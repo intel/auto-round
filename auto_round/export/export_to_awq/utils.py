@@ -33,8 +33,9 @@
 # SOFTWARE.
 
 import gc
-import torch
 import warnings
+
+import torch
 import torch.nn as nn
 from torch.autograd import Function
 
@@ -87,8 +88,8 @@ def dequantize_gemm(qweight, qzeros, scales, bits, group_size):
     iweight, izeros = reverse_awq_order(iweight, izeros, bits)
 
     # overflow checks
-    iweight = torch.bitwise_and(iweight, (2 ** bits) - 1)
-    izeros = torch.bitwise_and(izeros, (2 ** bits) - 1)
+    iweight = torch.bitwise_and(iweight, (2**bits) - 1)
+    izeros = torch.bitwise_and(izeros, (2**bits) - 1)
 
     # fp16 weights
     scales = scales.repeat_interleave(group_size, dim=0)
@@ -102,15 +103,15 @@ class WQLinearMMFunction(Function):
     @staticmethod
     # ctx is the first argument to forward
     def forward(
-            ctx,
-            x,
-            qweight,
-            qzeros,
-            scales,
-            w_bit=4,
-            group_size=128,
-            bias=None,
-            out_features=0,
+        ctx,
+        x,
+        qweight,
+        qzeros,
+        scales,
+        w_bit=4,
+        group_size=128,
+        bias=None,
+        out_features=0,
     ):
         # The forward pass can use ctx.
         ctx.save_for_backward(x, qweight, qzeros, scales, bias)
@@ -133,9 +134,7 @@ class WQLinearMMFunction(Function):
 
 
 class WQLinear_GEMM(nn.Module):
-    def __init__(
-            self, w_bit, group_size, in_features, out_features, bias, dev, training=False
-    ):
+    def __init__(self, w_bit, group_size, in_features, out_features, bias, dev, training=False):
         super().__init__()
 
         if w_bit not in [4]:
@@ -191,9 +190,7 @@ class WQLinear_GEMM(nn.Module):
             self.bias = None
 
     @classmethod
-    def from_linear(
-            cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None
-    ):
+    def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None):
         awq_linear = cls(
             w_bit,
             group_size,
@@ -223,15 +220,24 @@ class WQLinear_GEMM(nn.Module):
         repeat_scales = scales.to(device).t().repeat_interleave(repeat_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).t().repeat_interleave(repeat_size, 1)
-            intweight = torch.round(
-                linear.weight.to(device) / repeat_scales[:, :linear.weight.shape[1]] +
-                repeat_zeros[:, :linear.weight.shape[1]]).to(torch.int).t().contiguous()
+            intweight = (
+                torch.round(
+                    linear.weight.to(device) / repeat_scales[:, : linear.weight.shape[1]]
+                    + repeat_zeros[:, : linear.weight.shape[1]]
+                )
+                .to(torch.int)
+                .t()
+                .contiguous()
+            )
 
         else:
             repeat_zeros = zeros
-            intweight = torch.round(
-                linear.weight.to(device) / repeat_scales[:, :linear.weight.shape[1]] + repeat_zeros).to(
-                torch.int).t().contiguous()
+            intweight = (
+                torch.round(linear.weight.to(device) / repeat_scales[:, : linear.weight.shape[1]] + repeat_zeros)
+                .to(torch.int)
+                .t()
+                .contiguous()
+            )
 
         intweight = intweight.to(dtype=torch.int32)
         del repeat_scales
@@ -253,11 +259,14 @@ class WQLinear_GEMM(nn.Module):
             value = 0
             for i in range(pack_num):
                 value |= zeros << (i * awq_linear.w_bit)
-            qzeros = torch.ones(
-                (scales.shape[0], scales.shape[1] // pack_num),
-                dtype=torch.int32,
-                device=device,
-            ) * value
+            qzeros = (
+                torch.ones(
+                    (scales.shape[0], scales.shape[1] // pack_num),
+                    dtype=torch.int32,
+                    device=device,
+                )
+                * value
+            )
 
         awq_linear.qzeros = qzeros.to("cpu")
 
@@ -300,14 +309,12 @@ class WQLinear_GEMM(nn.Module):
         return out.reshape(out_shape)
 
     def extra_repr(self) -> str:
-        return (
-            "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
-                self.in_features,
-                self.out_features,
-                self.bias is not None,
-                self.w_bit,
-                self.group_size,
-            )
+        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
+            self.in_features,
+            self.out_features,
+            self.bias is not None,
+            self.w_bit,
+            self.group_size,
         )
 
 
@@ -316,4 +323,3 @@ def clear_memory(weight=None):
         del weight
     gc.collect()
     torch.cuda.empty_cache()
-

@@ -57,7 +57,7 @@ class QuantLinear(nn.Module):
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2 ** self.bits - 1
+        self.maxq = 2**self.bits - 1
 
         self.register_buffer(
             "qweight",
@@ -96,7 +96,6 @@ class QuantLinear(nn.Module):
                 dtype=torch.bfloat16,
             ),
         )
-
 
         if bias:
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
@@ -141,8 +140,9 @@ class QuantLinear(nn.Module):
         else:
             repeat_zeros = zeros
 
-        intweight =  torch.round(W.to(device) / repeat_scales[:,:W.shape[1]] + repeat_zeros[:,:W.shape[1]])
-
+        intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
+            torch.int32
+        )
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)
         order_map = torch.arange(0, 32 // self.bits, device=device) * self.bits
@@ -180,52 +180,6 @@ class QuantLinear(nn.Module):
     @classmethod
     def warmup(cls, model, transpose=False, seqlen=2048):
         return
-        # """
-        # Pre-tunes the quantized kernel
-        # """
-        # from tqdm import tqdm
-        #
-        # kn_values = {}
-        #
-        # for _, m in model.named_modules():
-        #     if not isinstance(m, cls):
-        #         continue
-        #
-        #     k = m.infeatures
-        #     n = m.outfeatures
-        #
-        #     if (k, n) not in kn_values:
-        #         kn_values[(k, n)] = (
-        #             m.qweight,
-        #             m.scales,
-        #             m.qzeros,
-        #             m.g_idx,
-        #             m.bits,
-        #             m.maxq,
-        #         )
-        #
-        # logger.info(f"Found {len(kn_values)} unique KN Linear values.")
-        # logger.info("Warming up autotune cache ...")
-        # with torch.no_grad():
-        #     for m in tqdm(range(0, math.ceil(math.log2(seqlen)) + 1)):
-        #         m = 2 ** m
-        #         for (k, n), (
-        #                 qweight,
-        #                 scales,
-        #                 qzeros,
-        #                 g_idx,
-        #                 bits,
-        #                 maxq,
-        #         ) in kn_values.items():
-        #             if transpose:
-        #                 a = torch.randn(m, k, dtype=torch.float16, device=model.device)
-        #                 quant_matmul_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
-        #                 a = torch.randn(m, n, dtype=torch.float16, device=model.device)
-        #                 transpose_quant_matmul_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
-        #             else:
-        #                 a = torch.randn(m, k, dtype=torch.float16, device=model.device)
-        #                 quant_matmul_inference_only_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
-        # del kn_values
 
 
 __all__ = ["QuantLinear"]

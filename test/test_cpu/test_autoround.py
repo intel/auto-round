@@ -7,10 +7,10 @@ from auto_round.eval.evaluation import simple_evaluate_user_model
 
 sys.path.insert(0, "../..")
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+from _test_helpers import model_infer
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from _test_helpers import model_infer
 
 
 class LLMDataLoader:
@@ -37,13 +37,14 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_remove_whole_block(self):
-        layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"bits": 32},
-                        "model.decoder.layers.0.self_attn.v_proj": {"bits": 32},
-                        "model.decoder.layers.0.self_attn.q_proj": {"bits": 32},
-                        "model.decoder.layers.0.self_attn.out_proj": {"bits": 32},
-                        "model.decoder.layers.0.fc1": {"bits": 32},
-                        "model.decoder.layers.0.fc2": {"bits": 32},
-                        }
+        layer_config = {
+            "model.decoder.layers.0.self_attn.k_proj": {"bits": 32},
+            "model.decoder.layers.0.self_attn.v_proj": {"bits": 32},
+            "model.decoder.layers.0.self_attn.q_proj": {"bits": 32},
+            "model.decoder.layers.0.self_attn.out_proj": {"bits": 32},
+            "model.decoder.layers.0.fc1": {"bits": 32},
+            "model.decoder.layers.0.fc2": {"bits": 32},
+        }
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -54,7 +55,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            layer_config=layer_config
+            layer_config=layer_config,
         )
         autoround.quantize()
 
@@ -97,7 +98,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            data_type="mx_fp4"
+            data_type="mx_fp4",
         )
         autoround.quantize()
 
@@ -112,7 +113,8 @@ class TestAutoRound(unittest.TestCase):
             batch_size=3,
             iters=2,
             dataset=self.llm_dataloader,
-            gradient_accumulate_steps=4)
+            gradient_accumulate_steps=4,
+        )
         autoround.quantize()
 
     def test_default(self):
@@ -224,6 +226,24 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_enable_norm_bias_tuning_qwen3(self):
+        bits, group_size, sym = 4, 128, True
+        model_name = "Qwen/Qwen3-0.6B"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=10,
+            enable_norm_bias_tuning=True,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
     def test_disable_minmax_tuning(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
@@ -292,8 +312,9 @@ class TestAutoRound(unittest.TestCase):
     def test_auto_device_map(self):
         bits, group_size, sym = 4, 128, False
         model_name = "facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                     device_map='auto')
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype="auto", trust_remote_code=True, device_map="auto"
+        )
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -309,8 +330,9 @@ class TestAutoRound(unittest.TestCase):
     def test_fp32(self):
         bits, group_size, sym = 4, 128, False
         model_name = "facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True,
-                                                     device_map='auto')
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.float32, trust_remote_code=True, device_map="auto"
+        )
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -320,7 +342,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            amp=False
+            amp=False,
         )
         autoround.quantize()
 
@@ -345,16 +367,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            nsamples=1
-
-        )
+        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(
@@ -370,10 +383,13 @@ class TestAutoRound(unittest.TestCase):
     def test_fallback_layers(self):
         bits, group_size, sym = 4, 128, True
         model_name = "facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True,
-                                                     device_map='auto')
-        layer_config = {"model.decoder.layers.0.self_attn.q_proj": {"bits": 16},
-                        "model.decoder.layers.1.self_attn.k_proj": {"bits": 16}}
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.float32, trust_remote_code=True, device_map="auto"
+        )
+        layer_config = {
+            "model.decoder.layers.0.self_attn.q_proj": {"bits": 16},
+            "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
+        }
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -383,18 +399,17 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            layer_config=layer_config
+            layer_config=layer_config,
         )
         autoround.quantize()
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
-        quantization_config = AutoRoundConfig(
-            backend="ipex"
-        )
+        quantization_config = AutoRoundConfig(backend="ipex")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map='cpu', quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", quantization_config=quantization_config
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -404,17 +419,20 @@ class TestAutoRound(unittest.TestCase):
     def test_not_convert_modules(self):
         import requests
         from PIL import Image
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+        from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+
         from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
+
         model_name = "Qwen/Qwen2-VL-2B-Instruct-AWQ"
         quantization_config = AutoRoundConfig()
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16)
+            model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
+        )
         self.assertTrue(isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear))
         self.assertFalse(isinstance(model.visual.merger.mlp[0], QuantLinear))
         if hasattr(model.model, "language_model"):
             self.assertTrue(isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear))
-        else: 
+        else:
             self.assertTrue(isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear))
 
         processor = AutoProcessor.from_pretrained(model_name, size=None)
@@ -433,9 +451,7 @@ class TestAutoRound(unittest.TestCase):
         ]
 
         # Preparation for inference
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs = Image.open(requests.get(image_url, stream=True).raw)
         inputs = processor(
             text=[text],
@@ -446,9 +462,7 @@ class TestAutoRound(unittest.TestCase):
 
         # Inference: Generation of the output
         generated_ids = model.generate(**inputs, max_new_tokens=1)
-        generated_ids_trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
+        generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
         output_text = processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
@@ -459,8 +473,10 @@ class TestAutoRound(unittest.TestCase):
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        layer_config = {"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
-                        "model.decoder.layers.1.self_attn.k_proj": {"bits": 16}}
+        layer_config = {
+            "model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+            "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
+        }
         autoround = AutoRound(
             model,
             tokenizer=tokenizer,
@@ -470,7 +486,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            layer_config=layer_config
+            layer_config=layer_config,
         )
         autoround.quantize()
         quantized_model_path = self.save_folder
@@ -478,8 +494,9 @@ class TestAutoRound(unittest.TestCase):
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_awq", inplace=True)
         quantization_config = AutoRoundConfig()
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map='auto', quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="auto", quantization_config=quantization_config
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -492,9 +509,10 @@ class TestAutoRound(unittest.TestCase):
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        layer_config = {"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
-                        ##"model.decoder.layers.1.self_attn.k_proj": {"bits": 16}
-                        }
+        layer_config = {
+            "model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+            ##"model.decoder.layers.1.self_attn.k_proj": {"bits": 16}
+        }
         autoround = AutoRound(
             model,
             tokenizer=tokenizer,
@@ -504,7 +522,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            layer_config=layer_config
+            layer_config=layer_config,
         )
         autoround.quantize()
         quantized_model_path = self.save_folder
@@ -512,8 +530,9 @@ class TestAutoRound(unittest.TestCase):
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_gptq", inplace=True)
         quantization_config = AutoRoundConfig()
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map='auto', quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="auto", quantization_config=quantization_config
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -526,9 +545,10 @@ class TestAutoRound(unittest.TestCase):
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        layer_config = {"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
-                        "model.decoder.layers.1.self_attn.k_proj": {"bits": 16}
-                        }
+        layer_config = {
+            "model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+            "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
+        }
         autoround = AutoRound(
             model,
             tokenizer=tokenizer,
@@ -538,7 +558,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            layer_config=layer_config
+            layer_config=layer_config,
         )
         autoround.quantize()
         quantized_model_path = self.save_folder
@@ -546,8 +566,9 @@ class TestAutoRound(unittest.TestCase):
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
         quantization_config = AutoRoundConfig()
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map='auto', quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="auto", quantization_config=quantization_config
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -560,9 +581,7 @@ class TestAutoRound(unittest.TestCase):
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        layer_config = {
-            "model.decoder.layers.12.self_attn.k_proj": {"bits": 16}
-        }
+        layer_config = {"model.decoder.layers.12.self_attn.k_proj": {"bits": 16}}
         with self.assertRaises(ValueError):
             autoround = AutoRound(
                 model,
@@ -573,8 +592,19 @@ class TestAutoRound(unittest.TestCase):
                 iters=2,
                 seqlen=2,
                 dataset=self.llm_dataloader,
-                layer_config=layer_config
+                layer_config=layer_config,
             )
+            autoround.quantize()
+
+    # def test_fp8_model_input_rtn_generation(self):
+    #     model_name = "Qwen/Qwen3-0.6B-FP8"
+    #     ar = AutoRound(model=model_name, iters=0)
+    #     ar.quantize_and_save(output_dir=self.save_folder)
+    #     model = AutoModelForCausalLM.from_pretrained(self.save_folder, torch_dtype="auto", trust_remote_code=True)
+    #     tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+    #     text = "There is a girl who likes adventure,"
+    #     inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 
 if __name__ == "__main__":

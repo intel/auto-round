@@ -24,56 +24,43 @@ accelerate==0.30.0
 
 ### INT4 Inference
 ```python
-from auto_round import AutoRoundConfig ##must import for auto-round format
+from auto_round import AutoRoundConfig  ##must import for auto-round format
 import requests
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
 
-model_id = "Intel/Phi-3.5-vision-instruct-inc-private" 
+model_id = "Intel/Phi-3.5-vision-instruct-inc-private"
 
 model = AutoModelForCausalLM.from_pretrained(
-  model_id, 
-  device_map="auto", 
-  trust_remote_code=True, 
-  torch_dtype="auto",
-  ##revision="13b4c3d" ##AutoGPTQ format
+    model_id,
+    device_map="auto",
+    trust_remote_code=True,
+    torch_dtype="auto",
+    ##revision="13b4c3d" ##AutoGPTQ format
 )
-processor = AutoProcessor.from_pretrained(model_id, 
-  trust_remote_code=True, 
-  num_crops=4
-) 
+processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True, num_crops=4)
 
 image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
 content = "Describe this image."
 messages = [
-    {"role": "user", 
-     "content": "<|image_1|>\n"+content},
+    {"role": "user", "content": "<|image_1|>\n" + content},
 ]
 
-prompt = processor.tokenizer.apply_chat_template(
-  messages, 
-  tokenize=False, 
-  add_generation_prompt=True
-)
+prompt = processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 image_inputs = Image.open(requests.get(image_url, stream=True).raw)
-inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device) 
+inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device)
 
-generation_args = { 
-    "max_new_tokens": 1000, 
-    "temperature": 0.0, 
-    "do_sample": False, 
-} 
+generation_args = {
+    "max_new_tokens": 1000,
+    "temperature": 0.0,
+    "do_sample": False,
+}
 
-generate_ids = model.generate(**inputs, 
-  eos_token_id=processor.tokenizer.eos_token_id, 
-  **generation_args
-)
+generate_ids = model.generate(**inputs, eos_token_id=processor.tokenizer.eos_token_id, **generation_args)
 
-# remove input tokens 
-generate_ids = generate_ids[:, inputs['input_ids'].shape[1]:]
-response = processor.batch_decode(generate_ids, 
-  skip_special_tokens=True, 
-  clean_up_tokenization_spaces=False)[0] 
+# remove input tokens
+generate_ids = generate_ids[:, inputs["input_ids"].shape[1] :]
+response = processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
 print(response)
 ##INT4:

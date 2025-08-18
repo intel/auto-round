@@ -9,18 +9,18 @@ This model is an int4 model with group_size 128 and symmetric quantization of [Q
 CPU requires auto-round version>0.3.1
 
 ```python
-from auto_round import AutoRoundConfig ##must import for auto-round format
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoRoundConfig  ##must import for auto-round format
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 quantized_model_dir = "Intel/Qwen2.5-7B-Instruct-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
 
 model = AutoModelForCausalLM.from_pretrained(
     quantized_model_dir,
-    torch_dtype='auto',
+    torch_dtype="auto",
     device_map="auto",
     ##revision="0b70f95" ##AutoGPTQ format
     ##revision="5a6d912" ##Quantized lm-head version
-    
 )
 
 ##import habana_frameworks.torch.core as htcore ## uncommnet it for HPU
@@ -28,26 +28,17 @@ model = AutoModelForCausalLM.from_pretrained(
 ##model = model.to(torch.bfloat16).to("hpu") ## uncommnet it for HPU
 
 prompt = "There is a girl who likes adventure,"
-messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": prompt}
-]
+messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
 
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
+text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
 generated_ids = model.generate(
     model_inputs.input_ids,
     max_new_tokens=200,  ##change this to align with the official usage
-    do_sample=False  ##change this to align with the official usage
+    do_sample=False,  ##change this to align with the official usage
 )
-generated_ids = [
-output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-]
+generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)]
 
 response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
 print(response)
@@ -61,8 +52,8 @@ prompt = "There is a girl who likes adventure,"
 """That sounds exciting! What kind of adventures does she enjoy? Is there something specific you'd like to plan or discuss related to her love for adventure?
 """
 
-prompt = "9.11和9.8哪个数字大"  
-#INT4: 
+prompt = "9.11和9.8哪个数字大"
+# INT4:
 """在比较9.11和9.8时，我们从左到右逐位进行比较：
 
 1. 首先比较整数部分：两个数的整数部分都是9，相等。
@@ -75,7 +66,7 @@ prompt = "9.11和9.8哪个数字大"
 因此，9.8比9.11大。
 """
 
-##BF16: 
+##BF16:
 """在比较9.11和9.8这两个数字时，我们可以直接进行比较：
 
 - 9.11 是九点一一
@@ -87,7 +78,7 @@ prompt = "9.11和9.8哪个数字大"
 
 
 prompt = "Once upon a time,"
-##INT4: 
+##INT4:
 """Once upon a time, in a land filled with wonder and magic, there lived a young girl named Elara. She had bright eyes that sparkled like the stars on a clear night and hair as golden as the sun-kissed fields of wheat. Elara's home was a cozy cottage nestled at the edge of a vast, enchanted forest, where ancient trees whispered secrets to one another and mystical creatures roamed freely.
 
 Every day, Elara would venture into the forest, exploring its hidden paths and marveling at the wonders it held. One sunny morning, as she wandered deeper into the woods than ever before, she stumbled upon a glade bathed in a soft, ethereal light. In the center of this glade stood an enormous tree, its trunk wider than any building Elara had ever seen, and its branches stretching high into the sky.

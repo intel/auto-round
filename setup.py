@@ -1,9 +1,10 @@
-import re
-from io import open
 import os
-from setuptools import find_packages, setup
+import re
 import sys
 from functools import lru_cache
+from io import open
+
+from setuptools import find_packages, setup
 
 os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
@@ -38,6 +39,7 @@ def is_habana_framework_installed():
 def is_hpu_available():
     try:
         import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+
         return True
     except ImportError:
         return False
@@ -53,12 +55,14 @@ def is_cpu_env():
         import torch
     except Exception as e:
         print(
-            f"Building extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/intel/auto-round for more details.")
+            f"Building extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/intel/auto-round for more details."
+        )
         sys.exit(1)
     if torch.cuda.is_available():
         return False
     try:
         import habana_frameworks.torch.core as htcore
+
         return False
     except:
         return True
@@ -67,7 +71,7 @@ def is_cpu_env():
 def fetch_requirements(path):
     requirements = []
     with open(path, "r") as fd:
-        requirements = [r.strip() for r in fd.readlines()]
+        requirements = [r.strip() for r in fd]
     return requirements
 
 

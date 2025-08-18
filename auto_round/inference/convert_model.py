@@ -15,19 +15,31 @@ import os
 import re
 from logging import getLogger
 from typing import Union
-from tqdm import tqdm
+
 import torch
 import torch.nn as nn
-
+from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.utils import (
-    get_module, set_module, is_hpu_supported, get_block_names, find_matching_blocks,
-    get_layer_names_in_block, check_to_quantized, check_start_with_block_name, SUPPORTED_LAYER_TYPES)
-
 from auto_round.inference.backend import (
-    get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, get_highest_priority_backend,
-    process_requirement)
+    BackendInfos,
+    dynamic_import_inference_linear,
+    find_backend,
+    get_highest_priority_backend,
+    get_layer_backend,
+    process_requirement,
+)
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    find_matching_blocks,
+    get_block_names,
+    get_layer_names_in_block,
+    get_module,
+    is_hpu_supported,
+    set_module,
+)
 
 logger = getLogger(__name__)
 
@@ -69,7 +81,9 @@ def get_keys_to_not_convert(model):
         Input model
     """
     from copy import deepcopy
+
     from accelerate.utils import find_tied_parameters
+
     # Create a copy of the model and tie the weights, then
     # check if it contains tied weights
     tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
@@ -110,10 +124,10 @@ def get_keys_to_not_convert(model):
 
 
 def _get_modules_to_not_convert(
-        model,
-        skip_modules=None,
-        keep_in_fp32_modules=None,
-        add_default_skips: bool = False,
+    model,
+    skip_modules=None,
+    keep_in_fp32_modules=None,
+    add_default_skips: bool = False,
 ):
     if skip_modules is None or add_default_skips:
         modules_to_not_convert = get_keys_to_not_convert(model)
@@ -175,7 +189,7 @@ def parse_target_device_and_backend(target_backend: str):
 
     def remove_device_prefix(backend: str, prefix: str) -> str:
         """Removes the given device prefix from the backend string, if present."""
-        return backend[len(prefix):].lstrip(":") if backend.startswith(prefix) else backend
+        return backend[len(prefix) :].lstrip(":") if backend.startswith(prefix) else backend
 
     # Handle "auto" case explicitly
     if target_backend == "auto":
@@ -241,7 +255,7 @@ def get_layer_config(model, quantization_config):
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
             ##speed up the matching
             for i in range(len(quant_block_list)):
-                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip('.')
+                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
 
     # Get layer names that will be quantized
     layer_names = []
@@ -257,7 +271,8 @@ def get_layer_config(model, quantization_config):
     # Process GPTQ format: identify modules that should be quantized
     if getattr(quantization_config, "modules_in_block_to_quantize", None):
         modules_in_block_to_quantize = flatten_list(
-            quantization_config.modules_in_block_to_quantize)  # Flatten the list
+            quantization_config.modules_in_block_to_quantize
+        )  # Flatten the list
         for layer_name in layer_names:
             if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
@@ -312,8 +327,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         layer_backend_must = find_backend(layer_backend, orig_backend)
         used_backends.append(layer_backend_must)
         if layer_backend_must is None:
-            raise ValueError(
-                f"{target_backend} is not compatible, please change backend to `auto` and retry")
+            raise ValueError(f"{target_backend} is not compatible, please change backend to `auto` and retry")
         devices = BackendInfos[layer_backend_must].device
         if target_device not in devices:
             raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
@@ -344,8 +358,9 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
                     used_backends.append(layer_backend)
             else:
                 # Determine backend
-                layer_backend = _get_layer_backend(target_device, target_backend, orig_backend, config,
-                                                   in_features, out_features)
+                layer_backend = _get_layer_backend(
+                    target_device, target_backend, orig_backend, config, in_features, out_features
+                )
                 backend_cache[key] = layer_backend
 
         if not layer_backend:
@@ -369,12 +384,19 @@ def _get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _get_layer_backend(target_device, target_backend, orig_backend, config, in_features,
-                       out_features):
+def _get_layer_backend(target_device, target_backend, orig_backend, config, in_features, out_features):
     """Determines the best backend for a given layer."""
 
-    backend = get_layer_backend(target_device, target_backend, orig_backend, config["bits"], config["group_size"],
-                                config["sym"], in_features, out_features)
+    backend = get_layer_backend(
+        target_device,
+        target_backend,
+        orig_backend,
+        config["bits"],
+        config["group_size"],
+        config["sym"],
+        in_features,
+        out_features,
+    )
 
     return backend
 
@@ -398,21 +420,38 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
 
     # Special handling for AWQ layers
     from auto_round_extension.qbits.qbits_awq import QuantLinear as QBitsAWQQuantLinear
+
     if "awq" in layer_backend and isinstance(QuantLinear, QBitsAWQQuantLinear):
-        return QuantLinear.from_linear(layer, config["bits"], config["group_size"], init_only=True,
-                                       has_zero_points=not config["sym"])
+        return QuantLinear.from_linear(
+            layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
+        )
     elif "awq" in layer_backend:
         return QuantLinear.from_linear(layer, config["bits"], config["group_size"], init_only=True)
     elif "gptqmodel" in layer_backend:
-        return QuantLinear(bits=config["bits"], group_size=config["group_size"], desc_act=False, sym=config["sym"],
-                           in_features=in_features, out_features=out_features, bias=bias)
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            desc_act=False,
+            sym=config["sym"],
+            in_features=in_features,
+            out_features=out_features,
+            bias=bias,
+        )
     # Default quantized layer creation
     try:
-        return QuantLinear(config["bits"], config["group_size"], in_features, out_features, bias,
-                           weight_dtype=layer.weight.dtype, clip=config["clip"])
+        return QuantLinear(
+            config["bits"],
+            config["group_size"],
+            in_features,
+            out_features,
+            bias,
+            weight_dtype=layer.weight.dtype,
+            clip=config["clip"],
+        )
     except:  # Handle cases where `clip` is not a valid argument
-        return QuantLinear(config["bits"], config["group_size"], in_features, out_features, bias,
-                           weight_dtype=layer.weight.dtype)
+        return QuantLinear(
+            config["bits"], config["group_size"], in_features, out_features, bias, weight_dtype=layer.weight.dtype
+        )
 
 
 def infer_target_device(device_map=None):
@@ -450,9 +489,11 @@ def post_init(model, used_backends):
             need_ipex_itrex_init = True
     if need_autogptq_init:
         from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
+
         model = gptq_post_init(model, use_act_order=False)
     if need_gptqmodel_init:
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
+
         model = gptq_post_init(model, use_act_order=False)
     if need_ipex_itrex_init:
         message = "repacking to CPU/XPU format"
@@ -461,8 +502,7 @@ def post_init(model, used_backends):
             if hasattr(m, "QUANT_TYPE") and ("qbits" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
                 layers.append(m)
 
-        for layer in tqdm(layers, desc=message, total=len(layers),
-                          leave=True):
+        for layer in tqdm(layers, desc=message, total=len(layers), leave=True):
             layer.post_init()
 
     if used_gptq_exllamav2:
@@ -477,7 +517,7 @@ def post_init(model, used_backends):
     for l in data_types[1:]:
         common &= set(l)
     common = list(common)
-    if len(common) > 0 and str(model.dtype).split('.')[-1] not in common:
+    if len(common) > 0 and str(model.dtype).split(".")[-1] not in common:
         if common[0] == "float16":
             model = model.to(torch.float16)
             logger.warning("force model to float16")
@@ -508,12 +548,14 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     quantization_config = model.config.quantization_config
 
-    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act == True:
+    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act:
         ##check static_group
         if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
-                not hasattr(quantization_config, "static_groups")):
+            not hasattr(quantization_config, "static_groups")
+        ):
             raise NotImplementedError(
-                "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound")
+                "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound"
+            )
 
     if hasattr(quantization_config, "backend"):
         backend = quantization_config.backend
@@ -523,10 +565,11 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     ##target_backend could be None
     _, backend = parse_target_device_and_backend(backend)
 
-    if hasattr(quantization_config,
-               "packing_format") and "auto-round" in quantization_config.quant_method:  # pragma: no cover
+    if (
+        hasattr(quantization_config, "packing_format") and "auto-round" in quantization_config.quant_method
+    ):  # pragma: no cover
         packing_format = quantization_config.packing_format
-    elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
+    elif "gptq" in quantization_config.quant_method:  # pragma: no cover
         packing_format = "auto_gptq"
     elif "awq" in quantization_config.quant_method:
         packing_format = "auto_awq"
@@ -538,18 +581,22 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     layer_configs = get_layer_config(model, quantization_config)
     if packing_format.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
-        packing_format = packing_format[len("auto_round:"):]
+        packing_format = packing_format[len("auto_round:") :]
     orig_backend = find_backend(packing_format)
 
     if backend.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
-        backend = backend[len("auto_round:"):]
+        backend = backend[len("auto_round:") :]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
 
     if backend == "auto" or backend == "":
-        best_backend = get_highest_priority_backend(quantization_config.bits, quantization_config.sym,
-                                                    quantization_config.group_size, target_device,
-                                                    BackendInfos[orig_backend].packing_format)
+        best_backend = get_highest_priority_backend(
+            quantization_config.bits,
+            quantization_config.sym,
+            quantization_config.group_size,
+            target_device,
+            BackendInfos[orig_backend].packing_format,
+        )
         if best_backend is not None and best_backend not in used_backends:
             requirements = BackendInfos[best_backend].requirements
             process_requirement(requirements, target_device, "warning")

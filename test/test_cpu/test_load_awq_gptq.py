@@ -4,9 +4,7 @@ import unittest
 
 sys.path.insert(0, "../..")
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from transformers import AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 
 class TestAutoRound(unittest.TestCase):
@@ -24,11 +22,9 @@ class TestAutoRound(unittest.TestCase):
             input_ids=inputs["input_ids"].to(model.device),
             attention_mask=inputs["attention_mask"].to(model.device),
             do_sample=False,  ## change this to follow official usage
-            max_new_tokens=5
+            max_new_tokens=5,
         )
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
-        ]
+        generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)]
 
         decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
@@ -45,15 +41,23 @@ class TestAutoRound(unittest.TestCase):
         model_name = "ModelCloud/Llama-3.2-1B-Instruct-gptqmodel-4bit-vortex-v1"
         quantization_config = AutoRoundConfig()
         with self.assertRaises(NotImplementedError) as cm:
-            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                         device_map="cpu",
-                                                         quantization_config=quantization_config)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype="auto",
+                trust_remote_code=True,
+                device_map="cpu",
+                quantization_config=quantization_config,
+            )
 
     def test_load_awq(self):
         model_name = "casperhansen/opt-125m-awq"
         quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                     device_map="cpu",
-                                                     quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            trust_remote_code=True,
+            device_map="cpu",
+            quantization_config=quantization_config,
+        )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)

@@ -43,7 +43,6 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 
 from . import custom_autotune
 
-
 logger = getLogger(__name__)
 
 
@@ -457,7 +456,6 @@ def transpose_quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq
         raise ValueError(f"Unsupported device type: {device_type}")
 
 
-
 class QuantLinearFunction(torch.autograd.Function):
     @staticmethod
     @custom_fwd
@@ -515,7 +513,6 @@ def quant_matmul_inference_only_248(input, qweight, scales, qzeros, g_idx, bits,
             return quant_matmul_inference_only_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq)
     else:
         raise ValueError(f"Unsupported device type: {device_type}")
-
 
 
 class QuantLinearInferenceOnlyFunction(torch.autograd.Function):

@@ -1,4 +1,3 @@
-
 # Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +17,9 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+
 from auto_round.utils import convert_dtype_torch2str, logger
+
 QBITS_AVAILABLE = True
 
 BITS_DTYPE_MAPPING = {
@@ -46,8 +47,7 @@ class QuantLinear(nn.Module):
         super().__init__()
 
         if bits not in [2, 4, 8]:
-            raise NotImplementedError(
-                "Only 2, 4,8 bits are supported for QBits.")
+            raise NotImplementedError("Only 2, 4,8 bits are supported for QBits.")
 
         self.infeatures = infeatures
         self.outfeatures = outfeatures
@@ -60,8 +60,7 @@ class QuantLinear(nn.Module):
 
         self.register_buffer(
             "qweight",
-            torch.zeros((infeatures // 32 * self.bits,
-                        outfeatures), dtype=torch.int32),
+            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
         )
         self.register_buffer(
             "qzeros",
@@ -81,8 +80,7 @@ class QuantLinear(nn.Module):
             ),
         )
         if bias:
-            self.register_buffer("bias", torch.zeros(
-                (outfeatures), dtype=torch.float))
+            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float))
         else:
             self.bias = None
 
@@ -104,52 +102,57 @@ class QuantLinear(nn.Module):
             #             f"Please install torch {version_match_map[itrex_version]} by command 'pip install torch=={version_match_map[itrex_version]} --extra-index-url https://download.pytorch.org/whl/cpu' as Intel Extension for Transformers {itrex_version} is not compatible with current torch.")
         else:
             logger.error(
-                "Please install Intel Extension for Transformers by running 'pip install intel-extension-for-transformers' as qbits linear requirements checking fail. ")
+                "Please install Intel Extension for Transformers by running 'pip install intel-extension-for-transformers' as qbits linear requirements checking fail. "
+            )
             exit(1)
 
     def post_init(self):
         import intel_extension_for_transformers
+
         self.qbits = intel_extension_for_transformers.qbits
         assert self.qweight.device.type == "cpu"
         if self.bias is not None:
             self.bias = self.bias.to(dtype=torch.float32)
 
         # intweight: k x n, zeros: k / group_size x n
-        intweight, zeros = unpack_to_8bit_signed(
-            self.qweight, self.qzeros, self.bits)
+        intweight, zeros = unpack_to_8bit_signed(self.qweight, self.qzeros, self.bits)
         if zeros is None:
             zeros = torch.empty(0, dtype=torch.int8)
             self.asym = False
         else:
             # change it to int8 with offset 128
             if self.bits == 8:
-                zeros = (zeros.to(torch.int32) -
-                         (2 ** (self.bits - 1))).to(torch.int8)
+                zeros = (zeros.to(torch.int32) - (2 ** (self.bits - 1))).to(torch.int8)
             else:
-                zeros -= (2**(self.bits - 1))
+                zeros -= 2 ** (self.bits - 1)
 
         if not self.asym:
-            intweight -= (2**(self.bits - 1))
+            intweight -= 2 ** (self.bits - 1)
         intweight = intweight.to(torch.uint8 if self.asym else torch.int8)
         # due to asym return torch.uint8 but backend request int8,
         # change it to int8 with offset 128
         if self.asym:
-            intweight = (intweight.to(torch.int32) -
-                         (2 ** (self.bits - 1))).to(torch.int8)
+            intweight = (intweight.to(torch.int32) - (2 ** (self.bits - 1))).to(torch.int8)
 
         scales = self.scales
 
         logger.debug(
-            f"QBits repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, group_size:{self.group_size}")
-        self.qweight = self.qbits.repack_quantized_weight(intweight.contiguous(), scales.float().contiguous(), zeros.contiguous(), torch.empty(0),
-                                                     # weight_dtype
-                                                     BITS_DTYPE_MAPPING[self.bits],
-                                                     # scale_dtype
-                                                     "fp32",
-                                                     # TODO(zhe): consider dynamic-set cmpt for better perf?
-                                                     "fp32",
-                                                     self.asym,
-                                                     self.group_size)
+            f"QBits repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, group_size:{self.group_size}"
+        )
+        self.qweight = self.qbits.repack_quantized_weight(
+            intweight.contiguous(),
+            scales.float().contiguous(),
+            zeros.contiguous(),
+            torch.empty(0),
+            # weight_dtype
+            BITS_DTYPE_MAPPING[self.bits],
+            # scale_dtype
+            "fp32",
+            # TODO(zhe): consider dynamic-set cmpt for better perf?
+            "fp32",
+            self.asym,
+            self.group_size,
+        )
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
@@ -163,14 +166,18 @@ class QuantLinear(nn.Module):
         out_2d_shape = x.shape[:-1] + (self.outfeatures,)
 
         outputs = torch.zeros(out_2d_shape, device=x.device, dtype=torch.float)
-        bias = self.bias if self.bias is not None else torch.empty(
-            0, dtype=torch.float)
+        bias = self.bias if self.bias is not None else torch.empty(0, dtype=torch.float)
 
-        self.qbits.woq_linear(x, self.qweight, bias, outputs,
-                         convert_dtype_torch2str(torch.float),  # compute_dtype
-                         BITS_DTYPE_MAPPING[self.bits],  # weight_dtype
-                         "fp32",  # scale_dtype
-                         self.asym)
+        self.qbits.woq_linear(
+            x,
+            self.qweight,
+            bias,
+            outputs,
+            convert_dtype_torch2str(torch.float),  # compute_dtype
+            BITS_DTYPE_MAPPING[self.bits],  # weight_dtype
+            "fp32",  # scale_dtype
+            self.asym,
+        )
         return outputs.to(raw_input_dtype).view(out_shape)
 
 
@@ -182,14 +189,13 @@ def unpack_to_8bit_signed(qweight, qzeros, bits):
         zp_shape = list(qzeros.shape)
         zp_shape[1] = zp_shape[1] * (32 // bits)
 
-        zeros = torch.bitwise_right_shift(
-            torch.unsqueeze(qzeros, 2).expand(-1, -1,
-                                              32 // bits), wf.unsqueeze(0)
-        ).to(torch.int16 if bits == 8 else torch.int8)
+        zeros = torch.bitwise_right_shift(torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // bits), wf.unsqueeze(0)).to(
+            torch.int16 if bits == 8 else torch.int8
+        )
         torch.bitwise_and(zeros, (2**bits) - 1, out=zeros)
         if bits == 8:
             zeros = zeros.to(torch.uint8)
-        zeros+=1
+        zeros += 1
         try:
             zeros = zeros.reshape(zp_shape)
         except:
@@ -198,10 +204,9 @@ def unpack_to_8bit_signed(qweight, qzeros, bits):
             zeros = zeros[zeros != 1]
             zeros = zeros.reshape(zp_shape)
 
-    weight = torch.bitwise_right_shift(
-        torch.unsqueeze(qweight, 1).expand(-1, 32 //
-                                           bits, -1), wf.unsqueeze(-1)
-    ).to(torch.int16 if bits == 8 else torch.int8)
+    weight = torch.bitwise_right_shift(torch.unsqueeze(qweight, 1).expand(-1, 32 // bits, -1), wf.unsqueeze(-1)).to(
+        torch.int16 if bits == 8 else torch.int8
+    )
     weight.bitwise_and_((2**bits) - 1)
     weight = weight.view(-1, weight.shape[-1])
 
@@ -211,15 +216,13 @@ def unpack_to_8bit_signed(qweight, qzeros, bits):
 # Copied from qlinear_marlin.py
 @torch.no_grad()
 def dequantize_weight(qweight, qzeros, scales, bits):
-    unpacked_qweight, unpacked_qzeros = unpack_to_8bit_signed(
-        qweight, qzeros, bits)
+    unpacked_qweight, unpacked_qzeros = unpack_to_8bit_signed(qweight, qzeros, bits)
     group_size = unpacked_qweight.shape[0] // scales.shape[0]
     scales = scales.repeat_interleave(group_size, dim=0)
     if unpacked_qzeros is not None:
         unpacked_qzeros = unpacked_qzeros.repeat_interleave(group_size, dim=0)
     else:
-        unpacked_qzeros = torch.full_like(
-            scales, 8 if bits == 4 else 128, dtype=torch.int32)
+        unpacked_qzeros = torch.full_like(scales, 8 if bits == 4 else 128, dtype=torch.int32)
     unpacked_qweight = (unpacked_qweight - unpacked_qzeros) * scales
 
     return unpacked_qweight, unpacked_qzeros

@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import transformers
 
+
 class TritonModuleMixin:
     @classmethod
     def warmup(cls, model, transpose=False, seqlen=2048):
@@ -38,7 +39,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2 ** self.bits - 1
+        self.maxq = 2**self.bits - 1
 
         self.register_buffer(
             "qweight",
@@ -97,12 +98,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros[:, :W.shape[1]]).to(
-                torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
+                torch.int32
+            )
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros).to(
-                torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
 
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)

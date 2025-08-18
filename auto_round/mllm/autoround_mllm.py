@@ -12,28 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
-from tqdm import tqdm
 from copy import deepcopy
+from typing import Union
 
 import torch
+from tqdm import tqdm
 
+from auto_round.special_model_handler import (
+    NOT_SUPPORT_ONLY_TEXT_MODELS,
+    SUPPORT_ONLY_TEXT_MODELS,
+    _handle_special_model,
+)
+
+from ..autoround import AutoRound
+from ..low_cpu_mem.utils import get_layers_before_block
 from ..utils import (
-    logger,
+    clear_memory,
     detect_device,
+    extract_block_names_to_str,
+    find_matching_blocks,
+    get_block_names,
+    logger,
+    mllm_load_model,
     to_device,
     to_dtype,
-    get_block_names,
-    find_matching_blocks,
-    extract_block_names_to_str,
-    clear_memory,
-    mllm_load_model
 )
-from ..autoround import AutoRound
-from .template import get_template, Template
-from auto_round.special_model_handler import  SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
 from .mllm_dataset import get_mllm_dataloader
-from ..low_cpu_mem.utils import get_layers_before_block
+from .template import Template, get_template
 
 
 def _only_text_test(model, tokenizer, device, model_type):
@@ -42,11 +47,14 @@ def _only_text_test(model, tokenizer, device, model_type):
     if model_type in SUPPORT_ONLY_TEXT_MODELS:  # save time
         return True
 
+    if model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
+        return False
+
     new_tokenizer = deepcopy(tokenizer)
     device = detect_device(device)
     text = ["only text", "test"]
-    new_tokenizer.padding_side = 'left'
-    if new_tokenizer.pad_token is None:
+    new_tokenizer.padding_side = "left"
+    if hasattr(new_tokenizer, "pad_token") and new_tokenizer.pad_token is None:
         new_tokenizer.pad_token = new_tokenizer.eos_token
     inputs = new_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
 
@@ -56,21 +64,20 @@ def _only_text_test(model, tokenizer, device, model_type):
         model(**inputs)
         return True
     except RuntimeError as e:
-        if "CUDA out of memory" in str(e):
-            model = model.to("cpu")
-            inputs = inputs.to("cpu")
-            try:
-                model(**inputs)
-            except:
-                return False
-        return False
+        model = model.to("cpu")
+        inputs = inputs.to("cpu")
+        try:
+            model(**inputs)
+        except:
+            return False
+        return True
     except Exception as e:
         return False
 
 
 class AutoRoundMLLM(AutoRound):
     """Class for automatic rounding-based quantization with MLLMs.
-    
+
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
@@ -111,7 +118,7 @@ class AutoRoundMLLM(AutoRound):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of 
+        to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
         **kwargs: Additional keyword arguments.
@@ -120,51 +127,52 @@ class AutoRoundMLLM(AutoRound):
     """
 
     def __init__(
-            self,
-            model: torch.nn.Module,
-            tokenizer,
-            processor = None,
-            image_processor = None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = True,
-            layer_config: dict = None,
-            batch_size: int = 8,
-            amp: bool = True,
-            device: str = None,
-            lr_scheduler=None,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
-            extra_data_dir: str = None,
-            template: Union[str, Template] = None,
-            quant_nontext_module: bool = False,
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
-            low_cpu_mem_usage: bool = False,
-            iters: int = 200,
-            seqlen: int = None,
-            nsamples: int = 128,
-            sampler: str = "rand",
-            seed: int = 42,
-            nblocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp16",
-            act_bits: int = 32,
-            act_group_size: int = None,
-            act_sym: bool = None,
-            act_dynamic: bool = True,
-            to_quant_block_names: Union[str, list] = None,
-            enable_norm_bias_tuning: bool = False,
-            truncation: bool = None,
-            enable_torch_compile: bool = False,
-            model_kwargs: dict = None,
-            **kwargs,
+        self,
+        model: torch.nn.Module,
+        tokenizer,
+        processor=None,
+        image_processor=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        layer_config: dict = None,
+        batch_size: int = 8,
+        amp: bool = True,
+        device: str = None,
+        lr_scheduler=None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
+        extra_data_dir: str = None,
+        template: Union[str, Template] = None,
+        quant_nontext_module: bool = False,
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = False,
+        iters: int = 200,
+        seqlen: int = None,
+        nsamples: int = 128,
+        sampler: str = "rand",
+        seed: int = 42,
+        nblocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp16",
+        act_bits: int = 32,
+        act_group_size: int = None,
+        act_sym: bool = None,
+        act_dynamic: bool = True,
+        to_quant_block_names: Union[str, list] = None,
+        enable_norm_bias_tuning: bool = False,
+        truncation: bool = None,
+        enable_torch_compile: bool = False,
+        model_kwargs: dict = None,
+        **kwargs,
     ):
+        quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
@@ -175,33 +183,44 @@ class AutoRoundMLLM(AutoRound):
         self.processor = processor
         self.image_processor = image_processor
         from transformers import PreTrainedModel
+
         if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
             template = "default"
-        self.template = template if template is not None else model.config.model_type
-        if not isinstance(dataset, torch.utils.data.DataLoader):
-            self.template = get_template(
-                self.template,
-                model=model,
-                tokenizer=tokenizer,
-                processor=processor,
-                image_processor=image_processor,
-                use_rtn=iters == 0)
-            dataset = self.template.default_dataset if dataset is None else dataset
+        if hasattr(model, "name_or_path") and "Mistral-Small-3.2" in model.name_or_path:
+            template = "mistral3_2"
+        if iters > 0:
+            self.template = template if template is not None else model.config.model_type
+            if not isinstance(dataset, torch.utils.data.DataLoader):
+                self.template = get_template(
+                    self.template,
+                    model=model,
+                    tokenizer=tokenizer,
+                    processor=processor,
+                    image_processor=image_processor,
+                    use_rtn=iters == 0,
+                    quiet=not self.quant_nontext_module,
+                )
+                dataset = self.template.default_dataset if dataset is None else dataset
+        else:
+            self.template = None
 
         model = _handle_special_model(model)
 
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
-        if isinstance(dataset, str):
-            if quant_nontext_module or \
-                (dataset in CALIB_DATASETS.keys() and not \
-                 _only_text_test(model, tokenizer, device, self.template.model_type)):
-                if quant_nontext_module:
-                    logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
-                                "switching to liuhaotian/llava_conv_58k")
-                else:
-                    logger.warning(f"{model.config.model_type} not support for {dataset},"
-                             " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+
+        if iters > 0 and isinstance(dataset, str) and dataset in CALIB_DATASETS.keys():
+            if quant_nontext_module:
+                logger.warning(
+                    "Text only dataset cannot be used for calibrating non-text modules,"
+                    " switching to liuhaotian/llava_conv_58k"
+                )
+                dataset = "liuhaotian/llava_conv_58k"
+            elif not _only_text_test(model, tokenizer, device, self.template.model_type):
+                logger.warning(
+                    f"{model.config.model_type} does not support for {dataset},"
+                    " will use liuhaotian/llava_conv_58k with default config as an alternative."
+                )
                 dataset = "liuhaotian/llava_conv_58k"
 
             if dataset in MLLM_DATASET.keys():
@@ -212,7 +231,8 @@ class AutoRoundMLLM(AutoRound):
                         f"reset batch_size({batch_size}) to 1 and "
                         f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                         f"to {batch_size * gradient_accumulate_steps}, "
-                        f"because batch_size={batch_size} cannot be used for {dataset}")
+                        f"because batch_size={batch_size} cannot be used for {dataset}"
+                    )
                     gradient_accumulate_steps = batch_size * gradient_accumulate_steps
                     batch_size = 1
         if quant_nontext_module and batch_size != 1:
@@ -220,7 +240,8 @@ class AutoRoundMLLM(AutoRound):
                 f"reset batch_size({batch_size}) to 1 and "
                 f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                 f"to {batch_size * gradient_accumulate_steps}, "
-                f"because batch_size={batch_size} cannot be used for calibrating non-text modules.")
+                f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
+            )
             gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
@@ -267,6 +288,7 @@ class AutoRoundMLLM(AutoRound):
             to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            vlm=True,
             **kwargs,
         )
 
@@ -298,7 +320,7 @@ class AutoRoundMLLM(AutoRound):
                 truncation=self.truncation,
                 nsamples=self.nsamples,
                 gradient_accumulate_steps=self.gradient_accumulate_steps,
-                quant_nontext_module=self.quant_nontext_module
+                quant_nontext_module=self.quant_nontext_module,
             )
         else:
             self.dataloader = self.dataset
@@ -334,7 +356,7 @@ class AutoRoundMLLM(AutoRound):
                         data_new[key] = data[key].to(self.device)
                     input_ids = data_new["input_ids"]
                 elif isinstance(data, dict) and "text" in data.keys():
-                    text = data['text']
+                    text = data["text"]
                     if isinstance(text, dict):
                         text = [text]
                     input_text = self.template._encode(text)
@@ -348,7 +370,7 @@ class AutoRoundMLLM(AutoRound):
                     for key in data.keys():
                         data_new[key] = torch.tensor(data[key])
                         data_new[key] = to_device(data_new[key], self.model.device)
-                        if key == 'images':
+                        if key == "images":
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
                     input_ids = data_new["input_ids"]
                 elif isinstance(data, tuple) or isinstance(data, list):
@@ -358,7 +380,7 @@ class AutoRoundMLLM(AutoRound):
                     data_new = {}
                     for key in data.keys():
                         data_new[key] = to_device(data[key], self.model.device)
-                        if key in ['images', 'pixel_values']:
+                        if key in ["images", "pixel_values"]:
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
                     if "input_ids" in data_new:
                         input_ids = data_new["input_ids"]
@@ -396,8 +418,10 @@ class AutoRoundMLLM(AutoRound):
                 f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
             if total_cnt < self.batch_size:
-                raise ValueError(f"valid samples is less than batch_size({self.batch_size}),"
-                                 " please adjust self.batch_size or seqlen.")
+                raise ValueError(
+                    f"valid samples is less than batch_size({self.batch_size}),"
+                    " please adjust self.batch_size or seqlen."
+                )
             max_len = (total_cnt // self.batch_size) * self.batch_size
             for k, v in self.inputs.items():
                 for key in v:
@@ -425,5 +449,17 @@ class AutoRoundMLLM(AutoRound):
         if self.processor is not None and not hasattr(self.processor, "chat_template"):
             self.processor.chat_template = None
         compressed_model = super().save_quantized(
-            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
+            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs
+        )
         return compressed_model
+
+    def _check_quant_nontext(self, layer_config, quant_nontext_module):
+        if not layer_config:
+            return quant_nontext_module
+        from auto_round.mllm.utils import VISUAL_KEYS
+
+        for layer_name in layer_config.keys():
+            for vlm_key in VISUAL_KEYS:
+                if vlm_key in layer_name:
+                    return True
+        return quant_nontext_module

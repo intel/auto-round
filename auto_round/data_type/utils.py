@@ -12,16 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+import math
 from functools import lru_cache
+from typing import List
+
+import torch
+from torch.nn import Linear, Module
+
+from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import logger
+
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
-    This function adjusts t
-    he input tensor's shape so that its last dimension is a multiple
+    This function adjusts the
+    input tensor's shape so that its last dimension is a multiple
     of the specified `group_size`. If padding is required, it adds padding to the tensor
     to achieve this. If the tensor's last dimension is already divisible by `group_size`,
     no padding is applied.
@@ -37,6 +43,9 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """
     orig_shape = data.shape
     pad_len = 0
+    if group_size == 0:
+        data = data.reshape(1, -1)
+        return data, orig_shape, pad_len
     if len(data.shape) > 2:
         data = data.reshape(-1, orig_shape[-1])
     if group_size == -1 or data.shape[1] < group_size:
@@ -81,17 +90,17 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int):
 def get_quant_func(dtype, bits, sym):
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
-       This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
-       dictionary based on the provided data type (`dtype`), bit width (`bits`), and whether
-       the quantization is symmetric (`sym`). If the function does not exist, raise ValueError.
+    This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
+    dictionary based on the provided data type (`dtype`), bit width (`bits`), and whether
+    the quantization is symmetric (`sym`). If the function does not exist, raise ValueError.
 
-       Args:
-           dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
-           bits (int): The bit width for the quantization (e.g., 2,4,8).
-           sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
+    Args:
+        dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
+        bits (int): The bit width for the quantization (e.g., 2,4,8).
+        sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
 
-       Returns:
-           function: The quantization function corresponding to the specified parameters.
+    Returns:
+        function: The quantization function corresponding to the specified parameters.
     """
     key = dtype
     if key in QUANT_FUNC_WITH_DTYPE.keys():
@@ -105,19 +114,11 @@ def get_quant_func(dtype, bits, sym):
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
 
-    ##need to add bits
+    ##need to add bits and sym infos
     if sym:
         key = dtype + str(bits) + "_sym"
     else:
         key = dtype + str(bits) + "_asym"
-
-    if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key], key
-
-    if sym:
-        key = dtype  + "_sym"
-    else:
-        key = dtype  + "_asym"
 
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
@@ -157,6 +158,18 @@ def floor_ste(x: torch.Tensor):
     return (x.floor() - x).detach() + x
 
 
+def ceil_ste(x: torch.Tensor):
+    """Straight-Through Estimator for ceil.
+
+    Args:
+        x: torch.Tensor
+
+    Returns:
+        torch.Tensor
+    """
+    return (x.ceil() - x).detach() + x
+
+
 def float8_e4m3fn_ste(x: torch.Tensor):
     """Straight-Through Estimator (STE) for float8.
 
@@ -170,6 +183,23 @@ def float8_e4m3fn_ste(x: torch.Tensor):
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
     fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
+
+    return fp8
+
+
+def float8_e5m2_ste(x: torch.Tensor):
+    """Straight-Through Estimator (STE) for float8.
+
+    Applies a quantization and dequantization step with float8 precision while maintaining
+    gradient flow using a straight-through estimator.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+
+    Returns:
+        torch.Tensor: Quantized and dequantized tensor using float8 format.
+    """
+    fp8 = (x.to(torch.float8_e5m2).to(x.dtype) - x).detach() + x
 
     return fp8
 
@@ -204,6 +234,72 @@ def get_gaudi_fp8_ste_func():
     return fn
 
 
+# please refer from https://github.com/vllm-project/llm-compressor/blob/
+# 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
+def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weight"):
+    """
+    When running NVFP4 quantization, update the global scale
+    such that q,k,v layers are treated as one tensor with the same
+    global_scale and gate_proj/up_proj layers are treated as one tensor
+    with the same global scale. This is requirement currently being set
+    by vLLM and may be removed in the future OR potentially make it
+    an optional step.
 
+    :param model: model to quantize
+    base_name: op name for fuse usage, option: weight, input
+    """
+    global_scale_name = f"{base_name}_global_scale"
+    max_value_tensor = torch.ones(1, device="cpu", dtype=torch.float32) * torch.finfo(torch.float32).max
 
+    def _is_attention_module(module: Module):
+        return "attention" in module.__class__.__name__.lower() and (
+            hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
+        )
 
+    def _is_mlp_module(module: Module):
+        return "mlp" in module.__class__.__name__.lower() and (
+            hasattr(module, "gate_proj") or hasattr(module, "up_proj")
+        )
+
+    if _is_attention_module(submodule):
+        # already fused/treated as one layer
+        if hasattr(submodule, "qkv_proj"):
+            return
+        global_scale = torch.min(
+            torch.cat(
+                (
+                    getattr(submodule.q_proj, global_scale_name, max_value_tensor).reshape(1),
+                    getattr(submodule.k_proj, global_scale_name, max_value_tensor).reshape(1),
+                    getattr(submodule.v_proj, global_scale_name, max_value_tensor).reshape(1),
+                )
+            )
+        ).reshape([1])
+
+        if math.isclose(global_scale.data, max_value_tensor.data, rel_tol=1e-9):
+            return
+        if hasattr(submodule.q_proj, global_scale_name):
+            setattr(submodule.q_proj, global_scale_name, global_scale.clone())
+        if hasattr(submodule.k_proj, global_scale_name):
+            setattr(submodule.k_proj, global_scale_name, global_scale.clone())
+        if hasattr(submodule.v_proj, global_scale_name):
+            setattr(submodule.v_proj, global_scale_name, global_scale.clone())
+
+        del global_scale
+
+    if _is_mlp_module(submodule):
+        global_scale = torch.min(
+            torch.cat(
+                (
+                    getattr(submodule.gate_proj, global_scale_name, max_value_tensor).reshape(1),
+                    getattr(submodule.up_proj, global_scale_name, max_value_tensor).reshape(1),
+                )
+            )
+        ).reshape([1])
+        if math.isclose(global_scale.data, max_value_tensor.data, rel_tol=1e-9):
+            return
+        if hasattr(submodule.gate_proj, global_scale_name):
+            setattr(submodule.gate_proj, global_scale_name, global_scale.clone())
+        if hasattr(submodule.up_proj, global_scale_name):
+            setattr(submodule.up_proj, global_scale_name, global_scale.clone())
+
+        del global_scale
