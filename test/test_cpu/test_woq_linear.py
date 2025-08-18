@@ -37,7 +37,8 @@ class TestWeightOnlyLinear:
         qdq, scale, zp = quant_tensor_sym(weight, -1)
         int_weight = qdq.div(scale).add(zp).clamp(0, 2 ** (bits) - 1).to(torch.int32).reshape(origin_shape)
         scale = scale.reshape(origin_shape[0], -1)
-        zp = zp.reshape(origin_shape[0], -1).to(torch.int32).clamp(0, 2 ** (bits) - 1)
+        if isinstance(zp, torch.Tensor):
+            zp = zp.reshape(origin_shape[0], -1).to(torch.int32).clamp(0, 2 ** (bits) - 1)
         module_with_legacy_pack = WeightOnlyLinear(
             in_features=m.in_features,
             out_features=m.out_features,
@@ -71,3 +72,4 @@ class TestWeightOnlyLinear:
         assert torch.equal(module_with_new_pack.scales, module_with_legacy_pack.scales)
         unpacked_int_weight = module_with_new_pack.unpack_tensor(module_with_legacy_pack.qweight)
         assert torch.equal(unpacked_int_weight, int_weight)
+

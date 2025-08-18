@@ -220,7 +220,7 @@ def pack_model(
         else:
             if not inplace:
                 scale = scale.clone()
-                zp = zp.clone()
+                zp = zp.clone() if isinstance(zp, torch.Tensor) else zp
             else:
                 scale = scale.to(dtype=convert_dtype)
                 zp = zp.to(dtype=torch.int32)
@@ -251,3 +251,4 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+

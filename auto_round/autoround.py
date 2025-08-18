@@ -848,8 +848,10 @@ class AutoRound(object):
                 if isinstance(value, dict):
                     for k, v in value.items():
                         setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
-                else:
+                elif isinstance(value, torch.Tensor):
                     setattr(module, param_name, value.cpu())
+                else:
+                    setattr(module, param_name, value)
 
             # Update config
             self.layer_config.setdefault(name, {}).update(config)
@@ -3179,3 +3181,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
