@@ -21,6 +21,7 @@ ENV LANG C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     python3 \
     python3-pip \
+    python3.12-dev \
     autoconf \
     build-essential \
     git \
