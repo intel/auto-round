@@ -294,11 +294,14 @@ class WrapperLinear(torch.nn.Module):
         if zp is not None:
             if isinstance(zp, dict):
                 _set_dict_attr(zp, "zp")
-            elif zp.numel() > 1:
-                zp = zp.reshape(shape[0], -1)
-                self.orig_layer.zp = zp.to("cpu")
+            elif isinstance(zp, torch.Tensor):
+                if zp.numel() > 1:
+                    zp = zp.reshape(shape[0], -1)
+                    self.orig_layer.zp = zp.to("cpu")
+                else:
+                    self.orig_layer.zp = zp.view(-1).to("cpu")
             else:
-                self.orig_layer.zp = zp.view(-1).to("cpu")
+                self.orig_layer.zp = zp
         else:
             self.orig_layer.zp = None
 
@@ -639,3 +642,4 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
+
