@@ -62,7 +62,7 @@ def pack_layer(name, model, backend):
     scale, zp = linear_layer.scale, linear_layer.zp
     scale = scale.t().contiguous()
     zp = zp.t().contiguous().to(torch.float32)
-    if sym:
+    if sym and isinstance(zp, torch.Tensor):
         zp = int(zp.flatten()[0])
     q_linear = WQLinear_GEMM.from_linear(
         linear=linear_layer,
@@ -195,3 +195,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

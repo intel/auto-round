@@ -200,7 +200,11 @@ def pack_layer(layer_name, model, backend):
         qlayer = new_layer
         import auto_round_extension.torch.qlinear_torch
 
-        if sym and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear)):
+        if (
+            sym
+            and isinstance(zp, torch.Tensor)
+            and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear))
+        ):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
@@ -216,7 +220,7 @@ def pack_layer(layer_name, model, backend):
         scale, zp = scale.to(torch.float32), zp.to(torch.float32)
         scale = scale.t().contiguous()
         zp = zp.t().contiguous()
-        if sym:
+        if sym and isinstance(zp, torch.Tensor):
             zp = int(zp.flatten()[0])
 
         if bits != 4:
@@ -406,3 +410,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
