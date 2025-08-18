@@ -765,4 +765,3 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
     # [ql, qh, scale, d]
     output_scale = output_scale.cpu().numpy().view(np.uint8)
     return np.concatenate([output_ql, output_qh, output_scale, output_d], axis=-1)
-

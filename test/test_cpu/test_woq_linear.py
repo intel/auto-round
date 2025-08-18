@@ -72,4 +72,3 @@ class TestWeightOnlyLinear:
         assert torch.equal(module_with_new_pack.scales, module_with_legacy_pack.scales)
         unpacked_int_weight = module_with_new_pack.unpack_tensor(module_with_legacy_pack.qweight)
         assert torch.equal(unpacked_int_weight, int_weight)
-
