@@ -38,10 +38,11 @@ SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
 
 def _get_moe_converter(config):
+    import torch
+    from transformers.modeling_utils import no_init_weights
+
     # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
     if config.model_type == "llama4":
-        import torch
-        from transformers.modeling_utils import no_init_weights
         from transformers.models.llama4.modeling_llama4 import Llama4TextMLP
 
         class SequentialLlama4TextExperts(torch.nn.ModuleList):
@@ -91,6 +92,7 @@ def _get_moe_converter(config):
     elif config.model_type == "gpt_oss":
         class SequentialGptOssExperts(torch.nn.Module):
             def __init__(self, config, original):
+                super().__init__()
                 self.intermediate_size = config.intermediate_size
                 self.num_experts = config.num_local_experts
                 self.hidden_size = config.hidden_size
@@ -99,13 +101,13 @@ def _get_moe_converter(config):
                 self.limit = original.limit
 
                 with no_init_weights():
-                    self.gate_up_projs = nn.ModuleList([
-                        nn.Linear(self.hidden_size, 2 * self.expert_dim)
+                    self.gate_up_projs = torch.nn.ModuleList([
+                        torch.nn.Linear(self.hidden_size, 2 * self.expert_dim)
                         for _ in range(self.num_experts)
                     ])
 
-                    self.down_projs = nn.ModuleList([
-                        nn.Linear(self.expert_dim, self.hidden_size)
+                    self.down_projs = torch.nn.ModuleList([
+                        torch.nn.Linear(self.expert_dim, self.hidden_size)
                         for _ in range(self.num_experts)
                     ])
 
@@ -165,10 +167,29 @@ def _get_moe_converter(config):
                     next_states = next_states * routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
                     next_states = next_states.sum(dim=0)
 
-            return next_states
+                return next_states
 
 
         return SequentialGptOssExperts, config, "GptOssExperts"
+
+
+def postprocess(model):
+    if model.config.model_type == "gpt_oss":
+        import torch
+        import tqdm
+        from transformers.models.gpt_oss.modeling_gpt_oss import GptOssExperts
+        for name, module in model.named_modules():
+            cls_name = module.__class__.__name__
+            if cls_name == "SequentialGptOssExperts":
+                new_module = GptOssExperts(model.config)
+                new_module.gate_up_proj.data = torch.stack([i.weight.data.t() for i in module.gate_up_projs])
+                new_module.gate_up_proj_bias.data = torch.stack([i.bias.data for i in module.gate_up_projs])
+                new_module.down_proj.data = torch.stack([i.weight.data.t() for i in module.down_projs])
+                new_module.down_proj_bias.data = torch.stack([i.bias.data for i in module.down_projs])
+                parent, child = name.rsplit(".", maxsplit=1)
+                parent = model.get_submodule(parent)
+                setattr(parent, child, new_module)
+    return model
 
 
 def _handle_special_model(model):
@@ -177,7 +198,11 @@ def _handle_special_model(model):
 
         model.forward = partial(_deepseek_vl2_forward, model)
 
-    elif model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
+    return model
+
+
+def _convert_to_linear(model):
+    if model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
         from auto_round.utils import clear_memory
         from tqdm import tqdm
 
@@ -192,7 +217,6 @@ def _handle_special_model(model):
                 parent, child = name.rsplit(".", maxsplit=1)
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
-
     return model
 
 
