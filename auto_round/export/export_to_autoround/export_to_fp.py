@@ -29,7 +29,6 @@ from auto_round.utils import (
     check_start_with_block_name,
     check_to_quantized,
     filter_quantization_config,
-    get_block_names,
     get_module,
     is_mx_fp,
     is_nv_fp,
@@ -292,3 +291,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

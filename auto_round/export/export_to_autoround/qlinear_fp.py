@@ -38,7 +38,7 @@ import transformers
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import is_mx_fp, is_nv_fp, is_standard_fp
+from auto_round.utils import is_mx_fp, is_nv_fp
 
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
@@ -228,31 +228,3 @@ class QuantLinear(nn.Module):
         packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
 
         return packed.reshape(m, n // 2)
-
-    # def get_fp_scale(self, scale_e8m0):
-    #     E8M0_EXPONENT_BIAS = 127
-    #     E8M0_EXPONENT_NAN_VAL = 255
-
-    #     scale_e8m0 = scale_e8m0.view(torch.uint8)
-    #     s_offset = scale_e8m0.to(torch.int16) - E8M0_EXPONENT_BIAS
-    #     # TODO(later): it would be nice if there was a way to do the 2^x operation
-    #     # in PyTorch without creating a tensor of twos
-    #     two = torch.full(s_offset.size(), 2.0, device=scale_e8m0.device)
-    #     # pow(two, s_offset) can be out of range of floating point formats.
-    #     # TODO(later): handle this for float16 if we decide to support float16
-    #     # scales.
-    #     s_fp = torch.pow(two, s_offset)
-
-    #     # If a block exponent was 255, set values of that block to NaN
-    #     s_fp = torch.where(scale_e8m0 != E8M0_EXPONENT_NAN_VAL, s_fp, float("nan"))
-
-    #     return s_fp
-
-    # def get_compressed_weight(self, tensor, bits, data_type):
-    #     data_type = str(data_type)
-    #     compress_dtype = None
-    #     if self.is_mx:
-    #         if bits == 4:
-
-    #     if self.is_nv:
-    #         pass ## TODO
