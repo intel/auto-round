@@ -85,62 +85,33 @@ class AutoRound(object):
      for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
 
     Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
+        model (Union[torch.nn.Module, str]): The PyTorch model to be quantized.
+        tokenizer (Any): An optional tokenizer for processing input data.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether symmetric quantization is to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
-        layer_config={
-                   'layer1':##layer_name
-                   {
-                       'data_type': 'int',
-                       'bits': 4,
-                       'group_size': 128,
-                       'sym': True
-                       'act_data_type': None,
-                       'act_bits': 16,
-                       'act_group_size': None,
-                       'act_sym': None,
-
-                   }
-                   ...
-               }
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for tuning (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset (str): The default dataset name (default is "NeelNanda/pile-10k").
-        enable_quanted_input (bool): Whether to use the output of the previous quantized block as
-                                the input for the current block (default is True).
+        device (Union[str, torch.device, int]): The device to be used for tuning (default is "auto").
+        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]): The default dataset name (default is "NeelNanda/pile-10k").
         enable_minmax_tuning (bool): Whether to enable weight min-max tuning (default is True).
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
         minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Data length of the sequence for tuning (default is 2048).
         nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
         seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
         act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of
-                            block's layer names to be quantized.
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer (default it False).
-        device_map (str|dict): device map for each block
+        device_map (Union[str, dict]): device map for each block
         disable_opt_rtn (bool): Whether to disable optimization of the RTN mode(iters=0) (default is False).
     Returns:
         The quantized model.
@@ -149,7 +120,7 @@ class AutoRound(object):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
+        tokenizer: Any = None,
         bits: int = 4,
         group_size: int = 128,
         sym: bool = True,
@@ -177,7 +148,7 @@ class AutoRound(object):
         device_map: Union[str, dict] = None,
         disable_opt_rtn: bool = False,
         **kwargs,
-    ):
+    ) -> None:
         ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
         ## major version releases may be pack them  with extra configuration options
         lr_scheduler = kwargs.pop("lr_scheduler", None)
@@ -389,7 +360,7 @@ class AutoRound(object):
 
         self.shared_cache_keys = get_shared_keys(self.model)
 
-    def set_device_map_in_blocks(self, device_map):
+    def set_device_map_in_blocks(self, device_map: Union[str, dict]) -> None:
         """Sets the device map for specific blocks in the model.
 
         Args:
@@ -432,7 +403,7 @@ class AutoRound(object):
                         if key in name:
                             self._set_device_for_matching_module(name, device)
 
-    def _set_device_for_matching_module(self, name, device):
+    def _set_device_for_matching_module(self, name: str, device: Any) -> None:
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
             logger.warning(
@@ -441,7 +412,7 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def _dq_check(self):
+    def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
@@ -450,11 +421,12 @@ class AutoRound(object):
                 gguf_config["super_group_size"] if self.super_group_size is None else self.super_group_size
             )
 
-    def check_configs(self):
+    def check_configs(self) -> None:
         """Checks if the configurations are valid.
 
         Raises:
-        ValueError, TypeError: If any of the configurations are invalid.
+            ValueError: If any of the configurations are invalid.
+            TypeError: If model is not a torch.nn.Module.
         """
         if not isinstance(self.model, torch.nn.Module):
             raise TypeError("model must be an instance of torch.nn.Module")
@@ -509,7 +481,7 @@ class AutoRound(object):
 
         self._dq_check()
 
-    def _check_compatibility(self):
+    def _check_compatibility(self) -> None:
         ##check gguf and others
         has_gguf = False
         if hasattr(self, "formats"):
@@ -569,11 +541,6 @@ class AutoRound(object):
 
     def parse_format_to_list(self, format: str) -> list:
         """Parses the format string into a list of formats.
-
-        This method checks the requested format(s) against the model's
-        quantization settings and adjusts them if necessary. It ensures that
-        the formats are compatible with the model's data type, bit width,
-        and activation quantization settings.
 
         Args:
             format (str): The requested format(s) for quantization, separated by commas.
@@ -643,18 +610,14 @@ class AutoRound(object):
         formats = remove_duplicates(formats)
         return formats
 
-    def _check_supported_format(self, format: str) -> bool:
+    def _check_supported_format(self, format: str) -> str:
         """Checks if the specified format is supported.
-
-        This method validates the requested format against the model's bit width,
-        group size, symmetry, and activation quantization settings. It raises an
-        error if the format is incompatible with the current model configuration.
 
         Args:
             format (str): The requested format for quantization.
 
         Returns:
-            bool: True if the format is supported, False otherwise.
+            str: The validated format string.
         """
         if format == "fake":
             return format
@@ -705,28 +668,19 @@ class AutoRound(object):
 
         return format
 
-    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
+    def quantize_and_save(
+        self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs
+    ) -> tuple[Any, list[str]]:
         """Quantizes the model and saves it in the specified format(s).
 
-        This function checks the validity of the requested format(s), quantizes
-        the model accordingly, and saves it to the specified output directory.
-        If multiple formats are provided, the model is saved separately for each format.
-
         Args:
-            output_dir (str, optional): The directory where the quantized model
-                will be saved. Defaults to "tmp_autoround".
-            format (str, optional): The quantization format(s) to use, separated
-                by commas if multiple. Defaults to "auto_round".
-            inplace (bool, optional): Whether to modify the model in place if only
-                one format is used. Defaults to True.
-            **kwargs: Additional arguments for the quantization and saving process.
+            output_dir (str, optional): The directory where the quantized model will be saved.
+            format (str, optional): The quantization format(s) to use.
+            inplace (bool, optional): Whether to modify the model in place.
+            **kwargs: Additional arguments.
 
         Returns:
-            model: A qdq model or packed model based on the configurations
-            folders: The folder paths where the quantized models are saved.
-
-        Raises:
-            ValueError: If an unsupported format is specified.
+            tuple: (model, folders)
         """
         # Validate and process the specified formats
         self.orig_output_dir = output_dir
@@ -764,12 +718,8 @@ class AutoRound(object):
     def get_save_folder_name(self, format_str: str) -> str:
         """Generates the save folder name based on the provided format string.
 
-        If there are multiple formats to handle, the function creates a subfolder
-        named after the format string with special characters replaced. If there's
-        only one format, it returns the original output directory directly.
-
         Args:
-            format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+            format_str (str): The format identifier.
 
         Returns:
             str: The path to the folder where results should be saved.
@@ -784,12 +734,8 @@ class AutoRound(object):
         return self.orig_output_dir
 
     @torch.inference_mode()
-    def quantize_embedding_layer(self):
+    def quantize_embedding_layer(self) -> bool:
         """Quantizes embedding layers in the model according to the configuration.
-
-        This method iterates through all modules in the model, identifies embedding
-        layers specified in `self.layer_config`, and applies the appropriate quantization
-        function based on bit precision, grouping strategy, and dtype.
 
         Returns:
             bool: True if the quantization process completes without critical errors.
@@ -864,13 +810,8 @@ class AutoRound(object):
     def quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
         """Performs RTN quantization using input activation statistics (imatrix).
 
-        This method accumulates per-channel second-moment activation statistics (imatrix)
-        via forward hooks and uses them to perform RTN quantization. If CUDA memory runs out,
-        it falls back to CPU-based blockwise quantization.
-
         Args:
-            all_to_quantized_module_names (list[str]):
-                A list of module names (e.g., 'model.layers.0.self_attn.q_proj') to be quantized.
+            all_to_quantized_module_names (list[str]): Module names to be quantized.
 
         Returns:
             None
@@ -1016,10 +957,6 @@ class AutoRound(object):
     def check_need_to_quantize_lm_head_embedding(self) -> bool:
         """Checks if LM head and embedding layers need quantization for GGUF format.
 
-        This function inspects the current model's formats and determines whether
-        it needs to apply quantization settings to the embedding and LM head layers.
-        The function modifies `self.layer_config` in-place and updates the model modules.
-
         Returns:
             bool: True if the LM head needs quantization, otherwise False.
 
@@ -1096,13 +1033,6 @@ class AutoRound(object):
     def quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
-        This function attempts to quantize a layer by switching its data type to a
-        `rtn_*` version if supported, then wraps and unwraps the module to apply
-        quantization. If GPU memory is insufficient, it falls back to CPU.
-
-        If packing is enabled (`is_packing_immediate`), the function will also export
-        the quantized layer to the appropriate backend format.
-
         Args:
             name (str): Name of the layer to quantize.
 
@@ -1163,7 +1093,7 @@ class AutoRound(object):
 
             if check_to_quantized(m):
                 target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                has_gguf = any("gguf" in fmt for fmt in self.formats)
+                has_gguf = any("gguf" in format_ for format_ in self.formats)
 
                 if has_gguf:
                     from auto_round.export.export_to_gguf.export import pack_gguf_layer
@@ -1193,11 +1123,8 @@ class AutoRound(object):
     def quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
-        If the target format includes GGUF with `k`, and optimized RTN is enabled,
-        blockwise quantization with input caching and imatrix is used.
-
         Returns:
-            tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
+            tuple: (quantized model, layer configuration)
         """
         if self.amp:
             self.model.to(self.amp_dtype)
@@ -1260,7 +1187,7 @@ class AutoRound(object):
                     clear_memory()
                     cnt = 1
                 cnt += 1
-        ##convert remainning fp8
+        ##convert remaining fp8
         if hasattr(self.model, "is_fp8"):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
@@ -1376,10 +1303,11 @@ class AutoRound(object):
                 cnt = 1
             cnt += 1
 
-    def quantize(self):
-        """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
+    def quantize(self) -> tuple[Any, dict]:
+        """Quantize the model and return the quantized model along with layer configurations.
+
         Returns:
-        The quantized model and layer configurations.
+            tuple: (quantized model, layer configurations)
         """
         for n, m in self.model.named_modules():
             m.tmp_name = n
@@ -1533,7 +1461,7 @@ class AutoRound(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def quant_layers(self, layer_names, layer_inputs):
+    def quant_layers(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
         Args:
@@ -1610,17 +1538,14 @@ class AutoRound(object):
             del layer_input
             clear_memory(q_layer_input)
 
-    def set_layerwise_config(self, layer_config):
-        """
-        Sets the layer-wise configuration based on the provided `layer_config`.
-        By default, only quantize layers in blocks.
+    def set_layerwise_config(self, layer_config: dict) -> bool:
+        """Sets the layer-wise configuration based on the provided `layer_config`.
 
         Args:
-            layer_config (dict): The configuration dictionary for each layer containing various configuration options.
+            layer_config (dict): The configuration dictionary for each layer.
 
         Returns:
-            bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head),
-                  otherwise returns False.
+            bool: True if there are quantized layers outside the blocks, otherwise False.
         """
         # Get the names of layers in quantization blocks
         supported_types = self.supported_types
@@ -1717,22 +1642,30 @@ class AutoRound(object):
         return has_qlayer_outside_block
 
     @torch.no_grad()
-    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True):
+    def get_block_outputs(
+        self,
+        block: Any,
+        input_ids: Any,
+        input_others: dict,
+        bs: int,
+        device: Any,
+        cache_device: Any,
+        save_output: bool = True,
+    ) -> Any:
         """Compute the output of a given block of the model for a given input.
 
         Args:
-        block: The block of the model.
-        input_ids: The input tensor containing tokenized input ids.
-        input_others: A dictionary containing additional input data.
-        bs: The batch size for computing the output.
-        device: The device for computation.
-        cache_device: The device for storing the output.
-        batch_dim: The batch dimension of the output tensor.
+            block (Any): The block of the model.
+            input_ids (Any): The input tensor containing tokenized input ids.
+            input_others (dict): Additional input data.
+            bs (int): The batch size for computing the output.
+            device (Any): The device for computation.
+            cache_device (Any): The device for storing the output.
+            save_output (bool): Whether to save output.
 
         Returns:
-        The output tensor of the block.
+            Any: The output tensor of the block.
         """
-
         output = []
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):
@@ -1755,14 +1688,9 @@ class AutoRound(object):
         return output
 
     @torch.no_grad()
-    def calib(self, nsamples, bs):
+    def calib(self, nsamples: int, bs: int) -> None:
         """Perform calibration for quantization.
 
-        This method calibrates the model for quantization by processing a specified
-        number of samples from the calibration dataset. It ensures that the data is
-        properly formatted and feeds it to the model. If the number of samples processed
-        is less than the specified number, it logs a warning. If no samples are processed,
-        it logs an error and exits.
         Args:
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
@@ -1860,20 +1788,23 @@ class AutoRound(object):
                 m = m.to("meta")
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def try_cache_inter_data_gpucpu(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: list = None,
+        last_cache_name: str = None,
+    ) -> dict:
         """Attempts to cache intermediate data on GPU, if failed, then using CPU.
 
         Args:
             block_names (list): List of block names to cache data for.
             nsamples (int): Number of samples to use for caching.
-            layer_names (list, optional): List of layer names to cache data for. Defaults to [].
-            last_cache_name (str, optional): Name of the last cache. Defaults to None.
+            layer_names (list, optional): List of layer names to cache data for.
+            last_cache_name (str, optional): Name of the last cache.
 
         Returns:
-            all_inputs: Cached intermediate data.
-
-        Raises:
-            Exception: If caching on GPU fails, switches to CPU and caches there.
+            dict: Cached intermediate data.
         """
         if hasattr(self.model, "is_fp8"):
             layer_names = []
@@ -1924,19 +1855,20 @@ class AutoRound(object):
         return all_inputs
 
     @torch.no_grad()
-    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def cache_inter_data(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: list = None,
+        last_cache_name: str = None,
+    ) -> dict:
         """Save the inputs of block_name for calibration.
 
-        This method temporarily replaces the forward method of the model to capture
-        the inputs passing through the specified block. It then calibrates the model
-        using a specified number of samples. Finally, it restores the original forward
-        method and returns the inputs for the specified block.
         Args:
             block_names (list): The names of the blocks for which inputs are to be saved.
-            layer_names (list):The names of the layers for which inputs are to be saved.
+            layer_names (list): The names of the layers for which inputs are to be saved.
             nsamples (int): The number of samples to use for calibration.
-            last_cache_name (str, optional): The name of the last layer to be cached,
-                                       we could break the forward in this layer to save time
+            last_cache_name (str, optional): The name of the last layer to be cached.
 
         Returns:
             dict: A dictionary containing the inputs for the specified block.
@@ -1969,11 +1901,12 @@ class AutoRound(object):
         return res
 
     @torch.no_grad()
-    def get_block_forward_func(self, name):
+    def get_block_forward_func(self, name: str) -> Any:
         """Gets the forward function.
 
         Args:
             name (str): The name of the function.
+
         Returns:
             function: The forward function.
         """
@@ -2082,10 +2015,15 @@ class AutoRound(object):
         return forward
 
     @torch.no_grad()
-    def _get_cache_data_hook_for_layer(self, name):
-        """A forward hook to save input max of a module
-        :param name: the module name
-        :return: A hook function."""
+    def _get_cache_data_hook_for_layer(self, name: str) -> Any:
+        """A forward hook to save input max of a module.
+
+        Args:
+            name (str): the module name
+
+        Returns:
+            Callable: A hook function.
+        """
 
         def cache_input_hook(module, inputs, outputs):
             input = inputs
@@ -2098,7 +2036,7 @@ class AutoRound(object):
 
         return cache_input_hook
 
-    def _recover_forward(self):
+    def _recover_forward(self) -> None:
         """Recovers the forward function."""
         for n, m in self.model.named_modules():
             if hasattr(m, "orig_forward"):
@@ -2108,7 +2046,7 @@ class AutoRound(object):
             hook_handle.remove()
         self.hook_handles = []
 
-    def _replace_forward(self):
+    def _replace_forward(self) -> None:
         """Replaces the forward function."""
         from functools import partial
 
@@ -2121,14 +2059,20 @@ class AutoRound(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
-    def quant_layer(self, layer_name, inputs, q_inputs=None, device=torch.device("cpu")):
+    def quant_layer(
+        self,
+        layer_name: str,
+        inputs: Any,
+        q_inputs: Any = None,
+        device: Any = torch.device("cpu"),
+    ) -> None:
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
             layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor): Input data for quantization.
-            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
-            device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
+            inputs (Any): Input data for quantization.
+            q_inputs (Any, optional): Quantized input data.
+            device (Any, optional): The device to use for quantization.
 
         Returns:
             None
@@ -2255,7 +2199,16 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def register_act_max_hook(self, model):
+    def register_act_max_hook(self, model: Any) -> list:
+        """Register hooks to collect activation max values.
+
+        Args:
+            model (Any): The model.
+
+        Returns:
+            list: List of hook handles.
+        """
+
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -2301,18 +2254,25 @@ class AutoRound(object):
                     continue
         return hook_handles
 
-    def quantize_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+    def quantize_block(
+        self,
+        block: Any,
+        input_ids: Any,
+        input_others: dict,
+        q_input: Any = None,
+        device: Any = torch.device("cpu"),
+    ) -> tuple[Any, Any]:
         """Quantize the weights of a given block of the model.
 
         Args:
-        block: The block of the model to be quantized.
-        input_ids: The input tensor containing tokenized input ids.
-        input_others: A dictionary containing additional input data.
-        q_input: The quantized input tensor.
-        device: The device for quantization.
+            block (Any): The block of the model to be quantized.
+            input_ids (Any): The input tensor containing tokenized input ids.
+            input_others (dict): Additional input data.
+            q_input (Any): The quantized input tensor.
+            device (Any): The device for quantization.
 
         Returns:
-        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
+            Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         if hasattr(self.model, "is_fp8"):
             for n, m in block.named_modules():
@@ -2378,6 +2338,7 @@ class AutoRound(object):
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
+            hasattr(m, "params")
             if hasattr(m, "orig_layer"):
                 for key in m.params.keys():
                     if "min" in key or "max" in key:
@@ -2528,19 +2489,20 @@ class AutoRound(object):
             return None, output
 
     def quantize_blocks(
-        self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None
-    ):
+        self, model: torch.nn.Module, inputs: dict, block_names: list, q_input: Any = None, nblocks: int = 1, device: Any = "cpu", pbar: Any = None
+    ) -> None:
         """Quantize and dequantize the weights of the specified blocks in the model.
 
         Args:
-        model: The PyTorch model to be quantized.
-        inputs: The input data for quantization.
-        block_names: The names of the blocks to be quantized and dequantized.
-        nblocks: The number of blocks to quantize and dequantize.
-        device: The device for quantization and dequantization.
+            model (torch.nn.Module): The PyTorch model to be quantized.
+            inputs (dict): The input data for quantization.
+            block_names (list): The names of the blocks to be quantized and dequantized.
+            nblocks (int): The number of blocks to quantize and dequantize.
+            device (Any): The device for quantization and dequantization.
+            pbar (Any): Progress bar.
 
         Returns:
-        None
+            None
         """
         clear_memory()
         for n, m in model.named_parameters():
@@ -2635,14 +2597,16 @@ class AutoRound(object):
 
         clear_memory()
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+    def save_quantized(
+        self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs
+    ) -> Any:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
-            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
-            format (str, optional): The format in which to save the model. Defaults to "auto_round".
-            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
-            **kwargs: Additional keyword arguments specific to the export format.
+            output_dir (str, optional): The directory to save the quantized model.
+            format (str, optional): The format in which to save the model.
+            inplace (bool, optional): Whether to modify the model in place.
+            **kwargs: Additional keyword arguments.
 
         Returns:
             object: The compressed model object.
@@ -2728,7 +2692,7 @@ class AutoRound(object):
         )
         return compressed_model
 
-    def get_quantized_layer_names_outside_blocks(self):
+    def get_quantized_layer_names_outside_blocks(self) -> list:
         """Gets the names of quantized layers outside blocks in the model.
 
         Returns:
@@ -2752,7 +2716,7 @@ class AutoRound(object):
 
         return layer_names
 
-    def set_amp_dtype(self):
+    def set_amp_dtype(self) -> None:
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
@@ -2772,239 +2736,15 @@ class AutoRound(object):
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
 
-    def get_optimizer(self, optimizer):
-        """Returns the specified optimizer. In SignRound, we fix the optimizer.
+    def get_optimizer(self, optimizer: Any) -> Any:
+        """Get optimizer class or instance.
 
         Args:
-        optimizer: The optimizer to be used.
+            optimizer (Any): Optimizer name or instance.
 
         Returns:
-        The specified optimizer.
+            Any: Optimizer class or instance.
         """
-        from auto_round.sign_sgd import SignSGD
-
-        return SignSGD
-
-    def get_scaler(self):
-        """Returns scaler, in SignRound, no need to use scaler."""
-        return None
-
-    def scale_loss_and_backward(self, scaler, loss):
-        """Scales the loss and performs backward pass.
-
-        Args:
-        scaler: The scaler to be used.
-        loss: The loss to be scaled.
-
-        Returns:
-        The scaled loss.
-        """
-        scale_loss = loss * 1000
-        scale_loss.backward()
-        if is_optimum_habana_available():
-            htcore.mark_step()
-        return scale_loss
-
-    def step(self, scaler, optimizer, lr_schedule):
-        """Performs a step in the optimization process.
-
-        Args:
-        scaler: The scaler to be used.
-        optimizer: The optimizer for the step.
-        lr_schedule: The learning rate schedule.
-
-        Returns:
-        None
-        """
-        optimizer.step()
-        # for hpu
-        if is_optimum_habana_available():
-            htcore.mark_step()
-        optimizer.zero_grad()
-        lr_schedule.step()
-
-    @classmethod
-    @torch.no_grad()
-    def sampling_inputs(cls, input_ids, input_others, indices, seqlen, batch_dim=0, share_cache_keys=()):
-        """Samples inputs based on the given indices and sequence length.
-
-        Args:
-        input_ids: The list of input tensor containing  input_ids.
-        input_others: A dictionary containing other input data.
-        indices: The indices to sample from the input.
-        seqlen: The sequence length.
-
-        Returns:
-        current_input_ids: The sampled input IDs.
-        current_input_others: The sampled other input data.
-        """
-        current_input_ids = [input_ids[i] for i in indices]
-
-        current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
-
-        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
-        for key in input_others.keys():
-            if "positional_inputs" in key:
-                continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
-                current_input_others[key] = input_others[key]
-
-        return current_input_ids, current_input_others
-
-
-class AutoRoundOPT(AutoRound):
-    """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
-
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
-        bits (int): Number of bits for quantization (default is 4).
-        group_size (int): Size of the quantization group (default is 128).
-        sym (bool): Whether sym to be used (default is True).
-        layer_config (dict): Configuration for weight quantization (default is None).
-        batch_size (int): Batch size for training (default is 8).
-        amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset: The default dataset name (default is "NeelNanda/pile-10k").
-        enable_quanted_input (bool): Whether to use quantized input data (default is True).
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
-        data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 16.
-        act_group_size (int): Group size for activation quantization. Default is None.
-        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
-        act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
-        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of
-                            block's layer names to be quantized.
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
-        **kwargs: Additional keyword arguments.
-
-    Returns:
-        The quantized model.
-    """
-
-    def __init__(
-        self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = True,
-        layer_config=None,
-        batch_size: int = 8,
-        amp: bool = True,
-        device: Union[str, torch.device, int] = 0,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: int = 0,
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        sampler: str = "rand",
-        seed: int = 42,
-        nblocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        act_bits: int = 16,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_data_type: str = None,
-        act_dynamic: bool = True,
-        to_quant_block_names: Union[str, list] = None,
-        enable_norm_bias_tuning: bool = False,
-        enable_torch_compile: bool = False,
-        device_map: Union[str, dict] = None,
-        optimizer="AdamW",
-        super_bits: int = None,
-        super_group_size: int = None,
-        disable_opt_rtn: bool = False,
-        **kwargs,
-    ):
-        super(AutoRoundOPT, self).__init__(
-            model=model,
-            tokenizer=tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            layer_config=layer_config,
-            batch_size=batch_size,
-            amp=amp,
-            device=device,
-            lr_scheduler=lr_scheduler,
-            dataset=dataset,
-            enable_quanted_input=enable_quanted_input,
-            enable_minmax_tuning=enable_minmax_tuning,
-            lr=lr,
-            minmax_lr=minmax_lr,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            low_cpu_mem_usage=low_cpu_mem_usage,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            sampler=sampler,
-            seed=seed,
-            nblocks=nblocks,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            not_use_best_mse=not_use_best_mse,
-            dynamic_max_gap=dynamic_max_gap,
-            data_type=data_type,
-            scale_dtype=scale_dtype,
-            act_bits=act_bits,
-            act_group_size=act_group_size,
-            act_sym=act_sym,
-            act_data_type=act_data_type,
-            act_dynamic=act_dynamic,
-            to_quant_block_names=to_quant_block_names,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
-            enable_torch_compile=enable_torch_compile,
-            device_map=device_map,
-            super_bits=super_bits,
-            super_group_size=super_group_size,
-            **kwargs,
-        )
-
-        self.optimizer = self.get_optimizer(optimizer)
-
-    def get_optimizer(self, optimizer):
         if optimizer is None:
             optimizer = torch.optim.AdamW
         elif isinstance(optimizer, str):
@@ -3013,7 +2753,12 @@ class AutoRoundOPT(AutoRound):
             optimizer = optimizer
         return optimizer
 
-    def get_scaler(self):
+    def get_scaler(self) -> Any:
+        """Get scaler for AMP.
+
+        Returns:
+            Any: Scaler instance or None.
+        """
         scaler = None
         if self.amp and not check_is_cpu(self.device):
             from torch.cuda.amp import GradScaler
@@ -3021,7 +2766,16 @@ class AutoRoundOPT(AutoRound):
             scaler = GradScaler(init_scale=1024, growth_interval=100000)
         return scaler
 
-    def scale_loss_and_backward(self, scaler, loss):
+    def scale_loss_and_backward(self, scaler: Any, loss: Any) -> Any:
+        """Scale loss and backward.
+
+        Args:
+            scaler (Any): Scaler instance.
+            loss (Any): Loss tensor.
+
+        Returns:
+            Any: Scaled loss.
+        """
         if scaler is not None:
             loss = scaler.scale(loss)
 
@@ -3030,7 +2784,17 @@ class AutoRoundOPT(AutoRound):
             htcore.mark_step()
         return loss
 
-    def step(self, scaler, optimizer, lr_schedule):
+    def step(self, scaler: Any, optimizer: Any, lr_schedule: Any) -> None:
+        """Optimizer step.
+
+        Args:
+            scaler (Any): Scaler instance.
+            optimizer (Any): Optimizer instance.
+            lr_schedule (Any): LR scheduler.
+
+        Returns:
+            None
+        """
         if scaler is not None:
             scaler.step(optimizer)
             optimizer.zero_grad()
@@ -3049,18 +2813,17 @@ class AutoRoundAdam(AutoRoundOPT):
     The default lr has been changed.
 
     Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
+        model (Union[torch.nn.Module, str]): The PyTorch model to be quantized.
+        tokenizer (Any): An optional tokenizer for processing input data.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (str): Whether symmetric quantization to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]):
-                The default dataset name (default is "NeelNanda/pile-10k").
+        device (Union[str, torch.device, int]): The device to be used for training (default is "auto").
+        lr_scheduler (Any): The learning rate scheduler to be used.
+        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]): The default dataset name (default is "NeelNanda/pile-10k").
         enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
@@ -3077,18 +2840,17 @@ class AutoRoundAdam(AutoRoundOPT):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        optimizer: string or object
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
+        optimizer (Any): Optimizer type.
+        scale_dtype (str): The data type of quantization scale to be used (default is "float16").
         act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (Union[str, list]): Block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
+
     Returns:
         The quantized model.
     """
@@ -3096,15 +2858,15 @@ class AutoRoundAdam(AutoRoundOPT):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
+        tokenizer: Any = None,
         bits: int = 4,
         group_size: int = 128,
         sym: bool = True,
-        layer_config=None,
+        layer_config: dict = None,
         batch_size: int = 8,
         amp: bool = True,
         device: Union[str, torch.device, int] = 0,
-        lr_scheduler=None,
+        lr_scheduler: Any = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
@@ -3132,12 +2894,12 @@ class AutoRoundAdam(AutoRoundOPT):
         enable_norm_bias_tuning: bool = False,
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
-        optimizer="AdamW",
+        optimizer: Any = "AdamW",
         super_bits: int = None,
         super_group_size: int = None,
         disable_opt_rtn: bool = False,
         **kwargs,
-    ):
+    ) -> None:
         super(AutoRoundAdam, self).__init__(
             model=model,
             tokenizer=tokenizer,
@@ -3179,5 +2941,6 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             super_bits=super_bits,
             super_group_size=super_group_size,
+            disable_opt_rtn=disable_opt_rtn,
             **kwargs,
         )
