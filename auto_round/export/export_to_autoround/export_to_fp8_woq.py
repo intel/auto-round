@@ -110,7 +110,11 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        q_weight = weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+        q_weight = (
+            weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+            if isinstance(zp, torch.Tensor)
+            else zp
+        )
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device)
     q_weight = torch.clamp(q_weight, info.min, info.max)
@@ -278,3 +282,4 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

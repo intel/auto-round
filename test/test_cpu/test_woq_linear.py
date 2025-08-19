@@ -51,7 +51,9 @@ class TestWeightOnlyLinear:
             compression_dtype=compression_dtype,
             use_legacy_pack=True,
         )
-        module_with_legacy_pack.pack(int_weight.clone(), scale.clone(), zp.clone(), m.bias)
+        module_with_legacy_pack.pack(
+            int_weight.clone(), scale.clone(), zp.clone() if isinstance(zp, torch.Tensor) else zp, m.bias
+        )
         module_with_new_pack = WeightOnlyLinear(
             in_features=m.in_features,
             out_features=m.out_features,
@@ -64,7 +66,9 @@ class TestWeightOnlyLinear:
             compression_dtype=compression_dtype,
             use_legacy_pack=False,
         )
-        module_with_new_pack.pack(int_weight.clone(), scale.clone(), zp.clone(), m.bias)
+        module_with_new_pack.pack(
+            int_weight.clone(), scale.clone(), zp.clone() if isinstance(zp, torch.Tensor) else zp, m.bias
+        )
 
         assert torch.equal(module_with_new_pack.qweight, module_with_legacy_pack.qweight)
 
@@ -72,3 +76,4 @@ class TestWeightOnlyLinear:
         assert torch.equal(module_with_new_pack.scales, module_with_legacy_pack.scales)
         unpacked_int_weight = module_with_new_pack.unpack_tensor(module_with_legacy_pack.qweight)
         assert torch.equal(unpacked_int_weight, int_weight)
+
