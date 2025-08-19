@@ -30,6 +30,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -222,6 +223,7 @@ class AutoRound(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
+        model = _handle_moe_model(model)
         # self.model_orig_dtype = model.dtype
         self.device = detect_device(device)  ##must place after llm_load_model, because this one will convert auto
 
