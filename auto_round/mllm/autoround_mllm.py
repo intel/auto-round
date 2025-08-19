@@ -27,6 +27,7 @@ from auto_round.special_model_handler import (
 from ..autoround import AutoRound
 from ..low_cpu_mem.utils import get_layers_before_block
 from ..utils import (
+    check_to_quantized,
     clear_memory,
     detect_device,
     extract_block_names_to_str,
@@ -460,6 +461,6 @@ class AutoRoundMLLM(AutoRound):
 
         for layer_name in layer_config.keys():
             for vlm_key in VISUAL_KEYS:
-                if vlm_key in layer_name and layer_config[layer_name].get("bits", 16) < 16:
+                if vlm_key in layer_name and check_to_quantized(layer_config[layer_name]):
                     return True
         return quant_nontext_module

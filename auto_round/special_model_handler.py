@@ -76,16 +76,32 @@ def _get_moe_converter(config):
 
             def forward(self, hidden_states: torch.Tensor):
                 hidden_states = hidden_states.reshape(-1, self.hidden_dim)
-                router_scores, router_logits = self.router(hidden_states)
-                routed_in = hidden_states.repeat(router_scores.shape[1], 1)
-                routed_in = routed_in * router_scores.reshape(-1, 1)
-                routed_out = self.experts(routed_in)
+                router_logits = self.router(hidden_states)
+                if isinstance(router_logits, tuple):
+                    router_scores, router_logits = router_logits
+                    router_scores = router_scores.t()
+                else:
+                    # transformers < 4.54.0 only returns router_logits
+                    router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
+
+                    router_scores = (
+                        torch.full_like(router_logits, float("-inf"))
+                        .scatter_(1, router_indices, router_top_value)
+                        .transpose(0, 1)
+                    )
+                    router_scores = torch.sigmoid(router_scores.float()).to(hidden_states.dtype)
+
                 out = self.shared_expert(hidden_states)
                 for i in range(self.num_experts):
                     out += self.experts[i](hidden_states) * router_scores[i].reshape(-1, 1)
-                return out, router_scores
+
+                return out, router_logits
+
 
         return SequentialLlama4TextMoe, config.get_text_config(), "Llama4TextMoe"
+
+    else:
+        raise ValueError(f"Currently moe converter only supports llama4 model_type, but get {config.model_type}")
 
 
 def _handle_special_model(model):
@@ -113,6 +129,8 @@ def _handle_moe_model(model):
                 parent, child = name.rsplit(".", maxsplit=1)
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
+
+        print("warning, Llama4 experts are converted, the quantized model can not run on transformers.")
     return model
 
 
