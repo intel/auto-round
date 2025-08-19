@@ -38,6 +38,7 @@ SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
 CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4"]
 
+
 def _get_moe_converter(config):
     import torch
     from transformers.modeling_utils import no_init_weights
@@ -101,8 +102,9 @@ def _handle_special_model(model):
 
 def _handle_moe_model(model):
     if model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
-        from auto_round.utils import clear_memory
         from tqdm import tqdm
+
+        from auto_round.utils import clear_memory
 
         new_moe_class, convert_config, orig_cls_name = _get_moe_converter(model.config)
         model = model.to("cpu")
