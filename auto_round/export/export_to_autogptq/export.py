@@ -109,11 +109,12 @@ def pack_layer(name, model, backend):
     # so far can only pack layer on CPU
     qlayer.to("cpu")
     ##force to float32 to be compatible with torch 2.0
-    if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
-        layer, scale = layer.to("cpu"), scale.to("cpu")
-        zero = int(zero.flatten()[0])
+    if sym and isinstance(zero, torch.Tensor):
+        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
+        if isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
+            zero = int(zero.flatten()[0])
     else:
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero
     sig = inspect.signature(qlayer.pack)
     param_count = len(sig.parameters)
     if param_count == 2:
