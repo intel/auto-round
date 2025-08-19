@@ -2489,7 +2489,14 @@ class AutoRound(object):
             return None, output
 
     def quantize_blocks(
-        self, model: torch.nn.Module, inputs: dict, block_names: list, q_input: Any = None, nblocks: int = 1, device: Any = "cpu", pbar: Any = None
+        self,
+        model: torch.nn.Module,
+        inputs: dict,
+        block_names: list,
+        q_input: Any = None,
+        nblocks: int = 1,
+        device: Any = "cpu",
+        pbar: Any = None,
     ) -> None:
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -2597,9 +2604,7 @@ class AutoRound(object):
 
         clear_memory()
 
-    def save_quantized(
-        self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs
-    ) -> Any:
+    def save_quantized(self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs) -> Any:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
