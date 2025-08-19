@@ -525,4 +525,3 @@ class WeightOnlyLinear(torch.nn.Module):
             return self.unpack_tensor_with_torch(packed_tensor)
         else:
             return self.unpack_tensor_with_numpy(packed_tensor)
-
