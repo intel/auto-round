@@ -76,14 +76,10 @@ def _get_moe_converter(config):
 
             def forward(self, hidden_states: torch.Tensor):
                 hidden_states = hidden_states.reshape(-1, self.hidden_dim)
-                router_logits = self.router(hidden_states)
-                router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
-                router_scores = (
-                    torch.full_like(router_logits, float("-inf"))
-                    .scatter_(1, router_indices, router_top_value)
-                    .transpose(0, 1)
-                )
-                router_scores = torch.sigmoid(router_scores.float()).to(hidden_states.dtype)
+                router_scores, router_logits = self.router(hidden_states)
+                routed_in = hidden_states.repeat(router_scores.shape[1], 1)
+                routed_in = routed_in * router_scores.reshape(-1, 1)
+                routed_out = self.experts(routed_in)
                 out = self.shared_expert(hidden_states)
                 for i in range(self.num_experts):
                     out += self.experts[i](hidden_states) * router_scores[i].reshape(-1, 1)
