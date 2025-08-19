@@ -213,7 +213,7 @@ def pack_model(
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
         scale, zp = m.scale, m.zp
-        if isinstance(zp, int|float):
+        if isinstance(zp, int | float):
             zp = torch.full_like(scale, zp)
         convert_dtype = scale_dtype
         if not isinstance(scale, torch.Tensor):
@@ -253,4 +253,3 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
-
