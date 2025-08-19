@@ -97,7 +97,6 @@ def _get_moe_converter(config):
 
                 return out, router_logits
 
-
         return SequentialLlama4TextMoe, config.get_text_config(), "Llama4TextMoe"
 
     else:
