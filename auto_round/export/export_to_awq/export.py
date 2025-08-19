@@ -61,7 +61,7 @@ def pack_layer(name, model, backend):
     linear_layer = get_module(model, name)
     scale, zp = linear_layer.scale, linear_layer.zp
     scale = scale.t().contiguous()
-    if isinstance(zp, torch.Tenosr):
+    if isinstance(zp, torch.Tensor):
         zp = zp.t().contiguous().to(torch.float32)
         if sym:
             zp = int(zp.flatten()[0])
