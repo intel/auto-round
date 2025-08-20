@@ -28,7 +28,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## 🆕 What's New
 
-[202508] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation]((./docs/alg_202508.md))
+[202508] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
  for some accuracy results. 
 
 
