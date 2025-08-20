@@ -176,6 +176,7 @@ class AutoRound(object):
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
         disable_opt_rtn: bool = False,
+        enable_alg_ext: bool = False,
         **kwargs,
     ):
         ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
@@ -251,7 +252,7 @@ class AutoRound(object):
         else:
             self.lr = lr or (1.0 / self.iters)  ##must after iter setting
         self.minmax_lr = minmax_lr or self.lr
-
+        self.enable_alg_ext = enable_alg_ext
         self.data_type = data_type
         tmp_bits = infer_bits_by_data_type(self.data_type)
         if tmp_bits < 16 and tmp_bits != bits:
@@ -2564,10 +2565,26 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        if self.enable_torch_compile:
-            quant_block = compile_func(self.quantize_block, device)
+
+        if self.act_bits > 8 and self.sym and self.enable_alg_ext and self.super_group_size is None and self.data_type.startswith("int"):
+            try:
+                from auto_round.alg_ext import quantize_block_ext
+                AutoRound.quantize_block_ext = quantize_block_ext
+                quantize_block = self.quantize_block_ext
+                logger.info("using algorithm extension for quantization")
+            except (ImportError, ModuleNotFoundError):
+                quantize_block = self.quantize_block
+                if self.enable_torch_compile:
+                    quantize_block = compile_func(quantize_block, device)
+                else:
+                    quantize_block = quantize_block
         else:
-            quant_block = self.quantize_block
+            quantize_block = self.quantize_block
+            if self.enable_torch_compile:
+                quantize_block = compile_func(quantize_block, device)
+            else:
+                quantize_block = quantize_block
+
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
@@ -2588,7 +2605,7 @@ class AutoRound(object):
             if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                 m = m.to(device)
 
-            q_input, input_ids = quant_block(
+            q_input, input_ids = quantize_block(
                 m,
                 input_ids,
                 input_others,
