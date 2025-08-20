@@ -750,9 +750,9 @@ class AutoRound(object):
 
         # Perform model quantization
         if self.static_kv_dtype is not None:
-            from auto_round.experimental.fp8_kv_cache import fp8_kv_context
+            from auto_round.experimental.kv_cache import kvcache_quant_context
 
-            with fp8_kv_context(self.model, static_kv_dtype=self.static_kv_dtype):
+            with kvcache_quant_context(self.model, static_kv_dtype=self.static_kv_dtype):
                 model, _ = self.quantize()
         else:
             model, _ = self.quantize()

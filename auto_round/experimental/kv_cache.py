@@ -30,7 +30,7 @@ __all__ = [
     "initialize_quantized_kv_cache",
     "prep_attention_module_for_calibration",
     "freeze_module_quantization_",
-    "fp8_kv_context",
+    "kvcache_quant_context",
 ]
 
 
@@ -284,7 +284,7 @@ def normalize_static_kv_dtype(static_kv_dtype: Union[str, torch.dtype]) -> torch
 
 
 @contextlib.contextmanager
-def fp8_kv_context(model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn):
+def kvcache_quant_context(model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn):
     """Context manager for FP8 KV cache quantization operations."""
     try:
         # Setup phase: Initialize KV cache for quantization
