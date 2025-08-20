@@ -89,7 +89,6 @@ def fp8_per_tensor_qdq(tensor):
 class QuantizedKVParameterCache(DynamicCache):
     """
     Quantized KV cache used in the forward call based on HF's dynamic cache.
-    Quantization strategy (tensor, group, channel) set from Quantization arg's strategy
     Singleton, so that the same cache gets reused in all forward call of self_attn.
     Each time forward is called, .update() is called, and ._quant_dequant() gets called appropriately.
     The size of tensor is
