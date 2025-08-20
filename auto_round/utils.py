@@ -24,6 +24,7 @@ import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
+from typing import Tuple, Any, Union
 
 import cpuinfo
 import psutil
@@ -2133,7 +2134,7 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     return False
 
 
-def pad_weight(weight, block_size):
+def pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, int, int]:
     """Pads a matrix to make its dimensions multiples of block_size."""
     M, N = weight.shape[-2:]
     block_size_m, block_size_n = block_size
@@ -2146,7 +2147,7 @@ def pad_weight(weight, block_size):
     return padded_weight, M, N  # Return original dimensions for unpadding
 
 
-def unpad_weight(weight, original_M, original_N, keep_first_dim=False):
+def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool=False) -> torch.Tensor:
     """Removes padding from the matrix to restore its original shape."""
     if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
         return weight
@@ -2156,7 +2157,8 @@ def unpad_weight(weight, original_M, original_N, keep_first_dim=False):
         return weight[:original_M, :original_N]
 
 
-def pad_block_fp8_weight_naive(weight, weight_scale, block_size):
+def pad_block_fp8_weight_naive(weight: torch.Tensor, weight_scale: torch.Tensor,
+                               block_size: list) -> Tuple[torch.Tensor, int, int]:
 
     assert len(block_size) == 2
 
@@ -2172,7 +2174,7 @@ def pad_block_fp8_weight_naive(weight, weight_scale, block_size):
     return weight, orig_M, orig_N
 
 
-def dequant_block_fp8_weight(weight, weight_scale, block_size):
+def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
