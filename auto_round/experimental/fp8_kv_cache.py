@@ -16,18 +16,13 @@
 # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modifiers/quantization/cache.py
 
 
-import os
-import sys
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from loguru import logger
-from torch import FloatTensor, IntTensor, Tensor
-from torch.nn import Module
 from transformers.cache_utils import DynamicCache
 
-logger.add(sys.stderr, level="TRACE")
+from auto_round.utils import logger
 
 __all__ = [
     "initialize_quantized_kv_cache",
@@ -37,7 +32,7 @@ __all__ = [
 ]
 
 
-def freeze_module_quantization_(module: Module):
+def freeze_module_quantization_(module: torch.nn.Module):
     """
     deletes observers when calibration is complete.
 
@@ -122,17 +117,17 @@ class QuantizedKVParameterCache(DynamicCache):
             self.quantization_args = quantization_args
 
             # each index corresponds to layer_idx of the attention layer
-            self.k_scales: List[Tensor] = []
-            self.v_scales: List[Tensor] = []
+            self.k_scales: List[torch.Tensor] = []
+            self.v_scales: List[torch.Tensor] = []
             self._initialized = True
 
     def update(
         self,
-        key_states: Tensor,
-        value_states: Tensor,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
         layer_idx: int,
         cache_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
@@ -164,12 +159,12 @@ class QuantizedKVParameterCache(DynamicCache):
 
     def reset_states(self):
         """reset the kv states (used in calibration)"""
-        self.key_cache: List[Tensor] = []
-        self.value_cache: List[Tensor] = []
+        self.key_cache: List[torch.Tensor] = []
+        self.value_cache: List[torch.Tensor] = []
         # Used in `generate` to keep tally of how many tokens the cache has seen
         self._seen_tokens = 0
-        self._quantized_key_cache: List[Tensor] = []
-        self._quantized_value_cache: List[Tensor] = []
+        self._quantized_key_cache: List[torch.Tensor] = []
+        self._quantized_value_cache: List[torch.Tensor] = []
 
     def reset(self):
         """
@@ -191,7 +186,7 @@ class QuantizedKVParameterCache(DynamicCache):
         return qdq_tensor
 
 
-def initialize_quantized_kv_cache(module: Module):
+def initialize_quantized_kv_cache(module: torch.nn.Module):
     """
     Initialize a quantized kv_cache on a module (analogous to initializing an observer)
     """
@@ -204,10 +199,10 @@ def initialize_quantized_kv_cache(module: Module):
 
     quantized_kv_cache = QuantizedKVParameterCache()
     setattr(module, "kv_cache", quantized_kv_cache)
-    logger.trace(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
+    logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
 
 
-def is_attention_module(module: Module):
+def is_attention_module(module: torch.nn.Module):
     # FIXME: Handle this better.
     return "attention" in module.__class__.__name__.lower() and (
         hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
@@ -215,14 +210,14 @@ def is_attention_module(module: Module):
 
 
 def calibrate_kv_cache_input_hook(
-    module: Module, args: Any, kwargs: Dict[str, Any]
+    module: torch.nn.Module, args: Any, kwargs: Dict[str, Any]
 ) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
     """
     Hook to update inputs to attention layers when running
     kv_cache quantization. Will update the passed in
     kv_cache to singleton QuantizedKVParameterCache.
     """
-    logger.trace(f"calibrate kv_cache input hook for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
+    logger.debug(f"calibrate kv_cache input hook for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     kv_cache = getattr(module, "kv_cache")
     #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
     # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
@@ -253,11 +248,11 @@ def update_parameter_data(module, new_val, name: str):
         module.register_parameter(name, torch.nn.Parameter(new_val))
 
 
-def calibrate_kv_cache_output_hook(module: Module, _args: Any, _output: torch.Tensor):
+def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output: torch.Tensor):
     """
     Hook to update k_scale and v_scale parameters when running kv_cache quantization.
     """
-    logger.trace(
+    logger.debug(
         "Calibrate kv_cache output hook for %s %s"
         % (module.__class__.__name__, str(getattr(module, "layer_idx", None)))
     )
