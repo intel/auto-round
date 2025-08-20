@@ -3,14 +3,13 @@ import shutil
 import sys
 import unittest
 
-
 sys.path.insert(0, "../..")
-from auto_round.eval.evaluation import simple_evaluate_user_model
 import torch
 from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.eval.evaluation import simple_evaluate_user_model
 
 
 class LLMDataLoader:
@@ -619,11 +618,12 @@ class TestAutoRound(unittest.TestCase):
         # test experts are stacked.
         weight = torch.randn([32, 5760, 1440])
         weight_scale = torch.randn([32, 5760, 90])
-        block_size =  [1,16]
+        block_size = [1, 16]
         dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
         self.assertEqual(len(dequant_weight.shape), 3)
         self.assertEqual(dequant_weight.shape[0], 32)
         self.assertEqual(dequant_weight.shape.numel(), 32 * 5760 * 1440)
+
 
 if __name__ == "__main__":
     unittest.main()
