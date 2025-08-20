@@ -91,7 +91,7 @@ class QuantizedKVParameterCache(DynamicCache):
     Quantized KV cache used in the forward call based on HF's dynamic cache.
     Quantization strategy (tensor, group, channel) set from Quantization arg's strategy
     Singleton, so that the same cache gets reused in all forward call of self_attn.
-    Each time forward is called, .update() is called, and ._quant_dequant(), gets called appropriately.
+    Each time forward is called, .update() is called, and ._quant_dequant() gets called appropriately.
     The size of tensor is
      `[batch_size, num_heads, seq_len - residual_length, head_dim]`.
 
@@ -106,11 +106,9 @@ class QuantizedKVParameterCache(DynamicCache):
             cls._instance = super(QuantizedKVParameterCache, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, quantization_args=None):
+    def __init__(self):
         if not self._initialized:
             super().__init__()
-
-            self.quantization_args = quantization_args
 
             # each index corresponds to layer_idx of the attention layer
             self.k_scales: List[torch.Tensor] = []
@@ -164,7 +162,7 @@ class QuantizedKVParameterCache(DynamicCache):
         QuantizedKVParameterCache._instance = None
         QuantizedKVParameterCache._initialized = False
 
-    def _quant_dequant(self, tensor, kv_type, layer_idx):
+    def _quant_dequant(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
         """Quantizes a key/value using a defined quantization method."""
         if kv_type == KVCacheScaleType.KEY:  # key type
             scales = self.k_scales
@@ -220,7 +218,7 @@ def calibrate_kv_cache_input_hook(
     return args, kwargs
 
 
-def update_parameter_data(module, new_val, name: str):
+def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: str):
     """
     Update the data of a parameter in a module.
     If the parameter does not exist, it will be created.
@@ -264,7 +262,7 @@ import contextlib
 
 
 @contextlib.contextmanager
-def fp8_kv_context(model):
+def fp8_kv_context(model: torch.nn.Module):
     """Context manager for FP8 KV cache quantization operations."""
     try:
         # Setup phase: Initialize KV cache for quantization
