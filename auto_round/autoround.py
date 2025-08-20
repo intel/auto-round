@@ -2581,7 +2581,8 @@ class AutoRound(object):
                 quantize_block = quantize_block_ext
                 if self.bits > 2:
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2; use with caution.")
+                        "algorithm extension has only undergone limited validation on INT2; use with caution."
+                    )
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
