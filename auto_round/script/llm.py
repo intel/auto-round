@@ -567,6 +567,7 @@ def tune(args):
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
         disable_deterministic_algorithms=args.disable_deterministic_algorithms,
+        enable_alg_ext=args.enable_alg_ext,
         **mllm_kwargs,
     )
 

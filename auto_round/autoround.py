@@ -2578,7 +2578,7 @@ class AutoRound(object):
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
-                quantize_block = quantize_block_ext
+                quantize_block = self.quantize_block_ext ##must use self.quantize_block_ext
                 if self.bits > 2:
                     logger.warning(
                         "algorithm extension has only undergone limited validation on INT2; use with caution.")
