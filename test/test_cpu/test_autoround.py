@@ -3,14 +3,13 @@ import shutil
 import sys
 import unittest
 
-from auto_round.eval.evaluation import simple_evaluate_user_model
-
 sys.path.insert(0, "../..")
 import torch
 from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.eval.evaluation import simple_evaluate_user_model
 
 
 class LLMDataLoader:
@@ -605,6 +604,25 @@ class TestAutoRound(unittest.TestCase):
     #     text = "There is a girl who likes adventure,"
     #     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
+    def test_dequant_fp8_weight(self):
+        from auto_round.utils import dequant_block_fp8_weight
+
+        # test pad and unpad
+        weight = torch.randn(587, 7168)
+        weight_scale = torch.randn(5, 56)
+        block_size = [128, 128]
+        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        self.assertEqual(dequant_weight.shape.numel(), 4207616)
+
+        # test experts are stacked.
+        weight = torch.randn([32, 5760, 1440])
+        weight_scale = torch.randn([32, 5760, 90])
+        block_size = [1, 16]
+        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        self.assertEqual(len(dequant_weight.shape), 3)
+        self.assertEqual(dequant_weight.shape[0], 32)
+        self.assertEqual(dequant_weight.shape.numel(), 32 * 5760 * 1440)
 
 
 if __name__ == "__main__":
