@@ -64,14 +64,12 @@ def quant_tensor_sym(
     max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
     scale = (max_v / maxq).to(scale_dtype)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
-    zp = zp.unsqueeze(dim=-1)
     int_w = round_ste(tensor / scale + v)
-    q = torch.clamp(int_w + zp, 0, 2**bits - 1)
-    qdq_result = (scale * (q - zp)).to(tensor.dtype)
+    q = torch.clamp(int_w, -maxq, maxq - 1)
+    qdq_result = (scale * q).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_result, scale, zp
+    return qdq_result, scale, maxq
 
 
 @register_dtype("int_asym")

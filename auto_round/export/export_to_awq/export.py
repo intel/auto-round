@@ -61,9 +61,10 @@ def pack_layer(name, model, backend):
     linear_layer = get_module(model, name)
     scale, zp = linear_layer.scale, linear_layer.zp
     scale = scale.t().contiguous()
-    zp = zp.t().contiguous().to(torch.float32)
-    if sym:
-        zp = int(zp.flatten()[0])
+    if isinstance(zp, torch.Tensor):
+        zp = zp.t().contiguous().to(torch.float32)
+        if sym:
+            zp = int(zp.flatten()[0])
     q_linear = WQLinear_GEMM.from_linear(
         linear=linear_layer,
         w_bit=bits,
