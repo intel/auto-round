@@ -28,6 +28,10 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## 🆕 What's New
 
+[202508] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation]((./docs/alg_202508.md))
+ for some accuracy results. 
+
+
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
   all bits other than 3 bits. Example
   models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)

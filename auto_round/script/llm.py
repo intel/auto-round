@@ -198,6 +198,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--enable_torch_compile", action="store_true", help="whether to enable torch compile")
 
+        self.add_argument("--enable_alg_ext", action="store_true", help="whether to enable probably better algorithm")
+
         self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
@@ -713,6 +715,8 @@ def tune(args):
                 args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
+            if "llama" in args.model.lower():
+                model_args += ",add_bos_token=True"
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs
             )
