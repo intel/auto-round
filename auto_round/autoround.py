@@ -2573,7 +2573,7 @@ class AutoRound(object):
             and self.enable_alg_ext
             and self.super_group_size is None
             and self.data_type.startswith("int")
-            and self.bits<=2
+            and self.bits <= 2
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
