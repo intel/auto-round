@@ -298,10 +298,10 @@ class AutoRound(object):
             )
 
         # kv cache
-        enable_static_fp8_kv = kwargs.pop("enable_static_fp8_kv", False)
-        self.enable_static_fp8_kv = enable_static_fp8_kv
-        if self.enable_static_fp8_kv:
-            logger.warning("The `enable_static_fp8_kv` feature is experimental and currently has limited support.")
+        static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_dtype = static_kv_dtype
+        if self.static_kv_dtype is not None:
+            logger.warning("The static kv is experimental and currently has limited support.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -749,16 +749,13 @@ class AutoRound(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
-        if self.enable_static_fp8_kv:
+        if self.static_kv_dtype is not None:
             from auto_round.experimental.fp8_kv_cache import fp8_kv_context
 
-            quant_ctx = fp8_kv_context
+            with fp8_kv_context(self.model, static_kv_dtype=self.static_kv_dtype):
+                model, _ = self.quantize()
         else:
-            quant_ctx = contextlib.nullcontext
-
-        with quant_ctx(self.model):
             model, _ = self.quantize()
-
         # Save the quantized model in the specified format_list
         folders = []
         for format in format_list:

@@ -16,8 +16,10 @@
 # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modifiers/quantization/cache.py
 
 
+import contextlib
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from functools import partial
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from transformers.cache_utils import DynamicCache
@@ -105,7 +107,9 @@ class QuantizedKVParameterCache(DynamicCache):
             cls._instance = super(QuantizedKVParameterCache, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, dtype: torch.dtype = torch.float8_e4m3fn):
+
+        assert dtype == torch.float8_e4m3fn, "Only fp8_e4m3fn is supported for now."
         if not self._initialized:
             super().__init__()
 
@@ -174,7 +178,7 @@ class QuantizedKVParameterCache(DynamicCache):
         return qdq_tensor
 
 
-def initialize_quantized_kv_cache(module: torch.nn.Module):
+def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn):
     """
     Initialize a quantized kv_cache on a module (analogous to initializing an observer)
     """
@@ -185,7 +189,7 @@ def initialize_quantized_kv_cache(module: torch.nn.Module):
     if isinstance(existing_kv_cache, QuantizedKVParameterCache):
         return
 
-    quantized_kv_cache = QuantizedKVParameterCache()
+    quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype)
     setattr(module, "kv_cache", quantized_kv_cache)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
 
@@ -257,16 +261,39 @@ def prep_attention_module_for_calibration(module: torch.nn.Module):
         module.register_forward_hook(calibrate_kv_cache_output_hook)
 
 
-import contextlib
+def normalize_static_kv_dtype(static_kv_dtype: Union[str, torch.dtype]) -> torch.dtype:
+    valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float"]
+    valid_torch_dtype = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "fp8": torch.float8_e4m3fn,
+        "float32": torch.float32,
+        "float": torch.float32,  # Alias for float32
+    }
+    if static_kv_dtype in valid_dtype_name_lst:
+        new_dtype = valid_torch_dtype[static_kv_dtype]
+    elif static_kv_dtype in valid_torch_dtype.values():
+        new_dtype = static_kv_dtype
+    else:
+        raise ValueError(
+            f"Invalid static kv dtype: {static_kv_dtype}. "
+            f"Valid options are: {', '.join(valid_dtype_name_lst  + list(valid_torch_dtype.values()))}."
+        )
+    return new_dtype
 
 
 @contextlib.contextmanager
-def fp8_kv_context(model: torch.nn.Module):
+def fp8_kv_context(model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn):
     """Context manager for FP8 KV cache quantization operations."""
     try:
         # Setup phase: Initialize KV cache for quantization
-        model.apply(initialize_quantized_kv_cache)
-        model.apply(prep_attention_module_for_calibration)
+        static_kv_dtype = normalize_static_kv_dtype(static_kv_dtype)
+        if static_kv_dtype != torch.float8_e4m3fn:
+            logger.warning(f"Ignoring static kv dtype {static_kv_dtype}, only fp8_e4m3fn is supported.")
+        else:
+            initialize_fn = partial(initialize_quantized_kv_cache, dtype=static_kv_dtype)
+            model.apply(initialize_fn)
+            model.apply(prep_attention_module_for_calibration)
 
         # Provide the model to the with block
         yield model
