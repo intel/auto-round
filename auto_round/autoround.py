@@ -174,7 +174,6 @@ class AutoRound(object):
         act_sym: bool = None,
         act_data_type: str = None,
         act_dynamic: bool = True,
-        enable_static_fp8_kv: bool = False,
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
         disable_opt_rtn: bool = False,
@@ -299,6 +298,7 @@ class AutoRound(object):
             )
 
         # kv cache
+        enable_static_fp8_kv = kwargs.pop("enable_static_fp8_kv", False)
         self.enable_static_fp8_kv = enable_static_fp8_kv
         logger.warning("The `enable_static_fp8_kv` feature is experimental and currently has limited support.")
 
