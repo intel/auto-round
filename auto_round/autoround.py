@@ -2573,14 +2573,17 @@ class AutoRound(object):
             and self.enable_alg_ext
             and self.super_group_size is None
             and self.data_type.startswith("int")
-            and self.bits<=2
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
                 quantize_block = quantize_block_ext
-                logger.info("using algorithm extension for quantization")
+                if self.bits > 2:
+                    logger.warning(
+                        "algorithm extension has only undergone limited validation on INT2; use with caution.")
+                else:
+                    logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
                 quantize_block = self.quantize_block
                 if self.enable_torch_compile:
