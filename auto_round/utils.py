@@ -2142,7 +2142,7 @@ def pad_weight(weight, block_size):
 
     if pad_M == 0 and pad_N == 0:
         return weight, M, N  # No padding needed
-    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode='constant', value=0)
+    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
     return padded_weight, M, N  # Return original dimensions for unpadding
 
 
@@ -2201,7 +2201,7 @@ def dequant_block_fp8_weight(weight, weight_scale, block_size):
         keep_first_dim = True
     else:
         raise ValueError("Only support original weight shape is either 2 or 3")
-    
+
     dequant_weight = unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
 
     return dequant_weight
