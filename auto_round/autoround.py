@@ -300,7 +300,8 @@ class AutoRound(object):
         # kv cache
         enable_static_fp8_kv = kwargs.pop("enable_static_fp8_kv", False)
         self.enable_static_fp8_kv = enable_static_fp8_kv
-        logger.warning("The `enable_static_fp8_kv` feature is experimental and currently has limited support.")
+        if self.enable_static_fp8_kv:
+            logger.warning("The `enable_static_fp8_kv` feature is experimental and currently has limited support.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
