@@ -91,8 +91,7 @@ class QuantizedKVParameterCache(DynamicCache):
     Quantized KV cache used in the forward call based on HF's dynamic cache.
     Quantization strategy (tensor, group, channel) set from Quantization arg's strategy
     Singleton, so that the same cache gets reused in all forward call of self_attn.
-    Each time forward is called, .update() is called, and ._quantize(), ._dequantize()
-     gets called appropriately.
+    Each time forward is called, .update() is called, and ._quant_dequant(), gets called appropriately.
     The size of tensor is
      `[batch_size, num_heads, seq_len - residual_length, head_dim]`.
 
@@ -128,11 +127,6 @@ class QuantizedKVParameterCache(DynamicCache):
         """
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
-
-        # FIXME: Should we append the key_states/value_states to the cache?
-        # q_key_states = self._quantize(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
-        # q_value_states = self._quantize(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
-
         qdq_key_states = self._quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
         qdq_value_states = self._quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
 
