@@ -2535,9 +2535,16 @@ class AutoRound(object):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
 
-        if self.act_bits > 8 and self.sym and self.enable_alg_ext and self.super_group_size is None and self.data_type.startswith("int"):
+        if (
+            self.act_bits > 8
+            and self.sym
+            and self.enable_alg_ext
+            and self.super_group_size is None
+            and self.data_type.startswith("int")
+        ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
+
                 AutoRound.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext
                 logger.info("using algorithm extension for quantization")
@@ -2553,7 +2560,6 @@ class AutoRound(object):
                 quantize_block = compile_func(quantize_block, device)
             else:
                 quantize_block = quantize_block
-
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))

@@ -716,7 +716,7 @@ def tune(args):
                 args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             if "llama" in args.model.lower():
-                model_args+=",add_bos_token=True"
+                model_args += ",add_bos_token=True"
             st = time.time()
 
             res = simple_evaluate(
