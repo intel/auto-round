@@ -142,7 +142,10 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     alias=["auto_gptq:cuda"],
     dtype=["float16"],
     convertable_format=["int32_zp"],
-    requirements=["torch<2.6.0", "auto-gptq>=0.7.1",],
+    requirements=[
+        "torch<2.6.0",
+        "auto-gptq>=0.7.1",
+    ],
 )
 
 BackendInfos["auto_round:tritonv2"] = BackendInfo(
@@ -256,7 +259,7 @@ BackendInfos["qbits"] = BackendInfo(
     alias=["itrex", "qbits"],
     dtype=["float16", "bfloat16"],
     convertable_format=["int32"],
-    requirements=["torch<2.7.0", "intel-extension-for-transformers" ],
+    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
 BackendInfos["qbits_zp"] = BackendInfo(
