@@ -17,8 +17,10 @@ import os
 import torch
 
 from auto_round.export.export_to_llmcompressor.config import quantization_config
-from auto_round.utils import detect_device, get_module, logger, set_module
+from auto_round.utils import detect_device, get_module, is_mx_fp, is_nv_fp, is_standard_fp, logger, set_module
 from auto_round.wrapper import WrapperWALayer
+
+from .export_to_fp import save_quantized_as_fp
 
 
 @torch.no_grad()
@@ -36,8 +38,40 @@ def recover_qweight(qdq_weight, scale):
     return (qdq_weight / scale).to(torch.int8)
 
 
+def pack_layer(layer_name, model, backend):
+    """
+    Packs a model layer for quantization based on its type and configuration.
+
+    This function retrieves the specified layer from the model, checks its
+    compatibility for quantization, and replaces it with a quantized version
+    if applicable. The quantization process depends on the layer's bit-width,
+    group size, symmetry, and activation bits.
+
+    Args:
+        layer_name (str): The name of the layer to be packed.
+        model (torch.nn.Module): The model containing the layer.
+        backend (str): The backend framework to be used for quantization.
+
+    Returns:
+        None: The function modifies the model in place.
+    """
+    if is_nv_fp(backend) or is_mx_fp(backend):
+        from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
+
+        return pack_layer(layer_name, model, backend)
+
+    ## passed as no other llmcompressor format is supported yet
+    logger.warning("No other llmcompressor packing format(except NVFP&MXFP) is supported yet, skip packing")
+    return
+
+
 @torch.no_grad()
-def save_quantized_as_llmcompressor(output_dir, model=None, **kwargs):
+def save_quantized_as_llmcompressor(output_dir, **kwargs):
+    backend = kwargs.get("backend", None)
+    if is_nv_fp(backend) or is_mx_fp(backend):
+        return save_quantized_as_fp(output_dir, **kwargs)
+
+    model = kwargs.get("model", None)
     safe_serialization = kwargs.get("safe_serialization", True)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)

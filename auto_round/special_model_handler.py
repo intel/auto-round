@@ -26,6 +26,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "idefics3",
     "llama4",
     "internvl_chat",
+    "glm4v_moe",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]

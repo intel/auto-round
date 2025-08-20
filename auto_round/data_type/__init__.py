@@ -17,6 +17,6 @@ import auto_round.data_type.mxfp
 import auto_round.data_type.fp8
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 import auto_round.data_type.w4fp8
-from auto_round.data_type.utils import get_quant_func
+from auto_round.data_type.utils import get_quant_func, update_fused_layer_global_scales
 import auto_round.data_type.nvfp
 import auto_round.data_type.gguf
