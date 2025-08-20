@@ -267,6 +267,7 @@ def normalize_static_kv_dtype(static_kv_dtype: Union[str, torch.dtype]) -> torch
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
         "fp8": torch.float8_e4m3fn,
+        "float8_e4m3fn": torch.float8_e4m3fn,
         "float32": torch.float32,
         "float": torch.float32,  # Alias for float32
     }
