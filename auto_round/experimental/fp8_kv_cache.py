@@ -96,9 +96,6 @@ class QuantizedKVParameterCache(DynamicCache):
     The size of tensor is
      `[batch_size, num_heads, seq_len - residual_length, head_dim]`.
 
-
-    # TODO: Triggered by adding kv_cache_scheme in ...
-
     """
 
     _instance = None
