@@ -15,6 +15,7 @@
 import collections.abc
 import copy
 import gc
+import importlib
 import json
 import logging
 import os
@@ -25,7 +26,6 @@ from enum import Enum
 from functools import lru_cache
 
 import cpuinfo
-import importlib
 import torch
 import transformers
 from packaging import version

@@ -2594,7 +2594,6 @@ class AutoRound(object):
             else:
                 quantize_block = quantize_block
 
-
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
