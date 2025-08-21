@@ -200,13 +200,34 @@ class QuantLinear(nn.Module):
 
             self.qzeros = qzeros.cpu()
         else:
-            shape = scales_t.shape
-            value = 0
-            for j in range(0, (32 // self.bits)):
-                value |= zeros << (self.bits * j)
-            qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
-            qzeros = qzeros.astype(np.int32)
-            self.qzeros = torch.from_numpy(qzeros)
+            if self.bits in [2, 4, 8]:
+                shape = scales_t.shape
+                value = 0
+                for j in range(0, (32 // self.bits)):
+                    value |= zeros << (self.bits * j)
+                qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
+                qzeros = qzeros.astype(np.int32)
+                self.qzeros = torch.from_numpy(qzeros)
+            else:  ## bits == 3
+                shape = scales_t.shape[0], scales_t.shape[1] // 32 * self.bits
+                qzeros = torch.zeros(shape, dtype=torch.int32)
+                zero_val = zeros
+                total_cols = shape[1]
+                # Precompute shifts for 3-bit packing
+                shifts0 = torch.arange(0, 10, dtype=torch.int32) * self.bits
+                shifts1 = shifts0 + 1
+                shifts2 = shifts0 + 2
+                # Compute packed pattern parts
+                part0 = (zero_val << shifts0).sum().to(torch.int32) | (zero_val << 30)
+                part1 = (zero_val << shifts1).sum().to(torch.int32) | (zero_val << 31) | ((zero_val >> 2) & 1)
+                part2 = (zero_val << shifts2).sum().to(torch.int32) | ((zero_val >> 1) & 0x3)
+                pattern = torch.tensor([part0, part1, part2], dtype=torch.int32)
+                # Tile pattern across all columns
+                repeats = (total_cols + 2) // 3
+                full_row = pattern.repeat(repeats)[:total_cols]
+                # Broadcast across rows
+                qzeros[:] = full_row.unsqueeze(0)
+                self.qzeros = qzeros.cpu()
 
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)

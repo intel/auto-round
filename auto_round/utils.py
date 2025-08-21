@@ -15,18 +15,18 @@
 import collections.abc
 import copy
 import gc
+import importlib
 import json
 import logging
 import os
 import re
-import subprocess
 import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
+from typing import Any, Tuple, Union
 
 import cpuinfo
-import psutil
 import torch
 import transformers
 from packaging import version
@@ -127,10 +127,6 @@ logger.propagate = False
 fh = logging.StreamHandler()
 fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
-
-import importlib
-
-import transformers
 
 
 class LazyImport(object):
@@ -2133,11 +2129,54 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     return False
 
 
-def dequant_block_fp8_weight(weight, weight_scale, block_size):
+def pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, int, int]:
+    """Pads a matrix to make its dimensions multiples of block_size."""
+    M, N = weight.shape[-2:]
+    block_size_m, block_size_n = block_size
+    pad_M = (block_size_m - M % block_size_m) % block_size_m
+    pad_N = (block_size_n - N % block_size_n) % block_size_n
+
+    if pad_M == 0 and pad_N == 0:
+        return weight, M, N  # No padding needed
+    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
+    return padded_weight, M, N  # Return original dimensions for unpadding
+
+
+def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
+    """Removes padding from the matrix to restore its original shape."""
+    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
+        return weight
+    if keep_first_dim:
+        return weight[:, :original_M, :original_N]
+    else:
+        return weight[:original_M, :original_N]
+
+
+def pad_block_fp8_weight_naive(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
+) -> Tuple[torch.Tensor, int, int]:
+
+    assert len(block_size) == 2
+
+    block_size_m, block_size_n = block_size
+    weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
+
+    weight, orig_M, orig_N = pad_weight(weight, block_size)
+    M, N = weight.shape[-2:]
+
+    assert weight_scale_m == M // block_size_m
+    assert weight_scale_n == N // block_size_n
+
+    return weight, orig_M, orig_N
+
+
+def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
     assert len(block_size) == 2
+
+    weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
     weight_shape_len = len(weight.shape)
 
@@ -2150,14 +2189,18 @@ def dequant_block_fp8_weight(weight, weight_scale, block_size):
         weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
         dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
         dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+        keep_first_dim = False
     elif weight_shape_len == 3:
         fd, weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
         dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
         dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+        keep_first_dim = True
     else:
         raise ValueError("Only support original weight shape is either 2 or 3")
+
+    dequant_weight = unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
 
     return dequant_weight
 

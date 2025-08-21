@@ -115,7 +115,7 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
     feature_checks=[exllamav2_feature_check],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
-    requirements=["auto-gptq>=0.7.1"],
+    requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
 )
 
 BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
@@ -128,7 +128,7 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     priority=0,
     feature_checks=[exllamav2_feature_check],
     alias=["auto_gptq:tritonv2"],
-    requirements=["auto-gptq>=0.7.1", "triton>=2.0"],
+    requirements=["torch<2.6.0", "auto-gptq>=0.7.1", "triton>=2.0"],
 )
 
 BackendInfos["auto_gptq:cuda"] = BackendInfo(
@@ -142,7 +142,10 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     alias=["auto_gptq:cuda"],
     dtype=["float16"],
     convertable_format=["int32_zp"],
-    requirements=["auto-gptq>=0.7.1"],
+    requirements=[
+        "torch<2.6.0",
+        "auto-gptq>=0.7.1",
+    ],
 )
 
 BackendInfos["auto_round:tritonv2"] = BackendInfo(
@@ -164,7 +167,7 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[feature_multiply_checker_32],
+    feature_checks=[exllamav2_feature_check],
     alias=["auto_round", "torch"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -189,7 +192,7 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[feature_multiply_checker_32],
+    feature_checks=[exllamav2_feature_check],
     alias=["torch", "torch_zp"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -256,7 +259,7 @@ BackendInfos["qbits"] = BackendInfo(
     alias=["itrex", "qbits"],
     dtype=["float16", "bfloat16"],
     convertable_format=["int32"],
-    requirements=["intel-extension-for-transformers", "torch<2.7.0"],
+    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
 BackendInfos["qbits_zp"] = BackendInfo(
@@ -270,7 +273,7 @@ BackendInfos["qbits_zp"] = BackendInfo(
     feature_checks=[],
     alias=["itrex", "qbits"],
     convertable_format=["int32_zp"],
-    requirements=["intel-extension-for-transformers", "torch<2.7.0"],
+    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
 BackendInfos["auto_round:qbits_awq"] = BackendInfo(
@@ -283,7 +286,7 @@ BackendInfos["auto_round:qbits_awq"] = BackendInfo(
     priority=1,
     feature_checks=[],
     alias=["itrex", "qbits"],
-    requirements=["intel-extension-for-transformers", "torch<2.7.0"],
+    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
 BackendInfos["ipex_gptq"] = BackendInfo(

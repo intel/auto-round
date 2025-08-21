@@ -29,7 +29,6 @@ from auto_round.utils import (
     check_start_with_block_name,
     check_to_quantized,
     filter_quantization_config,
-    get_block_names,
     get_module,
     is_mx_fp,
     is_nv_fp,

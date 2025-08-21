@@ -179,8 +179,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             self.bits,
             self.maxq,
         )
-        out = out.half().reshape(out_shape)
-        out = out + self.bias if self.bias is not None else out
+        out = out.to(x.dtype).reshape(out_shape)
+        out = out + self.bias.to(x.dtype) if self.bias is not None else out
         return out.to(x.dtype)
 
     @classmethod
