@@ -410,7 +410,6 @@ class AutoRound(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
-
     def _set_device_map_in_blocks(self, device_map: Union[str, dict, None]) -> None:
         """Sets the device map for specific blocks in the model.
 
@@ -454,7 +453,7 @@ class AutoRound(object):
                         if key in name:
                             self._set_device_for_matching_module(name, device)
 
-    def _set_device_for_matching_module(self, name:str, device:str)->None:
+    def _set_device_for_matching_module(self, name: str, device: str) -> None:
         """Sets the device for a module if it matches the given name."""
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
@@ -464,7 +463,7 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def _dq_check(self)->None:
+    def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
