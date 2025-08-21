@@ -1349,12 +1349,13 @@ def is_fp8_model(model: torch.nn.Module) -> bool:
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) and str(m.weight.dtype).startswith("torch.float8"):
             m.is_fp8 = True
-            if not hasattr(model, "is_fp8"): 
+            if not hasattr(model, "is_fp8"):
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 model.is_fp8 = True
     if hasattr(model, "is_fp8"):
         return True
     return False
+
 
 def llm_load_model(
     pretrained_model_name_or_path,
