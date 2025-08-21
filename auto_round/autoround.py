@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import copy
 import os
 import re
@@ -299,6 +300,12 @@ class AutoRound(object):
                 f"act_bits set in 'act_data_type' do not"
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
+
+        # kv cache
+        static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_dtype = static_kv_dtype
+        if self.static_kv_dtype is not None:
+            logger.warning("The static kv is experimental and currently has limited support.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -746,8 +753,13 @@ class AutoRound(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
-        model, _ = self.quantize()
+        if self.static_kv_dtype is not None:
+            from auto_round.experimental.kv_cache import kvcache_quant_context
 
+            with kvcache_quant_context(self.model, static_kv_dtype=self.static_kv_dtype):
+                model, _ = self.quantize()
+        else:
+            model, _ = self.quantize()
         # Save the quantized model in the specified format_list
         folders = []
         for format in format_list:
@@ -1338,7 +1350,6 @@ class AutoRound(object):
                         add_hook_to_module(m, hook, True)
                 else:
                     block = block.to(self.device)
-
                 input_ids = self.get_block_outputs(
                     block,
                     input_ids,
