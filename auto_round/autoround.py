@@ -83,69 +83,21 @@ from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block
 
 
 class AutoRound(object):
-    """For more information, please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
-     for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
+    """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
 
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
-        bits (int): Number of bits for quantization (default is 4).
-        group_size (int): Size of the quantization group (default is 128).
-        sym (bool): Whether symmetric quantization is to be used (default is True).
-        layer_config (dict): Configuration for weight quantization (default is None).
-        layer_config={
-                   'layer1':##layer_name
-                   {
-                       'data_type': 'int',
-                       'bits': 4,
-                       'group_size': 128,
-                       'sym': True
-                       'act_data_type': None,
-                       'act_bits': 16,
-                       'act_group_size': None,
-                       'act_sym': None,
+    Reference:
+        Cheng, Wenhua, et al., "Optimize weight rounding via signed gradient descent for
+        the quantization of LLMs." arXiv:2309.05516 (2023).
 
-                   }
-                   ...
-               }
-        batch_size (int): Batch size for training (default is 8).
-        amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for tuning (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset (str): The default dataset name (default is "NeelNanda/pile-10k").
-        enable_quanted_input (bool): Whether to use the output of the previous quantized block as
-                                the input for the current block (default is True).
-        enable_minmax_tuning (bool): Whether to enable weight min-max tuning (default is True).
-        lr (float): The learning rate (default is None, will be set to 1.0/iters).
-        minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Data length of the sequence for tuning (default is 2048).
-        nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
-        data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 16.
-        act_group_size (int): Group size for activation quantization. Default is None.
-        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
-        act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
-        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of
-                            block's layer names to be quantized.
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer (default it False).
-        device_map (str|dict): device map for each block
-        disable_opt_rtn (bool): Whether to disable optimization of the RTN mode(iters=0) (default is False).
-    Returns:
-        The quantized model.
+    Attributes:
+        model (torch.nn.Module): The loaded PyTorch model in eval mode.
+        tokenizer: Tokenizer used to prepare input text for calibration/tuning.
+        bits (int): Weight quantization bits.
+        group_size (int): Per-group size for weight quantization.
+        sym (bool): Whether to use symmetric weight quantization.
+        layer_config (dict): Per-layer quantization configuration.
+        nsamples (int): Number of calibration samples.
+        enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
 
     def __init__(
@@ -181,8 +133,66 @@ class AutoRound(object):
         enable_alg_ext: bool = False,
         **kwargs,
     ):
-        ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
-        ## major version releases may be pack them  with extra configuration options
+        """Initialize AutoRound with quantization and tuning configuration.
+
+        Args:
+            model (torch.nn.Module | str): Model object or model name to load.
+            tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
+            bits (int, optional): Weight quantization bits. Defaults to 4.
+            group_size (int, optional): Weight quantization group size. Defaults to 128.
+            sym (bool, optional): Symmetric weight quantization. Defaults to True.
+            layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
+            batch_size (int, optional): Calibration batch size. Defaults to 8.
+            amp (bool, optional): Use AMP for tuning. Defaults to True.
+            device (str | torch.device | int, optional): Compute device. Defaults to 0.
+            dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
+            enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
+            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
+            minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
+            low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            iters (int, optional): Optimization iterations. Defaults to 200.
+            seqlen (int, optional): Calibration sequence length. Defaults to 2048.
+            nsamples (int, optional): Number of calibration samples. Defaults to 128.
+            seed (int, optional): Random seed. Defaults to 42.
+            gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
+            data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
+            act_bits (int, optional): Activation quantization bits. Defaults to 16.
+            act_group_size (int, optional): Activation group size. Defaults to None.
+            act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
+            act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
+            act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
+            enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
+            device_map (str | dict, optional): Device placement map. Defaults to None.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
+            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
+            **kwargs: Backward compatible options:
+                - lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                  super_group_size, super_bits, scale_dtype ("fp16" etc.),
+                  nblocks, low_cpu_mem_usage, to_quant_block_names,
+                  enable_norm_bias_tuning, enable_quanted_input,
+                  disable_deterministic_algorithms, vlm, static_kv_dtype
+        Raises:
+            ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
+            RuntimeError: If model parameters are on meta device.
+        Example:
+            Layer-wise configuration structure:
+
+            >>> layer_config = {
+            ...     "layer1": {
+            ...         "data_type": "int",
+            ...         "bits": 4,
+            ...         "group_size": 128,
+            ...         "sym": True,
+            ...         "act_data_type": None,
+            ...         "act_bits": 16,
+            ...         "act_group_size": None,
+            ...         "act_sym": None,
+            ...     },
+            ...     # ...
+            ... }
+        """
+        # Extra/legacy kwargs for backward compatibility
+        # Major version releases may pack them with extra configuration options
         lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
@@ -196,23 +206,98 @@ class AutoRound(object):
         enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
+        static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+
+        if kwargs:
+            logger.warning(f"Unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+
+        if device is not None and "," in str(device):
+            raise ValueError("API does not support explicit set multiple devices,"
+                " please set CUDA_VISIBLE_DEVICES yourself and use `device=auto` instead")
+
         if not disable_deterministic_algorithms:
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
 
-        self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
-        if kwargs:
-            logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
-        self.quantized = False
-        self.seed = seed
-        set_seed(self.seed)
-        if device is not None and "," in str(device):
-            raise ValueError(
-                "API does not support explicit set multiple devices,"
-                " please set CUDA_VISIBLE_DEVICES yourself and use `device=auto` instead"
+        # Set quantization configs
+        self.bits = bits
+        self.data_type = data_type
+        tmp_bits = infer_bits_by_data_type(self.data_type)
+        if tmp_bits < 16 and tmp_bits != bits:
+            logger.warning(
+                f"Bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
+            )
+            self.bits = tmp_bits
+        self.group_size = group_size
+        self.sym = sym
+        self.layer_config = {} if layer_config is None else layer_config
+        self.to_quant_block_names = to_quant_block_names
+        if not hasattr(self, "quant_block_list"):
+            all_blocks = get_block_names(model)
+            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
+
+        # Activation
+        self.act_group_size = act_group_size if act_group_size is not None else group_size
+        self.act_bits = act_bits if act_bits is not None else self.bits
+        self.act_sym = act_sym if act_sym is not None else self.sym
+        self.act_dynamic = act_dynamic
+        self.act_data_type = act_data_type
+        if self.act_data_type is None:
+            if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
+                self.act_data_type = data_type
+                logger.info(f"Activation adopts {data_type}")
+            else:
+                self.act_data_type = "float"
+        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
+        if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
+            self.act_bits = tmp_act_bits
+            logger.warning(
+                f" 'act_data_type' do not"
+                f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
 
+        # Tuning hyperparameters
+        self.seed = seed
+        set_seed(self.seed)
+        self.amp = amp
+        self.enable_quanted_input = enable_quanted_input
+        self.enable_minmax_tuning = enable_minmax_tuning
+        self.nsamples = nsamples
+        self.enable_norm_bias_tuning = enable_norm_bias_tuning
+        self.low_gpu_mem_usage = low_gpu_mem_usage
+        self.seqlen = seqlen
+        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
+        self.nblocks = nblocks
+        self.dataset = dataset
+        self.iters = iters
+        if self.iters < 0:
+            logger.warning("`iters` must be non-negative, reset it to 200")
+            self.iters = 200
+        if self.iters == 0:
+            self.lr = 5e-3
+        else:
+            self.lr = lr or (1.0 / self.iters)  # must place after iter setting
+        self.minmax_lr = minmax_lr or self.lr
+        self.enable_alg_ext = enable_alg_ext
+        self.sampler = sampler
+        self.not_use_best_mse = not_use_best_mse
+        self.dynamic_max_gap = dynamic_max_gap
+        self.lr_scheduler = lr_scheduler
+        self.optimizer = self.get_optimizer(None)
+        self.super_bits = super_bits
+        self.super_group_size = super_group_size
+        self.disable_opt_rtn = disable_opt_rtn
+        self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
+
+        # Kv cache, this one does not affect tuning but will collect some infos during tuning
+        self.static_kv_dtype = static_kv_dtype
+        if self.static_kv_dtype is not None:
+            logger.warning("The static kv is experimental and currently has limited support.")
+
+        # Model related
+        self.quantized = False
         if isinstance(model, str):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
@@ -225,151 +310,36 @@ class AutoRound(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
-        model = _handle_moe_model(model)
-        # self.model_orig_dtype = model.dtype
-        self.enable_alg_ext = enable_alg_ext
-        self.device = detect_device(device)  ##must place after llm_load_model, because this one will convert auto
-
-        ## important tuning hype-parameters
-        self.amp = amp
-        self.enable_quanted_input = enable_quanted_input
-        self.enable_minmax_tuning = enable_minmax_tuning
-        self.nsamples = nsamples
-        self.bits = bits
-        self.enable_norm_bias_tuning = enable_norm_bias_tuning
-        self.group_size = group_size
-        self.sym = sym
-
-        self.low_gpu_mem_usage = low_gpu_mem_usage
-
-        self.layer_config = {} if layer_config is None else layer_config
-        self.seqlen = seqlen
-        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
-        self.nblocks = nblocks
-        self.dataset = dataset
-        self.iters = iters
-        if self.iters < 0:
-            logger.warning("`iters` must be non-negative, reset it to 200")
-            self.iters = 200
-        if self.iters == 0:
-            self.lr = 5e-3
-        else:
-            self.lr = lr or (1.0 / self.iters)  ##must after iter setting
-        self.minmax_lr = minmax_lr or self.lr
-
-        self.data_type = data_type
-        tmp_bits = infer_bits_by_data_type(self.data_type)
-        if tmp_bits < 16 and tmp_bits != bits:
-            logger.warning(
-                f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
-            )
-            self.bits = tmp_bits
-        self.supported_types = SUPPORTED_LAYER_TYPES
-        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-        if "hpu" in str(self.device):
-            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
-
         self.model = model.eval()
         self.tokenizer = tokenizer
+        self.shared_cache_keys = get_shared_keys(self.model)
 
+        # Set device, must place after model loading
+        self.device = detect_device(device)  # must place after llm_load_model, because this one will convert auto
+        self.device_map = device_map
+        self._set_device_map_in_blocks(self.device_map)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
-        self.to_quant_block_names = to_quant_block_names
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(model)
-            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-
-        ##activation
-        self.act_group_size = act_group_size if act_group_size is not None else group_size
-        self.act_bits = act_bits if act_bits is not None else self.bits
-        self.act_sym = act_sym if act_sym is not None else self.sym
-        self.act_dynamic = act_dynamic
-        self.act_data_type = act_data_type
-        if self.act_data_type is None:
-            if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
-                self.act_data_type = data_type
-                logger.info(f"activation adopts {data_type}")
-            else:
-                self.act_data_type = "float"
-
-        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
-            self.act_bits = tmp_act_bits
-            logger.warning(
-                f"act_bits set in 'act_data_type' do not"
-                f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
-            )
-
-        # kv cache
-        static_kv_dtype = kwargs.pop("static_kv_dtype", None)
-        self.static_kv_dtype = static_kv_dtype
-        if self.static_kv_dtype is not None:
-            logger.warning("The static kv is experimental and currently has limited support.")
-
-        self.sampler = sampler
-        self.not_use_best_mse = not_use_best_mse
-        self.dynamic_max_gap = dynamic_max_gap
-        self.lr_scheduler = lr_scheduler
-        self.optimizer = self.get_optimizer(None)
-        self.batch_dim = None
-        self.infer_bs_coeff = 1
-
-        self.super_bits = super_bits
-        self.super_group_size = super_group_size
-
-        self.disable_opt_rtn = disable_opt_rtn
-
-        torch.set_printoptions(precision=3, sci_mode=True)
-        self.check_configs()
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
-            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
+            logger.warning("Force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
             self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
+        # Some helpers
+        self.supported_types = SUPPORTED_LAYER_TYPES
+        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        if "hpu" in str(self.device):
+            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
+        self.batch_dim = None
+        self.infer_bs_coeff = 1
         self.enable_torch_compile = enable_torch_compile
-        if (
-            not self.enable_torch_compile
-            and TORCH_VERSION_AT_LEAST_2_6
-            and self.act_bits > 8
-            and not is_debug_mode()
-            and not self.low_cpu_mem_usage
-            and "fp8" not in self.data_type
-            and "fp8" not in self.act_data_type
-        ):
-            logger.info(
-                "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
-            )
+        self._adjust_torch_compile(enable_torch_compile)
 
-        if self.act_bits <= 8 and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
-
-        if self.low_cpu_mem_usage and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
-
-        if is_debug_mode() and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
-
-        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
-
-        if is_optimum_habana_available():
-            logger.info("Optimum Habana is available, import htcore explicitly.")
-            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
-        self.device_map = device_map
-
-        self.set_device_map_in_blocks(self.device_map)
-
-        self.is_packing_immediate = False  ## whether to pack the layer immediately after tuning
-
+        self.check_configs()
+        torch.set_printoptions(precision=3, sci_mode=True)
         self.serialization_keys = [
             "bits",
             "group_size",
@@ -398,9 +368,45 @@ class AutoRound(object):
             "super_group_size",
         ]
 
-        self.shared_cache_keys = get_shared_keys(self.model)
+    def _adjust_torch_compile(self, enable_torch_compile:bool) -> None:
+        """Sets the torch compile configuration for the tuning."""
+        self.enable_torch_compile = enable_torch_compile
+        if (
+                not self.enable_torch_compile
+                and TORCH_VERSION_AT_LEAST_2_6
+                and self.act_bits > 8
+                and not is_debug_mode()
+                and not self.low_cpu_mem_usage
+                and "fp8" not in self.data_type
+                and "fp8" not in self.act_data_type
+        ):
+            logger.info(
+                "'enable_torch_compile' is set to `False` by default. "
+                "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
+            )
 
-    def set_device_map_in_blocks(self, device_map):
+        if self.act_bits <= 8 and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
+
+        if self.low_cpu_mem_usage and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
+
+        if is_debug_mode() and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+
+        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+
+        if is_optimum_habana_available():
+            logger.info("Optimum Habana is available, import htcore explicitly.")
+            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
+    def _set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
 
         Args:
