@@ -406,11 +406,11 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-    def _set_device_map_in_blocks(self, device_map):
+    def _set_device_map_in_blocks(self, device_map:Union[str, dict, None]) -> None:
         """Sets the device map for specific blocks in the model.
 
         Args:
-            device_map (Union[str, dict]): A mapping of module names to devices.
+            device_map (Union[str, dict, None]): A mapping of module names to devices.
                 If provided as a string, it should be in the format
                 "module_name:device,module_name:device". Devices can be integers
                 (GPU IDs) or strings (e.g., 'cpu', 'cuda:0').
