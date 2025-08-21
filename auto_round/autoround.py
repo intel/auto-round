@@ -293,7 +293,7 @@ class AutoRound(object):
         self.disable_opt_rtn = disable_opt_rtn
         self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
 
-        # Kv cache, this one does not affect tuning but will collect some infos during tuning
+        # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
@@ -312,6 +312,7 @@ class AutoRound(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
+        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
