@@ -167,7 +167,7 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[feature_multiply_checker_32],
+    feature_checks=[exllamav2_feature_check],
     alias=["auto_round", "torch"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -192,7 +192,7 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[feature_multiply_checker_32],
+    feature_checks=[exllamav2_feature_check],
     alias=["torch", "torch_zp"],
     requirements=["auto-round>=0.5.1"],
 )
