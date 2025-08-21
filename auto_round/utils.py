@@ -15,11 +15,11 @@
 import collections.abc
 import copy
 import gc
+import importlib
 import json
 import logging
 import os
 import re
-import subprocess
 import sys
 from collections import UserDict
 from enum import Enum
@@ -27,7 +27,6 @@ from functools import lru_cache
 from typing import Any, Tuple, Union
 
 import cpuinfo
-import psutil
 import torch
 import transformers
 from packaging import version
@@ -128,10 +127,6 @@ logger.propagate = False
 fh = logging.StreamHandler()
 fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
-
-import importlib
-
-import transformers
 
 
 class LazyImport(object):

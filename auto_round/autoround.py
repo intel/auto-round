@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import copy
 import os
 import re
@@ -177,6 +178,7 @@ class AutoRound(object):
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
         disable_opt_rtn: bool = False,
+        enable_alg_ext: bool = False,
         **kwargs,
     ):
         ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
@@ -225,6 +227,7 @@ class AutoRound(object):
             )
         model = _handle_moe_model(model)
         # self.model_orig_dtype = model.dtype
+        self.enable_alg_ext = enable_alg_ext
         self.device = detect_device(device)  ##must place after llm_load_model, because this one will convert auto
 
         ## important tuning hype-parameters
@@ -297,6 +300,12 @@ class AutoRound(object):
                 f"act_bits set in 'act_data_type' do not"
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
+
+        # kv cache
+        static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_dtype = static_kv_dtype
+        if self.static_kv_dtype is not None:
+            logger.warning("The static kv is experimental and currently has limited support.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -744,8 +753,13 @@ class AutoRound(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
-        model, _ = self.quantize()
+        if self.static_kv_dtype is not None:
+            from auto_round.experimental.kv_cache import kvcache_quant_context
 
+            with kvcache_quant_context(self.model, static_kv_dtype=self.static_kv_dtype):
+                model, _ = self.quantize()
+        else:
+            model, _ = self.quantize()
         # Save the quantized model in the specified format_list
         folders = []
         for format in format_list:
@@ -1336,7 +1350,6 @@ class AutoRound(object):
                         add_hook_to_module(m, hook, True)
                 else:
                     block = block.to(self.device)
-
                 input_ids = self.get_block_outputs(
                     block,
                     input_ids,
@@ -2566,10 +2579,35 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        if self.enable_torch_compile:
-            quant_block = compile_func(self.quantize_block, device)
+
+        if (
+            self.act_bits > 8
+            and self.sym
+            and self.enable_alg_ext
+            and self.super_group_size is None
+            and self.data_type.startswith("int")
+        ):
+            try:
+                from auto_round.alg_ext import quantize_block_ext
+
+                AutoRound.quantize_block_ext = quantize_block_ext
+                quantize_block = self.quantize_block_ext  ##must use self.quantize_block_ext
+                if self.bits > 2:
+                    logger.warning(
+                        "algorithm extension has only undergone limited validation on INT2; use with caution."
+                    )
+                else:
+                    logger.info("using algorithm extension for quantization.")
+            except (ImportError, ModuleNotFoundError):
+                quantize_block = self.quantize_block
+                if self.enable_torch_compile:
+                    quantize_block = compile_func(quantize_block, device)
+                else:
+                    quantize_block = quantize_block
         else:
-            quant_block = self.quantize_block
+            quantize_block = self.quantize_block
+            if self.enable_torch_compile:
+                quantize_block = compile_func(quantize_block, device)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
@@ -2590,7 +2628,7 @@ class AutoRound(object):
             if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                 m = m.to(device)
 
-            q_input, input_ids = quant_block(
+            q_input, input_ids = quantize_block(
                 m,
                 input_ids,
                 input_others,
