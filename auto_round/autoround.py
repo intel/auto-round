@@ -213,8 +213,10 @@ class AutoRound(object):
             logger.warning(f"Unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
         if device is not None and "," in str(device):
-            raise ValueError("API does not support explicit set multiple devices,"
-                " please set CUDA_VISIBLE_DEVICES yourself and use `device=auto` instead")
+            raise ValueError(
+                "API does not support explicit set multiple devices,"
+                " please set CUDA_VISIBLE_DEVICES yourself and use `device=auto` instead"
+            )
 
         if not disable_deterministic_algorithms:
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
@@ -368,17 +370,17 @@ class AutoRound(object):
             "super_group_size",
         ]
 
-    def _adjust_torch_compile(self, enable_torch_compile:bool) -> None:
+    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
         self.enable_torch_compile = enable_torch_compile
         if (
-                not self.enable_torch_compile
-                and TORCH_VERSION_AT_LEAST_2_6
-                and self.act_bits > 8
-                and not is_debug_mode()
-                and not self.low_cpu_mem_usage
-                and "fp8" not in self.data_type
-                and "fp8" not in self.act_data_type
+            not self.enable_torch_compile
+            and TORCH_VERSION_AT_LEAST_2_6
+            and self.act_bits > 8
+            and not is_debug_mode()
+            and not self.low_cpu_mem_usage
+            and "fp8" not in self.data_type
+            and "fp8" not in self.act_data_type
         ):
             logger.info(
                 "'enable_torch_compile' is set to `False` by default. "
@@ -406,7 +408,7 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-    def _set_device_map_in_blocks(self, device_map:Union[str, dict, None]) -> None:
+    def _set_device_map_in_blocks(self, device_map: Union[str, dict, None]) -> None:
         """Sets the device map for specific blocks in the model.
 
         Args:
