@@ -1343,7 +1343,7 @@ def set_fake_cuda_device_capability(func=None):
     return orig_func
 
 
-def is_fp8_model(model: torch.nn.Module) -> bool:
+def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
     if hasattr(model, "is_fp8"):
         return model.is_fp8
     for n, m in model.named_modules():
@@ -1447,7 +1447,7 @@ def llm_load_model(
                 )
 
     model = model.eval()
-    is_fp8_model(model)
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer, low_cpu_mem_usage
@@ -1573,7 +1573,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
-    is_fp8_model(model)
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -2237,11 +2237,15 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-    keys = get_quant_keys() + ["tmp_name"]
-    for key in keys:
-        setattr(new_layer, key, getattr(layer, key, None))
-    weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-    dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+    
+    if layer.__class__.__name__ == "CompressedLinear":
+        dq_weight = layer.compressor.decompress_module(layer)
+    else:
+        keys = get_quant_keys() + ["tmp_name"]
+        for key in keys:
+            setattr(new_layer, key, getattr(layer, key, None))
+        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 
@@ -2251,7 +2255,6 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
     """
-    breakpoint()
     for n, m in model.named_modules():
         if m.__class__.__name__ == "FP8Linear":
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
