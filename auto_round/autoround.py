@@ -2708,7 +2708,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":  #TODO fix act quantization later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
@@ -2918,7 +2918,7 @@ class AutoRound(object):
         return current_input_ids, current_input_others
 
 
-class AutoRoundOPT(AutoRound):
+class AutoRoundAdam(AutoRound):
     """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
 
     Args:
@@ -3012,7 +3012,7 @@ class AutoRoundOPT(AutoRound):
         disable_opt_rtn: bool = False,
         **kwargs,
     ):
-        super(AutoRoundOPT, self).__init__(
+        super(AutoRoundAdam, self).__init__(
             model=model,
             tokenizer=tokenizer,
             bits=bits,
@@ -3052,6 +3052,7 @@ class AutoRoundOPT(AutoRound):
             device_map=device_map,
             super_bits=super_bits,
             super_group_size=super_group_size,
+            disable_opt_rtn=disable_opt_rtn,
             **kwargs,
         )
 
@@ -3096,141 +3097,3 @@ class AutoRoundOPT(AutoRound):
         if is_optimum_habana_available():
             htcore.mark_step()
 
-
-class AutoRoundAdam(AutoRoundOPT):
-    """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
-    The default lr has been changed.
-
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
-        bits (int): Number of bits for quantization (default is 4).
-        group_size (int): Size of the quantization group (default is 128).
-        sym (str): Whether symmetric quantization to be used (default is True).
-        layer_config (dict): Configuration for weight quantization (default is None).
-        batch_size (int): Batch size for training (default is 8).
-        amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]):
-                The default dataset name (default is "NeelNanda/pile-10k").
-        enable_quanted_input (bool): Whether to use quantized input data (default is True).
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
-        data_type (str): The data type to be used (default is "int").
-        optimizer: string or object
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 16.
-        act_group_size (int): Group size for activation quantization. Default is None.
-        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
-        act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
-        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A list whose elements are list of block's layer names to be quantized.
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
-    Returns:
-        The quantized model.
-    """
-
-    def __init__(
-        self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = True,
-        layer_config=None,
-        batch_size: int = 8,
-        amp: bool = True,
-        device: Union[str, torch.device, int] = 0,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: int = 0,
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        sampler: str = "rand",
-        seed: int = 42,
-        nblocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        act_bits: int = 16,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_data_type: str = None,
-        act_dynamic: bool = True,
-        to_quant_block_names: Union[str, list] = None,
-        enable_norm_bias_tuning: bool = False,
-        enable_torch_compile: bool = False,
-        device_map: Union[str, dict] = None,
-        optimizer="AdamW",
-        super_bits: int = None,
-        super_group_size: int = None,
-        disable_opt_rtn: bool = False,
-        **kwargs,
-    ):
-        super(AutoRoundAdam, self).__init__(
-            model=model,
-            tokenizer=tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            layer_config=layer_config,
-            batch_size=batch_size,
-            amp=amp,
-            device=device,
-            lr_scheduler=lr_scheduler,
-            dataset=dataset,
-            enable_quanted_input=enable_quanted_input,
-            enable_minmax_tuning=enable_minmax_tuning,
-            lr=lr,
-            minmax_lr=minmax_lr,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            low_cpu_mem_usage=low_cpu_mem_usage,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            sampler=sampler,
-            seed=seed,
-            nblocks=nblocks,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            not_use_best_mse=not_use_best_mse,
-            dynamic_max_gap=dynamic_max_gap,
-            data_type=data_type,
-            scale_dtype=scale_dtype,
-            act_bits=act_bits,
-            act_group_size=act_group_size,
-            act_sym=act_sym,
-            act_data_type=act_data_type,
-            act_dynamic=act_dynamic,
-            to_quant_block_names=to_quant_block_names,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
-            enable_torch_compile=enable_torch_compile,
-            device_map=device_map,
-            optimizer=optimizer,
-            super_bits=super_bits,
-            super_group_size=super_group_size,
-            **kwargs,
-        )
