@@ -2331,7 +2331,7 @@ class AutoRound(object):
         """
         if hasattr(self.model, "is_fp8"):
             for n, m in block.named_modules():
-                if m.__class__.__name__ == "FP8Linear":
+                if hasattr(m, "is_fp8"):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
