@@ -33,7 +33,6 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
     def test_Adam(self):
         bits, group_size, sym = 4, 128, False
         from auto_round.utils import get_block_names

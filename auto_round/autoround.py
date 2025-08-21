@@ -2708,7 +2708,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq":  #TODO fix act quantization later
+        if format == "fake" or format == "qdq":  # TODO fix act quantization later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
@@ -3096,4 +3096,3 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
-
