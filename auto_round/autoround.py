@@ -1568,7 +1568,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if hasattr(m, "is_fp8"):
+                if hasattr(layer, "is_fp8"):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
