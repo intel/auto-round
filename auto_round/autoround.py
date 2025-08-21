@@ -1140,7 +1140,8 @@ class AutoRound(object):
         """
         m = get_module(self.model, name)
 
-        if m.__class__.__name__ == "FP8Linear":
+        # if m.__class__.__name__ == "FP8Linear":
+        if hasattr(m, "is_fp8_linear"):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
 
@@ -1532,7 +1533,7 @@ class AutoRound(object):
 
         if hasattr(self.model, "is_fp8"):
             for n, m in self.model.named_modules():
-                if m.__class__.__name__ == "FP8Linear":
+                if hasattr(m, "is_fp8_linear"):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
                     set_module(self.model, n, new_layer)
 
@@ -1580,7 +1581,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if layer.__class__.__name__ == "FP8Linear":
+                if hasattr(layer, "is_fp8"):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
@@ -2344,7 +2345,7 @@ class AutoRound(object):
         """
         if hasattr(self.model, "is_fp8"):
             for n, m in block.named_modules():
-                if m.__class__.__name__ == "FP8Linear":
+                if hasattr(m, "is_fp8_linear"):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 

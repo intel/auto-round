@@ -1343,6 +1343,20 @@ def set_fake_cuda_device_capability(func=None):
     return orig_func
 
 
+def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
+    if hasattr(model, "is_fp8"):
+        return model.is_fp8
+    for n, m in model.named_modules():
+        if isinstance(m, torch.nn.Linear) and str(m.weight.dtype).startswith("torch.float8"):
+            m.is_fp8_linear = True
+            if not hasattr(model, "is_fp8"):
+                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+                model.is_fp8 = True
+    if hasattr(model, "is_fp8"):
+        return True
+    return False
+
+
 def llm_load_model(
     pretrained_model_name_or_path,
     trust_remote_code=True,
@@ -1403,7 +1417,6 @@ def llm_load_model(
             )
         else:
             try:
-
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
@@ -1435,6 +1448,7 @@ def llm_load_model(
                 )
 
     model = model.eval()
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer, low_cpu_mem_usage
@@ -1516,12 +1530,25 @@ def mllm_load_model(
                 cls = getattr(transformers, architectures)
             else:
                 cls = AutoModelForCausalLM
-            model = cls.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=trust_remote_code,
-                torch_dtype=torch_dtype,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            try:
+                model = cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    torch_dtype=torch_dtype,
+                    device_map="auto" if use_auto_mapping else None,
+                )
+            except ValueError as e:
+                if "FP8 quantized" in str(e):
+                    orig_func = set_fake_cuda_device_capability()
+                    model = cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        trust_remote_code=trust_remote_code,
+                        torch_dtype=torch_dtype,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
+                    torch.cuda.get_device_capability = orig_func
+                    model.is_fp8 = True  ##tricky setting
+                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
@@ -1547,6 +1574,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -2208,12 +2236,18 @@ def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, b
 def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     """ """
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias:
+    if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
     keys = get_quant_keys() + ["tmp_name"]
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
-    dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale_inv, layer.block_size)
+
+    if layer.__class__.__name__ == "CompressedLinear":
+        dq_weight = layer.compressor.decompress_module(layer)
+    else:
+        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 
