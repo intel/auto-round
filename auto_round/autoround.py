@@ -340,8 +340,15 @@ class AutoRound(object):
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
 
-        self.check_configs()
+        self._check_configs()
+
         torch.set_printoptions(precision=3, sci_mode=True)
+
+        if is_optimum_habana_available():
+            logger.info("Optimum Habana is available, import htcore explicitly.")
+            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
         self.serialization_keys = [
             "bits",
             "group_size",
@@ -403,10 +410,6 @@ class AutoRound(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
-        if is_optimum_habana_available():
-            logger.info("Optimum Habana is available, import htcore explicitly.")
-            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
     def _set_device_map_in_blocks(self, device_map: Union[str, dict, None]) -> None:
         """Sets the device map for specific blocks in the model.
@@ -451,7 +454,8 @@ class AutoRound(object):
                         if key in name:
                             self._set_device_for_matching_module(name, device)
 
-    def _set_device_for_matching_module(self, name, device):
+    def _set_device_for_matching_module(self, name:str, device:str)->None:
+        """Sets the device for a module if it matches the given name."""
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
             logger.warning(
@@ -460,7 +464,7 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def _dq_check(self):
+    def _dq_check(self)->None:
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
@@ -469,56 +473,56 @@ class AutoRound(object):
                 gguf_config["super_group_size"] if self.super_group_size is None else self.super_group_size
             )
 
-    def check_configs(self):
+    def _check_configs(self) -> None:
         """Checks if the configurations are valid.
 
         Raises:
         ValueError, TypeError: If any of the configurations are invalid.
         """
         if not isinstance(self.model, torch.nn.Module):
-            raise TypeError("model must be an instance of torch.nn.Module")
+            raise TypeError("Model must be an instance of torch.nn.Module")
         if self.bits <= 0:
-            raise ValueError("bits must be positive")
+            raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
-            raise ValueError("act_bits must be positive")
+            raise ValueError("`act_bits` must be positive")
         if not (self.group_size == -1 or self.group_size >= 0):
-            raise ValueError("group_size must be -1 (per channel) or 0 (per-tensor) or a postivie integer")
+            raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
         if not (self.act_group_size == -1 or self.act_group_size >= 0):
-            raise ValueError("act_group_size must be -1 (per channel) or 0 (per-tensor) or a positive integer")
+            raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
         if self.batch_size <= 0:
-            raise ValueError("batch_size must be positive")
+            raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
-            raise ValueError("iters must be non-negative")
+            raise ValueError("`iters` must be non-negative")
         if self.seqlen <= 0:
-            raise ValueError("seqlen must be positive")
+            raise ValueError("`seqlen` must be positive")
         if self.nblocks <= 0:
-            raise ValueError("nblocks must be positive")
+            raise ValueError("`nblocks` must be positive")
         if self.gradient_accumulate_steps <= 0:
-            raise ValueError("gradient_accumulate_steps must be positive")
-        # assert self.tokenizer != None or self.dataloader != None
+            raise ValueError("`gradient_accumulate_steps` must be positive")
+
         if self.act_bits <= 8:
             logger.warning(
-                "activation quantization is an experimental feature with limited support and a complex API. "
+                "Activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
             )
 
         if is_mx_fp(self.data_type) and self.group_size != 32:
-            logger.warning("mx_fp should only support group_size of 32 in real deployment")
+            logger.warning("Dtype mx_fp should only support group_size of 32 in real deployment")
 
         if is_nv_fp(self.data_type) and (self.group_size != 16):
-            logger.warning("nv_fp should only support group_size of 16 in real deployment")
+            logger.warning("Dtype nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
                 logger.warning(
-                    f"reset batch_size to {self.nsamples} as nsamples({self.nsamples})"
+                    f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
                     f" is smaller than batch_size({self.batch_size})"
                 )
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
                 logger.warning(
-                    f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
+                    f"Reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size"
                 )
@@ -528,8 +532,9 @@ class AutoRound(object):
 
         self._dq_check()
 
-    def _check_compatibility(self):
-        ##check gguf and others
+    def _check_compatibility(self) -> None:
+        """Checks compatibility of the configurations and model."""
+        # Check gguf and others
         has_gguf = False
         if hasattr(self, "formats"):
             has_besides_gguf = False
@@ -539,7 +544,7 @@ class AutoRound(object):
                 elif format_ != "fake":
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
-                raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
+                raise ValueError("Gguf format is not compatible with other formats, please choose only one of them")
             if has_gguf and self.iters != 0 and self.bits != 3:
                 logger.warning(
                     "`iters=0` is recommended when exporting to GGUF format except for bits 3,"
@@ -547,7 +552,7 @@ class AutoRound(object):
                     " We are likely to release new algorithm for certain configurations in the future."
                 )
 
-        ##check group_size 32 for auto_round
+        # Check group_size 32 for auto_round
         if (
             self.data_type == "int"
             and hasattr(self, "formats")
@@ -569,7 +574,7 @@ class AutoRound(object):
         ):
             if self.model.config.max_position_embeddings < self.seqlen:
                 logger.warning(
-                    f"change sequence length to {self.model.config.max_position_embeddings} "
+                    f"Change sequence length to {self.model.config.max_position_embeddings} "
                     "due to the limitation of max_position_embeddings"
                 )
                 self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
@@ -577,16 +582,16 @@ class AutoRound(object):
         if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
             if self.tokenizer.model_max_length < self.seqlen:
                 logger.warning(
-                    f"change sequence length to {self.tokenizer.model_max_length} "
+                    f"Change sequence length to {self.tokenizer.model_max_length} "
                     "due to the limitation of model_max_length. "
                     "You can also try to increase the model_max_length to avoid this issue."
                 )
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
 
         if self.group_size == 0 and "fp8" not in self.data_type:
-            logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
+            logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
 
-    def parse_format_to_list(self, format: str) -> list:
+    def _parse_format_to_list(self, format: str) -> list:
         """Parses the format string into a list of formats.
 
         This method checks the requested format(s) against the model's
@@ -678,7 +683,7 @@ class AutoRound(object):
         if format == "fake":
             return format
         format = format.replace("q*_", f"q{self.bits}_")
-        # only support to export afp8/nv_fp
+        # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
                 if format == "llmcompressor":
@@ -751,7 +756,7 @@ class AutoRound(object):
         self.orig_output_dir = output_dir
 
         # check and update the format based on the current configuration
-        format_list = self.parse_format_to_list(format)
+        format_list = self._parse_format_to_list(format)
         self.formats = format_list
 
         # If multiple formats are specified, enforce inplace=False
