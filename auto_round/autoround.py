@@ -32,6 +32,10 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.special_model_handler import _handle_moe_model
+from auto_round.utils import set_amax_for_all_moe_layers
+from auto_round.sign_sgd import SignSGD
+from auto_round.utils import SUPPORTED_FORMATS
+from tqdm import tqdm
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -608,7 +612,6 @@ class AutoRound(object):
             _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
-        from auto_round.utils import SUPPORTED_FORMATS
 
         for format_ in formats:
             if format_ not in SUPPORTED_FORMATS:
@@ -905,7 +908,7 @@ class AutoRound(object):
         logger.info("start to compute imatrix for GGUF quantization.")
 
         # Load dataset
-        from .calib_dataset import get_dataloader
+        from auto_round.calib_dataset import get_dataloader
 
         if hasattr(self.model, "is_fp8"):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
@@ -983,8 +986,6 @@ class AutoRound(object):
 
                 accelerate.hooks.remove_hook_from_submodules(model)
             # Perform quantization using RTN
-            from tqdm import tqdm
-
             pbar = tqdm(all_to_quantized_module_names)
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
@@ -2203,12 +2204,14 @@ class AutoRound(object):
                 unwrapper_layer(self.model, wrapper_linear, layer_name, {})
             mv_module_from_gpu(layer, self.low_cpu_mem_usage)
 
+        lr = torch.tensor(self.lr)
+        minmax_lr = torch.tensor(self.minmax_lr)
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
             )
         else:
-            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -2407,6 +2410,7 @@ class AutoRound(object):
             if input_ids is not q_input:
                 clear_memory(input_ids)
             else:
+                pass
                 clear_memory()
             input_ids = q_input
 
@@ -2429,12 +2433,14 @@ class AutoRound(object):
                     else:
                         round_params.append(m.params[key])
 
+        lr = torch.tensor(self.lr)
+        minmax_lr = torch.tensor(self.minmax_lr)
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr,weight_decay=0
             )
         else:
-            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+            optimizer = self.optimizer(round_params, lr=lr,weight_decay=0)
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
@@ -2442,7 +2448,7 @@ class AutoRound(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {})  ## TODO Quant layer should change
+            unwrapper_block(block, {})  # TODO Quant layer should change
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             return output, output
 
@@ -2469,15 +2475,15 @@ class AutoRound(object):
         init_loss = None
         best_params = {}
         total_loss = 0
-
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
-                ##we assume the block input and output shape is same
+                # We assume the block input and output shape is same
                 if self.gradient_accumulate_steps != 1:
                     current_input_ids = [input_ids[i] for i in whole_indices]
                     num_elm = sum(id.numel() for id in current_input_ids)
+
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = AutoRound.sampling_inputs(
@@ -2491,7 +2497,6 @@ class AutoRound(object):
 
                 current_output = [output[x] for x in indices]
                 current_output = torch.cat(current_output, dim=self.batch_dim)
-
                 current_output = to_device(current_output, device)
 
                 output_q = block_forward(
@@ -2540,10 +2545,9 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_params)
+
         if self.enable_quanted_input:
             if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-                from auto_round.utils import set_amax_for_all_moe_layers
-
                 # enable moe experts act_max automatic generation for WrapperWALayer
                 set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
@@ -2850,8 +2854,6 @@ class AutoRound(object):
         Returns:
         The specified optimizer.
         """
-        from auto_round.sign_sgd import SignSGD
-
         return SignSGD
 
     def get_scaler(self):
