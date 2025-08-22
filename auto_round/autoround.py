@@ -1713,13 +1713,15 @@ class AutoRound(object):
                 tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
                 if tmp_bits != layer_config[n]["bits"]:
                     logger.warning(
-                        f"'data_type' do not match the specified 'bits' setting for {n}. Resetting 'bits' to {tmp_bits}."
+                        f"'data_type' do not match the specified 'bits' setting for {n}."
+                        f" Resetting 'bits' to {tmp_bits}."
                     )
                     layer_config[n]["bits"] = tmp_bits
                 tmp_act_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
                 if tmp_act_bits != layer_config[n]["act_bits"]:
                     logger.warning(
-                        f"'act_data_type' do not match the specified 'act_bits' setting for {n}. Resetting 'act_bits' to {tmp_act_bits}."
+                        f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
+                        f" Resetting 'act_bits' to {tmp_act_bits}."
                     )
                     layer_config[n]["act_bits"] = tmp_act_bits
             # If the layer is not in the config and not part of a quantization block,
