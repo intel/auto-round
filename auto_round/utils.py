@@ -35,7 +35,6 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 
-
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
 
@@ -171,6 +170,7 @@ class LazyImport(object):
 
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
+
 
 @torch._dynamo.disable()
 @lru_cache(None)
@@ -920,6 +920,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         torch.cuda.empty_cache()
     if torch.xpu.is_available():
         torch.xpu.empty_cache()
+
 
 @torch._dynamo.disable()
 def clear_memory(tensor=None):

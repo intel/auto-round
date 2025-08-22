@@ -31,14 +31,12 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.special_model_handler import _handle_moe_model
-from auto_round.utils import set_amax_for_all_moe_layers
 from auto_round.sign_sgd import SignSGD
-from auto_round.utils import SUPPORTED_FORMATS
-from tqdm import tqdm
+from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
+    SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
@@ -78,6 +76,7 @@ from auto_round.utils import (
     logger,
     mv_module_from_gpu,
     reset_params,
+    set_amax_for_all_moe_layers,
     set_module,
     to_device,
     to_dtype,
@@ -2437,10 +2436,10 @@ class AutoRound(object):
         minmax_lr = torch.tensor(self.minmax_lr)
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr,weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
             )
         else:
-            optimizer = self.optimizer(round_params, lr=lr,weight_decay=0)
+            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
