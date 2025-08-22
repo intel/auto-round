@@ -628,7 +628,8 @@ def tune(args):
     import time
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-    if args.act_bits <= 8 or infer_bits_by_data_type(args.act_data_type) <= 8 or eval_gguf_model:
+    tmp_act_bits = infer_bits_by_data_type(args.act_data_type)
+    if tmp_act_bits is not None and (args.act_bits <= 8 or tmp_act_bits <= 8 or eval_gguf_model):
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file

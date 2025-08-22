@@ -248,7 +248,7 @@ class AutoRound(object):
         self.bits = bits
         self.data_type = data_type
         tmp_bits = infer_bits_by_data_type(self.data_type)
-        if tmp_bits < 16 and tmp_bits != bits:
+        if tmp_bits is not None and tmp_bits < 16 and tmp_bits != bits:
             logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
         self.group_size = group_size
@@ -269,7 +269,7 @@ class AutoRound(object):
             else:
                 self.act_data_type = "float"
         tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
+        if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
             self.act_bits = tmp_act_bits
             logger.warning(
                 f"`act_data_type` do not"
@@ -1732,14 +1732,14 @@ class AutoRound(object):
                 layer_config[n]["fixed_by_user"] = True
                 # Check dtype and act_dtype
                 tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
-                if tmp_bits != layer_config[n]["bits"]:
+                if tmp_bits is not None and tmp_bits != layer_config[n]["bits"]:
                     logger.warning(
                         f"'data_type' do not match the specified 'bits' setting for {n}."
                         f" Resetting 'bits' to {tmp_bits}."
                     )
                     layer_config[n]["bits"] = tmp_bits
                 tmp_act_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
-                if tmp_act_bits != layer_config[n]["act_bits"]:
+                if tmp_act_bits is not None and tmp_act_bits != layer_config[n]["act_bits"]:
                     logger.warning(
                         f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
                         f" Resetting 'act_bits' to {tmp_act_bits}."

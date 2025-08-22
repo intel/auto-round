@@ -97,7 +97,7 @@ def infer_bits_by_data_type(data_type: str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
-    return 16
+    return None
 
 
 @lru_cache(None)
