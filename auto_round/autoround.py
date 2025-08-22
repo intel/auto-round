@@ -2409,7 +2409,6 @@ class AutoRound(object):
             if input_ids is not q_input:
                 clear_memory(input_ids)
             else:
-                pass
                 clear_memory()
             input_ids = q_input
 
@@ -2547,7 +2546,7 @@ class AutoRound(object):
 
         if self.enable_quanted_input:
             if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-                # enable moe experts act_max automatic generation for WrapperWALayer
+                # Enable moe experts act_max automatic generation for WrapperWALayer
                 set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
                 block = block.to(device)
@@ -2598,7 +2597,7 @@ class AutoRound(object):
         clear_memory()
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
-        ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         for i in range(len(input_ids)):
             input_ids[i] = input_ids[i].to(tmp_dtype)
