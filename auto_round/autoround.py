@@ -78,6 +78,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
+    check_and_mark_fp8_model
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -222,6 +223,26 @@ class AutoRound(object):
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
+        
+        # Model related
+        self.quantized = False
+        if isinstance(model, str):
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(
+                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
+            )
+        elif tokenizer is None and iters > 0:
+            raise ValueError("A tokenizer must be set for non-str model input")
+        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
+        if unsupport_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        check_and_mark_fp8_model(model)
+        model = _handle_moe_model(model)
+        self.model = model.eval()
+        self.tokenizer = tokenizer
+        self.shared_cache_keys = get_shared_keys(self.model)
 
         # Set quantization configs
         self.bits = bits
@@ -297,25 +318,6 @@ class AutoRound(object):
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
-
-        # Model related
-        self.quantized = False
-        if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(
-                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
-            )
-        elif tokenizer is None and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupport_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
-            )
-        model = _handle_moe_model(model)
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
 
         # Set device, must place after model loading
         self.device = detect_device(device)  # must place after llm_load_model, because this one will convert auto
