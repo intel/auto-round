@@ -87,6 +87,14 @@ if deepspeed_exists:
 
 
 def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
     if data_type is None:
         return 16
     for supported_dtype in SUPPORTED_DTYPES:
