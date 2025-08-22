@@ -22,6 +22,7 @@ import torch
 import transformers
 from tqdm import tqdm
 
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -31,7 +32,6 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
 from .utils import check_neq_config
 

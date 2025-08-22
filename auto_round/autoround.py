@@ -1312,7 +1312,8 @@ class AutoRound(object):
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
-                    " will significantly increase calibration time")
+                    " will significantly increase calibration time"
+                )
             all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
         else:
             all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
