@@ -249,17 +249,12 @@ class AutoRound(object):
         self.data_type = data_type
         tmp_bits = infer_bits_by_data_type(self.data_type)
         if tmp_bits < 16 and tmp_bits != bits:
-            logger.warning(
-                f"Bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
-            )
+            logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
         self.group_size = group_size
         self.sym = sym
         self.layer_config = {} if layer_config is None else layer_config
         self.to_quant_block_names = to_quant_block_names
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(model)
-            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
 
         # Activation
         self.act_group_size = act_group_size if act_group_size is not None else group_size
@@ -277,7 +272,7 @@ class AutoRound(object):
         if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
             self.act_bits = tmp_act_bits
             logger.warning(
-                f" 'act_data_type' do not"
+                f"`act_data_type` do not"
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
 
@@ -318,6 +313,28 @@ class AutoRound(object):
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
+
+        # Model related
+        self.quantized = False
+        if isinstance(model, str):
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(
+                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
+            )
+        elif tokenizer is None and iters > 0:
+            raise ValueError("A tokenizer must be set for non-str model input")
+        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
+        if unsupport_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        model = _handle_moe_model(model)
+        self.model = model.eval()
+        self.tokenizer = tokenizer
+        self.shared_cache_keys = get_shared_keys(self.model)
+        if not hasattr(self, "quant_block_list"):
+            all_blocks = get_block_names(model)
+            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
 
         # Set device, must place after model loading
         self.device = detect_device(device)  # must place after llm_load_model, because this one will convert auto
@@ -1292,7 +1309,7 @@ class AutoRound(object):
                     clear_memory()
                     cnt = 1
                 cnt += 1
-        ##convert remainning fp8
+        # Convert remaining fp8
         if hasattr(self.model, "is_fp8"):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
@@ -1484,10 +1501,13 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
+            accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         logger.info("caching done")
-        pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
+        if len(all_blocks) > 1:
+            pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
+        else:
+            pbar = None  # move the alg warning outside pbar
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -1529,7 +1549,6 @@ class AutoRound(object):
                     f"Expected exactly one packing format when 'is_packing_immediate' is True, "
                     f"but got {len(self.formats)} formats."
                 )
-        pbar.close()
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -1688,14 +1707,13 @@ class AutoRound(object):
                     layer_config[match_name] = val
             else:
                 tmp_m = get_module(self.model, name)
-                if not isinstance(tmp_m, torch.nn.Embedding):  ##TODO not good code style
+                if not isinstance(tmp_m, torch.nn.Embedding):  # TODO not good code style
                     raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
 
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
 
         # Iterate through all modules in the model
         for n, m in self.model.named_modules():
-
             # Skip unsupported types
             if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
                 continue
@@ -1705,12 +1723,28 @@ class AutoRound(object):
                 layer_config[n] = {}
                 for key in keys:
                     layer_config[n][key] = getattr(self, key)
+
             # If the layer is partially configured, fill in missing values
             elif n in layer_config.keys():
                 for key in keys:
                     if key not in layer_config[n].keys():
                         layer_config[n][key] = getattr(self, key)
                 layer_config[n]["fixed_by_user"] = True
+                # Check dtype and act_dtype
+                tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
+                if tmp_bits != layer_config[n]["bits"]:
+                    logger.warning(
+                        f"'data_type' do not match the specified 'bits' setting for {n}."
+                        f" Resetting 'bits' to {tmp_bits}."
+                    )
+                    layer_config[n]["bits"] = tmp_bits
+                tmp_act_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
+                if tmp_act_bits != layer_config[n]["act_bits"]:
+                    logger.warning(
+                        f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
+                        f" Resetting 'act_bits' to {tmp_act_bits}."
+                    )
+                    layer_config[n]["act_bits"] = tmp_act_bits
             # If the layer is not in the config and not part of a quantization block,
             # use default configuration and set specific values
             else:
@@ -2678,7 +2712,7 @@ class AutoRound(object):
                             PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description("Quantizing done")
         pbar.update(1)
-
+        pbar.close()
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
