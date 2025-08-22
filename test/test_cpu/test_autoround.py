@@ -3,6 +3,8 @@ import shutil
 import sys
 import unittest
 
+from auto_round.low_cpu_mem import get_module
+
 sys.path.insert(0, "../..")
 import torch
 from _test_helpers import model_infer
@@ -34,6 +36,14 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    def test_bits_setting(self):
+        layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
+        autoround = AutoRound("facebook/opt-125m", iters=2, seqlen=2, nsamples=1, layer_config=layer_config)
+        autoround.quantize()
+        module = get_module(autoround.model, "model.decoder.layers.0.self_attn.k_proj")
+        if module.bits != 8:
+            raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
     def test_remove_whole_block(self):
         layer_config = {
