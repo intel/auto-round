@@ -300,7 +300,7 @@ for output in outputs:
 ### Transformers (CPU/Intel GPU/Gaudi/CUDA)
 
 
-AutoRound support 10+ backends an automatically selects the best available backend based on the installed libraries and prompts the user to
+AutoRound support 10+ backends and automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
 **Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as

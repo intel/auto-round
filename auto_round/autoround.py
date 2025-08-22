@@ -40,6 +40,7 @@ from auto_round.utils import (
     CpuInfo,
     _gguf_args_check,
     block_forward,
+    check_and_mark_fp8_model,
     check_is_cpu,
     check_need_act_calibration,
     check_seqlen_compatible,
@@ -223,11 +224,31 @@ class AutoRound(object):
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
 
+        # Model related
+        self.quantized = False
+        if isinstance(model, str):
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(
+                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
+            )
+        elif tokenizer is None and iters > 0:
+            raise ValueError("A tokenizer must be set for non-str model input")
+        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
+        if unsupport_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        check_and_mark_fp8_model(model)
+        model = _handle_moe_model(model)
+        self.model = model.eval()
+        self.tokenizer = tokenizer
+        self.shared_cache_keys = get_shared_keys(self.model)
+
         # Set quantization configs
         self.bits = bits
         self.data_type = data_type
         tmp_bits = infer_bits_by_data_type(self.data_type)
-        if tmp_bits < 16 and tmp_bits != bits:
+        if tmp_bits is not None and tmp_bits < 16 and tmp_bits != bits:
             logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
         self.group_size = group_size
@@ -248,7 +269,7 @@ class AutoRound(object):
             else:
                 self.act_data_type = "float"
         tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
+        if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
             self.act_bits = tmp_act_bits
             logger.warning(
                 f"`act_data_type` do not"
@@ -1711,14 +1732,14 @@ class AutoRound(object):
                 layer_config[n]["fixed_by_user"] = True
                 # Check dtype and act_dtype
                 tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
-                if tmp_bits != layer_config[n]["bits"]:
+                if tmp_bits is not None and tmp_bits != layer_config[n]["bits"]:
                     logger.warning(
                         f"'data_type' do not match the specified 'bits' setting for {n}."
                         f" Resetting 'bits' to {tmp_bits}."
                     )
                     layer_config[n]["bits"] = tmp_bits
                 tmp_act_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
-                if tmp_act_bits != layer_config[n]["act_bits"]:
+                if tmp_act_bits is not None and tmp_act_bits != layer_config[n]["act_bits"]:
                     logger.warning(
                         f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
                         f" Resetting 'act_bits' to {tmp_act_bits}."

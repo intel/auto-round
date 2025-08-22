@@ -97,7 +97,7 @@ def infer_bits_by_data_type(data_type: str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
-    return 16
+    return None
 
 
 @lru_cache(None)
@@ -1116,15 +1116,15 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     return True, ""
 
 
-def get_device_and_parallelism(device):
+def get_device_and_parallelism(device: Union[str, torch.device, int]) -> Tuple[str, bool]:
     from auto_round.utils import detect_device
 
     if isinstance(device, str):
         devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
-        devices = str(device)
+        devices = [str(device)]
     else:
-        devices = device
+        devices = [device]
     if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
