@@ -1482,10 +1482,13 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
+            accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         logger.info("caching done")
-        pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
+        if len(all_blocks)>1:
+            pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
+        else:
+            pbar = None # move the alg warning outside pbar
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -1686,7 +1689,7 @@ class AutoRound(object):
                     layer_config[match_name] = val
             else:
                 tmp_m = get_module(self.model, name)
-                if not isinstance(tmp_m, torch.nn.Embedding):  ##TODO not good code style
+                if not isinstance(tmp_m, torch.nn.Embedding):  # TODO not good code style
                     raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
 
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
