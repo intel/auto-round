@@ -136,6 +136,7 @@ class TestGGUF(unittest.TestCase):
         # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai", eval_model_dtype="bf16")
         # self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.5)
         shutil.rmtree("./saved", ignore_errors=True)
+
     #
     # def test_q5_k(self):
     #     model_name = "Qwen/Qwen2.5-1.5B-Instruct"

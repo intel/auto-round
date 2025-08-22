@@ -1485,10 +1485,10 @@ class AutoRound(object):
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         logger.info("caching done")
-        if len(all_blocks)>1:
+        if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
-            pbar = None # move the alg warning outside pbar
+            pbar = None  # move the alg warning outside pbar
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
