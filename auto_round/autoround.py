@@ -40,6 +40,7 @@ from auto_round.utils import (
     CpuInfo,
     _gguf_args_check,
     block_forward,
+    check_and_mark_fp8_model,
     check_is_cpu,
     check_need_act_calibration,
     check_seqlen_compatible,
@@ -78,7 +79,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    check_and_mark_fp8_model
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -223,7 +223,7 @@ class AutoRound(object):
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
-        
+
         # Model related
         self.quantized = False
         if isinstance(model, str):

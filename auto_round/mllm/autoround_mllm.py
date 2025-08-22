@@ -18,14 +18,15 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
+from auto_round.autoround import AutoRound
+from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.mllm.mllm_dataset import get_mllm_dataloader
+from auto_round.mllm.template import Template, get_template
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SUPPORT_ONLY_TEXT_MODELS,
     _handle_special_model,
 )
-
-from auto_round.autoround import AutoRound
-from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.utils import (
     check_to_quantized,
     clear_memory,
@@ -38,8 +39,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
 )
-from auto_round.mllm.mllm_dataset import get_mllm_dataloader
-from auto_round.mllm.template import Template, get_template
 
 
 def _only_text_test(model, tokenizer, device, model_type):
