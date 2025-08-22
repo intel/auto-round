@@ -244,7 +244,7 @@ class AutoRound(object):
         if self.act_data_type is None:
             if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
                 self.act_data_type = data_type
-                logger.info(f"activation adopts {data_type}")
+                logger.info(f"Activation adopts {data_type}")
             else:
                 self.act_data_type = "float"
         tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
