@@ -37,6 +37,14 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_bits_setting(self):
+        layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
+        autoround = AutoRound("facebook/opt-125m", iters=2, seqlen=2, nsamples=1, layer_config=layer_config)
+        autoround.quantize()
+        module = get_module(autoround.model, "model.decoder.layers.0.self_attn.k_proj")
+        if module.bits != 8:
+            raise ValueError(f"Expected bits to be 8, but got {module.bits}")
+
     def test_remove_whole_block(self):
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 32},
@@ -60,13 +68,6 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_bits_setting(self):
-        layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
-        autoround = AutoRound("facebook/opt-125m", iters=2, seqlen=2, nsamples=1, layer_config=layer_config)
-        module = get_module(self.model, "model.decoder.layers.0.self_attn.k_proj")
-        if module.bits != 8:
-            raise ValueError(f"Expected bits to be 8, but got {module.bits}")
-        autoround.quantize()
 
     def test_consective_quant(self):
         bits, group_size, sym = 4, -1, False
