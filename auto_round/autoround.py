@@ -228,9 +228,7 @@ class AutoRound(object):
         self.data_type = data_type
         tmp_bits = infer_bits_by_data_type(self.data_type)
         if tmp_bits < 16 and tmp_bits != bits:
-            logger.warning(
-                f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
-            )
+            logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
         self.group_size = group_size
         self.sym = sym
@@ -1530,7 +1528,6 @@ class AutoRound(object):
                     f"Expected exactly one packing format when 'is_packing_immediate' is True, "
                     f"but got {len(self.formats)} formats."
                 )
-
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
