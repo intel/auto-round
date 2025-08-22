@@ -1403,8 +1403,9 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if (is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)) \
-                    or (any("auto_round:fp8" in format_ for format_ in self.formats)):
+                if (is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)) or (
+                    any("auto_round:fp8" in format_ for format_ in self.formats)
+                ):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for linears
