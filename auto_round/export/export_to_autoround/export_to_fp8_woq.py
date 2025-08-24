@@ -94,7 +94,7 @@ class WeightFP8ActFP8StaticQuantLinear(torch.nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        init_weight = torch.empty((out_features, in_features), dtype=dtype) if weight is None else weight
+        init_weight = torch.zeros((out_features, in_features), dtype=dtype) if weight is None else weight
         self.weight = torch.nn.Parameter(init_weight, requires_grad=False)
         self.dtype = dtype
         if bias is not None:
@@ -103,14 +103,14 @@ class WeightFP8ActFP8StaticQuantLinear(torch.nn.Module):
             self.bias = torch.nn.Parameter(bias, requires_grad=False)
         else:
             self.register_parameter("bias", None)
-        init_weight_scale = torch.empty((out_features, 1), dtype=dtype) if weight_scale is None else weight_scale
+        init_weight_scale = torch.empty((out_features), dtype=dtype) if weight_scale is None else weight_scale
         self.register_buffer("weight_scale", init_weight_scale.to(dtype))
 
         init_weight_zp = torch.zeros((out_features, 1), dtype=dtype) if weight_zp is None else weight_zp
         if weight_zp:
             self.register_buffer("weight_zp", init_weight_zp.to(dtype))
 
-        init_input_scale = torch.zeros((1, 1), dtype=dtype) if input_scale is None else input_scale
+        init_input_scale = torch.zeros((1,), dtype=dtype) if input_scale is None else input_scale
         self.register_buffer("input_scale", init_input_scale.to(dtype))
         self.pre_dequantized = False
 
@@ -132,7 +132,7 @@ class WeightFP8ActFP8StaticQuantLinear(torch.nn.Module):
         if self.pre_dequantized:
             return self.weight
         fp8_weight = self.weight
-        qdq_weight = fp8_weight.to(self.dtype) * self.weight_scale
+        qdq_weight = fp8_weight.to(self.dtype) * self.weight_scale.unsqueeze(1)
         return qdq_weight
 
     def pre_dequantize(self):
