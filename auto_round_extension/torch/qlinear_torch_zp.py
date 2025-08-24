@@ -72,7 +72,7 @@ class QuantLinear(nn.Module):
         # is performed by unpacking the weights and using torch.matmul
         if self.bits in [2, 4, 8]:
             self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32).unsqueeze(0)
-        elif self.bits == 3:
+        else:  ## bits == 3
             self.wf = torch.tensor(
                 [
                     [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 0],
@@ -125,7 +125,7 @@ class QuantLinear(nn.Module):
 
             intweight = intweight.t().contiguous().to(torch.int32)
             self.qweight = intweight.to("cpu")
-        elif self.bits == 3:
+        else:  ## bits == 3
             intweight = intweight.t().contiguous()
             intweight = intweight.cpu().numpy().astype(np.uint32)
             i = 0
@@ -159,46 +159,77 @@ class QuantLinear(nn.Module):
 
             self.qweight = qweight.cpu()
 
-        zeros = zeros.t().contiguous()
-        zeros -= 1
-        zeros = zeros.numpy().astype(np.uint32)
-        qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=torch.int32)
-        i = 0
-        col = 0
-        while col < qzeros.shape[1]:
+        if isinstance(zeros, torch.Tensor):
+            zeros = zeros.t().contiguous()
+            zeros -= 1
+            zeros = zeros.numpy().astype(np.uint32)
+            qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=torch.int32)
+            i = 0
+            col = 0
+            while col < qzeros.shape[1]:
+                if self.bits in [2, 4, 8]:
+                    packed_zeros = torch.tensor(zeros[:, i : i + (32 // self.bits)]).to(dtype=torch.int32)
+                    shifts = torch.arange(0, (32 // self.bits)) * self.bits
+                    shifted = packed_zeros << shifts
+                    qzeros[:, col] |= shifted.sum(dim=-1)
+                    i += 32 // self.bits
+                    col += 1
+                else:  ## bits == 3
+                    packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
+                    shifts = torch.arange(0, 10) * self.bits
+                    shifted = packed_zeros << shifts
+                    qzeros[:, col] = shifted.sum(dim=-1)
+                    i += 10
+                    qzeros[:, col] |= zeros[:, i] << 30
+                    col += 1
+                    qzeros[:, col] |= (zeros[:, i] >> 2) & 1
+                    i += 1
+                    packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
+                    shifts = torch.arange(0, 10) * self.bits + 1
+                    shifted = packed_zeros << shifts
+                    qzeros[:, col] |= shifted.sum(dim=-1)
+                    i += 10
+                    qzeros[:, col] |= zeros[:, i] << 31
+                    col += 1
+                    qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
+                    i += 1
+                    packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
+                    shifts = torch.arange(0, 10) * self.bits + 2
+                    shifted = packed_zeros << shifts
+                    qzeros[:, col] |= shifted.sum(dim=-1)
+                    i += 10
+                    col += 1
+            self.qzeros = qzeros.cpu()
+        else:
+            zeros -= 1
             if self.bits in [2, 4, 8]:
-                packed_zeros = torch.tensor(zeros[:, i : i + (32 // self.bits)]).to(dtype=torch.int32)
-                shifts = torch.arange(0, (32 // self.bits)) * self.bits
-                shifted = packed_zeros << shifts
-                qzeros[:, col] |= shifted.sum(dim=-1)
-                i += 32 // self.bits
-                col += 1
-            elif self.bits == 3:
-                packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
-                shifts = torch.arange(0, 10) * self.bits
-                shifted = packed_zeros << shifts
-                qzeros[:, col] = shifted.sum(dim=-1)
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 30
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 2) & 1
-                i += 1
-                packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
-                shifts = torch.arange(0, 10) * self.bits + 1
-                shifted = packed_zeros << shifts
-                qzeros[:, col] |= shifted.sum(dim=-1)
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 31
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
-                i += 1
-                packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
-                shifts = torch.arange(0, 10) * self.bits + 2
-                shifted = packed_zeros << shifts
-                qzeros[:, col] |= shifted.sum(dim=-1)
-                i += 10
-                col += 1
-        self.qzeros = qzeros.cpu()
+                shape = scales_t.shape
+                value = 0
+                for j in range(0, (32 // self.bits)):
+                    value |= zeros << (self.bits * j)
+                qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
+                qzeros = qzeros.astype(np.int32)
+                self.qzeros = torch.from_numpy(qzeros)
+            else:  ## bits == 3
+                shape = scales_t.shape[0], scales_t.shape[1] // 32 * self.bits
+                qzeros = torch.zeros(shape, dtype=torch.int32)
+                zero_val = zeros
+                total_cols = shape[1]
+                # Precompute shifts for 3-bit packing
+                shifts0 = torch.arange(0, 10, dtype=torch.int32) * self.bits
+                shifts1 = shifts0 + 1
+                shifts2 = shifts0 + 2
+                # Compute packed pattern parts
+                part0 = (zero_val << shifts0).sum().to(torch.int32) | (zero_val << 30)
+                part1 = (zero_val << shifts1).sum().to(torch.int32) | (zero_val << 31) | ((zero_val >> 2) & 1)
+                part2 = (zero_val << shifts2).sum().to(torch.int32) | ((zero_val >> 1) & 0x3)
+                pattern = torch.tensor([part0, part1, part2], dtype=torch.int32)
+                # Tile pattern across all columns
+                repeats = (total_cols + 2) // 3
+                full_row = pattern.repeat(repeats)[:total_cols]
+                # Broadcast across rows
+                qzeros[:] = full_row.unsqueeze(0)
+                self.qzeros = qzeros.cpu()
 
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
@@ -244,7 +275,7 @@ class QuantLinear(nn.Module):
             weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
             weight = weight & 0x7
             weight = torch.cat([weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1)
-
+        zeros += 1
         weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         if hasattr(self, "g_idx"):
             num_itr = self.g_idx.shape[0] // x.shape[-1]

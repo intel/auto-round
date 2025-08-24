@@ -45,7 +45,7 @@ def ggml_quant(
 
     data = data.to(torch.float32).to(device)
     scale = scale.to(device) if scale is not None else scale
-    zp = zp.to(device) if zp is not None else zp
+    zp = zp.to(device) if zp is not None and isinstance(zp, torch.Tensor) else zp
     wmin = wmin.to(device) if wmin is not None else wmin
     d_scale = d_scale.to(device) if d_scale is not None else d_scale
     d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
@@ -62,7 +62,7 @@ def ggml_quant(
         device = "cpu"
         blocks = blocks.to(device)
         scale = scale.to(device) if scale is not None else scale
-        zp = zp.to(device) if zp is not None else zp
+        zp = zp.to(device) if zp is not None and isinstance(zp, torch.Tensor) else zp
         wmin = wmin.to(device) if wmin is not None else wmin
         d_scale = d_scale.to(device) if d_scale is not None else d_scale
         d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin

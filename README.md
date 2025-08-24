@@ -28,6 +28,9 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## 🆕 What's New
 
+[2025/08] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
+ for some accuracy results. 
+
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
   all bits other than 3 bits. Example
   models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
@@ -297,7 +300,7 @@ for output in outputs:
 ### Transformers (CPU/Intel GPU/Gaudi/CUDA)
 
 
-AutoRound support 10+ backends an automatically selects the best available backend based on the installed libraries and prompts the user to
+AutoRound support 10+ backends and automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
 **Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as

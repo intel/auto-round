@@ -35,9 +35,12 @@ class TestWeightOnlyLinear:
         origin_shape = weight.shape
         weight = weight.reshape(-1, group_size)
         qdq, scale, zp = quant_tensor_sym(weight, -1)
+        if isinstance(zp, int | float):
+            zp = torch.full_like(scale, zp)
         int_weight = qdq.div(scale).add(zp).clamp(0, 2 ** (bits) - 1).to(torch.int32).reshape(origin_shape)
         scale = scale.reshape(origin_shape[0], -1)
-        zp = zp.reshape(origin_shape[0], -1).to(torch.int32).clamp(0, 2 ** (bits) - 1)
+        if isinstance(zp, torch.Tensor):
+            zp = zp.reshape(origin_shape[0], -1).to(torch.int32).clamp(0, 2 ** (bits) - 1)
         module_with_legacy_pack = WeightOnlyLinear(
             in_features=m.in_features,
             out_features=m.out_features,
@@ -50,7 +53,9 @@ class TestWeightOnlyLinear:
             compression_dtype=compression_dtype,
             use_legacy_pack=True,
         )
-        module_with_legacy_pack.pack(int_weight.clone(), scale.clone(), zp.clone(), m.bias)
+        module_with_legacy_pack.pack(
+            int_weight.clone(), scale.clone(), zp.clone() if isinstance(zp, torch.Tensor) else zp, m.bias
+        )
         module_with_new_pack = WeightOnlyLinear(
             in_features=m.in_features,
             out_features=m.out_features,
@@ -63,7 +68,9 @@ class TestWeightOnlyLinear:
             compression_dtype=compression_dtype,
             use_legacy_pack=False,
         )
-        module_with_new_pack.pack(int_weight.clone(), scale.clone(), zp.clone(), m.bias)
+        module_with_new_pack.pack(
+            int_weight.clone(), scale.clone(), zp.clone() if isinstance(zp, torch.Tensor) else zp, m.bias
+        )
 
         assert torch.equal(module_with_new_pack.qweight, module_with_legacy_pack.qweight)
 

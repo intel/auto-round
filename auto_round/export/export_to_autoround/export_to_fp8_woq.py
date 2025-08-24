@@ -33,23 +33,7 @@ from auto_round.utils import (
     set_module,
 )
 
-
-def check_neq_config(config, data_type, bits, group_size, sym):
-    """
-    Checks if the provided configuration parameters are not equal to the values in the config dictionary.
-
-    Args:
-        config (dict): A dictionary containing the configuration parameters.
-        data_type (str): The expected data type.
-        bits (int): The expected number of bits.
-        group_size (int): The expected group size.
-        sym (bool): The expected symmetry flag.
-
-    Returns:
-        list: A list of strings indicating which configuration parameters do not match.
-    """
-    expected_config = {"data_type": data_type, "bits": bits, "group_size": group_size, "sym": sym}
-    return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
+from .utils import check_neq_config
 
 
 class FP8WOQLinear(torch.nn.Module):
@@ -216,7 +200,11 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        q_weight = weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+        q_weight = (
+            weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+            if isinstance(zp, torch.Tensor)
+            else zp
+        )
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device)
     q_weight = torch.clamp(q_weight, info.min, info.max)
@@ -289,6 +277,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
                 bits=quantization_config["bits"],
+                act_bits=quantization_config["act_bits"],
                 group_size=quantization_config["group_size"],
                 sym=quantization_config["sym"],
             )

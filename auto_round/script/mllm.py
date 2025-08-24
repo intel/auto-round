@@ -25,8 +25,6 @@ from auto_round.utils import (
     set_cuda_visible_devices,
 )
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -331,13 +329,6 @@ def tune(args):
 
     import torch
 
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        print(
-            "'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "
-            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter."
-        )
-
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -378,7 +369,7 @@ def tune(args):
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
-        layer_config[name] = {"bits": 16}
+        layer_config[name] = {"bits": 16, "act_bits": 16}
     if len(not_quantize_layer_names) > 0:
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
@@ -417,7 +408,7 @@ def tune(args):
                     )
                     break
     if args.quant_lm_head:
-        layer_config[lm_head_layer_name] = {"bits": args.bits}
+        layer_config[lm_head_layer_name] = {"bits": args.bits, "act_bits": args.act_bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
@@ -484,6 +475,7 @@ def tune(args):
         model_kwargs=model_kwargs,
         data_type=args.data_type,
         disable_opt_rtn=args.disable_opt_rtn,
+        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
     )
 
     model_name = args.model.rstrip("/")
