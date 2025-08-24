@@ -85,7 +85,6 @@ if deepspeed_exists:
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
-SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 DTYPE_INFO_MAPPING = {
     "nv_fp4": {"bits": 4, "group_size": 16, "sym": True},
     "mx_fp4": {"bits": 4, "group_size": 32, "sym": True},
