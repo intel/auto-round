@@ -85,6 +85,13 @@ if deepspeed_exists:
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
+DTYPE_INFO_MAPPING = {
+    "nv_fp4": {"bits": 4, "group_size": 16, "sym": True},
+    "mx_fp4": {"bits": 4, "group_size": 32, "sym": True},
+    "mx_fp8": {"bits": 8, "group_size": 32, "sym": True},
+}
+
 
 def infer_bits_by_data_type(data_type: str):
     if data_type is None:
@@ -2502,3 +2509,78 @@ def is_mx_fp(backend):
 
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
+
+
+######################################### Recipe related codes ####################################
+def create_mp_block(block, mp_layers, mp_dtype):
+    from auto_round.wrapper import WrapperLinear
+
+    for layer_name in mp_layers:
+        layer = get_module(block, layer_name)
+        layer.data_type, layer.bits, layer.sym = mp_dtype["data_type"], mp_dtype["bits"], mp_dtype["sym"]
+        layer.act_data_type, layer.act_bits, layer.act_sym = (
+            mp_dtype["act_data_type"],
+            mp_dtype["act_bits"],
+            mp_dtype["act_sym"],
+        )
+    for n, m in block.named_modules():
+        if isinstance(m, SUPPORTED_LAYER_TYPES):
+            if check_to_quantized(m):
+                new_m = WrapperLinear(
+                    m,
+                    enable_minmax_tuning=False,
+                    enable_norm_bias_tuning=False,
+                    device=m.weight.device,
+                )
+                set_module(block, n, new_m)
+    if is_optimum_habana_available():
+        htcore.mark_step()
+    return block
+
+
+def recover_mp_block(block, mp_layers, raw_dtype):
+    from auto_round.wrapper import WrapperLinear
+
+    for n, m in block.named_modules():
+        if isinstance(m, WrapperLinear):
+            set_module(block, n, m.orig_layer)
+    for layer_name in mp_layers:
+        layer = get_module(block, layer_name)
+        layer.data_type, layer.bits, layer.sym = raw_dtype["data_type"], raw_dtype["bits"], raw_dtype["sym"]
+        layer.act_data_type, layer.act_bits, layer.act_sym = (
+            raw_dtype["act_data_type"],
+            raw_dtype["act_bits"],
+            raw_dtype["act_sym"],
+        )
+    if is_optimum_habana_available():
+        htcore.mark_step()
+    return block
+
+
+def get_numel(block, hp_layers):
+    numel = 0
+    for layer_name in hp_layers:
+        layer = get_module(block, layer_name)
+        numel += layer.weight.numel()
+    return numel
+
+
+def get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio=2.0):
+    # Get ranks for numel_list and
+    numel_ranks = [sorted(numel_list).index(x) for x in numel_list]
+    loss_ranks = [(sorted(loss_list).index(x)) * loss_numel_ratio for x in loss_list]
+
+    # Calculate rank sums
+    rank_sums = [x + y for x, y in zip(numel_ranks, loss_ranks)]
+    logger.debug(f"numel_ranks: {numel_ranks}")
+    logger.debug(f"loss_ranks: {loss_ranks}")
+    logger.debug(f"rank sum: {rank_sums}")
+
+    # Find the index of the smallest rank sum
+    best_index = rank_sums.index(min(rank_sums))
+
+    # Return the best combination
+    return combination_list[best_index]
+
+
+###############################################################################################
