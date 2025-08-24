@@ -3006,6 +3006,7 @@ class AutoRound(object):
         recipe_layer_config.update(self.recipe_results)
         self._dump_average_bits(layer_config=recipe_layer_config)
         self.recipe_mode = False
+        recipe_layer_config.pop("lm_head")  # lm_head is not included in the recipe
         return recipe_layer_config
 
     def _generate_block_recipe(self, block, input_ids, input_others):
