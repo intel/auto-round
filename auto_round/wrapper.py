@@ -91,6 +91,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer = orig_layer
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
+        self.extra_repr_org = orig_layer.extra_repr
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_round_tuning = enable_round_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
@@ -450,6 +451,9 @@ class WrapperLinear(torch.nn.Module):
 
         output = self.orig_forward(x, weight_q, bias).to(self.output_device)
         return output
+
+    def extra_repr(self):
+        return f"{self.extra_repr_org()}, weight_type={self.data_type}, act_data_type={self.act_data_type}"
 
 
 class WrapperWALayer(torch.nn.Module):
