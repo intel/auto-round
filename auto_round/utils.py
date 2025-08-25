@@ -34,7 +34,6 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
-from auto_round.wrapper import WrapperLinear
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -2547,6 +2546,8 @@ def create_mp_block(block, mp_layers, mp_dtype):
     Returns:
         torch.nn.Module: mixed precision block.
     """
+    from auto_round.wrapper import WrapperLinear
+
     for layer_name in mp_layers:
         layer = get_module(block, layer_name)
         layer.data_type, layer.bits, layer.sym = mp_dtype["data_type"], mp_dtype["bits"], mp_dtype["sym"]
@@ -2581,6 +2582,8 @@ def recover_mp_block(block, mp_layers, raw_dtype):
     Returns:
         torch.nn.Module: recovered block.
     """
+    from auto_round.wrapper import WrapperLinear
+
     for n, m in block.named_modules():
         if isinstance(m, WrapperLinear):
             set_module(block, n, m.orig_layer)
