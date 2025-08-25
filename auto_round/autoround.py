@@ -515,7 +515,7 @@ class AutoRound(object):
             raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
             raise ValueError("`iters` must be non-negative")
-        if self.seqlen <= 0:
+        if self.seqlen <= 0 :
             raise ValueError("`seqlen` must be positive")
         if self.nblocks <= 0:
             raise ValueError("`nblocks` must be positive")
@@ -536,10 +536,11 @@ class AutoRound(object):
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
-                logger.warning(
-                    f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
-                    f" is smaller than batch_size({self.batch_size})"
-                )
+                if self.iters > 0: # GGUF should log this warning, but we don't know the format here
+                    logger.warning(
+                        f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
+                        f" is smaller than batch_size({self.batch_size})"
+                    )
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
