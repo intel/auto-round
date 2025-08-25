@@ -172,6 +172,8 @@ auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
 
+@torch._dynamo.disable()
+@lru_cache(None)
 def is_optimum_habana_available():
     from transformers.utils.import_utils import is_optimum_available
 
@@ -920,6 +922,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         torch.xpu.empty_cache()
 
 
+@torch._dynamo.disable()
 def clear_memory(tensor=None):
     if is_hpu_supported():
         # hpu does not have empty_cache
@@ -1117,8 +1120,6 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
 
 def get_device_and_parallelism(device: Union[str, torch.device, int]) -> Tuple[str, bool]:
-    from auto_round.utils import detect_device
-
     if isinstance(device, str):
         devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
@@ -2457,33 +2458,34 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         model = get_module(model, moe_name)
     # Handle input quantizers of experts that are not calibrated
     for name, sub_module in model.named_modules():
-        if is_moe(sub_module) and hasattr(sub_module, "experts"):
-            expert_linear_names = get_expert_linear_names(sub_module)
-            for linear_name in expert_linear_names:
-                if isinstance(sub_module.experts, collections.abc.Iterable):
-                    # For other MoE models (like Mixtral) with iterable experts
-                    try:
-                        set_amax_for_uncalibrated_experts(
-                            [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
-                        )
-                    except AttributeError as e:
-                        # Provide more helpful debugging information
-                        expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
-                        raise AttributeError(
-                            f"Failed to access attribute '{linear_name}' on experts. "
-                            f"MoE module type: {type(sub_module).__name__}, "
-                            f"Expert types: {expert_types}, "
-                            f"Expected linear names: {expert_linear_names}. "
-                            f"This suggests the get_expert_linear_names function may need "
-                            f"to be updated for this model architecture. "
-                            f"Original error: {e}"
-                        ) from e
-                else:
-                    # Unsupported MoE model structure
-                    raise NotImplementedError(
-                        f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
-                        f"Please file an issue or add support for this model architecture."
+        if not (is_moe(sub_module) and hasattr(sub_module, "experts")):
+            continue
+        expert_linear_names = get_expert_linear_names(sub_module)
+        for linear_name in expert_linear_names:
+            if isinstance(sub_module.experts, collections.abc.Iterable):
+                # For other MoE models (like Mixtral) with iterable experts
+                try:
+                    set_amax_for_uncalibrated_experts(
+                        [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
                     )
+                except AttributeError as e:
+                    # Provide more helpful debugging information
+                    expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                    raise AttributeError(
+                        f"Failed to access attribute '{linear_name}' on experts. "
+                        f"MoE module type: {type(sub_module).__name__}, "
+                        f"Expert types: {expert_types}, "
+                        f"Expected linear names: {expert_linear_names}. "
+                        f"This suggests the get_expert_linear_names function may need "
+                        f"to be updated for this model architecture. "
+                        f"Original error: {e}"
+                    ) from e
+            else:
+                # Unsupported MoE model structure
+                raise NotImplementedError(
+                    f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
+                    f"Please file an issue or add support for this model architecture."
+                )
 
 
 class BackendDataType(str, Enum):
