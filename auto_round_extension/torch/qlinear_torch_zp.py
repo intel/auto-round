@@ -39,7 +39,7 @@ class QuantLinear(nn.Module):
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2 ** self.bits - 1
+        self.maxq = 2**self.bits - 1
 
         self.register_buffer(
             "qweight",
@@ -130,12 +130,11 @@ class QuantLinear(nn.Module):
             zeros = zeros.t().contiguous().to(device)
             zeros -= 1
             # zeros = zeros.numpy().astype(np.uint32)
-            qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device,
-                                 dtype=torch.int32)
+            qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device, dtype=torch.int32)
             i = 0
             col = 0
             while col < qzeros.shape[1]:
-                packed_zeros = torch.tensor(zeros[:, i: i + (32 // self.bits)]).to(dtype=torch.int32)
+                packed_zeros = torch.tensor(zeros[:, i : i + (32 // self.bits)]).to(dtype=torch.int32)
                 shifts = torch.arange(0, (32 // self.bits)) * self.bits
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -183,10 +182,11 @@ class QuantLinear(nn.Module):
         intweight = intweight.t().contiguous().to(torch.int32)
         i = 0
         row = 0
-        qweight = torch.zeros((intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=torch.int32,
-                              device=device)
+        qweight = torch.zeros(
+            (intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=torch.int32, device=device
+        )
         while row < qweight.shape[0]:
-            packed_weight = (intweight[i: i + 10]).to(dtype=torch.int32).t()
+            packed_weight = (intweight[i : i + 10]).to(dtype=torch.int32).t()
             shifts = torch.arange(0, 10).to(device) * self.bits
             shifted = packed_weight << shifts
             qweight[row] |= shifted.sum(dim=-1)
@@ -195,7 +195,7 @@ class QuantLinear(nn.Module):
             row += 1
             qweight[row] |= (intweight[i] >> 2) & 1
             i += 1
-            packed_weight = (intweight[i: i + 10]).to(dtype=torch.int32).t()
+            packed_weight = (intweight[i : i + 10]).to(dtype=torch.int32).t()
             shifts = torch.arange(0, 10).to(device) * self.bits + 1
             shifted = packed_weight << shifts
             qweight[row] |= shifted.sum(dim=-1)
@@ -204,7 +204,7 @@ class QuantLinear(nn.Module):
             row += 1
             qweight[row] |= (intweight[i] >> 1) & 0x3
             i += 1
-            packed_weight = (intweight[i: i + 10]).to(dtype=torch.int32).t()
+            packed_weight = (intweight[i : i + 10]).to(dtype=torch.int32).t()
             shifts = torch.arange(0, 10).to(device) * self.bits + 2
             shifted = packed_weight << shifts
             qweight[row] |= shifted.sum(dim=-1)
@@ -221,7 +221,7 @@ class QuantLinear(nn.Module):
             i = 0
             col = 0
             while col < qzeros.shape[1]:
-                packed_zeros = torch.tensor(zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits
                 shifted = packed_zeros << shifts
                 qzeros[:, col] = shifted.sum(dim=-1)
@@ -230,7 +230,7 @@ class QuantLinear(nn.Module):
                 col += 1
                 qzeros[:, col] |= (zeros[:, i] >> 2) & 1
                 i += 1
-                packed_zeros = torch.tensor(zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits + 1
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -239,7 +239,7 @@ class QuantLinear(nn.Module):
                 col += 1
                 qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
                 i += 1
-                packed_zeros = torch.tensor(zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits + 2
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -327,10 +327,10 @@ class QuantLinear(nn.Module):
             num_dim = self.g_idx.shape[0] // num_itr
             weights = []
             for i in range(num_itr):
-                scale_i = self.scales[:, i * num_dim: (i + 1) * num_dim]
-                weight_i = weight[:, i * num_dim: (i + 1) * num_dim]
-                zeros_i = zeros[:, i * num_dim: (i + 1) * num_dim]
-                g_idx_i = self.g_idx[i * num_dim: (i + 1) * num_dim]
+                scale_i = self.scales[:, i * num_dim : (i + 1) * num_dim]
+                weight_i = weight[:, i * num_dim : (i + 1) * num_dim]
+                zeros_i = zeros[:, i * num_dim : (i + 1) * num_dim]
+                g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
                 weights.append(scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()]))
             weights = torch.cat(weights, dim=1)
         else:

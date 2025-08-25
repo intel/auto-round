@@ -129,12 +129,13 @@ class QuantLinear(nn.Module):
             zeros = zeros.t().contiguous()
             zeros -= 1
             # zeros = zeros.numpy().astype(np.uint32)
-            qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=self.device,
-                                 dtype=torch.int32)
+            qzeros = torch.zeros(
+                (zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=self.device, dtype=torch.int32
+            )
             i = 0
             col = 0
             while col < qzeros.shape[1]:
-                packed_zeros = torch.tensor(zeros[:, i: i + (32 // self.bits)]).to(dtype=torch.int32)
+                packed_zeros = torch.tensor(zeros[:, i : i + (32 // self.bits)]).to(dtype=torch.int32)
                 shifts = torch.arange(0, (32 // self.bits)) * self.bits
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -183,10 +184,11 @@ class QuantLinear(nn.Module):
         intweight = intweight.t().contiguous().to(torch.int32)
         i = 0
         row = 0
-        qweight = torch.zeros((intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=torch.int32,
-                              device=device)
+        qweight = torch.zeros(
+            (intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=torch.int32, device=device
+        )
         while row < qweight.shape[0]:
-            packed_weight = (intweight[i: i + 10]).to(dtype=torch.int32).t()
+            packed_weight = (intweight[i : i + 10]).to(dtype=torch.int32).t()
             shifts = torch.arange(0, 10).to(device) * self.bits
             shifted = packed_weight << shifts
             qweight[row] |= shifted.sum(dim=-1)
@@ -195,7 +197,7 @@ class QuantLinear(nn.Module):
             row += 1
             qweight[row] |= (intweight[i] >> 2) & 1
             i += 1
-            packed_weight = (intweight[i: i + 10]).to(dtype=torch.int32).t()
+            packed_weight = (intweight[i : i + 10]).to(dtype=torch.int32).t()
             shifts = torch.arange(0, 10).to(device) * self.bits + 1
             shifted = packed_weight << shifts
             qweight[row] |= shifted.sum(dim=-1)
@@ -204,7 +206,7 @@ class QuantLinear(nn.Module):
             row += 1
             qweight[row] |= (intweight[i] >> 1) & 0x3
             i += 1
-            packed_weight = (intweight[i: i + 10]).to(dtype=torch.int32).t()
+            packed_weight = (intweight[i : i + 10]).to(dtype=torch.int32).t()
             shifts = torch.arange(0, 10).to(device) * self.bits + 2
             shifted = packed_weight << shifts
             qweight[row] |= shifted.sum(dim=-1)
@@ -221,7 +223,7 @@ class QuantLinear(nn.Module):
             i = 0
             col = 0
             while col < qzeros.shape[1]:
-                packed_zeros =(zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = (zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits
                 shifted = packed_zeros << shifts
                 qzeros[:, col] = shifted.sum(dim=-1)
@@ -274,7 +276,6 @@ class QuantLinear(nn.Module):
             return self.pack_3bits(linear, scales, zeros, g_idx)
         else:
             raise ValueError("Only 2,3,4,8 bits are supported.")
-
 
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
