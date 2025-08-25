@@ -8,7 +8,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundAdam, AutoRoundOPT
+from auto_round import AutoRoundAdam
 
 
 class LLMDataLoader:
@@ -32,21 +32,6 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-
-    def test_default(self):
-        bits, group_size, sym = 4, 128, False
-        autoround = AutoRoundOPT(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=10,
-            dataset=self.llm_dataloader,
-            to_quant_block_names=None,
-        )
-        autoround.quantize()
 
     def test_Adam(self):
         bits, group_size, sym = 4, 128, False

@@ -2,3 +2,5 @@ addict
 modelscope
 gguf
 torchvision
+compressed-tensors
+parameterized

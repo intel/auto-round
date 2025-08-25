@@ -12,18 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections.abc
 import copy
 import gc
+import importlib
+import json
 import logging
 import os
 import re
-import subprocess
 import sys
 from collections import UserDict
+from enum import Enum
 from functools import lru_cache
+from typing import Any, Tuple, Union
 
 import cpuinfo
-import psutil
 import torch
 import transformers
 from packaging import version
@@ -33,6 +36,11 @@ from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFI
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
+
+
+deepspeed_exists = False
+if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
+    deepspeed_exists = True
 
 
 class SupportedFormats:
@@ -48,6 +56,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
+            "llmcompressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -63,16 +72,18 @@ class SupportedFormats:
         return self._support_list[key]
 
 
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 SUPPORTED_FORMATS = SupportedFormats()
-
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 ##changed to str as it relies triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
-
 # INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
 
-SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
+if deepspeed_exists:
+    from deepspeed.module_inject import LinearAllreduce, LinearLayer
+
+    SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
 
 def infer_bits_by_data_type(data_type: str):
@@ -86,7 +97,7 @@ def infer_bits_by_data_type(data_type: str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
-    return 16
+    return None
 
 
 @lru_cache(None)
@@ -123,10 +134,6 @@ logger.propagate = False
 fh = logging.StreamHandler()
 fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
-
-import importlib
-
-import transformers
 
 
 class LazyImport(object):
@@ -165,6 +172,8 @@ auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
 
+@torch._dynamo.disable()
+@lru_cache(None)
 def is_optimum_habana_available():
     from transformers.utils.import_utils import is_optimum_available
 
@@ -913,6 +922,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         torch.xpu.empty_cache()
 
 
+@torch._dynamo.disable()
 def clear_memory(tensor=None):
     if is_hpu_supported():
         # hpu does not have empty_cache
@@ -1109,15 +1119,13 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     return True, ""
 
 
-def get_device_and_parallelism(device):
-    from auto_round.utils import detect_device
-
+def get_device_and_parallelism(device: Union[str, torch.device, int]) -> Tuple[str, bool]:
     if isinstance(device, str):
         devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
-        devices = str(device)
+        devices = [str(device)]
     else:
-        devices = device
+        devices = [device]
     if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
@@ -1172,7 +1180,35 @@ def get_layer_features(layer):
         return layer.weight.shape[0], layer.weight.shape[1]
     elif isinstance(layer, torch.nn.Embedding):
         return layer.num_embeddings, layer.embedding_dim
+    elif deepspeed_exists and isinstance(layer, (LinearLayer, LinearAllreduce)):
+        return layer.weight.shape[1], layer.weight.shape[0]  # (input_dim, output_dim)
     return None, None  # Unsupported layer type
+
+
+def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
+    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
+        ModelBase,
+        get_model_architecture,
+    )
+
+    is_mistral_format = False
+
+    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    if isinstance(hparams, dict):
+        tmp_model_type = hparams["model_type"]
+    else:
+        tmp_model_type = hparams.model_type
+    if "mistral" == tmp_model_type:
+        is_mistral_format = True
+        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    if not is_mistral_format:
+        model_class = get_model_architecture(hparams, model_type)
+    elif model_type == ModelType.MMPROJ:
+        assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
+        model_class = "PixtralModel"
+    else:
+        model_class = "MistralModel"
+    return model_class
 
 
 def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
@@ -1211,8 +1247,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                 model_path = args_or_ar.model.name_or_path
             if not os.path.isdir(model_path):
                 model_path = download_hf_model(model_path)
-            hparams = ModelBase.load_hparams(model_path)
-            model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
+            model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
             if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
                 logger.warning(
                     f"Current version of gguf export does not support for {model_architecture},"
@@ -1223,18 +1258,17 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             if "convert_hf_to_gguf" in str(e):
                 logger.warning("GGUF export dependency file is not found, download from github.")
                 redownload = True
-            else:
-                raise ImportError(
-                    "Please use the latest gguf-py, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-                )
+        except AttributeError as e:
+            raise ImportError(
+                "Please use the latest gguf-py, you can use the following command to install it:\n"
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+            )
         download_convert_file(redownload)
 
         try:
             from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
                 ModelBase,
                 ModelType,
-                get_model_architecture,
             )
         except ImportError as e:
             raise ImportError(
@@ -1247,13 +1281,12 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             model_path = args_or_ar.model.name_or_path
         if not os.path.isdir(model_path):
             model_path = download_hf_model(model_path)
-        hparams = ModelBase.load_hparams(model_path)
-        model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
+        model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
         if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
 
-    pattern = re.compile("q\d_k")
+    pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
     for format in GGUF_CONFIG:
@@ -1274,7 +1307,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                 if not hasattr(args_or_ar, k):
                     continue
                 if k == "data_type":
-                    if re.search("q\d_1", format) and len(formats) > 1:
+                    if re.search(r"q\d_1", format) and len(formats) > 1:
                         v = "int"
                 if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
                     k = "asym"
@@ -1318,6 +1351,20 @@ def set_fake_cuda_device_capability(func=None):
     orig_func = torch.cuda.get_device_capability
     torch.cuda.get_device_capability = fake_cuda
     return orig_func
+
+
+def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
+    if hasattr(model, "is_fp8"):
+        return model.is_fp8
+    for n, m in model.named_modules():
+        if isinstance(m, torch.nn.Linear) and str(m.weight.dtype).startswith("torch.float8"):
+            m.is_fp8_linear = True
+            if not hasattr(model, "is_fp8"):
+                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+                model.is_fp8 = True
+    if hasattr(model, "is_fp8"):
+        return True
+    return False
 
 
 def llm_load_model(
@@ -1411,6 +1458,7 @@ def llm_load_model(
                 )
 
     model = model.eval()
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer, low_cpu_mem_usage
@@ -1425,7 +1473,6 @@ def mllm_load_model(
     model_dtype=None,
     **kwargs,
 ):
-    import json
 
     import transformers
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
@@ -1493,12 +1540,25 @@ def mllm_load_model(
                 cls = getattr(transformers, architectures)
             else:
                 cls = AutoModelForCausalLM
-            model = cls.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=trust_remote_code,
-                torch_dtype=torch_dtype,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            try:
+                model = cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    torch_dtype=torch_dtype,
+                    device_map="auto" if use_auto_mapping else None,
+                )
+            except ValueError as e:
+                if "FP8 quantized" in str(e):
+                    orig_func = set_fake_cuda_device_capability()
+                    model = cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        trust_remote_code=trust_remote_code,
+                        torch_dtype=torch_dtype,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
+                    torch.cuda.get_device_capability = orig_func
+                    model.is_fp8 = True  ##tricky setting
+                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
@@ -1524,6 +1584,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -1717,7 +1778,7 @@ def _use_more_bits(i_layer: int, n_layer: int):
 
 
 def _get_digital_in_layer_name(layer_name):
-    pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    pattern = re.compile(r"([a-zA-Z]+\.){1,}(\d+)")
     res = re.search(pattern, layer_name)
     if res:
         return int(res[2])
@@ -2106,11 +2167,54 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     return False
 
 
-def dequant_block_fp8_weight(weight, weight_scale, block_size):
+def pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, int, int]:
+    """Pads a matrix to make its dimensions multiples of block_size."""
+    M, N = weight.shape[-2:]
+    block_size_m, block_size_n = block_size
+    pad_M = (block_size_m - M % block_size_m) % block_size_m
+    pad_N = (block_size_n - N % block_size_n) % block_size_n
+
+    if pad_M == 0 and pad_N == 0:
+        return weight, M, N  # No padding needed
+    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
+    return padded_weight, M, N  # Return original dimensions for unpadding
+
+
+def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
+    """Removes padding from the matrix to restore its original shape."""
+    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
+        return weight
+    if keep_first_dim:
+        return weight[:, :original_M, :original_N]
+    else:
+        return weight[:original_M, :original_N]
+
+
+def pad_block_fp8_weight_naive(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
+) -> Tuple[torch.Tensor, int, int]:
+
+    assert len(block_size) == 2
+
+    block_size_m, block_size_n = block_size
+    weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
+
+    weight, orig_M, orig_N = pad_weight(weight, block_size)
+    M, N = weight.shape[-2:]
+
+    assert weight_scale_m == M // block_size_m
+    assert weight_scale_n == N // block_size_n
+
+    return weight, orig_M, orig_N
+
+
+def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
     assert len(block_size) == 2
+
+    weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
     weight_shape_len = len(weight.shape)
 
@@ -2123,14 +2227,18 @@ def dequant_block_fp8_weight(weight, weight_scale, block_size):
         weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
         dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
         dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+        keep_first_dim = False
     elif weight_shape_len == 3:
         fd, weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
         dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
         dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+        keep_first_dim = True
     else:
         raise ValueError("Only support original weight shape is either 2 or 3")
+
+    dequant_weight = unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
 
     return dequant_weight
 
@@ -2138,12 +2246,18 @@ def dequant_block_fp8_weight(weight, weight_scale, block_size):
 def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     """ """
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias:
+    if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
     keys = get_quant_keys() + ["tmp_name"]
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
-    dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale_inv, layer.block_size)
+
+    if layer.__class__.__name__ == "CompressedLinear":
+        dq_weight = layer.compressor.decompress_module(layer)
+    else:
+        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 
@@ -2225,3 +2339,168 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
 
         model_path = snapshot_download(repo_id)
         return model_path
+
+
+def is_moe(module: torch.nn.Module) -> bool:
+    """Returns whether the module is an MOE layer."""
+    return any(
+        key in type(module).__name__.lower()
+        for key in [
+            "MixtralSparseMoeBlock".lower(),
+            "ArcticMoE".lower(),
+            "DbrxFFN".lower(),
+            "MoELayer".lower(),
+            "PhimoeSparseMoeBlock".lower(),
+            "DeepseekMoE".lower(),
+            "DeepseekV2MoE".lower(),
+            "DeepseekV3MoE".lower(),
+            "Qwen2MoeSparseMoeBlock".lower(),
+            "Qwen3MoeSparseMoeBlock".lower(),
+        ]
+    )
+
+
+# please refer to https://github.com/NVIDIA/TensorRT-Model-Optimizer
+# /blob/4c611e47a60084a86e1de7e48690a692a1b8170c/modelopt/torch/export/layer_utils.py#L976
+def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
+    """Get the list of linear names for the experts."""
+
+    def module_match_name_list(module, name_list):
+        """Check if the module name matches any of the names in the list.
+
+        e.g. module_match_name_list(QuantQwen3MoeSparseMoeBlock, ['Qwen3MoeSparseMoeBlock']) -> True
+
+        """
+        return any(name.lower() in type(module).__name__.lower() for name in name_list)
+
+    if module_match_name_list(
+        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+    ):
+        return ["gate_proj", "down_proj", "up_proj"]
+    elif module_match_name_list(module, ["MixtralMoeSparseMoeBlock"]):
+        return ["linear_fc1", "linear_fc2"]
+    elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
+        return ["w1_linear", "w2_linear", "v1_linear"]
+    else:
+        # assuing w1, w2, w3 by default
+        return ["w1", "w2", "w3"]
+
+
+def get_nested_attr(module, attr_name: str):
+    """Recursively get nested attribute (e.g., 'orig_layer.act_max')."""
+    attrs = attr_name.split(".")
+    for attr in attrs:
+        if not hasattr(module, attr):
+            return None
+        module = getattr(module, attr)
+    return module
+
+
+def set_nested_attr(module, attr_name: str, value):
+    """Recursively set nested attribute (e.g., 'orig_layer.act_max' = value)."""
+    attrs = attr_name.split(".")
+    for attr in attrs[:-1]:
+        if not hasattr(module, attr):
+            raise AttributeError(f"{module} has no attribute '{attr}'")
+        module = getattr(module, attr)
+    setattr(module, attrs[-1], value)
+
+
+def set_amax_for_uncalibrated_experts(
+    experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"
+):
+    """Set amax of uncalibrated experts to a given value or the max of existing amax value from other experts.
+
+    Args:
+        experts: a list of experts
+        set_amax_value: set amax value to the given value.
+                        If None, set amax value to the max of existing amax value from other experts.
+
+    Returns:
+        uncalibrated_experts: a list of uncalibrated experts
+    """
+    uncalibrated_experts = []
+    # get the max amax value from all experts
+    if set_amax_value is None:
+        amax_values = [
+            get_nested_attr(module, attr_name) for module in experts if get_nested_attr(module, attr_name) is not None
+        ]
+        if len(amax_values) == 0:
+            return uncalibrated_experts
+        # Flatten all tensors to 1D before concatenation
+        flat_values = [t.reshape(-1) for t in amax_values]
+        all_values = torch.cat(flat_values)
+        set_amax_value = torch.max(all_values)
+
+    for module in experts:
+        if get_nested_attr(module, attr_name) is None:
+            logger.warning_once(
+                "Missing amax value of expert layers."
+                "This typically occurs in MoE models when certain experts are not activated during calibration. "
+                "Consider increasing your calibration dataset size to ensure all experts are exercised."
+            )
+            # Use float32 dtype explicitly to ensure we create a floating point tensor
+            if not isinstance(set_amax_value, torch.Tensor):
+                set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
+            set_nested_attr(module, attr_name, set_amax_value)
+            # uncalibrated_experts.append(module)
+
+
+# Please refer to: https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/
+# 4c611e47a60084a86e1de7e48690a692a1b8170c/modelopt/torch/export/unified_export_hf.py#L195-L207
+def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_name="act_max"):
+    if layer_name is not None:
+        parts = layer_name.split(".")
+        if "experts" not in parts:
+            raise ValueError
+        idx = parts.index("experts")
+        moe_name = ".".join(parts[:idx])
+        model = get_module(model, moe_name)
+    # Handle input quantizers of experts that are not calibrated
+    for name, sub_module in model.named_modules():
+        if not (is_moe(sub_module) and hasattr(sub_module, "experts")):
+            continue
+        expert_linear_names = get_expert_linear_names(sub_module)
+        for linear_name in expert_linear_names:
+            if isinstance(sub_module.experts, collections.abc.Iterable):
+                # For other MoE models (like Mixtral) with iterable experts
+                try:
+                    set_amax_for_uncalibrated_experts(
+                        [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
+                    )
+                except AttributeError as e:
+                    # Provide more helpful debugging information
+                    expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                    raise AttributeError(
+                        f"Failed to access attribute '{linear_name}' on experts. "
+                        f"MoE module type: {type(sub_module).__name__}, "
+                        f"Expert types: {expert_types}, "
+                        f"Expected linear names: {expert_linear_names}. "
+                        f"This suggests the get_expert_linear_names function may need "
+                        f"to be updated for this model architecture. "
+                        f"Original error: {e}"
+                    ) from e
+            else:
+                # Unsupported MoE model structure
+                raise NotImplementedError(
+                    f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
+                    f"Please file an issue or add support for this model architecture."
+                )
+
+
+class BackendDataType(str, Enum):
+    STANDARD_FP8 = "fp8"
+    MX_FP = "mx_fp"
+    NV_FP = "nv_fp"
+
+
+def is_standard_fp(backend):
+    return BackendDataType.STANDARD_FP8 in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
+
+
+def is_mx_fp(backend):
+    return BackendDataType.MX_FP in backend
+
+
+def is_nv_fp(backend):
+    return BackendDataType.NV_FP in backend

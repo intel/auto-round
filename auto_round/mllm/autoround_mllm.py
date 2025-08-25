@@ -18,15 +18,17 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
+from auto_round.autoround import AutoRound
+from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.mllm.mllm_dataset import get_mllm_dataloader
+from auto_round.mllm.template import Template, get_template
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SUPPORT_ONLY_TEXT_MODELS,
     _handle_special_model,
 )
-
-from ..autoround import AutoRound
-from ..low_cpu_mem.utils import get_layers_before_block
-from ..utils import (
+from auto_round.utils import (
+    check_to_quantized,
     clear_memory,
     detect_device,
     extract_block_names_to_str,
@@ -37,8 +39,6 @@ from ..utils import (
     to_device,
     to_dtype,
 )
-from .mllm_dataset import get_mllm_dataloader
-from .template import Template, get_template
 
 
 def _only_text_test(model, tokenizer, device, model_type):
@@ -128,8 +128,8 @@ class AutoRoundMLLM(AutoRound):
 
     def __init__(
         self,
-        model: torch.nn.Module,
-        tokenizer,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
         processor=None,
         image_processor=None,
         bits: int = 4,
@@ -138,7 +138,7 @@ class AutoRoundMLLM(AutoRound):
         layer_config: dict = None,
         batch_size: int = 8,
         amp: bool = True,
-        device: str = None,
+        device: Union[str, torch.device, int] = 0,
         lr_scheduler=None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
         extra_data_dir: str = None,
@@ -172,6 +172,9 @@ class AutoRoundMLLM(AutoRound):
         model_kwargs: dict = None,
         **kwargs,
     ):
+        if isinstance(model, str):
+            model, processor, tokenizer, image_processor = mllm_load_model(model, device=device)
+
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -460,6 +463,6 @@ class AutoRoundMLLM(AutoRound):
 
         for layer_name in layer_config.keys():
             for vlm_key in VISUAL_KEYS:
-                if vlm_key in layer_name:
+                if vlm_key in layer_name and check_to_quantized(layer_config[layer_name]):
                     return True
         return quant_nontext_module

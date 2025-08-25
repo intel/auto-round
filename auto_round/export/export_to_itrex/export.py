@@ -40,7 +40,7 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
         output: int weight.
     """
     scale = scale.to(device)
-    if zp is not None:
+    if zp is not None and isinstance(zp, torch.Tensor):
         zp = zp.to(device)
     if group_size == -1:
         return torch.round(weight / scale) if zp is None else torch.round(weight / scale + zp)
@@ -213,6 +213,8 @@ def pack_model(
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
         scale, zp = m.scale, m.zp
+        if isinstance(zp, int | float):
+            zp = torch.full_like(scale, zp)
         convert_dtype = scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
@@ -220,10 +222,10 @@ def pack_model(
         else:
             if not inplace:
                 scale = scale.clone()
-                zp = zp.clone()
+                zp = zp.clone() if isinstance(zp, torch.Tensor) else zp
             else:
                 scale = scale.to(dtype=convert_dtype)
-                zp = zp.to(dtype=torch.int32)
+                zp = zp.to(dtype=torch.int32) if isinstance(zp, torch.Tensor) else zp
         if isinstance(m, transformers.pytorch_utils.Conv1D):
             fp_weight = fp_weight.t_().contiguous()
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)

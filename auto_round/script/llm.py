@@ -42,8 +42,6 @@ from auto_round.utils import (
     str2bool,
 )
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -201,6 +199,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         self.add_argument("--enable_torch_compile", action="store_true", help="whether to enable torch compile")
+
+        self.add_argument("--enable_alg_ext", action="store_true", help="whether to enable probably better algorithm")
 
         self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
 
@@ -432,11 +432,6 @@ def tune(args):
 
     import torch
 
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
-        #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
-
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
@@ -492,11 +487,16 @@ def tune(args):
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
-        layer_config[name] = {"bits": 16}
+        layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
     if len(not_quantize_layer_names) > 0:
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
-            if "auto_round" not in format and "fake" not in format and "awq" not in format:
+            if (
+                "auto_round" not in format
+                and "fake" not in format
+                and "awq" not in format
+                and "llmcompressor" not in format
+            ):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
@@ -517,7 +517,7 @@ def tune(args):
                     break
 
     if args.quant_lm_head:
-        layer_config[lm_head_layer_name] = {"bits": args.bits}
+        layer_config[lm_head_layer_name] = {"bits": args.bits, "act_bits": args.act_bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
@@ -597,6 +597,8 @@ def tune(args):
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
+        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
+        enable_alg_ext=args.enable_alg_ext,
         **mllm_kwargs,
     )
 
@@ -657,7 +659,8 @@ def tune(args):
     import time
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-    if args.act_bits <= 8 or infer_bits_by_data_type(args.act_data_type) <= 8 or eval_gguf_model:
+    tmp_act_bits = infer_bits_by_data_type(args.act_data_type)
+    if tmp_act_bits is not None and (args.act_bits <= 8 or tmp_act_bits <= 8 or eval_gguf_model):
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
@@ -745,6 +748,8 @@ def tune(args):
                 args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
+            if "llama" in args.model.lower():
+                model_args += ",add_bos_token=True"
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs
             )

@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from functools import partial
 from itertools import chain
 from pathlib import Path
@@ -47,6 +48,7 @@ import requests
 import torch
 from transformers import AutoConfig
 
+from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
 from auto_round.utils import LazyImport, clean_module_parameter, get_module, logger
 
@@ -62,7 +64,14 @@ def download_convert_file(redownload=False):
     gguf_export_dir = os.path.dirname(__file__)
     if redownload is False and FILE_NAME in os.listdir(gguf_export_dir):
         return
-    response = requests.get(CONVERT_URL)
+    try:
+        response = requests.get(CONVERT_URL)
+    except:
+        logger.error(
+            f"Fail to download the dependency file, please try downloading the convert_hf_to_gguf.py"
+            f" from https://github.com/ggml-org/llama.cpp manually and move it to {gguf_export_dir}."
+        )
+        sys.exit(-1)
     with open(os.path.join(gguf_export_dir, FILE_NAME), "w") as f:
         f.write(response.text)
 
@@ -74,7 +83,6 @@ def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usag
     model_instance.layer_config = layer_config
     model_instance.low_cpu_mem_usage = _need_low_cpu_mem(low_cpu_mem_usage)
 
-    model_instance.load_hparams = load_hparams
     model_instance.get_tensors = partial(get_tensors, model_instance)
     model_instance.prepare_tensors = partial(prepare_tensors, model_instance)
 
@@ -101,7 +109,7 @@ def get_moe_name(cls, name, new_name):
         "FFN_DOWN_EXP": ["down_proj", "w2", "linear_1"],
         "FFN_UP_EXP": ["up_proj", "w3", "linear_v"],
     }
-    nums = re.findall("\d+", name)
+    nums = re.findall(r"\d+", name)
     if len(nums) != 2:
         return name
     name_tmp = name[: -len(".weight")].replace(f".{nums[1]}", "")
@@ -120,7 +128,46 @@ def get_moe_name(cls, name, new_name):
 
 
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
+    if not hasattr(cls.model, "tensor_name_list"):
+        cls.model.tensor_name_list = []
+
+    reverse_key_mapping = {v: k for k, v in cls.model._checkpoint_conversion_mapping.items()}
     for name, tensor in cls.model.named_parameters():
+        if name not in cls.model.tensor_name_list:
+            cls.model.tensor_name_list.append(name)
+            for pattern, replacement in reverse_key_mapping.items():
+                replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+                replacement = re.sub(r"\(.*\)", "", replacement)
+                key, n_replace = re.subn(pattern, replacement, name)
+                cls.model.tensor_name_list.append(key)
+                if n_replace > 0:
+                    break
+        yield name, tensor
+
+    extra_tensor = {}
+    if hasattr(cls.model, "name_or_path"):
+        from safetensors import safe_open
+
+        from auto_round.export.export_to_gguf.special_handle import get_tensor_from_file
+        from auto_round.utils import download_hf_model
+
+        dir_path = cls.model.name_or_path
+        if not os.path.isdir(dir_path):
+            dir_path = download_hf_model(dir_path)
+        INDEX_FILE = "model.safetensors.index.json"
+        if INDEX_FILE in os.listdir(dir_path):
+            with open(os.path.join(dir_path, INDEX_FILE)) as f:
+                tensor_index = json.load(f)
+            for tensor_name in tensor_index["weight_map"]:
+                if tensor_name not in cls.model.tensor_name_list:
+                    extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
+        else:
+            f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
+            for tensor_name in f.keys():
+                if tensor_name not in cls.model.tensor_name_list:
+                    extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
+
+    for name, tensor in extra_tensor.items():
         yield name, tensor
 
 
@@ -349,6 +396,14 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, name)
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
+            skip = False
+            for tensor_info in cls.gguf_writer.tensors:
+                if new_name in tensor_info:
+                    print("new_name already add to gguf_writer, skip")
+                    skip = True
+                    break
+            if skip:
+                continue
             data = data_torch.squeeze().cpu().numpy()
 
             # if data ends up empty, it means data_torch was a scalar tensor -> restore
@@ -506,7 +561,7 @@ def prepare_tensors(cls):
                     data = _quant_data_with_args(data_torch, data_qtype, **attr_list)
 
                 # for MOE model
-                elif len(data_torch.shape) == 3 and len(re.findall("\d+", name)) == 2:
+                elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", name)) == 2:
                     new_data = []
                     for idx, arr in enumerate(data_torch):
                         arr_name = name.split(".")
@@ -545,22 +600,3 @@ def prepare_tensors(cls):
                 if cls.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
                     continue
                 clean_module_parameter(module, weight_name.split(".")[-1])
-
-
-def load_hparams(dir_model: Path):
-    try:
-        # for security reason, we don't allow loading remote code by default
-        # if a model need remote code, we will fallback to config.json
-        config = AutoConfig.from_pretrained(dir_model, trust_remote_code=False).to_dict()
-    except Exception as e:
-        logger.warning(f"Failed to load model config from {dir_model}: {e}")
-        logger.warning("Trying to load config.json instead")
-        with open(dir_model / "config.json", "r", encoding="utf-8") as f:
-            config = json.load(f)
-    if "llm_config" in config:
-        # rename for InternVL
-        config["text_config"] = config["llm_config"]
-    if "thinker_config" in config:
-        # rename for Qwen2.5-Omni
-        config["text_config"] = config["thinker_config"]["text_config"]
-    return config

@@ -41,16 +41,9 @@ class TestAutoRoundMLLM(unittest.TestCase):
         return super().tearDownClass()
 
     def test_tune(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
-        )
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
-            model,
-            tokenizer,
-            processor=processor,
+            model=self.model_name,
             bits=bits,
             group_size=group_size,
             nsamples=1,
