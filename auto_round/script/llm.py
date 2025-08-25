@@ -637,8 +637,8 @@ def tune(args):
     if tmp_act_bits is not None:
         act_bits = tmp_act_bits
     else:
-        act_bits =  args.act_bits
-    if  act_bits <= 8 or eval_gguf_model:
+        act_bits = args.act_bits
+    if act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
