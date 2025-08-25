@@ -1397,7 +1397,11 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                if (
+                    hasattr(self, "formats")
+                    and is_nv_fp(self.act_data_type)
+                    and any("nv_fp" in format_ for format_ in self.formats)
+                ):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for linears
@@ -3022,14 +3026,19 @@ class AutoRound(object):
 
         # fetch mix-precision recipe configuration
         sample_num = self.recipe_mp_config.get("sample_num", 8)
-        mp_ratio = self.recipe_mp_config.get("mp_ratio", 1 / 7)
+        mp_ratio = self.recipe_mp_config.get("mp_ratio", 1 / 3)
         loss_weight = float(self.recipe_mp_config.get("loss_weight", 2.0))
         numel_weight = float(self.recipe_mp_config.get("numel_weight", 1.0))
         loss_numel_ratio = loss_weight / numel_weight
 
         # calculate the number of layers to use mix-precision
         quantizable_layers = [n for n, m in block.named_modules() if isinstance(m, SUPPORTED_LAYER_TYPES)]
+        mp_ratio_list = [f"{i}/{len(quantizable_layers)}" for i in range(1, len(quantizable_layers))]
         quantizable_num = int(mp_ratio * len(quantizable_layers))  # It's ceiling
+        logger.warning_once(
+            f"[Recipe Mode] {len(quantizable_layers)} layers are detected, so the available mp_ratio values are {mp_ratio_list}"
+        )
+        logger.warning_once(f"[Recipe Mode] {quantizable_num} layers of each block use the mixed precision.")
         # fetch raw low-bits dtype of block for recovering mix-precision block
         layer = get_module(block, quantizable_layers[0])
         raw_dtype = {
@@ -3103,7 +3112,7 @@ class AutoRound(object):
             logger.debug(f"{hp_layers}, {loss}, {numel}")
 
         hp_layers = get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio)
-        logger.info(f"final hp layers: {hp_layers}")
+        logger.info(f"[Recipe Mode] Mix precision layers in this block: {hp_layers}")
         return hp_layers
 
     def _dump_average_bits(self, layer_config=None):

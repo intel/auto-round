@@ -52,7 +52,17 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
         )
-        layer_config = autoround._generate_recipe()
+        layer_config = autoround._generate_recipe(
+            mp_dtype={
+                "data_type": "mx_fp8",
+                "act_data_type": "mx_fp8",
+            },
+            mp_config={
+                "mp_ratio": 1 / 3,
+                "loss_weight": 2.0,
+                "numel_weight": 1.0,
+            },
+        )
         autoround.layer_config = layer_config
         autoround.quantize()
         # autoround.quantize_and_save()  # save is not supported for mix-precision
