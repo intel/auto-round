@@ -485,11 +485,16 @@ def tune(args):
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
-        layer_config[name] = {"bits": 16, "act_bits": 16}
+        layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
     if len(not_quantize_layer_names) > 0:
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
-            if "auto_round" not in format and "fake" not in format and "awq" not in format:
+            if (
+                "auto_round" not in format
+                and "fake" not in format
+                and "awq" not in format
+                and "llmcompressor" not in format
+            ):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
