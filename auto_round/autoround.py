@@ -105,37 +105,37 @@ class AutoRound(object):
     """
 
     def __init__(
-            self,
-            model: Union[torch.nn.Module, str],
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = True,
-            layer_config: dict = None,
-            batch_size: int = 8,
-            amp: bool = True,
-            device: Union[str, torch.device, int] = 0,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
-            iters: int = 200,
-            seqlen: int = 2048,
-            nsamples: int = 128,
-            seed: int = 42,
-            gradient_accumulate_steps: int = 1,
-            data_type: str = "int",
-            act_bits: int = 16,
-            act_group_size: int = None,
-            act_sym: bool = None,
-            act_data_type: str = None,
-            act_dynamic: bool = True,
-            enable_torch_compile: bool = False,
-            device_map: Union[str, dict] = None,
-            disable_opt_rtn: bool = False,
-            enable_alg_ext: bool = False,
-            **kwargs,
+        self,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        layer_config: dict = None,
+        batch_size: int = 8,
+        amp: bool = True,
+        device: Union[str, torch.device, int] = 0,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = False,
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        seed: int = 42,
+        gradient_accumulate_steps: int = 1,
+        data_type: str = "int",
+        act_bits: int = 16,
+        act_group_size: int = None,
+        act_sym: bool = None,
+        act_data_type: str = None,
+        act_dynamic: bool = True,
+        enable_torch_compile: bool = False,
+        device_map: Union[str, dict] = None,
+        disable_opt_rtn: bool = False,
+        enable_alg_ext: bool = False,
+        **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
 
@@ -404,13 +404,13 @@ class AutoRound(object):
         """Sets the torch compile configuration for the tuning."""
         self.enable_torch_compile = enable_torch_compile
         if (
-                not self.enable_torch_compile
-                and TORCH_VERSION_AT_LEAST_2_6
-                and self.act_bits > 8
-                and not is_debug_mode()
-                and not self.low_cpu_mem_usage
-                and "fp8" not in self.data_type
-                and "fp8" not in self.act_data_type
+            not self.enable_torch_compile
+            and TORCH_VERSION_AT_LEAST_2_6
+            and self.act_bits > 8
+            and not is_debug_mode()
+            and not self.low_cpu_mem_usage
+            and "fp8" not in self.data_type
+            and "fp8" not in self.act_data_type
         ):
             logger.info(
                 "'enable_torch_compile' is set to `False` by default. "
@@ -453,7 +453,7 @@ class AutoRound(object):
             for info in infos:
                 index = info.find(":")
                 key = info[:index]
-                value = info[index + 1:]
+                value = info[index + 1 :]
                 device_map_dict[key] = value
             device_map = device_map_dict
 
@@ -577,9 +577,9 @@ class AutoRound(object):
 
         # Check group_size 32 for auto_round
         if (
-                self.data_type == "int"
-                and hasattr(self, "formats")
-                and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
+            self.data_type == "int"
+            and hasattr(self, "formats")
+            and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
         ):
             for n, m in self.model.named_modules():
                 if isinstance(m, self.supported_types):
@@ -591,9 +591,9 @@ class AutoRound(object):
                         )
 
         if (
-                self.seqlen is not None
-                and hasattr(self.model, "config")
-                and hasattr(self.model.config, "max_position_embeddings")
+            self.seqlen is not None
+            and hasattr(self.model, "config")
+            and hasattr(self.model.config, "max_position_embeddings")
         ):
             if self.model.config.max_position_embeddings < self.seqlen:
                 logger.warning(
@@ -713,11 +713,11 @@ class AutoRound(object):
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
-                            self.bits == bits
-                            and self.group_size == group_size
-                            and self.sym == sym
-                            and self.act_bits == act_bits
-                            and self.act_dynamic
+                        self.bits == bits
+                        and self.group_size == group_size
+                        and self.sym == sym
+                        and self.act_bits == act_bits
+                        and self.act_dynamic
                     ), (
                         f"Currently only support to export llmcompressor format for dynamic quantized"
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
@@ -958,7 +958,7 @@ class AutoRound(object):
             def get_imatrix_hook(module, input, output):
                 input = input[0] if isinstance(input, (tuple, list)) else input
                 flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(flattened ** 2, dim=0).to(torch.float32)
+                squared = torch.sum(flattened**2, dim=0).to(torch.float32)
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
@@ -1105,10 +1105,10 @@ class AutoRound(object):
         return False
 
     def _apply_config_to_layer(
-            self,
-            layer_name: str,
-            config: dict[str, Any],
-            check_fixed_by_user: bool = False,
+        self,
+        layer_name: str,
+        config: dict[str, Any],
+        check_fixed_by_user: bool = False,
     ) -> None:
         """Applies GGUF quantization configuration to a given layer.
 
@@ -1125,9 +1125,9 @@ class AutoRound(object):
 
         for key in keys:
             if (
-                    key in self.layer_config[layer_name]
-                    and check_fixed_by_user
-                    # and self.layer_config[layer_name].get("fixed_by_user", False)
+                key in self.layer_config[layer_name]
+                and check_fixed_by_user
+                # and self.layer_config[layer_name].get("fixed_by_user", False)
             ):
                 continue
             self.layer_config[layer_name][key] = config.get(key)
@@ -1273,7 +1273,7 @@ class AutoRound(object):
         if has_gguf_k and not self.disable_opt_rtn:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
-                self.act_dynamic, self.act_data_type
+            self.act_dynamic, self.act_data_type
         ):  ##TODO, mixed datatype has bug
             hook_handles = self.register_act_max_hook(self.model)
             try:
@@ -1451,15 +1451,15 @@ class AutoRound(object):
             # Determine if immediate packing is required
             formats = self.formats
             if (
-                    len(formats) == 1
-                    and (
+                len(formats) == 1
+                and (
                     "awq" in formats[0]
                     or "gptq" in formats[0]
                     or "auto_round" in formats[0]
                     or "gguf" in formats[0]
                     or "llmcompressor" in formats[0]
-            )
-                    and self.inplace
+                )
+                and self.inplace
             ):
                 self.is_packing_immediate = True
         if self.iters == 0:
@@ -1580,7 +1580,7 @@ class AutoRound(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def quantize_layers(self, layer_names:list, layer_inputs:dict)->None:
+    def quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
         Args:
@@ -1758,9 +1758,9 @@ class AutoRound(object):
 
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
             if (
-                    n not in layers_in_blocks
-                    and check_to_quantized(layer_config[n])
-                    and not isinstance(m, torch.nn.Embedding)
+                n not in layers_in_blocks
+                and check_to_quantized(layer_config[n])
+                and not isinstance(m, torch.nn.Embedding)
             ):
                 has_qlayer_outside_block = True
 
@@ -1943,11 +1943,11 @@ class AutoRound(object):
             layer_names = []
 
         if self.low_gpu_mem_usage or (
-                str(self.model.device == "cpu")
-                and len(block_names) == 1
-                and len(layer_names) == 0
-                and not self.has_qlayer_outside_block
-                and (last_cache_name is None or last_cache_name in block_names)
+            str(self.model.device == "cpu")
+            and len(block_names) == 1
+            and len(layer_names) == 0
+            and not self.has_qlayer_outside_block
+            and (last_cache_name is None or last_cache_name in block_names)
         ):
             ## low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
@@ -2098,9 +2098,9 @@ class AutoRound(object):
 
             for key in kwargs.keys():
                 if (
-                        isinstance(kwargs[key], torch.Tensor)
-                        or isinstance(kwargs[key], list)
-                        or isinstance(kwargs[key], tuple)
+                    isinstance(kwargs[key], torch.Tensor)
+                    or isinstance(kwargs[key], list)
+                    or isinstance(kwargs[key], tuple)
                 ):
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
@@ -2183,7 +2183,7 @@ class AutoRound(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
-    def quantize_layer(self, layer_name:str, inputs:torch.Tensor, q_inputs:torch.Tensor=None, device:str= "cpu"):
+    def quantize_layer(self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
@@ -2267,7 +2267,7 @@ class AutoRound(object):
                         current_input = [inputs[i] for i in whole_indices]
                     num_elm = sum(id.numel() for id in current_input)
             for tmp_step in range(gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * batch_size: (tmp_step + 1) * batch_size]
+                indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -2342,9 +2342,9 @@ class AutoRound(object):
 
         for n, m in model.named_modules():
             if (
-                    hasattr(m, "act_dynamic")
-                    and check_need_act_calibration(m.act_dynamic, m.act_data_type)
-                    and check_to_quantized(m)
+                hasattr(m, "act_dynamic")
+                and check_need_act_calibration(m.act_dynamic, m.act_data_type)
+                and check_to_quantized(m)
             ):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
@@ -2356,9 +2356,9 @@ class AutoRound(object):
                 act_dynamic = config.get("act_dynamic", True)
                 act_data_type = config.get("act_data_type", None)
                 if (
-                        config["bits"] <= 8
-                        and check_need_act_calibration(act_dynamic, act_data_type)
-                        and check_to_quantized(config)
+                    config["bits"] <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type)
+                    and check_to_quantized(config)
                 ):
                     hook = m.register_forward_hook(get_act_max_hook)
                     hook_handles.append(hook)
@@ -2501,7 +2501,7 @@ class AutoRound(object):
                     num_elm = sum(id.numel() for id in current_input_ids)
 
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
+                indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = AutoRound.sampling_inputs(
                     input_ids,
                     input_others,
@@ -2592,8 +2592,14 @@ class AutoRound(object):
             return None, output
 
     def quantize_blocks(
-            self, model: torch.nn.Module, inputs: dict, block_names: list, q_input: torch.Tensor = None, nblocks: int = 1,
-            device: str = "cpu", pbar: tqdm = None
+        self,
+        model: torch.nn.Module,
+        inputs: dict,
+        block_names: list,
+        q_input: torch.Tensor = None,
+        nblocks: int = 1,
+        device: str = "cpu",
+        pbar: tqdm = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -2623,7 +2629,7 @@ class AutoRound(object):
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
-                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
@@ -2631,11 +2637,11 @@ class AutoRound(object):
                     to_dtype(input_others[key][i], tmp_dtype)
 
         if (
-                self.act_bits > 8
-                and self.sym
-                and self.enable_alg_ext
-                and self.super_group_size is None
-                and self.data_type.startswith("int")
+            self.act_bits > 8
+            and self.sym
+            and self.enable_alg_ext
+            and self.super_group_size is None
+            and self.data_type.startswith("int")
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
@@ -2670,7 +2676,7 @@ class AutoRound(object):
                 pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: min(i + nblocks, len(block_names))]
+                names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -2726,8 +2732,9 @@ class AutoRound(object):
 
         clear_memory()
 
-    def save_quantized(self, output_dir: str = None, format: str = "auto_round", inplace: bool = True,
-                       **kwargs) -> torch.nn.Module:
+    def save_quantized(
+        self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs
+    ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
@@ -2937,7 +2944,7 @@ class AutoRound(object):
             if "positional_inputs" in key:
                 continue
             if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                    input_others[key], (str, bool, type(None))
+                input_others[key], (str, bool, type(None))
             ):
                 current_input_others[key] = None
                 if input_others[key] is not None:
@@ -3005,49 +3012,49 @@ class AutoRoundAdam(AutoRound):
     """
 
     def __init__(
-            self,
-            model: Union[torch.nn.Module, str],
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = True,
-            layer_config=None,
-            batch_size: int = 8,
-            amp: bool = True,
-            device: Union[str, torch.device, int] = 0,
-            lr_scheduler=None,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
-            low_cpu_mem_usage: int = 0,
-            iters: int = 200,
-            seqlen: int = 2048,
-            nsamples: int = 128,
-            sampler: str = "rand",
-            seed: int = 42,
-            nblocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp16",
-            act_bits: int = 16,
-            act_group_size: int = None,
-            act_sym: bool = None,
-            act_data_type: str = None,
-            act_dynamic: bool = True,
-            to_quant_block_names: Union[str, list] = None,
-            enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
-            device_map: Union[str, dict] = None,
-            optimizer="AdamW",
-            super_bits: int = None,
-            super_group_size: int = None,
-            disable_opt_rtn: bool = False,
-            **kwargs,
+        self,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        layer_config=None,
+        batch_size: int = 8,
+        amp: bool = True,
+        device: Union[str, torch.device, int] = 0,
+        lr_scheduler=None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = False,
+        low_cpu_mem_usage: int = 0,
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        sampler: str = "rand",
+        seed: int = 42,
+        nblocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp16",
+        act_bits: int = 16,
+        act_group_size: int = None,
+        act_sym: bool = None,
+        act_data_type: str = None,
+        act_dynamic: bool = True,
+        to_quant_block_names: Union[str, list] = None,
+        enable_norm_bias_tuning: bool = False,
+        enable_torch_compile: bool = False,
+        device_map: Union[str, dict] = None,
+        optimizer="AdamW",
+        super_bits: int = None,
+        super_group_size: int = None,
+        disable_opt_rtn: bool = False,
+        **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(
             model=model,
