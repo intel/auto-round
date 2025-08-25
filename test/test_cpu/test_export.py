@@ -228,7 +228,7 @@ class TestAutoRound(unittest.TestCase):
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.input_scale", f.keys())
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
 
         if static_kv_dtype == "fp8":
@@ -259,7 +259,7 @@ class TestAutoRound(unittest.TestCase):
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.input_scale", f.keys())
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 

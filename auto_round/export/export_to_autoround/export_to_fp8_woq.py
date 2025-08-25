@@ -22,6 +22,7 @@ import torch
 import transformers
 from tqdm import tqdm
 
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -101,22 +102,24 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         return
 
     device = layer.weight.device
-    scale = layer.scale
+    scale = layer.scale.view(-1)
     zp = layer.zp
     weight = layer.weight
-    act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
+    weight, orig_shape, pad_len = reshape_pad_tensor_by_group_size(weight, layer.group_size)
+    act_scale = layer.act_scale.view(-1) if hasattr(layer, "act_scale") else None
     torch_dtype = torch.float8_e4m3fn
     if "fp8_e5m2" in data_type:
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
         q_weight = (
-            weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp.to(packing_device)
             if isinstance(zp, torch.Tensor)
             else zp
         )
     else:
-        q_weight = weight.to(packing_device) / scale.to(packing_device)
+        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
+    q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
     q_weight = torch.clamp(q_weight, info.min, info.max)
     q_weight = q_weight.to(torch_dtype)
     if isinstance(layer, torch.nn.Linear):
