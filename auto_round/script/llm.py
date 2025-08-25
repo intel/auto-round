@@ -634,7 +634,7 @@ def tune(args):
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     tmp_act_bits = infer_bits_by_data_type(args.act_data_type)
-    if tmp_act_bits is None:
+    if tmp_act_bits is not None:
         act_bits = tmp_act_bits
     else:
         act_bits =  args.act_bits
