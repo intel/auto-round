@@ -234,8 +234,8 @@ class AutoRound(object):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
             )
-        elif tokenizer is None and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
+        #elif tokenizer is None and iters > 0:
+        #    raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):
             raise RuntimeError(

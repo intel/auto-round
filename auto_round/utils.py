@@ -424,10 +424,9 @@ def get_block_names(model, quant_vision=False):
     def _get_llm_block_names(model):
         block_names = []
         target_modules = []
-        for n, m in model.named_modules():
+        for n, m in model.named_children():
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
                 target_modules.append((n, m))
-                break  ## only find the first modulelist, may be not robust
         for i, target_m in enumerate(target_modules):
             block_names.append([])
             for n, m in target_m[1].named_children():
@@ -435,7 +434,7 @@ def get_block_names(model, quant_vision=False):
         return block_names
 
     def _get_vlm_block_names(model, quant_vision=False):
-        if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        if hasattr(model, "config") and hasattr(model.config, "model_type") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
@@ -1600,6 +1599,18 @@ def mllm_load_model(
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
+
+def vlm_load_model(
+    pretrained_model_name_or_path,
+    device="cpu",
+    torch_dtype="auto",
+    model_dtype=None,
+    **kwargs,
+):
+    from diffusers import AutoPipelineForText2Image
+    pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype)
+    pipe = _to_model_dtype(pipe, model_dtype)
+    return pipe
 
 
 def is_pure_text_model(model):

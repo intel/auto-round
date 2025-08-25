@@ -112,7 +112,7 @@ def _handle_special_model(model):
 
 
 def _handle_moe_model(model):
-    if model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
+    if hasattr(model.config, "model_type") and  model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
         from tqdm import tqdm
 
         from auto_round.utils import clear_memory

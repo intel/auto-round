@@ -290,6 +290,20 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )
 
+        ## ======================= VLM =======================
+        self.add_argument(
+            "--prompt_file", default=None, type=str, help="the prompt file to load prmpt."
+        )
+        self.add_argument(
+            "--prompt", default=None, type=str, help="the prompt for test."
+        )
+        self.add_argument(
+            "--metrics",
+            "--metric",
+            default="clip",
+            help="support clip, clip-iqa, imagereward",
+        )
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -441,16 +455,24 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.utils import llm_load_model, mllm_load_model
+    from auto_round.utils import llm_load_model, mllm_load_model, vlm_load_model
 
     if args.mllm:
-        model, processor, tokenizer, image_processor = mllm_load_model(
-            model_name,
-            device=device_str,
-            use_auto_mapping=use_auto_mapping,
-            trust_remote_code=not args.disable_trust_remote_code,
-            model_dtype=args.model_dtype,
-        )
+        if os.path.exists(os.path.join(model_name, "model_index.json")):
+            model = vlm_load_model(
+                model_name,
+                device=device_str,
+                model_dtype=args.model_dtype,
+            )
+            tokenizer = None
+        else:
+            model, processor, tokenizer, image_processor = mllm_load_model(
+                model_name,
+                device=device_str,
+                use_auto_mapping=use_auto_mapping,
+                trust_remote_code=not args.disable_trust_remote_code,
+                model_dtype=args.model_dtype,
+            )
         low_cpu_mem_usage = False
     else:
         model, tokenizer, low_cpu_mem_usage = llm_load_model(
@@ -463,7 +485,7 @@ def tune(args):
             model_dtype=args.model_dtype,
         )
 
-    from auto_round import AutoRound, AutoRoundAdam, AutoRoundMLLM
+    from auto_round import AutoRound, AutoRoundAdam, AutoRoundMLLM, AutoRoundVLM
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -473,14 +495,25 @@ def tune(args):
     if args.adam:
         round = AutoRoundAdam
     if args.mllm:
-        round = AutoRoundMLLM
-        mllm_kwargs = {
-            "processor": processor,
-            "image_processor": image_processor,
-            "extra_data_dir": args.extra_data_dir,
-            "quant_nontext_module": args.quant_nontext_module,
-            "template": args.template,
-        }
+        if os.path.exists(os.path.join(model_name, "model_index.json")):
+            round = AutoRoundVLM
+            pipe = model
+            model = model.transformer
+            mllm_kwargs = {
+                "pipe": pipe,
+                "guidance_scale": 7.5,
+                "num_inference_steps": 50,
+                "generator": None,
+            }
+        else:
+            round = AutoRoundMLLM
+            mllm_kwargs = {
+                "processor": processor,
+                "image_processor": image_processor,
+                "extra_data_dir": args.extra_data_dir,
+                "quant_nontext_module": args.quant_nontext_module,
+                "template": args.template,
+            }
 
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
