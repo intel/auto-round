@@ -79,6 +79,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
+    is_static_afp8
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -1403,9 +1404,8 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if (is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)) or (
-                    any("auto_round:fp8" in format_ for format_ in self.formats)
-                ):
+                if (is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)) or \
+                    is_static_afp8(self):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for linears
