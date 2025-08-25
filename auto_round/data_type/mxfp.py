@@ -22,6 +22,7 @@ from auto_round.data_type.utils import (
     revert_tensor_by_pad,
     round_ste,
 )
+from auto_round.utils import is_hpex_available
 
 MXFP_FORMAT_CACHE = {
     # data type: ebits, mbits, emax, max_norm, min_norm
@@ -177,6 +178,11 @@ def quant_mx_rceil(
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
+
+# HPU returns error with Habana software 1.22.0, so skip torch.compile here.
+if not is_hpex_available():
+    quant_mx = torch.compile(quant_mx)
+    quant_mx_rceil = torch.compile(quant_mx_rceil)
 
 for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx

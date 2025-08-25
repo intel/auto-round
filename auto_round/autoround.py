@@ -38,6 +38,8 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
+    _generate_block_recipe,
+    _generate_recipe,
     _gguf_args_check,
     block_forward,
     check_and_mark_fp8_model,
@@ -67,9 +69,9 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_hpex_available,
     is_mx_fp,
     is_nv_fp,
-    is_optimum_habana_available,
     is_standard_fp,
     llm_load_model,
     logger,
@@ -100,6 +102,11 @@ class AutoRound(object):
         nsamples (int): Number of calibration samples.
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
+
+    # If function is not necessary for AutoRound, putting it in other place and
+    # assembling the function here, can improve code readability and maintainability
+    _generate_recipe = _generate_recipe
+    _generate_block_recipe = _generate_block_recipe
 
     def __init__(
         self,
@@ -364,7 +371,7 @@ class AutoRound(object):
 
         torch.set_printoptions(precision=3, sci_mode=True)
 
-        if is_optimum_habana_available():
+        if is_hpex_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
@@ -2453,7 +2460,11 @@ class AutoRound(object):
                 try:
                     update_fused_layer_global_scales(module)
                 except:
-                    pass  # mix-precision may cause error, since q,k,v are not the same dtype.
+                    # mix-precision may cause error, since q,k,v are not the same dtype.
+                    logger.warning_once(
+                        "Cannot keep the same global scale for fused layers, "
+                        + "so the model may not work with vLLM with fused QKV or else."
+                    )
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -2646,9 +2657,12 @@ class AutoRound(object):
                     )
                     modules = [get_module(model, n) for n in names]
                     block = WrapperMultiblock(modules)
+                if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
+                    block = block.to(device)
                 block_recipe_results = self._generate_block_recipe(block, input_ids, input_others)
                 for result in block_recipe_results:
                     self.recipe_results.update({block_names[i] + "." + result: self.recipe_mp_dtype})
+            pbar.close()
             return
         ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
@@ -2925,7 +2939,7 @@ class AutoRound(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return scale_loss
 
@@ -2942,7 +2956,7 @@ class AutoRound(object):
         """
         optimizer.step()
         # for hpu
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -2988,134 +3002,8 @@ class AutoRound(object):
 
         return current_input_ids, current_input_others
 
-    def _generate_recipe(
-        self,
-        # same data type config as before
-        mp_dtype={
-            "data_type": "mx_fp8",
-            "act_data_type": "mx_fp8",
-        },
-        # special mix-precision configuration
-        mp_config={
-            "mp_ratio": 1 / 3,
-            "loss_weight": 2.0,
-            "numel_weight": 1.0,
-        },
-    ):
-        self.recipe_mode = True
-        self.recipe_mp_dtype = mp_dtype
-        self.recipe_mp_config = mp_config
-        self.quantize()
-        recipe_layer_config = copy.deepcopy(self.layer_config)
-        recipe_layer_config.update(self.recipe_results)
-        self._dump_average_bits(layer_config=recipe_layer_config)
-        self.recipe_mode = False
-        recipe_layer_config.pop("lm_head")  # lm_head is not included in the recipe
-        return recipe_layer_config
-
-    def _generate_block_recipe(self, block, input_ids, input_others):
-        from itertools import combinations
-
-        from auto_round.utils import (
-            DTYPE_INFO_MAPPING,
-            create_mp_block,
-            get_best_combination,
-            get_numel,
-            recover_mp_block,
-        )
-
-        # fetch mix-precision recipe configuration
-        sample_num = self.recipe_mp_config.get("sample_num", 8)
-        mp_ratio = self.recipe_mp_config.get("mp_ratio", 1 / 3)
-        loss_weight = float(self.recipe_mp_config.get("loss_weight", 2.0))
-        numel_weight = float(self.recipe_mp_config.get("numel_weight", 1.0))
-        loss_numel_ratio = loss_weight / numel_weight
-
-        # calculate the number of layers to use mix-precision
-        quantizable_layers = [n for n, m in block.named_modules() if isinstance(m, SUPPORTED_LAYER_TYPES)]
-        mp_ratio_list = [f"{i}/{len(quantizable_layers)}" for i in range(1, len(quantizable_layers))]
-        quantizable_num = int(mp_ratio * len(quantizable_layers))  # It's ceiling
-        logger.warning_once(
-            f"[Recipe Mode] {len(quantizable_layers)} layers are detected, so the available mp_ratio values are {mp_ratio_list}"
-        )
-        logger.warning_once(f"[Recipe Mode] {quantizable_num} layers of each block use the mixed precision.")
-        # fetch raw low-bits dtype of block for recovering mix-precision block
-        layer = get_module(block, quantizable_layers[0])
-        raw_dtype = {
-            "data_type": layer.data_type,
-            "bits": layer.bits,
-            "sym": layer.sym,
-            "act_data_type": layer.act_data_type,
-            "act_bits": layer.act_bits,
-            "act_sym": layer.act_sym,
-        }
-        # update self.recipe_mp_dtype
-        self.recipe_mp_dtype.update(
-            {
-                "bits": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["data_type"]]["bits"],
-                "group_size": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["data_type"]]["group_size"],
-                "sym": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["data_type"]]["sym"],
-                "act_bits": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["act_data_type"]]["bits"],
-                "act_group_size": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["act_data_type"]]["group_size"],
-                "act_sym": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["act_data_type"]]["sym"],
-            }
-        )
-
-        # generate reference output of sample input_ids
-        reference_output = self.get_block_outputs(
-            block,
-            input_ids[:sample_num],
-            input_others,
-            bs=self.batch_size,
-            device=self.device,
-            cache_device=self.cache_device,
-            save_output=True,
-        )
-
-        # generate q_output of sample input_ids and get loss
-        def get_loss(q_block):
-            q_output = self.get_block_outputs(
-                q_block,
-                input_ids[:sample_num],
-                input_others,
-                bs=self.batch_size,
-                device=self.device,
-                cache_device=self.cache_device,
-                save_output=True,
-            )
-            total_loss = 0
-            mse_loss = torch.nn.MSELoss(reduction="sum").to(self.device)
-            for i in range(len(q_output)):
-                loss = mse_loss(  # pylint: disable=not-callable
-                    q_output[i].to(torch.float32), reference_output[i].to(torch.float32)
-                )
-                total_loss += loss
-            if is_optimum_habana_available():
-                htcore.mark_step()
-            return loss
-
-        combination_list = []
-        numel_list = []
-        loss_list = []
-        for hp_layers in combinations(quantizable_layers, quantizable_num):
-            combination_list.append(hp_layers)
-            # get numel
-            numel = get_numel(block, hp_layers)
-            numel_list.append(numel)
-            # get loss
-            block = create_mp_block(block, hp_layers, self.recipe_mp_dtype)
-            loss = get_loss(block)
-            loss_list.append(loss)
-            block = recover_mp_block(block, hp_layers, raw_dtype)
-            if is_optimum_habana_available():
-                htcore.mark_step()
-            logger.debug(f"{hp_layers}, {loss}, {numel}")
-
-        hp_layers = get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio)
-        logger.info(f"[Recipe Mode] Mix precision layers in this block: {hp_layers}")
-        return hp_layers
-
     def _dump_average_bits(self, layer_config=None):
+        """Dumps the average bits of the model based on the layer configuration."""
         total_numel = 0
         total_bits = 0
         for n, m in self.model.named_modules():
@@ -3292,7 +3180,7 @@ class AutoRoundAdam(AutoRound):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return loss
 
@@ -3306,5 +3194,5 @@ class AutoRoundAdam(AutoRound):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()

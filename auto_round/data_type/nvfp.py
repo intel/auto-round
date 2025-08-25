@@ -89,6 +89,7 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, **kwargs):
         tensor_max = tensor.abs().max().to(torch.float32)
         global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(tensor.device)
+    # Ensure global_scale is in float32, sometimes tensor is in bf16/fp16
     global_scale = global_scale.to(torch.float32)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
@@ -110,6 +111,7 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, *
             tensor_max = tensor.abs().max().to(torch.float32)
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(tensor.device)
+    # Ensure global_scale is in float32, sometimes tensor is in bf16/fp16
     global_scale = global_scale.to(torch.float32)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)

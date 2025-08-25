@@ -34,6 +34,7 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
+from auto_round.wrapper import WrapperLinear
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -176,6 +177,30 @@ class LazyImport(object):
 
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
+
+
+def is_package_available(package_name):
+    """Check if the package exists in the environment without importing.
+
+    Args:
+        package_name (str): package name
+    """
+    from importlib.util import find_spec
+
+    package_spec = find_spec(package_name)
+    return package_spec is not None
+
+
+if is_package_available("habana_frameworks"):
+    _hpex_available = True
+    import habana_frameworks.torch.hpex  # pylint: disable=E0401
+else:
+    _hpex_available = False
+
+
+def is_hpex_available():
+    """Returns whether hpex is available."""
+    return _hpex_available
 
 
 def is_optimum_habana_available():
@@ -575,7 +600,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             # logger.info("Using GPU device")
-        elif is_optimum_habana_available():  # pragma: no cover
+        elif is_hpex_available():  # pragma: no cover
             device = torch.device("hpu")
             # logger.info("Using HPU device")
         elif torch.xpu.is_available():  # pragma: no cover
@@ -2512,8 +2537,16 @@ def is_nv_fp(backend):
 
 ######################################### Recipe related codes ####################################
 def create_mp_block(block, mp_layers, mp_dtype):
-    from auto_round.wrapper import WrapperLinear
+    """Create a mixed precision block.
 
+    Args:
+        block (torch.nn.Module): original block.
+        mp_layers (list): list of layer names to apply mixed precision.
+        mp_dtype (dict): mixed precision data type configuration.
+
+    Returns:
+        torch.nn.Module: mixed precision block.
+    """
     for layer_name in mp_layers:
         layer = get_module(block, layer_name)
         layer.data_type, layer.bits, layer.sym = mp_dtype["data_type"], mp_dtype["bits"], mp_dtype["sym"]
@@ -2532,14 +2565,22 @@ def create_mp_block(block, mp_layers, mp_dtype):
                     device=m.weight.device,
                 )
                 set_module(block, n, new_m)
-    if is_optimum_habana_available():
+    if is_hpex_available():
         htcore.mark_step()
     return block
 
 
 def recover_mp_block(block, mp_layers, raw_dtype):
-    from auto_round.wrapper import WrapperLinear
+    """Recover a mixed precision block.
 
+    Args:
+        block (torch.nn.Module): mixed precision block.
+        mp_layers (list): list of layer names to recover.
+        raw_dtype (dict): original data type configuration.
+
+    Returns:
+        torch.nn.Module: recovered block.
+    """
     for n, m in block.named_modules():
         if isinstance(m, WrapperLinear):
             set_module(block, n, m.orig_layer)
@@ -2551,12 +2592,21 @@ def recover_mp_block(block, mp_layers, raw_dtype):
             raw_dtype["act_bits"],
             raw_dtype["act_sym"],
         )
-    if is_optimum_habana_available():
+    if is_hpex_available():
         htcore.mark_step()
     return block
 
 
 def get_numel(block, hp_layers):
+    """Get the total number of elements in the specified layers of a block.
+
+    Args:
+        block (torch.nn.Module): The model block.
+        hp_layers (list): List of layer names to include.
+
+    Returns:
+        int: Total number of elements in the specified layers.
+    """
     numel = 0
     for layer_name in hp_layers:
         layer = get_module(block, layer_name)
@@ -2565,6 +2615,21 @@ def get_numel(block, hp_layers):
 
 
 def get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio=2.0):
+    """Selects the best combination from a list based on the ranks of two criteria: numel_list and loss_list.
+
+    Each combination is ranked by its position in the sorted numel_list and loss_list. The loss rank is scaled
+    by `loss_numel_ratio` to adjust its importance relative to the numel rank. The combination with the lowest
+    sum of ranks is selected as the best.
+
+    Args:
+        combination_list (list): List of candidate combinations.
+        numel_list (list): List of numerical values representing the size or complexity of each combination.
+        loss_list (list): List of loss values associated with each combination.
+        loss_numel_ratio (float, optional): Scaling factor for the loss rank relative to the numel rank. Default is 2.0.
+
+    Returns:
+        The combination from `combination_list` with the lowest combined rank based on numel and loss.
+    """
     # Get ranks for numel_list and
     numel_ranks = [sorted(numel_list).index(x) for x in numel_list]
     loss_ranks = [(sorted(loss_list).index(x)) * loss_numel_ratio for x in loss_list]
@@ -2580,6 +2645,147 @@ def get_best_combination(combination_list, numel_list, loss_list, loss_numel_rat
 
     # Return the best combination
     return combination_list[best_index]
+
+
+def _generate_recipe(
+    self,
+    # same data type config as before
+    mp_dtype={
+        "data_type": "mx_fp8",
+        "act_data_type": "mx_fp8",
+    },
+    # special mix-precision configuration
+    mp_config={
+        "mp_ratio": 1 / 3,
+        "loss_weight": 2.0,
+        "numel_weight": 1.0,
+    },
+):
+    """
+    Generates a quantization recipe for the model based on the specified mixed-precision data type and configuration.
+
+    Args:
+        mp_dtype (dict, optional): Dictionary specifying the mixed-precision data types for weights and activations.
+            Defaults to {"data_type": "mx_fp8", "act_data_type": "mx_fp8"}.
+        mp_config (dict, optional): Dictionary specifying the mixed-precision configuration parameters such as
+            ratio, loss weight, and numel weight. Defaults to {"mp_ratio": 1/3, "loss_weight": 2.0, "numel_weight": 1.0}.
+
+    Returns:
+        dict: A dictionary containing the quantization recipe for each layer, excluding the "lm_head" layer.
+    """
+    self.recipe_mode = True
+    self.recipe_mp_dtype = mp_dtype
+    self.recipe_mp_config = mp_config
+    self.quantize()
+    recipe_layer_config = copy.deepcopy(self.layer_config)
+    recipe_layer_config.update(self.recipe_results)
+    self._dump_average_bits(layer_config=recipe_layer_config)
+    self.recipe_mode = False
+    recipe_layer_config.pop("lm_head")  # lm_head is not included in the recipe
+    return recipe_layer_config
+
+
+def _generate_block_recipe(self, block, input_ids, input_others):
+    from itertools import combinations
+
+    from auto_round.utils import (
+        DTYPE_INFO_MAPPING,
+        create_mp_block,
+        get_best_combination,
+        get_numel,
+        recover_mp_block,
+    )
+
+    # fetch mix-precision recipe configuration
+    sample_num = self.recipe_mp_config.get("sample_num", 8)
+    mp_ratio = self.recipe_mp_config.get("mp_ratio", 1 / 3)
+    loss_weight = float(self.recipe_mp_config.get("loss_weight", 2.0))
+    numel_weight = float(self.recipe_mp_config.get("numel_weight", 1.0))
+    loss_numel_ratio = loss_weight / numel_weight
+
+    # calculate the number of layers to use mix-precision
+    quantizable_layers = [n for n, m in block.named_modules() if isinstance(m, SUPPORTED_LAYER_TYPES)]
+    mp_ratio_list = [f"{i}/{len(quantizable_layers)}" for i in range(1, len(quantizable_layers))]
+    quantizable_num = int(mp_ratio * len(quantizable_layers))  # It's ceiling
+    logger.warning_once(
+        f"[Recipe Mode] {len(quantizable_layers)} layers are detected, so the available mp_ratio values are {mp_ratio_list}"
+    )
+    logger.warning_once(f"[Recipe Mode] {quantizable_num} layers of each block use the mixed precision.")
+    # fetch raw low-bits dtype of block for recovering mix-precision block
+    layer = get_module(block, quantizable_layers[0])
+    raw_dtype = {
+        "data_type": layer.data_type,
+        "bits": layer.bits,
+        "sym": layer.sym,
+        "act_data_type": layer.act_data_type,
+        "act_bits": layer.act_bits,
+        "act_sym": layer.act_sym,
+    }
+    # update self.recipe_mp_dtype
+    self.recipe_mp_dtype.update(
+        {
+            "bits": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["data_type"]]["bits"],
+            "group_size": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["data_type"]]["group_size"],
+            "sym": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["data_type"]]["sym"],
+            "act_bits": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["act_data_type"]]["bits"],
+            "act_group_size": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["act_data_type"]]["group_size"],
+            "act_sym": DTYPE_INFO_MAPPING[self.recipe_mp_dtype["act_data_type"]]["sym"],
+        }
+    )
+
+    # generate reference output of sample input_ids
+    reference_output = self.get_block_outputs(
+        block,
+        input_ids[:sample_num],
+        input_others,
+        bs=self.batch_size,
+        device=self.device,
+        cache_device=self.cache_device,
+        save_output=True,
+    )
+
+    # generate q_output of sample input_ids and get loss
+    def get_loss(q_block):
+        q_output = self.get_block_outputs(
+            q_block,
+            input_ids[:sample_num],
+            input_others,
+            bs=self.batch_size,
+            device=self.device,
+            cache_device=self.cache_device,
+            save_output=True,
+        )
+        total_loss = 0
+        mse_loss = torch.nn.MSELoss(reduction="sum").to(self.device)
+        for i in range(len(q_output)):
+            loss = mse_loss(  # pylint: disable=not-callable
+                q_output[i].to(torch.float32), reference_output[i].to(torch.float32)
+            )
+            total_loss += loss
+        if is_hpex_available():
+            htcore.mark_step()
+        return loss
+
+    combination_list = []
+    numel_list = []
+    loss_list = []
+    for hp_layers in combinations(quantizable_layers, quantizable_num):
+        combination_list.append(hp_layers)
+        # get numel
+        numel = get_numel(block, hp_layers)
+        numel_list.append(numel)
+        # get loss
+        block = create_mp_block(block, hp_layers, self.recipe_mp_dtype)
+        loss = get_loss(block)
+        loss_list.append(loss)
+        block = recover_mp_block(block, hp_layers, raw_dtype)
+        if is_hpex_available():
+            htcore.mark_step()
+        logger.debug(f"{hp_layers}, {loss}, {numel}")
+
+    hp_layers = get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio)
+    logger.info(f"[Recipe Mode] Mix precision layers in this block: {hp_layers}")
+    return hp_layers
 
 
 ###############################################################################################
