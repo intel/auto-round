@@ -186,6 +186,7 @@ class QuantLinear(nn.Module):
         return
 
 
+# Adapted from https://github.com/neuralmagic/compressed-tensors/pull/400
 @torch.compile(fullgraph=True, dynamic=True)
 def pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
     """
