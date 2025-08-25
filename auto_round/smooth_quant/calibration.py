@@ -16,9 +16,10 @@ import copy
 import json
 
 import torch
-from .utils import *
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+
+from .utils import *
 
 
 class Calibration:

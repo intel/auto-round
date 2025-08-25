@@ -1,15 +1,46 @@
-import torch
-import numpy
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-from auto_round.utils import logger
-from auto_round.smooth_quant.utils import get_module, set_module
+import numpy
+import torch
+
+from auto_round.smooth_quant.absorb_utils import get_absorb_layers
 from auto_round.smooth_quant.calibration import Calibration
 from auto_round.smooth_quant.utils import (
-    model_forward_per_sample, reshape_in_channel_to_last, cal_scale, mul_scale, reshape_scale_as_weight)
-from auto_round.smooth_quant.absorb_utils import get_absorb_layers
+    cal_scale,
+    get_module,
+    model_forward_per_sample,
+    mul_scale,
+    reshape_in_channel_to_last,
+    reshape_scale_as_weight,
+    set_module,
+)
+from auto_round.utils import logger
+
 
 class SmoothQuant:
-    def __init__(self, model, dataloader=None, device="cpu", dtype=torch.bfloat16,  example_inputs=None, q_func=None, traced_model=None, group_size=-1):
+    def __init__(
+        self,
+        model,
+        dataloader=None,
+        device="cpu",
+        dtype=torch.bfloat16,
+        example_inputs=None,
+        q_func=None,
+        traced_model=None,
+        group_size=-1,
+    ):
         """
         :param model: Torch model :param dataloader: Calibration dataloader :param traced_model: A specific model
         shares the same architecture as the model and could be traced by torch.jit. If not supplied, we use model
@@ -41,7 +72,6 @@ class SmoothQuant:
         self.max_value_info = {}
         self.need_calibration = False
         self.group_size = group_size
-
 
     @torch.no_grad()
     def transform_model(
@@ -182,7 +212,7 @@ class SmoothQuant:
             self._absorb_scales(key, 1.0 / self.absorb_scales_info[key])
         self.weight_scale_info = {}  ##clear the data
         self.absorb_scales_info = {}
-    
+
     def output_is_equal(self, out1, out2, atol=1e-03):
         try:
             if isinstance(out1, tuple):
@@ -198,7 +228,6 @@ class SmoothQuant:
                 "between out_pre_sq and out_post_sq if necessary."
             )
             return True
-
 
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales
@@ -449,7 +478,9 @@ class SmoothQuant:
         # (due to self._get_all_layer_names use layer tree instead of forward_path)
         if not folding and self.need_calibration:
             if len(self.input_mins) == 0:  ##there are some modules not used in forward
-                calib = Calibration(self.model, self.dataloader, self.q_func, self.device, group_size=self.group_size)  ##
+                calib = Calibration(
+                    self.model, self.dataloader, self.q_func, self.device, group_size=self.group_size
+                )  ##
                 input_mins, input_maxes = calib.calibrate(
                     1, op_types
                 )  ##TODO if using qfunc for calibration, it will calibrate twice

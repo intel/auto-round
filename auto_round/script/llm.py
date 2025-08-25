@@ -539,17 +539,19 @@ def tune(args):
     # sq
     if args.sq:
         from auto_round.calib_dataset import get_dataloader
+
         dataloader = get_dataloader(tokenizer, args.seqlen, bs=8, nsamples=args.nsamples)
-        auto_alpha_args={
-                    "init_alpha": 0.5,
-                    "alpha_min": 0.1,
-                    "alpha_max": 1.0,
-                    "alpha_step": 0.1,
-                    "shared_criterion": "mean",
-                    "n_samples": 512,  ##512 for cuda, 128 for cpu?
-                    # "do_blockwise": True
-                }
+        auto_alpha_args = {
+            "init_alpha": 0.5,
+            "alpha_min": 0.1,
+            "alpha_max": 1.0,
+            "alpha_step": 0.1,
+            "shared_criterion": "mean",
+            "n_samples": 512,  ##512 for cuda, 128 for cpu?
+            # "do_blockwise": True
+        }
         from auto_round.smooth_quant import SmoothQuant
+
         model = model.to(device_str)
         sq = SmoothQuant(model, dataloader, device=model.device, group_size=-1)
         model = sq.transform_model(
@@ -558,7 +560,8 @@ def tune(args):
             auto_alpha_args=auto_alpha_args,
             folding=True,
             op_types=[torch.nn.Linear, torch.nn.Conv2d],
-            calib_iter=100)
+            calib_iter=100,
+        )
 
     autoround = round(
         model=model,

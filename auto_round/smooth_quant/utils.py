@@ -1,11 +1,26 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import copy
 from collections import UserDict, defaultdict
 
-import torch 
+import torch
 from tqdm import tqdm
 
-from auto_round.utils import logger
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.utils import logger
+
 
 def get_module(model, key):
     """Get module from model by key name.
@@ -28,6 +43,7 @@ def get_module(model, key):
         else:
             module = module
     return module
+
 
 def set_module(model, key, new_module):
     """Set new module into model by key name.
@@ -57,6 +73,7 @@ def set_module(model, key, new_module):
         module = getattr(module, "orig_layer")
     setattr(module, name_list[-1], new_module)
 
+
 def mul_scale(tensor, scale, group_size=-1):
     ori_shape = tensor.shape
     if len(scale.shape) == 2 and scale.shape[1] == 1:
@@ -66,6 +83,7 @@ def mul_scale(tensor, scale, group_size=-1):
 
     tensor *= scale
     return tensor.reshape(ori_shape)
+
 
 def reshape_scale_as_input(layer, scale):
     """Reshape the scale for input feature in channel
@@ -102,6 +120,7 @@ def reshape_scale_as_weight(layer, scale):
         scale = scale.view(1, scale.shape[0])
     return scale
 
+
 def move_input_to_device(input, device=torch.device("cpu")):
     if isinstance(input, dict) or isinstance(input, UserDict):
         tmp_input = {}
@@ -117,6 +136,7 @@ def move_input_to_device(input, device=torch.device("cpu")):
     elif isinstance(input, torch.Tensor):
         input = input.to(device)  # pylint: disable=no-member
     return input
+
 
 def forward_wrapper(model, input, device=torch.device("cpu")):
     try:
@@ -157,6 +177,7 @@ def model_forward(model, dataloader, iters, device):
         if iters != -1 and cnt > iters:
             break
     pbar.close()
+
 
 def cal_scale(input_max_abs, weights, alpha, weight_max_lb=1e-5, group_size=-1):
     weights = torch.cat(weights, dim=0)
@@ -199,15 +220,17 @@ def enough_memo_store_scale(device, need_space):
     return free_space >= need_space
 
 
-def quant_dequant(m, num_bits=4, group_size=32, data_type='mx_fp4', sym=True):
+def quant_dequant(m, num_bits=4, group_size=32, data_type="mx_fp4", sym=True):
     from auto_round.data_type.utils import get_quant_func
+
     # data_type = 'int_asym'
-    data_type = 'mx_fp4'
+    data_type = "mx_fp4"
     tensor = m.weight if hasattr(m, "weight") else m
     quant_func, data_type = get_quant_func(data_type, num_bits, sym)
     # print(quant_func, num_bits)
     data_new, scale, zp = quant_func(tensor, bits=num_bits, group_size=group_size, v=0, max_scale=1.0)
     return data_new.to(tensor.dtype)
+
 
 class WrapperLayer(torch.nn.Module):
     def __init__(self, layer, input_min, input_max, save_q_input=False, group_size=-1):

@@ -19,19 +19,26 @@
 import copy
 import json
 
-
-import torch
-from .utils import logger
-
-
 import numpy
+import torch
 from tqdm import tqdm
 
 from auto_round.smooth_quant.calibration import Calibration
-from auto_round.smooth_quant.utils import set_module, get_module
 from auto_round.smooth_quant.utils import (
-    WrapperLayer, enough_memo_store_scale, reshape_scale_as_input, reshape_scale_as_weight, reshape_in_channel_to_last,
-    cal_scale, forward_wrapper, mul_scale, quant_dequant)
+    WrapperLayer,
+    cal_scale,
+    enough_memo_store_scale,
+    forward_wrapper,
+    get_module,
+    mul_scale,
+    quant_dequant,
+    reshape_in_channel_to_last,
+    reshape_scale_as_input,
+    reshape_scale_as_weight,
+    set_module,
+)
+
+from .utils import logger
 
 TUNERS = {}
 
@@ -70,7 +77,7 @@ class AutoAlpha:
         do_blockwise=False,
         n_samples=32,
         calib_iter=100,
-        group_size=-1
+        group_size=-1,
     ):
         """Initialize the AutoAlpha tuner with necessary parameters and components."""
 
@@ -243,7 +250,13 @@ class AutoAlpha:
             if name not in self.input_mins:  # skip module if it's not used in calibration
                 continue
             module = get_module(self.model, name)
-            new_module = WrapperLayer(module, self.input_mins[name], self.input_maxes[name], save_q_input=save_q_input, group_size=self.group_size)
+            new_module = WrapperLayer(
+                module,
+                self.input_mins[name],
+                self.input_maxes[name],
+                save_q_input=save_q_input,
+                group_size=self.group_size,
+            )
             set_module(self.model, name, new_module)
 
     def _qdq_model_unwrapper_for_auto(self):
@@ -427,7 +440,9 @@ class AutoAlpha:
                 if str(alpha) in losses.keys():
                     continue
                 module = get_module(self.model, name)
-                output = module.q_dq_forward(module.q_input, module.input_scale, module.weight_scale, module.absorb_scale)
+                output = module.q_dq_forward(
+                    module.q_input, module.input_scale, module.weight_scale, module.absorb_scale
+                )
                 loss = self._get_auto_loss(fp32_output[name], output)
                 loss_alphas[name][str(alpha)] = loss
         return loss_alphas
@@ -492,7 +507,9 @@ class AutoAlpha:
                         module_copy = copy.deepcopy(module)
                     if module.weight_scale is not None:
                         # module_copy.orig_layer.weight *= module.weight_scale
-                        module_copy.orig_layer.weight.data = mul_scale(module_copy.orig_layer.weight, module.weight_scale, self.group_size)
+                        module_copy.orig_layer.weight.data = mul_scale(
+                            module_copy.orig_layer.weight, module.weight_scale, self.group_size
+                        )
                     # q_dq_weight = quant_dequant_w_v1(module_copy.orig_layer)
                     q_dq_weight = quant_dequant(module_copy.orig_layer)
                     module_copy.orig_layer.weight.data.copy_(q_dq_weight)
@@ -512,7 +529,8 @@ class AutoAlpha:
                     output = block_copy(
                         self.block_inputs[block_name],
                         position_ids=position_ids,
-                        position_embeddings=position_embeddings)[0]
+                        position_embeddings=position_embeddings,
+                    )[0]
                 loss = self._get_auto_loss(fp32_output[block_name], output)
                 loss_alphas[block_name][str(alpha)] = loss
                 del block_copy  # release memory
@@ -594,9 +612,7 @@ class AutoAlpha:
             self._qdq_model_unwrapper_for_auto()
             return best_alphas
         # bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
-        pbar = tqdm(
-            range(self.calib_sample_num // self.dataloader.batch_size),
-            desc="auto tune alpha")
+        pbar = tqdm(range(self.calib_sample_num // self.dataloader.batch_size), desc="auto tune alpha")
         for input in self.dataloader:
             pbar.update(1)
             if isinstance(input, tuple) or isinstance(input, list):
