@@ -71,6 +71,7 @@ from auto_round.utils import (
     is_nv_fp,
     is_optimum_habana_available,
     is_standard_fp,
+    is_static_afp8,
     llm_load_model,
     logger,
     mv_module_from_gpu,
@@ -79,7 +80,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    is_static_afp8
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -1404,8 +1404,9 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if (is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)) or \
-                    is_static_afp8(self):
+                if (
+                    is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
+                ) or is_static_afp8(self):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for linears
