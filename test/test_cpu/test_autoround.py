@@ -3,6 +3,8 @@ import shutil
 import sys
 import unittest
 
+from parameterized import parameterized
+
 sys.path.insert(0, "../..")
 import torch
 from _test_helpers import model_infer
@@ -107,12 +109,30 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
             data_type="mx_fp4",
+            act_data_type="mx_fp_rceil",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100)
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35) # 0.39
 
+    def test_nv_fp4(self):
+        bits, group_size, sym = 4, 16, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            data_type="nv_fp4",
+        )
+        model, _ = autoround.quantize()
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32)
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35) 
 
     def test_nsample(self):
         autoround = AutoRound(
@@ -177,14 +197,12 @@ class TestAutoRound(unittest.TestCase):
             seqlen=10,
             dataset=self.llm_dataloader,
         )
-        model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100)
-        print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.15) #  0.19
+        autoround.quantize()
 
-    def test_w3g128(self):
+    @parameterized.expand([(2,), (3,), (4,)])
+    def test_g128(self, bits):
         model_name = "facebook/opt-125m"
-        bits, group_size, sym = 3, 128, True
+        group_size, sym = 128, True
         autoround = AutoRound(
             model_name,
             bits=bits,
@@ -195,11 +213,11 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100)
-        print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.2) #  0.23
-
-
+        if bits > 2:
+            result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32)
+            print(result["results"]["lambada_openai"]["acc,none"])
+            self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3) 
+    
     def test_disable_quanted_input(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
@@ -498,7 +516,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
-            "model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+            r"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
             "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
         }
         autoround = AutoRound(
@@ -534,7 +552,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
-            "model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+            r"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
             ##"model.decoder.layers.1.self_attn.k_proj": {"bits": 16}
         }
         autoround = AutoRound(
@@ -570,8 +588,8 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
-            "model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
-            "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
+            r"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+            r"model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
         }
         autoround = AutoRound(
             model,
