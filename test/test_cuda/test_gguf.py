@@ -118,9 +118,7 @@ class TestAutoRound(unittest.TestCase):
     def test_q4_0(self):
         model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         bits, group_size, sym = 4, 32, True
-        autoround = AutoRound(
-            model_name, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int"
-        )
+        autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int")
         autoround.quantize()
         quantized_model_path = "./saved"
 
@@ -141,9 +139,7 @@ class TestAutoRound(unittest.TestCase):
     def test_q4_1(self):
         model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         bits, group_size, sym = 4, 32, False
-        autoround = AutoRound(
-            model=model_name, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int"
-        )
+        autoround = AutoRound(model=model_name, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int")
         autoround.quantize()
         quantized_model_path = "./saved"
 
