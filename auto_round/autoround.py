@@ -255,8 +255,8 @@ class AutoRound(object):
         if tmp_bits is not None and tmp_bits < 16 and tmp_bits != bits:
             logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
-        if tmp_bits is not None and tmp_bits < 16 :
-            for supported_dtype in SUPPORTED_DTYPES: # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+        if tmp_bits is not None and tmp_bits < 16:
+            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
                 if data_type.startswith(supported_dtype):
                     self.data_type = supported_dtype
                     break
@@ -1749,7 +1749,7 @@ class AutoRound(object):
             elif n in layer_config.keys():
                 if "data_type" in layer_config[n] and "bits" not in layer_config[n]:
                     tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
-                    if  tmp_bits != self.bits:
+                    if tmp_bits != self.bits:
                         logger.warning(
                             f"'data_type' do not match the specified 'bits' setting for {n}."
                             f" Resetting 'bits' to {tmp_bits}."
@@ -1757,7 +1757,7 @@ class AutoRound(object):
                         layer_config[n]["bits"] = tmp_bits
                 if "act_data_type" in layer_config[n] and "act_bits" not in layer_config[n]:
                     tmp_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
-                    if  tmp_bits != self.act_bits:
+                    if tmp_bits != self.act_bits:
                         logger.warning(
                             f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
                             f" Resetting 'act_bits' to {tmp_bits}."

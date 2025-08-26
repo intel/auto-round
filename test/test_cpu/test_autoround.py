@@ -610,8 +610,10 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, data_type="mx_fp4", act_bits=4, iters=0, layer_config=layer_config)
         ar.quantize()
         layer_config = ar.layer_config
-        if layer_config["model.decoder.layers.7.fc1"]["bits"] != 8 or layer_config["model.decoder.layers.7.fc1"][
-            "act_bits"] != 8:
+        if (
+            layer_config["model.decoder.layers.7.fc1"]["bits"] != 8
+            or layer_config["model.decoder.layers.7.fc1"]["act_bits"] != 8
+        ):
             raise ValueError("mixed bits is not correct")
 
 
