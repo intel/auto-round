@@ -420,6 +420,7 @@ def get_block_names(model, quant_vision=False):
     block_names: A list whose elements are list of block's layer names
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
+
     def _get_llm_block_names(model):
         block_names = []
         target_modules = []
@@ -1670,6 +1671,7 @@ def get_shared_keys(model):
         tuple: tuple of shared keys.
     """
     from auto_round.special_model_handler import SPECIAL_SHARED_CACHE_KEYS
+
     shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
