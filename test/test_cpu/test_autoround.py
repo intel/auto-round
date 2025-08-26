@@ -3,14 +3,13 @@ import shutil
 import sys
 import unittest
 
-from auto_round.low_cpu_mem import get_module
-
 sys.path.insert(0, "../..")
 import torch
 from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.low_cpu_mem import get_module
 from auto_round.eval.evaluation import simple_evaluate_user_model
 
 
@@ -109,7 +108,11 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
             data_type="mx_fp4",
         )
-        autoround.quantize()
+        model, _ = autoround.quantize()
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100)
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35) # 0.39
+
 
     def test_nsample(self):
         autoround = AutoRound(
@@ -174,13 +177,16 @@ class TestAutoRound(unittest.TestCase):
             seqlen=10,
             dataset=self.llm_dataloader,
         )
-        autoround.quantize()
+        model, _ = autoround.quantize()
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100)
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.15) #  0.19
 
     def test_w3g128(self):
+        model_name = "facebook/opt-125m"
         bits, group_size, sym = 3, 128, True
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -188,21 +194,11 @@ class TestAutoRound(unittest.TestCase):
             seqlen=10,
             dataset=self.llm_dataloader,
         )
-        autoround.quantize()
+        model, _ = autoround.quantize()
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100)
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.2) #  0.23
 
-    def test_w2g128(self):
-        bits, group_size, sym = 2, 128, True
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=10,
-            dataset=self.llm_dataloader,
-        )
-        autoround.quantize()
 
     def test_disable_quanted_input(self):
         bits, group_size, sym = 4, -1, True
@@ -215,6 +211,25 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_quanted_input=False,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
+
+    def test_enable_norm_bias_tuning_qwen3(self):
+        bits, group_size, sym = 4, 128, True
+        model_name = "Qwen/Qwen3-0.6B"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=10,
+            enable_norm_bias_tuning=True,
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
