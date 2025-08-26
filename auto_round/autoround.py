@@ -215,7 +215,7 @@ class AutoRound(object):
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
 
         if kwargs:
-            logger.warning(f"Unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+            logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
         if device is not None and "," in str(device):
             raise ValueError(
@@ -255,6 +255,11 @@ class AutoRound(object):
         if tmp_bits is not None and tmp_bits < 16 and tmp_bits != bits:
             logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
+        if tmp_bits is not None and tmp_bits < 16 :
+            for supported_dtype in SUPPORTED_DTYPES: # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                if data_type.startswith(supported_dtype):
+                    self.data_type = supported_dtype
+                    break
         self.group_size = group_size
         self.sym = sym
         self.layer_config = {} if layer_config is None else layer_config
@@ -267,9 +272,9 @@ class AutoRound(object):
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
-            if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
+            if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
                 self.act_data_type = data_type
-                logger.info(f"Activation adopts {data_type}")
+                logger.info(f"activation adopts {data_type}")
             else:
                 self.act_data_type = "float"
         tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
@@ -279,6 +284,11 @@ class AutoRound(object):
                 f"`act_data_type` do not"
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
+        if tmp_act_bits is not None and tmp_act_bits < 16:
+            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                if self.act_data_type.startswith(supported_dtype):
+                    self.act_data_type = supported_dtype
+                    break
 
         # Tuning hyperparameters
         self.seed = seed
@@ -348,7 +358,7 @@ class AutoRound(object):
         self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
-            logger.warning("Force to use bf16 to for quantization tuning when enabling activation quantization")
+            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
             self.model = self.model.to(torch.bfloat16)
         else:
@@ -369,7 +379,7 @@ class AutoRound(object):
         torch.set_printoptions(precision=3, sci_mode=True)
 
         if is_optimum_habana_available():
-            logger.info("Optimum Habana is available, import htcore explicitly.")
+            logger.info("optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
@@ -482,7 +492,7 @@ class AutoRound(object):
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
             logger.warning(
-                f"Multiple devices have been set for layer {name}, keeping original device {module.tuning_device}"
+                f"multiple devices have been set for layer {name}, keeping original device {module.tuning_device}"
             )
         else:
             module.tuning_device = device
@@ -503,7 +513,7 @@ class AutoRound(object):
         ValueError, TypeError: If any of the configurations are invalid.
         """
         if not isinstance(self.model, torch.nn.Module):
-            raise TypeError("Model must be an instance of torch.nn.Module")
+            raise TypeError("model must be an instance of torch.nn.Module")
         if self.bits <= 0:
             raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
@@ -525,28 +535,28 @@ class AutoRound(object):
 
         if self.act_bits <= 8:
             logger.warning(
-                "Activation quantization is an experimental feature with limited support and a complex API. "
+                "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
             )
 
         if is_mx_fp(self.data_type) and self.group_size != 32:
-            logger.warning("Dtype mx_fp should only support group_size of 32 in real deployment")
+            logger.warning("dtype mx_fp should only support group_size of 32 in real deployment")
 
         if is_nv_fp(self.data_type) and (self.group_size != 16):
-            logger.warning("Dtype nv_fp should only support group_size of 16 in real deployment")
+            logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
                 if self.iters > 0:  # GGUF should log this warning, but we don't know the format here
                     logger.warning(
-                        f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
+                        f"reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
                         f" is smaller than batch_size({self.batch_size})"
                     )
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
                 logger.warning(
-                    f"Reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
+                    f"reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size"
                 )
@@ -1737,25 +1747,28 @@ class AutoRound(object):
 
             # If the layer is partially configured, fill in missing values
             elif n in layer_config.keys():
+                if "data_type" in layer_config[n] and "bits" not in layer_config[n]:
+                    tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
+                    if  tmp_bits != self.bits:
+                        logger.warning(
+                            f"'data_type' do not match the specified 'bits' setting for {n}."
+                            f" Resetting 'bits' to {tmp_bits}."
+                        )
+                        layer_config[n]["bits"] = tmp_bits
+                if "act_data_type" in layer_config[n] and "act_bits" not in layer_config[n]:
+                    tmp_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
+                    if  tmp_bits != self.act_bits:
+                        logger.warning(
+                            f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
+                            f" Resetting 'act_bits' to {tmp_bits}."
+                        )
+                        layer_config[n]["act_bits"] = tmp_bits
+
                 for key in keys:
                     if key not in layer_config[n].keys():
                         layer_config[n][key] = getattr(self, key)
                 layer_config[n]["fixed_by_user"] = True
-                # Check dtype and act_dtype
-                tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
-                if tmp_bits is not None and tmp_bits != layer_config[n]["bits"]:
-                    logger.warning(
-                        f"'data_type' do not match the specified 'bits' setting for {n}."
-                        f" Resetting 'bits' to {tmp_bits}."
-                    )
-                    layer_config[n]["bits"] = tmp_bits
-                tmp_act_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
-                if tmp_act_bits is not None and tmp_act_bits != layer_config[n]["act_bits"]:
-                    logger.warning(
-                        f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
-                        f" Resetting 'act_bits' to {tmp_act_bits}."
-                    )
-                    layer_config[n]["act_bits"] = tmp_act_bits
+
             # If the layer is not in the config and not part of a quantization block,
             # use default configuration and set specific values
             else:

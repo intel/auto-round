@@ -604,6 +604,16 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(dequant_weight.shape[0], 32)
         self.assertEqual(dequant_weight.shape.numel(), 32 * 5760 * 1440)
 
+    def test_mixed_bit_setting(self):
+        model_name = "facebook/opt-125m"
+        layer_config = {"model.decoder.layers.7.fc1": {"bits": 8, "act_bits": 8}}
+        ar = AutoRound(model_name, data_type="mx_fp4", act_bits=4, iters=0, layer_config=layer_config)
+        ar.quantize()
+        layer_config = ar.layer_config
+        if layer_config["model.decoder.layers.7.fc1"]["bits"] != 8 or layer_config["model.decoder.layers.7.fc1"][
+            "act_bits"] != 8:
+            raise ValueError("mixed bits is not correct")
+
 
 if __name__ == "__main__":
     unittest.main()
