@@ -350,7 +350,7 @@ class AutoRound(object):
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
             logger.warning("Force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
-            if self.model.dtype != torch.bfloat16: # keep the model's buffer dtype unchanged
+            if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
                 self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
