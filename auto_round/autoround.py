@@ -350,7 +350,7 @@ class AutoRound(object):
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
             logger.warning("Force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
-            if self.model.dtype!=torch.bfloat16: ##keep the model buffers dtype unchanged
+            if self.model.dtype != torch.bfloat16:  ##keep the model buffers dtype unchanged
                 self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
@@ -1250,7 +1250,7 @@ class AutoRound(object):
             tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
         """
         if self.amp:
-            if self.model.dtype!=self.amp_dtype:
+            if self.model.dtype != self.amp_dtype:
                 self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
@@ -1490,7 +1490,7 @@ class AutoRound(object):
             logger.warning("could not find blocks, exit with original model")
             return self.model, self.layer_config
 
-        if self.amp and self.model.dtype!=self.amp_dtype:
+        if self.amp and self.model.dtype != self.amp_dtype:
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self._get_quantized_layer_names_outside_blocks()
@@ -2033,12 +2033,12 @@ class AutoRound(object):
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
 
-        tmp_dtype = None # TODO delete this as most model is not fp32 now
+        tmp_dtype = None  # TODO delete this as most model is not fp32 now
         ## have bug if block name is not the first block
         if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
             tmp_dtype = self.model.dtype
             if self.amp:
-                if self.model.dtype!=self.model.dtype:
+                if self.model.dtype != self.model.dtype:
                     self.model = self.model.to(torch.bfloat16)
             else:
                 self.model = self.model.to(torch.float32)  ##model on cpu
@@ -2906,7 +2906,7 @@ class AutoRound(object):
                     f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
                 )
             else:
-                if self.model.dtype !=self.amp_dtype:
+                if self.model.dtype != self.amp_dtype:
                     self.model = self.model.to(self.amp_dtype)
         else:
             self.amp_dtype = torch.float32
