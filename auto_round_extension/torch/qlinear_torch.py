@@ -86,7 +86,7 @@ class QuantLinear(nn.Module):
     def post_init(self):
         pass
 
-    @torch.compile()
+    # @torch.compile() ## cpu side has bug
     def pack_248_bits(self, linear, scales, zeros, g_idx=None):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
