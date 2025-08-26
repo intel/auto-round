@@ -172,6 +172,17 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     requirements=["auto-round>=0.5.1"],
 )
 
+BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
+    device=["cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    bits=[8],
+    priority=0,
+    feature_checks=[],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>=0.6.1"],
+)
+
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     device=["cuda", "xpu"],
     sym=[True],  ## asym has accuracys
@@ -732,6 +743,7 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
             If no compatible backend is found for the given layer configuration.
     """
     # Check if the provided backend is in BackendInfos
+    # breakpoint()
     backend = find_backend(backend)
     if backend not in BackendInfos.keys():
         raise ValueError(f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection.")
