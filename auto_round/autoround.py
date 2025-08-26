@@ -2395,7 +2395,7 @@ class AutoRound(object):
         block: torch.nn.Module,
         input_ids: list[torch.Tensor],
         input_others: dict,
-        q_input: Union[None, torch.Tenosr] = None,
+        q_input: Union[None, torch.Tensor] = None,
         device: Union[str, torch.device] = "cpu",
     ):
         """Quantize the weights of a given block of the model.
