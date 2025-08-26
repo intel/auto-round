@@ -17,6 +17,7 @@ import torch
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 
+
 @register_dtype("int_sym")
 def quant_tensor_sym(
     tensor,
@@ -69,6 +70,7 @@ def quant_tensor_sym(
     qdq_result = (scale * q).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, maxq
+
 
 @register_dtype("int_asym")
 def quant_tensor_asym(
