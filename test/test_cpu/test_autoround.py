@@ -11,8 +11,8 @@ from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.low_cpu_mem import get_module
 from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.low_cpu_mem import get_module
 
 
 class LLMDataLoader:
@@ -112,7 +112,9 @@ class TestAutoRound(unittest.TestCase):
             act_data_type="mx_fp_rceil",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32)
+        result = simple_evaluate_user_model(
+            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100
+        )
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35) # 0.39
 
@@ -232,7 +234,6 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
-
 
     def test_enable_norm_bias_tuning_qwen3(self):
         bits, group_size, sym = 4, 128, True
