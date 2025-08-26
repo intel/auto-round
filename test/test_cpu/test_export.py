@@ -228,7 +228,7 @@ class TestAutoRound(unittest.TestCase):
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.input_scale", f.keys())
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
         with torch.no_grad():
             import transformers
@@ -284,7 +284,7 @@ class TestAutoRound(unittest.TestCase):
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.input_scale", f.keys())
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
@@ -294,9 +294,16 @@ class TestAutoRound(unittest.TestCase):
         from transformers import AutoConfig
 
         bits = 4
-        data_type = "mx_fp4e2m1"
+        data_type = "mx_fp"
         group_size = 32
         sym = True
+        layer_config = {}
+        fp_layers_str = "k_proj"
+        from auto_round.utils import get_fp_layer_names
+
+        not_quantize_layer_names = get_fp_layer_names(model, fp_layers_str)
+        for name in not_quantize_layer_names:
+            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float"}
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -306,6 +313,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             data_type=data_type,
+            layer_config=layer_config,
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
@@ -314,12 +322,16 @@ class TestAutoRound(unittest.TestCase):
             output_dir=quantized_model_path, inplace=True, format="llmcompressor"
         )
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_packed")
             and tmp_layer.weight_scale.dtype is torch.uint8
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal MXFP4 packing name or data_type or shape"
+        assert not hasattr(skip_layer, "weight_scale") and not hasattr(  ## check skipped layers
+            skip_layer, "weight_packed"
+        ), "Illegal MXFP4 quantization for fp_layers"
         quantization_config = AutoConfig.from_pretrained(
             quantized_model_path, trust_remote_code=True
         ).quantization_config
@@ -336,7 +348,7 @@ class TestAutoRound(unittest.TestCase):
         from transformers import AutoConfig
 
         bits = 8
-        data_type = "mx_fp8e4m3_rceil"
+        data_type = "mx_fp_rceil"
         group_size = 32
         sym = True
         autoround = AutoRound(
