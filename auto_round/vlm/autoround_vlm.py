@@ -38,6 +38,7 @@ from auto_round.utils import (
     collect_best_params,
     mv_module_from_gpu,
     check_need_act_calibration,
+    get_module,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 from .vlm_dataset import get_vlm_dataloader
@@ -251,7 +252,6 @@ class AutoRoundVLM(AutoRound):
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
-                    import pdb;pdb.set_trace()
                     self.pipe(
                         prompt=prompts,
                         guidance_scale=self.guidance_scale,
@@ -353,7 +353,16 @@ class AutoRoundVLM(AutoRound):
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
         all_first_block_names = [block[0] for block in all_blocks]
-        all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
+        if self.act_bits < 16:
+            layer_names = self.get_quantized_layer_names_outside_blocks()
+            if len(layer_names) > 0:
+                logger.warning(
+                    "quantize layers outside blocks for static activation quantizaiton"
+                    " will significantly increase calibration time"
+                )
+            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
+        else:
+            all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
 
         # Clear hooks for multi-GPU setups
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -415,6 +424,7 @@ class AutoRoundVLM(AutoRound):
                     self.batch_size * self.infer_bs_coeff,
                     self.device,
                     self.cache_device,
+                    only_return_hidden_states=False,
                 )
                 if "encoder_hidden_states" in input_others:
                     input_others["encoder_hidden_states"] = encoder_hidden_states
@@ -451,7 +461,6 @@ class AutoRoundVLM(AutoRound):
                 clear_memory()
                 cnt = 1
             cnt += 1
-
 
 
     def quantize_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
