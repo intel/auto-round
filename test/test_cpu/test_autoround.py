@@ -133,9 +133,11 @@ class TestAutoRound(unittest.TestCase):
             data_type="nv_fp4",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32)
+        result = simple_evaluate_user_model(
+            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
+        )
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35) 
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
 
     def test_nsample(self):
         autoround = AutoRound(
@@ -217,10 +219,12 @@ class TestAutoRound(unittest.TestCase):
         )
         model, _ = autoround.quantize()
         if bits > 2:
-            result = simple_evaluate_user_model(model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32)
+            result = simple_evaluate_user_model(
+                model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
+            )
             print(result["results"]["lambada_openai"]["acc,none"])
-            self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3) 
-    
+            self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)
+
     def test_disable_quanted_input(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
