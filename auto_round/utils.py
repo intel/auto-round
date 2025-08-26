@@ -87,6 +87,14 @@ if deepspeed_exists:
 
 
 def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
     if data_type is None:
         return 16
     for supported_dtype in SUPPORTED_DTYPES:
@@ -2504,3 +2512,7 @@ def is_mx_fp(backend):
 
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
+
+
+def is_static_afp8(ar):
+    return not ar.act_dynamic and "fp8" in ar.act_data_type
