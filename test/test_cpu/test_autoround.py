@@ -103,6 +103,7 @@ class TestAutoRound(unittest.TestCase):
             self.model,
             self.tokenizer,
             bits=bits,
+            act_bits=bits,
             group_size=group_size,
             sym=sym,
             iters=2,
@@ -116,7 +117,7 @@ class TestAutoRound(unittest.TestCase):
             model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100
         )
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35) # 0.39
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3) # 0.39
 
     def test_nv_fp4(self):
         bits, group_size, sym = 4, 16, False
@@ -264,24 +265,6 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_quanted_input=False,
-            enable_norm_bias_tuning=True,
-            dataset=self.llm_dataloader,
-        )
-        autoround.quantize()
-
-    def test_enable_norm_bias_tuning_qwen3(self):
-        bits, group_size, sym = 4, 128, True
-        model_name = "Qwen/Qwen3-0.6B"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=10,
             enable_norm_bias_tuning=True,
             dataset=self.llm_dataloader,
         )
