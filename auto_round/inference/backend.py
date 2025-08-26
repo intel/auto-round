@@ -816,8 +816,8 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         except:
             missing_requirements.append(req)
 
-    gptq_req = next((req for req in missing_requirements if "gptqmodel" in req), None)
-    other_reqs = [req for req in missing_requirements if "gptqmodel" not in req]
+    gptq_req = next((f'"{req}"' for req in missing_requirements if "gptqmodel" in req), None)
+    other_reqs = [f'"{req}"' for req in missing_requirements if "gptqmodel" not in req]
 
     pip_cmds = build_pip_commands(gptq_req, other_reqs)
     if not pip_cmds:
