@@ -74,6 +74,7 @@ def test_w4a8(data_type):
         data_type=data_type,
         act_data_type="fp8_sym",
         act_bits=8,
+        nsamples=1,
         act_dynamic=False,
     )
     q_model, qconfig = autoround.quantize()

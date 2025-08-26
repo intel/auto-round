@@ -217,25 +217,6 @@ class TestQuantizationBlocks(unittest.TestCase):
         self.assertTrue(block_name == block_name_2)
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue("model.layers.23" == block_name_2[0][-1])
-        ##tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # python_path = sys.executable
-        # res = os.system(
-        #     f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iter 1 --nsamples 1 --format auto_round --output_dir test/saved --disable_eval")
-        # if res > 0 or res == -1:
-        #     assert False, "cmd line test fail, please have a check"
-        #
-        # quantized_model_path = "../saved"
-        #
-        # from auto_round import AutoHfQuantizer
-        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-        # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        # text = "There is a girl who likes adventure,"
-        # inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        # shutil.rmtree("./saved", ignore_errors=True)
-        # quant_config = model.config.quantization_config
-        # assert quant_config.to_quant_block_names is not None
-
 
 if __name__ == "__main__":
     unittest.main()
