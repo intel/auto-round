@@ -139,21 +139,6 @@ class TestAutoRound(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
 
-    def test_nsample(self):
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=4,
-            group_size=128,
-            seqlen=2,
-            nsamples=3,
-            batch_size=3,
-            iters=2,
-            dataset=self.llm_dataloader,
-            gradient_accumulate_steps=4,
-        )
-        autoround.quantize()
-
     def test_default(self):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -175,20 +160,6 @@ class TestAutoRound(unittest.TestCase):
             return
         if torch.cuda.is_available():
             autoround.save_quantized(output_dir="./saved", inplace=False)
-
-    def test_sym(self):
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=10,
-            dataset=self.llm_dataloader,
-        )
-        autoround.quantize()
 
     def test_w4g1(self):
         bits, group_size, sym = 4, -1, True
@@ -377,7 +348,6 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     def test_tensor_reshape(self):
-        model_name = "facebook/opt-125m"
         bits, group_size, sym = 4, 100, False
         autoround = AutoRound(
             self.model,

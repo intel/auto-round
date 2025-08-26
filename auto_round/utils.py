@@ -24,7 +24,7 @@ import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Tuple, Union
+from typing import Any, Callable, Tuple, Union
 
 import cpuinfo
 import torch
@@ -33,10 +33,8 @@ from packaging import version
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
-from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
-
 
 deepspeed_exists = False
 if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
@@ -87,6 +85,14 @@ if deepspeed_exists:
 
 
 def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
     if data_type is None:
         return 16
     for supported_dtype in SUPPORTED_DTYPES:
@@ -413,6 +419,7 @@ def get_block_names(model, quant_vision=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
+    from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
     def _get_llm_block_names(model):
         block_names = []
@@ -944,6 +951,7 @@ TORCH_VERSION_AT_LEAST_2_6 = torch_version_at_least("2.6.0")
 TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
+
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -971,7 +979,10 @@ def compile_func_on_cuda_or_cpu(func):
     return torch.compile(func)
 
 
-def compile_func(fun, device):
+def compile_func(
+    fun: Union[torch.nn.Module, Callable], device: Union[torch.nn.Module, Callable]
+) -> Union[torch.nn.Module, Callable]:
+    """Compile function on the specified device."""
     if "hpu" in str(device):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
@@ -1473,7 +1484,6 @@ def mllm_load_model(
     model_dtype=None,
     **kwargs,
 ):
-
     import transformers
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
@@ -1660,6 +1670,8 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
+    from auto_round.special_model_handler import SPECIAL_SHARED_CACHE_KEYS
+
     shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
@@ -2193,7 +2205,6 @@ def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_fi
 def pad_block_fp8_weight_naive(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
 ) -> Tuple[torch.Tensor, int, int]:
-
     assert len(block_size) == 2
 
     block_size_m, block_size_n = block_size
@@ -2504,3 +2515,7 @@ def is_mx_fp(backend):
 
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
+
+
+def is_static_afp8(ar):
+    return not ar.act_dynamic and "fp8" in ar.act_data_type
