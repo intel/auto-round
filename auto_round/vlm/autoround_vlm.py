@@ -19,12 +19,6 @@ import torch
 from torch import autocast
 from tqdm import tqdm
 
-from auto_round.special_model_handler import (
-    NOT_SUPPORT_ONLY_TEXT_MODELS,
-    SUPPORT_ONLY_TEXT_MODELS,
-    _handle_special_model,
-    _handle_diffusers_model,
-)
 
 from auto_round import AutoRound
 from auto_round.low_cpu_mem.utils import get_layers_before_block
@@ -152,7 +146,6 @@ class AutoRoundVLM(AutoRound):
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator = generator
-        #model = _handle_diffusers_model(model)
 
         if iters > 0 or check_need_act_calibration(act_dynamic, act_data_type):
             if dataset is None:
@@ -258,6 +251,7 @@ class AutoRoundVLM(AutoRound):
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
+                    import pdb;pdb.set_trace()
                     self.pipe(
                         prompt=prompts,
                         guidance_scale=self.guidance_scale,
