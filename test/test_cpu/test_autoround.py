@@ -117,7 +117,7 @@ class TestAutoRound(unittest.TestCase):
             model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100
         )
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3) # 0.39
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)  # 0.39
 
     def test_nv_fp4(self):
         bits, group_size, sym = 4, 16, False
