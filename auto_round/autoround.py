@@ -73,6 +73,7 @@ from auto_round.utils import (
     is_nv_fp,
     is_optimum_habana_available,
     is_standard_fp,
+    is_static_afp8,
     llm_load_model,
     logger,
     mv_module_from_gpu,
@@ -1325,7 +1326,16 @@ class AutoRound(object):
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
         all_first_block_names = [block[0] for block in all_blocks]
-        all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
+        if self.act_bits < 16 and not self.act_dynamic:
+            layer_names = self.get_quantized_layer_names_outside_blocks()
+            if len(layer_names) > 0:
+                logger.warning(
+                    "quantize layers outside blocks for static activation quantizaiton"
+                    " will significantly increase calibration time"
+                )
+            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
+        else:
+            all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
 
         # Clear hooks for multi-GPU setups
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -1391,7 +1401,9 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                if (
+                    is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
+                ) or is_static_afp8(self):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for linears
