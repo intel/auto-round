@@ -817,7 +817,9 @@ def eval(args):
         )
         model.eval()
         st = time.time()
-        res = simple_evaluate_user_model(model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit)
+        res = simple_evaluate_user_model(
+            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit
+        )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
     else:
@@ -831,7 +833,7 @@ def eval(args):
             tasks=tasks,
             device=device_str,
             batch_size=batch_size,
-            limit=args.limit
+            limit=args.limit,
         )
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
