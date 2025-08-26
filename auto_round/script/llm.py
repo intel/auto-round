@@ -253,6 +253,26 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="the template for building training dataset. It can be a custom one.",
         )
 
+        ## ===================== diffusers model ==================
+        self.add_argument(
+            "--guidance_scale",
+            default=7.5,
+            type=float,
+        )
+
+        self.add_argument(
+            "--num_inference_steps",
+            default=50,
+            type=int,
+        )
+
+        self.add_argument(
+            "--generator_seed",
+            default=50,
+            type=int,
+        )
+
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -290,7 +310,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )
 
-        ## ======================= VLM =======================
+        ## ======================= diffusers model =======================
         self.add_argument(
             "--prompt_file", default=None, type=str, help="the prompt file to load prmpt."
         )
@@ -459,7 +479,7 @@ def tune(args):
 
     if args.mllm:
         if os.path.exists(os.path.join(model_name, "model_index.json")):
-            model = vlm_load_model(
+            pipe, model = vlm_load_model(
                 model_name,
                 device=device_str,
                 model_dtype=args.model_dtype,
@@ -497,12 +517,11 @@ def tune(args):
     if args.mllm:
         if os.path.exists(os.path.join(model_name, "model_index.json")):
             round = AutoRoundVLM
-            pipe = model
-            model = model.transformer
             mllm_kwargs = {
                 "pipe": pipe,
-                "guidance_scale": 7.5,
-                "num_inference_steps": 50,
+                "guidance_scale": args.guidance_scale,
+                "num_inference_steps": args.num_inference_steps,
+                #"generator": torch.Generator(device=device_str).manual_seed(args.generator_seed) if args.generator_seed else None,
                 "generator": None,
             }
         else:

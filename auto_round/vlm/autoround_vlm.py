@@ -16,12 +16,14 @@ from copy import deepcopy
 from typing import Union
 
 import torch
+from torch import autocast
 from tqdm import tqdm
 
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SUPPORT_ONLY_TEXT_MODELS,
     _handle_special_model,
+    _handle_diffusers_model,
 )
 
 from auto_round import AutoRound
@@ -37,7 +39,13 @@ from auto_round.utils import (
     mllm_load_model,
     to_device,
     to_dtype,
+    block_forward,
+    is_nv_fp,
+    collect_best_params,
+    mv_module_from_gpu,
+    check_need_act_calibration,
 )
+from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 from .vlm_dataset import get_vlm_dataloader
 
 
@@ -123,6 +131,7 @@ class AutoRoundVLM(AutoRound):
         act_group_size: int = None,
         act_sym: bool = None,
         act_dynamic: bool = True,
+        act_data_type: str = None,
         to_quant_block_names: Union[str, list] = None,
         enable_norm_bias_tuning: bool = False,
         truncation: bool = None,
@@ -143,8 +152,9 @@ class AutoRoundVLM(AutoRound):
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator = generator
+        #model = _handle_diffusers_model(model)
 
-        if iters > 0:
+        if iters > 0 or check_need_act_calibration(act_dynamic, act_data_type):
             if dataset is None:
                 logger.warning("Dataset is not provided, will use coco-2014 captions for calibration")
                 dataset = "coco2014"
@@ -199,6 +209,7 @@ class AutoRoundVLM(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
+            act_data_type=act_data_type,
             to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
@@ -239,7 +250,9 @@ class AutoRoundVLM(AutoRound):
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         if self.pipe.dtype != self.model.dtype:
-            self.pipe = self.pipe.to(self.model.dtype)
+            self.pipe.to(self.model.dtype)
+        if self.pipe.device != self.model.device:
+            self.pipe.to(self.model.device)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
@@ -288,6 +301,399 @@ class AutoRoundVLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
+
+
+    @torch.no_grad()
+    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True, only_return_hidden_states=True):
+        """Compute the output of a given block of the model for a given input.
+
+        Args:
+        block: The block of the model.
+        input_ids: The input tensor containing tokenized input ids.
+        input_others: A dictionary containing additional input data.
+        bs: The batch size for computing the output.
+        device: The device for computation.
+        cache_device: The device for storing the output.
+        batch_dim: The batch dimension of the output tensor.
+
+        Returns:
+        The output tensor of the block.
+        """
+
+        output = []
+        nsamples = len(input_ids)
+        new_encoder_hidden_states = deepcopy(input_others.get("encoder_hidden_states", []))
+        for i in range(0, nsamples, bs):
+            end_index = min(nsamples, i + bs)
+            indices = torch.arange(i, end_index).to(torch.long)
+            tmp_input_ids, tmp_input_others = AutoRound.sampling_inputs(
+                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
+            )
+            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, only_return_hidden_states)
+            if "encoder_hidden_states" in tmp_input_others and (isinstance(tmp_output, list) or isinstance(tmp_output, tuple)) and len(tmp_output) == 2:
+                encoder_hidden_states, tmp_output = tmp_output
+                for i in indices:
+                    new_encoder_hidden_states[i] = encoder_hidden_states.to(cache_device)
+            tmp_output = tmp_output.to(cache_device)
+            if save_output:
+                if self.batch_size == 1:
+                    output.append(tmp_output)
+                else:
+                    output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
+        if self.low_gpu_mem_usage:
+            clear_memory()
+ 
+        return output, new_encoder_hidden_states
+
+
+    def quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
+        """Quantize model layers block by block using cached inputs and imatrix.
+
+        Args:
+            all_to_quantized_module_names (list[str]): Names of layers to be quantized.
+        """
+        all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+
+        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        if not all_blocks:
+            raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
+
+        all_first_block_names = [block[0] for block in all_blocks]
+        all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
+
+        # Clear hooks for multi-GPU setups
+        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+            accelerate.hooks.remove_hook_from_submodules(self.model)
+
+        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+
+        for block_names in all_blocks:
+            first_block = block_names[0]
+            inputs = all_inputs.pop(first_block)
+            input_keys = [k for k in inputs if k.startswith("hidden_state")]
+            if len(input_keys) != 1:
+                raise RuntimeError(
+                    "hidden_states arg mismatch. Please file an issue at https://github.com/intel/auto-round/issues"
+                )
+            inputs["input_ids"] = inputs.pop(input_keys[0])
+
+            clear_memory(self.inputs)
+
+            total_samples = len(inputs["input_ids"])
+            if total_samples < self.batch_size:
+                self.batch_size = total_samples
+                logger.warning(f"Forcing batch size to {total_samples}")
+
+            input_ids = to_device(inputs.pop("input_ids"), self.cache_device)
+            input_others = to_device(inputs, self.cache_device)
+
+            tmp_dtype = self.amp_dtype if self.amp else torch.float32
+            input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
+
+            for key, val in input_others.items():
+                if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
+                    input_others[key] = val.to(tmp_dtype)
+                elif isinstance(val, list):
+                    input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+
+            for block_name in block_names:
+                pbar.set_description(f"Quantizing {block_name}")
+                block = get_module(self.model, block_name)
+                block = block.to(self.device)
+                if hasattr(self.model, "is_fp8"):
+                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
+                # Dispatch model if needed
+                if self.device_map is not None:
+                    from accelerate import dispatch_model
+                    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                    for _, m in block.named_modules():
+                        if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                            continue
+                        hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+                        add_hook_to_module(m, hook, True)
+                else:
+                    block = block.to(self.device)
+                input_ids, encoder_hidden_states = self.get_block_outputs(
+                    block,
+                    input_ids,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    self.device,
+                    self.cache_device,
+                )
+                if "encoder_hidden_states" in input_others:
+                    input_others["encoder_hidden_states"] = encoder_hidden_states
+
+                if self.device_map is not None:
+                    accelerate.hooks.remove_hook_from_submodules(block)
+
+                if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                    from auto_round.utils import set_amax_for_all_moe_layers
+
+                    # enable moe experts act_max automatic generation for linears
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+                # Normalize imatrix and quantize layers
+                for _, m in block.named_modules():
+                    if hasattr(m, "imatrix"):
+                        m.imatrix /= m.imatrix_cnt
+                    if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
+                        self.quantize_layer_via_rtn(m.tmp_name)
+                        all_to_quantized_module_names.remove(m.tmp_name)
+
+                mv_module_from_gpu(block, self.low_cpu_mem_usage)
+                pbar.update(1)
+
+        pbar.close()
+        cnt = 1
+        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+        if clear_mem_freq == 0:
+            clear_mem_freq = 1
+        # Process remaining layers not in blocks
+        for name in all_to_quantized_module_names:
+            self.quantize_layer_via_rtn(name)
+            if cnt % clear_mem_freq == 0:
+                clear_memory()
+                cnt = 1
+            cnt += 1
+
+
+
+    def quantize_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+        """Quantize the weights of a given block of the model.
+
+        Args:
+        block: The block of the model to be quantized.
+        input_ids: The input tensor containing tokenized input ids.
+        input_others: A dictionary containing additional input data.
+        q_input: The quantized input tensor.
+        device: The device for quantization.
+
+        Returns:
+        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
+        """
+        if hasattr(self.model, "is_fp8"):
+            for n, m in block.named_modules():
+                if m.__class__.__name__ == "FP8Linear":
+                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
+                    set_module(block, n, new_layer)
+
+        if self.device_map is not None:
+            from accelerate import dispatch_model
+
+            for n, m in block.named_modules():
+                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                    continue
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+                add_hook_to_module(m, hook, True)
+
+        if q_input is None:
+            hook_handles = self.register_act_max_hook(block)
+
+            output, encoder_hidden_states = self.get_block_outputs(
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device, only_return_hidden_states=False
+            )
+
+            for handle in hook_handles:
+                handle.remove()
+        else:
+            output, encoder_hidden_states = self.get_block_outputs(
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device, only_return_hidden_states=False
+            )
+            hook_handles = self.register_act_max_hook(block)
+            if hook_handles:
+                self.get_block_outputs(
+                    block,
+                    q_input,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    device,
+                    self.cache_device,
+                    save_output=False,
+                )
+
+            for handle in hook_handles:
+                handle.remove()
+
+        if q_input is not None:
+            if input_ids is not q_input:
+                clear_memory(input_ids)
+            else:
+                clear_memory()
+            input_ids = q_input
+
+        quantized_layer_names, unquantized_layer_names = wrapper_block(
+            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device
+        )
+        if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
+            from auto_round.data_type.utils import update_fused_layer_global_scales
+
+            modules = block.modules()
+            for module in modules:
+                update_fused_layer_global_scales(module)
+        round_params = []
+        minmax_params = []
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                for key in m.params.keys():
+                    if "min" in key or "max" in key:
+                        minmax_params.append(m.params[key])
+                    else:
+                        round_params.append(m.params[key])
+
+        if self.enable_minmax_tuning:
+            optimizer = self.optimizer(
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+            )
+        else:
+            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                f"layers in the block"
+            )
+            logger.info(dump_info)
+            unwrapper_block(block, {})  ## TODO Quant layer should change
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            return output, output
+
+        if self.lr_scheduler is None:
+            lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
+            )
+        else:
+            lr_schedule = copy.deepcopy(self.lr_scheduler)
+
+        nsamples = len(input_ids)
+        pick_samples = self.batch_size * self.gradient_accumulate_steps
+        pick_samples = min(nsamples, pick_samples)
+        if self.sampler != "rand":
+            whole_indices = torch.randperm(nsamples)[:pick_samples]
+        last_best_iter = 0
+        best_loss = torch.finfo(torch.float).max
+        num_elm = 1
+        mse_reduction = "mean"
+        if self.gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
+        best_params = {}
+        total_loss = 0
+
+        for i in range(self.iters):
+            total_loss = 0
+            if self.sampler == "rand":
+                whole_indices = torch.randperm(nsamples)[:pick_samples]
+                ##we assume the block input and output shape is same
+                if self.gradient_accumulate_steps != 1:
+                    current_input_ids = [input_ids[i] for i in whole_indices]
+                    num_elm = sum(id.numel() for id in current_input_ids)
+            for tmp_step in range(self.gradient_accumulate_steps):
+                indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
+                current_input_ids, current_input_others = AutoRound.sampling_inputs(
+                    input_ids,
+                    input_others,
+                    indices,
+                    seqlen=self.seqlen,
+                    batch_dim=self.batch_dim,
+                    share_cache_keys=self.shared_cache_keys,
+                )
+
+                current_output = [output[x] for x in indices]
+                current_output = torch.cat(current_output, dim=self.batch_dim)
+
+                current_output = to_device(current_output, device)
+
+                output_q = block_forward(
+                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, only_return_hidden_states=False
+                )
+                if "encoder_hidden_states" in input_others and (isinstance(output_q, list) or isinstance(output_q, tuple)) and len(output_q) == 2:
+                    output_q = output_q[1]
+ 
+                if self.amp:
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                else:
+                    loss = mse_loss(  # pylint: disable=not-callable
+                        output_q.to(torch.float32), current_output.to(torch.float32)
+                    )
+
+                total_loss += loss.item() / num_elm
+                self.scale_loss_and_backward(scaler, loss)
+
+            if i == 0:
+                init_loss = total_loss
+
+            if total_loss < best_loss:
+                best_loss = total_loss
+                if not self.not_use_best_mse:
+                    best_params = collect_best_params(block)
+                    # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
+
+                    last_best_iter = i
+            if self.not_use_best_mse and i == self.iters - 1:
+                best_params = collect_best_params(block)
+
+            if not self.not_use_best_mse:
+                if 0 < self.dynamic_max_gap <= i - last_best_iter:
+                    break
+            self.step(scaler, optimizer, lr_schedule)
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        dump_info = (
+            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        )
+        logger.info(dump_info)
+        if len(unquantized_layer_names) != 0:
+            logger.info(f"{unquantized_layer_names} have not been quantized")
+        with torch.no_grad():
+            unwrapper_block(block, best_params)
+        if self.enable_quanted_input:
+            if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                from auto_round.utils import set_amax_for_all_moe_layers
+
+                # enable moe experts act_max automatic generation for WrapperWALayer
+                set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
+            if self.low_cpu_mem_usage:
+                block = block.to(device)
+            clear_memory()
+            q_outputs, _ = self.get_block_outputs(
+                block,
+                input_ids,
+                input_others,
+                self.batch_size * self.infer_bs_coeff,
+                device,
+                cache_device=self.cache_device,
+                only_return_hidden_states=False,
+            )
+            if self.device_map is not None:
+                accelerate.hooks.remove_hook_from_submodules(block)
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            clear_memory(input_ids)
+
+            if "encoder_hidden_states" in input_others:
+                input_others["encoder_hidden_states"] = encoder_hidden_states
+            return q_outputs, output
+
+        else:
+            if self.device_map is not None:
+                accelerate.hooks.remove_hook_from_submodules(block)
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            clear_memory(input_ids)
+            if "encoder_hidden_states" in input_others:
+                input_others["encoder_hidden_states"] = encoder_hidden_states
+            return None, output
+
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.

@@ -469,7 +469,7 @@ def collect_best_params(block):
     return params
 
 
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu"), only_return_hidden_states=True):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -479,6 +479,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     amp: A boolean indicating whether to use automatic mixed precision.
     amp_dtype: The data type for automatic mixed precision.
     device: The target device.
+    only_return_hidden_states: if the output has more than one tenor, only return the hidden_states tensor
 
     Returns:
     output: The output of the forward pass.
@@ -495,7 +496,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
             output = block(input_ids, *input_tuple, **input_others)
     else:
         output = block(input_ids, *input_tuple, **input_others)
-    if isinstance(output, list) or isinstance(output, tuple):
+    if only_return_hidden_states and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[0]
     return output
 
@@ -1610,7 +1611,8 @@ def vlm_load_model(
     from diffusers import AutoPipelineForText2Image
     pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype)
     pipe = _to_model_dtype(pipe, model_dtype)
-    return pipe
+    model = pipe.transformer
+    return pipe, model.to(device)
 
 
 def is_pure_text_model(model):
