@@ -77,7 +77,15 @@ class TestLocalCalibDataset(unittest.TestCase):
         dataset = "NeelNanda/pile-10k:apply_chat_template:system_prompt=''"
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset,nsamples=1
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=128,
+            dataset=dataset,
+            nsamples=1,
         )
         autoround.quantize()
 
@@ -85,7 +93,15 @@ class TestLocalCalibDataset(unittest.TestCase):
         dataset = "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp"
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset,nsamples=1
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=128,
+            dataset=dataset,
+            nsamples=1,
         )
         autoround.quantize()
 
@@ -93,7 +109,15 @@ class TestLocalCalibDataset(unittest.TestCase):
         dataset = "NeelNanda/pile-10k:num=256,mbpp:num=256"
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset,nsamples=1
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=128,
+            dataset=dataset,
+            nsamples=1,
         )
         autoround.quantize()
 

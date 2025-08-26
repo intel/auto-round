@@ -111,7 +111,6 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-
     def test_default(self):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -133,7 +132,6 @@ class TestAutoRound(unittest.TestCase):
             return
         if torch.cuda.is_available():
             autoround.save_quantized(output_dir="./saved", inplace=False)
-
 
     def test_w4g1(self):
         bits, group_size, sym = 4, -1, True

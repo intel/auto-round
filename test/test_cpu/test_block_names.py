@@ -218,5 +218,6 @@ class TestQuantizationBlocks(unittest.TestCase):
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue("model.layers.23" == block_name_2[0][-1])
 
+
 if __name__ == "__main__":
     unittest.main()
