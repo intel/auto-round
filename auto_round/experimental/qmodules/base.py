@@ -19,10 +19,34 @@ import torch
 
 
 class QModuleBase(torch.nn.Module):
+    """
+    Abstract class used to describe the weight creation and forward pass
+    of different quantization schemes supported by Auto-Round.
+    The design is inspired by vLLM's CompressedTensorsScheme:
+    https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_scheme.py
+
+    """
+
     def __init__(self):
         super().__init__()
 
     @classmethod
     @abstractmethod
     def from_original(cls, config, original_layer):
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def get_min_capability(cls) -> int:
+        """
+        Get minimum device capability.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def process_weights_after_loading(self, layer: torch.nn.Module):
+        """
+        Called after weight loading is complete for any cleanup that
+        needs to occur.
+        """
         raise NotImplementedError

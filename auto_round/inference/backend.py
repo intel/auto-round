@@ -172,6 +172,10 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     requirements=["auto-round>=0.5.1"],
 )
 
+# FP8 static quant
+# Weight: FP8, per-channel, may be extended to per-tensor in future
+# Activation: FP8, per-tensor
+
 BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     device=["cuda", "cpu"],
     packing_format="",

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from abc import abstractmethod
 from typing import Optional, Union
 
 import torch
@@ -106,3 +107,14 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
         qdq_weight = self.dequant_weight_online()
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
         return out
+
+    @classmethod
+    def get_min_capability(cls) -> int:
+        """
+        Get minimum device capability.
+        """
+        # FIXME: set to 0 for now, as fp8 kernels are not available yet
+        return 0
+
+    def process_weights_after_loading(self, layer: torch.nn.Module):
+        pass
