@@ -176,11 +176,12 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     device=["cuda", "cpu"],
     packing_format="",
     sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
     bits=[8],
     priority=0,
     feature_checks=[],
     alias=["auto_round", "torch"],
-    requirements=["auto-round>=0.6.1"],
+    requirements=["auto-round>=0.6.1.dev0"],
 )
 
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
@@ -463,7 +464,7 @@ def dynamic_import_inference_linear(backend, config):
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
 
     if is_weight_fp8_activation_static_fp8(config):
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import WeightFP8ActFP8StaticQuantLinear
+        from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear
 
         return WeightFP8ActFP8StaticQuantLinear
 
@@ -743,7 +744,6 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
             If no compatible backend is found for the given layer configuration.
     """
     # Check if the provided backend is in BackendInfos
-    # breakpoint()
     backend = find_backend(backend)
     if backend not in BackendInfos.keys():
         raise ValueError(f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection.")
@@ -855,6 +855,7 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
     # Instructional messages
     install_instructions = []
+
     for cmd in pip_cmds:
         if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
             install_instructions.append(

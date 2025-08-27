@@ -590,7 +590,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     if backend.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
         backend = backend[len("auto_round:") :]
-    # breakpoint()
+
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
     if backend == "auto" or backend == "":
         best_backend = get_highest_priority_backend(
