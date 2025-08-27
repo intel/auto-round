@@ -20,9 +20,9 @@ import torch
 __all__ = ["QModuleBase"]
 
 
-class QModuleBase(ABC):
+class QModuleBase(torch.nn.Module):
     """
-    Abstract class used to describe the weight creation and forward pass
+    Base class used to describe the weight creation and forward pass
     of different quantization schemes supported by Auto-Round.
     The design is inspired by vLLM's CompressedTensorsScheme:
     https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_scheme.py
