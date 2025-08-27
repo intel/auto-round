@@ -217,6 +217,8 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
                 for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
                     if hasattr(module, attr) and getattr(module, attr) is not None:
                         attr_tensor = getattr(module, attr)
+                        if not isinstance(attr_tensor, torch.Tensor):
+                            continue
                         ori_shape = attr_tensor.shape
                         attr_tensor = cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
                         attr_tensor = attr_tensor.reshape(ori_shape)
