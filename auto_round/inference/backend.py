@@ -177,7 +177,7 @@ BackendInfos["auto_round:torch"] = BackendInfo(
 # Activation: FP8, per-tensor
 
 BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
-    device=["cuda", "cpu"],
+    device=["xpu", "cuda", "cpu"],
     packing_format="",
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
