@@ -145,6 +145,7 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits, orig_layer.sym)
+
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(
                 orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym
@@ -365,7 +366,7 @@ class WrapperLinear(torch.nn.Module):
                     self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
                     self.orig_layer.act_max = self.orig_layer.act_max.to("cpu")
                 else:
-                    act_scale = torch.ones_like(act_max_scale, dtype=self.orig_layer.scale_dtype)
+                    act_scale = torch.ones(1, dtype=self.orig_layer.scale_dtype)
                 self.orig_layer.act_scale = act_scale.to("cpu")
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh

@@ -485,11 +485,16 @@ def tune(args):
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
-        layer_config[name] = {"bits": 16, "act_bits": 16}
+        layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
     if len(not_quantize_layer_names) > 0:
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
-            if "auto_round" not in format and "fake" not in format and "awq" not in format:
+            if (
+                "auto_round" not in format
+                and "fake" not in format
+                and "awq" not in format
+                and "llmcompressor" not in format
+            ):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
@@ -629,7 +634,11 @@ def tune(args):
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     tmp_act_bits = infer_bits_by_data_type(args.act_data_type)
-    if tmp_act_bits is not None and (args.act_bits <= 8 or tmp_act_bits <= 8 or eval_gguf_model):
+    if tmp_act_bits is not None:
+        act_bits = tmp_act_bits
+    else:
+        act_bits = args.act_bits
+    if act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
