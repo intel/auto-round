@@ -175,6 +175,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
     for layer_name in layer_config:
+        if "in_blocks" not in layer_config[layer_name]:
+            continue
         if (
             not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
         ):  ##lm head ##TODO fix act and so on
