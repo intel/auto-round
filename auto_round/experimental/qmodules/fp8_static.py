@@ -19,6 +19,8 @@ import torch
 
 from auto_round.experimental.qmodules.base import QModuleBase
 
+__all__ = ["WeightFP8ActFP8StaticQuantLinear"]
+
 
 def _quant_tensor_to_fp8_with_scale(tensor: torch.Tensor, scale: torch.Tensor):
     FULL_RANGE = torch.finfo(torch.float8_e4m3fn).max
