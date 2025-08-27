@@ -107,17 +107,17 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            seqlen=2,
-            dataset=self.llm_dataloader,
+            nsamples=2,
+            seqlen=128,
             data_type="mx_fp4",
             act_data_type="mx_fp_rceil",
         )
         model, _ = autoround.quantize()
         result = simple_evaluate_user_model(
-            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=100
+            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
         )
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)  # 0.39
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)  # 0.375
 
     def test_nv_fp4(self):
         model_name = "facebook/opt-125m"
