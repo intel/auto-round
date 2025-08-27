@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Optional, Union
 
 import torch
 
 
-class QModuleBase(torch.nn.Module):
+class QModuleBase(ABC):
     """
     Abstract class used to describe the weight creation and forward pass
     of different quantization schemes supported by Auto-Round.
@@ -32,7 +32,7 @@ class QModuleBase(torch.nn.Module):
 
     @classmethod
     @abstractmethod
-    def from_original(cls, config, original_layer):
+    def from_original(cls, config, original_layer: torch.nn.Module):
         raise NotImplementedError
 
     @classmethod
