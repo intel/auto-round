@@ -16,7 +16,6 @@ import copy
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Union
 
 import threadpoolctl as tctl
 import torch
