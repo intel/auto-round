@@ -19,7 +19,7 @@ from typing import Any, List, Optional
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
-from auto_round.utils import get_library_version, logger
+from auto_round.utils import get_library_version, is_weight_fp8_activation_static_fp8, logger
 
 BackendInfos = {}
 
@@ -427,17 +427,6 @@ def check_compatible(
                 return res
 
     return True
-
-
-def is_weight_fp8_activation_static_fp8(config):
-    bits, group_size, sym, data_type, act_dynamic = (
-        config["bits"],
-        config["group_size"],
-        config["sym"],
-        config["data_type"],
-        config["act_dynamic"],
-    )
-    return bits == 8 and group_size == -1 and sym and data_type == "fp8" and not act_dynamic
 
 
 def dynamic_import_inference_linear(backend, config):

@@ -19,6 +19,7 @@ import re
 import sys
 import time
 import traceback
+from enum import Enum
 from typing import Any, Union
 
 import accelerate
@@ -74,6 +75,7 @@ from auto_round.utils import (
     is_optimum_habana_available,
     is_standard_fp,
     is_static_afp8,
+    is_torch_fp8_static,
     llm_load_model,
     logger,
     mv_module_from_gpu,
@@ -85,6 +87,12 @@ from auto_round.utils import (
     unsupport_meta_device,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+
+
+class AutoRoundFormat(str, Enum):
+    # Weight: FP8, per-channel, may be extended to per-tensor in future
+    # Activation: FP8, per-tensor
+    TORCH_FP8_STATIC = "torch_fp8_static"
 
 
 class AutoRound(object):
@@ -663,9 +671,14 @@ class AutoRound(object):
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
-                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type) or is_standard_fp(self.data_type):
+                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = format.replace("auto_round", f"auto_round:{self.data_type}")
                     formats[index] = format
+                if is_torch_fp8_static(self):
+                    format = format.replace("auto_round", f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}")
+                    formats[index] = format
+                # if is_torch_fp8_static(self):
+                #     formats[index] = "auto_round:torch_fp8_static"
             elif format == "llmcompressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
@@ -731,10 +744,10 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == "auto_round:fp8"):
+                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"):
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
-                        " change format to auto_round"
+                        f" change format {format} to auto_round"
                     )
                     format = "auto_round"
             if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
