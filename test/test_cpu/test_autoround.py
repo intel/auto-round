@@ -47,6 +47,7 @@ class TestAutoRound(unittest.TestCase):
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
     def test_remove_whole_block(self):
+        model_name = "facebook/opt-125m"
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 32},
             "model.decoder.layers.0.self_attn.v_proj": {"bits": 32},
@@ -57,8 +58,7 @@ class TestAutoRound(unittest.TestCase):
         }
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -98,10 +98,10 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     def test_mx_fp4(self):
+        model_name = "facebook/opt-125m"
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             act_bits=bits,
             group_size=group_size,
@@ -120,10 +120,10 @@ class TestAutoRound(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)  # 0.39
 
     def test_nv_fp4(self):
+        model_name = "facebook/opt-125m"
         bits, group_size, sym = 4, 16, False
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -162,10 +162,10 @@ class TestAutoRound(unittest.TestCase):
             autoround.save_quantized(output_dir="./saved", inplace=False)
 
     def test_w4g1(self):
+        model_name = "facebook/opt-125m"
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -262,10 +262,10 @@ class TestAutoRound(unittest.TestCase):
 
     #
     def test_signround(self):
+        model_name = "facebook/opt-125m"
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -296,17 +296,17 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     def test_wa_quant(self):
+        model_name = "facebook/opt-125m"
         bits, group_size, sym, act_bits = 4, 128, False, 4
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            act_bits=4,
+            act_bits=act_bits,
         )
         autoround.quantize()
 
