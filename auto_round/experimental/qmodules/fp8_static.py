@@ -57,10 +57,10 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
             self.bias = torch.nn.Parameter(bias, requires_grad=False)
         else:
             self.register_parameter("bias", None)
-        init_weight_scale = torch.empty((out_features, 1), dtype=dtype) if weight_scale is None else weight_scale
+        init_weight_scale = torch.empty((out_features), dtype=dtype) if weight_scale is None else weight_scale
         self.register_buffer("weight_scale", init_weight_scale.to(dtype))
 
-        init_input_scale = torch.zeros((1, 1), dtype=dtype) if input_scale is None else input_scale
+        init_input_scale = torch.zeros((1), dtype=dtype) if input_scale is None else input_scale
         self.register_buffer("input_scale", init_input_scale.to(dtype))
         self.pre_dequantized = False
 
