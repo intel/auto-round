@@ -299,7 +299,7 @@ class AutoRoundVLM(AutoRound):
 
 
     @torch.no_grad()
-    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True, only_return_hidden_states=True):
+    def _get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True, only_return_hidden_states=True):
         """Compute the output of a given block of the model for a given input.
 
         Args:
@@ -321,7 +321,7 @@ class AutoRoundVLM(AutoRound):
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = AutoRound.sampling_inputs(
+            tmp_input_ids, tmp_input_others = AutoRound._sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, only_return_hidden_states)
@@ -341,7 +341,7 @@ class AutoRoundVLM(AutoRound):
         return output, new_encoder_hidden_states
 
 
-    def quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
+    def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
 
         Args:
@@ -412,7 +412,7 @@ class AutoRoundVLM(AutoRound):
                         add_hook_to_module(m, hook, True)
                 else:
                     block = block.to(self.device)
-                input_ids, encoder_hidden_states = self.get_block_outputs(
+                input_ids, encoder_hidden_states = self._get_block_outputs(
                     block,
                     input_ids,
                     input_others,
@@ -437,7 +437,7 @@ class AutoRoundVLM(AutoRound):
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self.quantize_layer_via_rtn(m.tmp_name)
+                        self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
 
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
@@ -451,14 +451,14 @@ class AutoRoundVLM(AutoRound):
             clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
-            self.quantize_layer_via_rtn(name)
+            self._quantize_layer_via_rtn(name)
             if cnt % clear_mem_freq == 0:
                 clear_memory()
                 cnt = 1
             cnt += 1
 
 
-    def quantize_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+    def _quantize_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -489,21 +489,21 @@ class AutoRoundVLM(AutoRound):
                 add_hook_to_module(m, hook, True)
 
         if q_input is None:
-            hook_handles = self.register_act_max_hook(block)
+            hook_handles = self._register_act_max_hook(block)
 
-            output, encoder_hidden_states = self.get_block_outputs(
+            output, encoder_hidden_states = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device, only_return_hidden_states=False
             )
 
             for handle in hook_handles:
                 handle.remove()
         else:
-            output, encoder_hidden_states = self.get_block_outputs(
+            output, encoder_hidden_states = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device, only_return_hidden_states=False
             )
-            hook_handles = self.register_act_max_hook(block)
+            hook_handles = self._register_act_max_hook(block)
             if hook_handles:
-                self.get_block_outputs(
+                self._get_block_outputs(
                     block,
                     q_input,
                     input_others,
@@ -593,7 +593,7 @@ class AutoRoundVLM(AutoRound):
                     num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-                current_input_ids, current_input_others = AutoRound.sampling_inputs(
+                current_input_ids, current_input_others = AutoRound._sampling_inputs(
                     input_ids,
                     input_others,
                     indices,
@@ -622,7 +622,7 @@ class AutoRoundVLM(AutoRound):
                     )
 
                 total_loss += loss.item() / num_elm
-                self.scale_loss_and_backward(scaler, loss)
+                self._scale_loss_and_backward(scaler, loss)
 
             if i == 0:
                 init_loss = total_loss
@@ -640,7 +640,7 @@ class AutoRoundVLM(AutoRound):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
-            self.step(scaler, optimizer, lr_schedule)
+            self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
         best_iter = self.iters
@@ -665,7 +665,7 @@ class AutoRoundVLM(AutoRound):
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             clear_memory()
-            q_outputs, _ = self.get_block_outputs(
+            q_outputs, _ = self._get_block_outputs(
                 block,
                 input_ids,
                 input_others,
