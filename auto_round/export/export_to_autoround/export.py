@@ -148,12 +148,12 @@ def pack_layer(layer_name, model, backend):
         None: The function modifies the model in place.
     """
     if is_nv_fp(backend) or is_mx_fp(backend):
-        from auto_round.export.export_to_autoround.export_to_fp import pack_layer
+        from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
 
         return pack_layer(layer_name, model, backend)
 
-    if is_standard_fp(backend):
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
+    if backend == "auto_round:fp8":
+        from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
         return pack_layer(layer_name, model, backend)
 
@@ -201,9 +201,9 @@ def pack_layer(layer_name, model, backend):
         import auto_round_extension.torch.qlinear_torch
 
         if (
-            sym
-            and isinstance(zp, torch.Tensor)
-            and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear))
+                sym
+                and isinstance(zp, torch.Tensor)
+                and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear))
         ):
             zp = int(zp.flatten()[0])
 
@@ -265,12 +265,12 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     """
     data_type = kwargs.get("data_type", None)
     if is_nv_fp(data_type) or is_mx_fp(data_type):  ## detect nvfp & mxfp first
-        from auto_round.export.export_to_autoround.export_to_fp import save_quantized_as_fp
+        from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
 
         return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
-    if is_standard_fp(data_type) and kwargs.get("act_bits", 16) >= 16:
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import save_quantized_as_autoround
+    if kwargs.get("data_type", "int") == "fp" and kwargs.get("bits", 16) == 8 and kwargs.get("act_bits", 16) >= 16:
+        from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
@@ -302,7 +302,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     for layer_name in layer_config:
         if (
-            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
+                not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
         ):  ##lm head ##TODO fix act and so on
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
@@ -310,7 +310,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
         elif layer_config[layer_name]["in_blocks"] or (
-            block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
+                block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
                 layer_config[layer_name],
@@ -333,7 +333,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
-
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):

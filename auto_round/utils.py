@@ -98,7 +98,7 @@ def infer_bits_by_data_type(data_type: str):
     for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
-            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
+            suc_2str = data_type[len(supported_dtype): len(supported_dtype) + 2]
             if str.isdigit(suc_2str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
@@ -763,7 +763,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None, class_names=None
+        model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None,
+        class_names=None
 ):
     """Retrieves the names of layers within each block of the model.
 
@@ -980,7 +981,7 @@ def compile_func_on_cuda_or_cpu(func):
 
 
 def compile_func(
-    fun: Union[torch.nn.Module, Callable], device: Union[torch.nn.Module, Callable]
+        fun: Union[torch.nn.Module, Callable], device: Union[torch.nn.Module, Callable]
 ) -> Union[torch.nn.Module, Callable]:
     """Compile function on the specified device."""
     if "hpu" in str(device):
@@ -1115,9 +1116,9 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     layer_names = get_layer_names_in_block(model)
     for layer_name in layer_names:
         if (
-            layer_configs is not None
-            and layer_name in layer_configs.keys()
-            and layer_configs[layer_name].get("bits", bits) > 8
+                layer_configs is not None
+                and layer_name in layer_configs.keys()
+                and layer_configs[layer_name].get("bits", bits) > 8
         ):
             continue
 
@@ -1342,7 +1343,7 @@ def _to_model_dtype(model, model_dtype):
             if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
                 model = model.to(torch.float16)
             elif (
-                model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
+                    model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
             ) and model.dtype != torch.bfloat16:
                 model = model.to(torch.bfloat16)
             elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
@@ -1381,13 +1382,13 @@ def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
 
 
 def llm_load_model(
-    pretrained_model_name_or_path,
-    trust_remote_code=True,
-    model_dtype=None,
-    device="cpu",
-    low_cpu_mem_mode=0,
-    low_cpu_mem_tmp_dir=None,
-    **kwargs,
+        pretrained_model_name_or_path,
+        trust_remote_code=True,
+        model_dtype=None,
+        device="cpu",
+        low_cpu_mem_mode=0,
+        low_cpu_mem_tmp_dir=None,
+        **kwargs,
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
@@ -1478,13 +1479,13 @@ def llm_load_model(
 
 
 def mllm_load_model(
-    pretrained_model_name_or_path,
-    device="cpu",
-    torch_dtype="auto",
-    use_auto_mapping=True,
-    trust_remote_code=True,
-    model_dtype=None,
-    **kwargs,
+        pretrained_model_name_or_path,
+        device="cpu",
+        torch_dtype="auto",
+        use_auto_mapping=True,
+        trust_remote_code=True,
+        model_dtype=None,
+        **kwargs,
 ):
     import transformers
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
@@ -1545,7 +1546,7 @@ def mllm_load_model(
             )
         else:
             if architectures.endswith("Model") and hasattr(
-                transformers, n := architectures.replace("Model", "ForConditionalGeneration")
+                    transformers, n := architectures.replace("Model", "ForConditionalGeneration")
             ):
                 cls = getattr(transformers, n)
             elif hasattr(transformers, architectures):
@@ -1878,9 +1879,9 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
 
     n_gqa = 1
     if (
-        hasattr(model, "config")
-        and hasattr(model.config, "num_attention_heads")
-        and hasattr(model.config, "num_key_value_heads")
+            hasattr(model, "config")
+            and hasattr(model.config, "num_attention_heads")
+            and hasattr(model.config, "num_key_value_heads")
     ):
         n_gqa = model.config.num_attention_heads // model.config.num_key_value_heads
     n_expert = 0
@@ -1921,14 +1922,14 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
                     f"Setting layer_config requires providing bits, {layer_name} has not bits,"
                     f" using bits={target_bits} instead."
                 )
-                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1 :]
+                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1:]
             else:
-                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
+                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
         elif target_bits is not None and "bits" in config and config["bits"] != target_bits:
-            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
@@ -1957,7 +1958,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif target_gguf_format == "gguf:q3_k_l":
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_k_m" or target_gguf_format == "gguf:q5_k_m") and _use_more_bits(
-                i_layer, n_layer
+                    i_layer, n_layer
             ):
                 new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
@@ -2012,9 +2013,9 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
                 new_type = "gguf:q6_k"
             elif (
-                target_gguf_format == "gguf:q4_k_s"
-                and model_class.model_arch != gguf.MODEL_ARCH.FALCON
-                and i_layer < n_layer / 8
+                    target_gguf_format == "gguf:q4_k_s"
+                    and model_class.model_arch != gguf.MODEL_ARCH.FALCON
+                    and i_layer < n_layer / 8
             ):
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
@@ -2029,12 +2030,12 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             if gguf.MODEL_ARCH.FALCON != model_class.model_arch:
                 if n_expert == 8:
                     if target_gguf_format in (
-                        "gguf:q2_k",
-                        "gguf:q3_k_s",
-                        "gguf:q3_k_m",
-                        "gguf:q4_k_s",
-                        "gguf:q4_k_m",
-                        "gguf:q5_k",
+                            "gguf:q2_k",
+                            "gguf:q3_k_s",
+                            "gguf:q3_k_m",
+                            "gguf:q4_k_s",
+                            "gguf:q4_k_m",
+                            "gguf:q5_k",
                     ):
                         new_type = "gguf:q5_k"
                     elif target_gguf_format == "gguf:q2_k":
@@ -2073,10 +2074,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             kv_b_shape = get_module(model, layer_name).weight.shape
 
             if (
-                qk_nope_head_dim < QK_K
-                or qk_nope_head_dim % QK_K != 0
-                or kv_b_shape[-1] < QK_K
-                or kv_b_shape[-1] % QK_K != 0
+                    qk_nope_head_dim < QK_K
+                    or qk_nope_head_dim % QK_K != 0
+                    or kv_b_shape[-1] < QK_K
+                    or kv_b_shape[-1] % QK_K != 0
             ):
                 fallback = True
             if fallback:
@@ -2205,7 +2206,7 @@ def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_fi
 
 
 def pad_block_fp8_weight_naive(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
+        weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
 ) -> Tuple[torch.Tensor, int, int]:
     assert len(block_size) == 2
 
@@ -2387,7 +2388,8 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         return any(name.lower() in type(module).__name__.lower() for name in name_list)
 
     if module_match_name_list(
-        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+            module,
+            ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
     ):
         return ["gate_proj", "down_proj", "up_proj"]
     elif module_match_name_list(module, ["MixtralMoeSparseMoeBlock"]):
@@ -2420,7 +2422,7 @@ def set_nested_attr(module, attr_name: str, value):
 
 
 def set_amax_for_uncalibrated_experts(
-    experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"
+        experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"
 ):
     """Set amax of uncalibrated experts to a given value or the max of existing amax value from other experts.
 
@@ -2502,13 +2504,13 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
 
 
 class BackendDataType(str, Enum):
-    STANDARD_FP8 = "fp8"
+    STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
 
 
 def is_standard_fp(backend):
-    return BackendDataType.STANDARD_FP8 in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
+    return backend.startswith(BackendDataType.STANDARD_FP)
 
 
 def is_mx_fp(backend):
@@ -2518,6 +2520,16 @@ def is_mx_fp(backend):
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
 
+def is_wfp8afp8(ar):
+    if ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8)) and (
+            "fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8)):
+        return True
+    else:
+        return False
 
-def is_static_afp8(ar):
-    return not ar.act_dynamic and "fp8" in ar.act_data_type
+def is_static_wfp8afp8(ar):
+    if ar.act_dynamic:
+        return False
+    if is_wfp8afp8(ar):
+        return True
+    return False
