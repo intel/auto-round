@@ -39,6 +39,7 @@ from auto_round.utils import (
     mv_module_from_gpu,
     check_need_act_calibration,
     get_module,
+    flatten_list,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 from .vlm_dataset import get_vlm_dataloader
