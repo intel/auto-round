@@ -677,8 +677,7 @@ class AutoRound(object):
                 if is_torch_fp8_static(self):
                     format = format.replace("auto_round", f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}")
                     formats[index] = format
-                # if is_torch_fp8_static(self):
-                #     formats[index] = "auto_round:torch_fp8_static"
+
             elif format == "llmcompressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
