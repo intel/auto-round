@@ -18,6 +18,7 @@ from typing import Optional, Union
 import torch
 
 from auto_round.experimental.qmodules.base import QModuleBase
+from auto_round.utils import logger
 
 __all__ = ["WeightFP8ActFP8StaticQuantLinear"]
 
@@ -41,7 +42,6 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
         weight: Optional[torch.Tensor] = None,
         weight_scale: Optional[torch.Tensor] = None,
         bias: Union[torch.Tensor, bool, None] = None,
-        weight_zp: Optional[torch.Tensor] = None,
         input_scale: Optional[torch.Tensor] = None,
         dtype=torch.bfloat16,
     ):
@@ -57,14 +57,10 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
             self.bias = torch.nn.Parameter(bias, requires_grad=False)
         else:
             self.register_parameter("bias", None)
-        init_weight_scale = torch.empty((out_features), dtype=dtype) if weight_scale is None else weight_scale
+        init_weight_scale = torch.empty((out_features, 1), dtype=dtype) if weight_scale is None else weight_scale
         self.register_buffer("weight_scale", init_weight_scale.to(dtype))
 
-        init_weight_zp = torch.zeros((out_features, 1), dtype=dtype) if weight_zp is None else weight_zp
-        if weight_zp:
-            self.register_buffer("weight_zp", init_weight_zp.to(dtype))
-
-        init_input_scale = torch.zeros((1,), dtype=dtype) if input_scale is None else input_scale
+        init_input_scale = torch.zeros((1, 1), dtype=dtype) if input_scale is None else input_scale
         self.register_buffer("input_scale", init_input_scale.to(dtype))
         self.pre_dequantized = False
 
@@ -73,7 +69,8 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
         """
         Get minimum device capability.
         """
-        # FIXME: set to 0 for now, as fp8 kernels are not available yet
+        # TODO: correct that config once we add fp8 op support.
+        logger.warning_once("FP8 ops are not yet supported. Using capability 0.")
         return 0
 
     def process_weights_after_loading(self, layer: torch.nn.Module):

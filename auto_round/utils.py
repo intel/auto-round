@@ -108,9 +108,17 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-@lru_cache(None)
-def warning_once(self, msg: str):
-    self.warning(msg)
+@lru_cache(maxsize=None)
+def warning_once(self, msg, *args, **kwargs):
+    """
+    Log a warning message only once per unique message/arguments combination.
+
+    Args:
+        msg: The warning message format string
+        *args: Variable positional arguments for message formatting
+        **kwargs: Variable keyword arguments for message formatting and logging options
+    """
+    self.warning(msg, *args, **kwargs)
 
 
 class AutoRoundFormatter(logging.Formatter):
