@@ -201,9 +201,9 @@ def pack_layer(layer_name, model, backend):
         import auto_round_extension.torch.qlinear_torch
 
         if (
-                sym
-                and isinstance(zp, torch.Tensor)
-                and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear))
+            sym
+            and isinstance(zp, torch.Tensor)
+            and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear))
         ):
             zp = int(zp.flatten()[0])
 
@@ -302,7 +302,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     for layer_name in layer_config:
         if (
-                not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
+            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
         ):  ##lm head ##TODO fix act and so on
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
@@ -310,7 +310,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
         elif layer_config[layer_name]["in_blocks"] or (
-                block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
+            block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
                 layer_config[layer_name],
@@ -333,6 +333,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
+
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
