@@ -2508,7 +2508,7 @@ class BackendDataType(str, Enum):
 
 
 def is_standard_fp(backend):
-    return BackendDataType.STANDARD_FP8 in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
+    return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 def is_mx_fp(backend):
