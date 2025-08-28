@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 import copy
 import os
 import re
@@ -290,7 +289,6 @@ class AutoRound(object):
                 if self.act_data_type.startswith(supported_dtype):
                     if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # could not replace FP8_e4m3
                         self.act_data_type = supported_dtype
-                    self.act_data_type = supported_dtype
                     break
 
         # Tuning hyperparameters
