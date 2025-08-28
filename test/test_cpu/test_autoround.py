@@ -10,8 +10,8 @@ from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.low_cpu_mem import get_module
 from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.low_cpu_mem import get_module
 
 
 class LLMDataLoader:
@@ -358,8 +358,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder)
-    
-    
+
     def test_embed_quant(self):
         bits, group_size, sym = 4, 128, True
         model_name = "facebook/opt-125m"
