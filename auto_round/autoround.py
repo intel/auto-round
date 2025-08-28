@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 from enum import Enum
-from typing import Any, Union
+from typing import Any, Callable, Union
 
 import accelerate
 import torch
@@ -315,7 +315,7 @@ class AutoRound(object):
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
-        self.optimizer = self.get_optimizer(None)
+        self.optimizer = self._get_optimizer(None)
         self.super_bits = super_bits
         self.super_group_size = super_group_size
         self.disable_opt_rtn = disable_opt_rtn
@@ -353,7 +353,7 @@ class AutoRound(object):
         self.device_map = device_map
         self._set_device_map_in_blocks(self.device_map)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
-        self.set_amp_dtype()
+        self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
             logger.warning("Force to use bf16 to for quantization tuning when enabling activation quantization")
@@ -545,10 +545,11 @@ class AutoRound(object):
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
-                logger.warning(
-                    f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
-                    f" is smaller than batch_size({self.batch_size})"
-                )
+                if self.iters > 0:  # GGUF should log this warning, but we don't know the format here
+                    logger.warning(
+                        f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
+                        f" is smaller than batch_size({self.batch_size})"
+                    )
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
@@ -763,7 +764,9 @@ class AutoRound(object):
 
         return format
 
-    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
+    def quantize_and_save(
+        self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs
+    ) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantizes the model and saves it in the specified format(s).
 
         This function checks the validity of the requested format(s), quantizes
@@ -817,14 +820,14 @@ class AutoRound(object):
                     " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
                     "the AutoRound format(2/3/4/8 bits)."
                 )
-            save_folder = self.get_save_folder_name(format)
+            save_folder = self._get_save_folder_name(format)
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
 
             folders.append(save_folder)
 
         return model, folders
 
-    def get_save_folder_name(self, format_str: str) -> str:
+    def _get_save_folder_name(self, format_str: str) -> str:
         """Generates the save folder name based on the provided format string.
 
         If there are multiple formats to handle, the function creates a subfolder
@@ -847,7 +850,7 @@ class AutoRound(object):
         return self.orig_output_dir
 
     @torch.inference_mode()
-    def quantize_embedding_layer(self):
+    def _quantize_embedding_layer(self):
         """Quantizes embedding layers in the model according to the configuration.
 
         This method iterates through all modules in the model, identifies embedding
@@ -891,7 +894,7 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    logger.info("out of VRAM, falling back to CPU.")
+                    logger.info("out of VRAM, falling back to CPU")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
@@ -924,7 +927,7 @@ class AutoRound(object):
 
         return is_quantized
 
-    def quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
+    def _quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
         """Performs RTN quantization using input activation statistics (imatrix).
 
         This method accumulates per-channel second-moment activation statistics (imatrix)
@@ -938,7 +941,7 @@ class AutoRound(object):
         Returns:
             None
         """
-        logger.info("start to compute imatrix for GGUF quantization.")
+        logger.info("start to compute imatrix for GGUF quantization")
 
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
@@ -1027,7 +1030,7 @@ class AutoRound(object):
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
-                self.quantize_layer_via_rtn(name)
+                self._quantize_layer_via_rtn(name)
                 if cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
@@ -1042,7 +1045,7 @@ class AutoRound(object):
                 logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
                 model = model.to("cpu")
                 clear_memory()
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
@@ -1060,7 +1063,7 @@ class AutoRound(object):
 
                     orig_device = self.device
                     self.device = "cpu"
-                    self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                    self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
                     self.device = orig_device
                 except Exception as e:
                     logger.error(cuda_error_msg)
@@ -1070,11 +1073,7 @@ class AutoRound(object):
             for hook in hooks:
                 hook.remove()
 
-        # Move back to CPU and free memory
-        model.to("cpu")
-        clear_memory()
-
-    def check_need_to_quantize_lm_head_embedding(self) -> bool:
+    def _check_need_to_quantize_lm_head_embedding(self) -> bool:
         """Checks if LM head and embedding layers need quantization for GGUF format.
 
         This function inspects the current model's formats and determines whether
@@ -1154,7 +1153,7 @@ class AutoRound(object):
         setattr(get_module(self.model, layer_name), "act_bits", act_bits)
         setattr(get_module(self.model, layer_name), "scale_dtype", scale_dtype)
 
-    def quantize_layer_via_rtn(self, name: str) -> None:
+    def _quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
         This function attempts to quantize a layer by switching its data type to a
@@ -1230,7 +1229,7 @@ class AutoRound(object):
                 if has_gguf:
                     from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
-                    output_dir = self.get_save_folder_name(self.formats[0])
+                    output_dir = self._get_save_folder_name(self.formats[0])
                     model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
                     pack_gguf_layer(
                         name,
@@ -1252,7 +1251,7 @@ class AutoRound(object):
             set_module(self.model, name, m)
 
     @torch.inference_mode()
-    def quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+    def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
         If the target format includes GGUF with `k`, and optimized RTN is enabled,
@@ -1283,17 +1282,17 @@ class AutoRound(object):
 
         has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", []))
 
-        self.quantize_embedding_layer()
+        self._quantize_embedding_layer()
 
         self.model.to("cpu")
         if has_gguf_k and not self.disable_opt_rtn:
-            self.quant_rtn_with_imatrix(all_to_quantized_module_names)
+            self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic, self.act_data_type
         ):  ##TODO, mixed datatype has bug
-            hook_handles = self.register_act_max_hook(self.model)
+            hook_handles = self._register_act_max_hook(self.model)
             try:
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
             except RuntimeError as e:
                 logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
                 self.model = self.model.to("cpu")
@@ -1304,7 +1303,7 @@ class AutoRound(object):
                     accelerate.hooks.remove_hook_from_submodules(self.model)
                 orig_device = self.device
                 self.device = "cpu"
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
                 self.device = orig_device
             for handle in hook_handles:
                 handle.remove()
@@ -1317,7 +1316,7 @@ class AutoRound(object):
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
-                self.quantize_layer_via_rtn(name)
+                self._quantize_layer_via_rtn(name)
                 if cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
@@ -1328,7 +1327,7 @@ class AutoRound(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
+    def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
 
         Args:
@@ -1342,7 +1341,7 @@ class AutoRound(object):
 
         all_first_block_names = [block[0] for block in all_blocks]
         if self.act_bits < 16 and not self.act_dynamic:
-            layer_names = self.get_quantized_layer_names_outside_blocks()
+            layer_names = self._get_quantized_layer_names_outside_blocks()
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
@@ -1405,7 +1404,7 @@ class AutoRound(object):
                         add_hook_to_module(m, hook, True)
                 else:
                     block = block.to(self.device)
-                input_ids = self.get_block_outputs(
+                input_ids = self._get_block_outputs(
                     block,
                     input_ids,
                     input_others,
@@ -1421,14 +1420,14 @@ class AutoRound(object):
                 ) or is_static_afp8(self):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
-                    # enable moe experts act_max automatic generation for linears
+                    # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self.quantize_layer_via_rtn(m.tmp_name)
+                        self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
 
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
@@ -1442,13 +1441,13 @@ class AutoRound(object):
             clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
-            self.quantize_layer_via_rtn(name)
+            self._quantize_layer_via_rtn(name)
             if cnt % clear_mem_freq == 0:
                 clear_memory()
                 cnt = 1
             cnt += 1
 
-    def quantize(self):
+    def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
         The quantized model and layer configurations.
@@ -1456,7 +1455,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             m.tmp_name = n
         self._check_compatibility()
-        self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
+        self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
@@ -1490,7 +1489,7 @@ class AutoRound(object):
             ):
                 self.is_packing_immediate = True
         if self.iters == 0:
-            return self.quantize_rtn()
+            return self._quantize_rtn()
 
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
@@ -1504,7 +1503,7 @@ class AutoRound(object):
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
 
-        layer_names = self.get_quantized_layer_names_outside_blocks()
+        layer_names = self._get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         if len(layer_names) > 0:
@@ -1514,7 +1513,7 @@ class AutoRound(object):
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
-        is_quantized_embedding = self.quantize_embedding_layer()
+        is_quantized_embedding = self._quantize_embedding_layer()
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
@@ -1559,7 +1558,7 @@ class AutoRound(object):
                     self.batch_size = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
 
-            self.quantize_blocks(
+            self._quantize_blocks(
                 self.model,
                 inputs,
                 block_names,
@@ -1574,7 +1573,7 @@ class AutoRound(object):
                     f"but got {len(self.formats)} formats."
                 )
 
-        self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
+        self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
         if hasattr(self.model, "is_fp8"):
             for n, m in self.model.named_modules():
@@ -1607,7 +1606,7 @@ class AutoRound(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def quant_layers(self, layer_names, layer_inputs):
+    def _quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
         Args:
@@ -1672,9 +1671,9 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         if self.enable_torch_compile:
-            quant_layer = compile_func(self.quant_layer, self.device)
+            quant_layer = compile_func(self._quantize_layer, self.device)
         else:
-            quant_layer = self.quant_layer
+            quant_layer = self._quantize_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -1684,7 +1683,7 @@ class AutoRound(object):
             del layer_input
             clear_memory(q_layer_input)
 
-    def set_layerwise_config(self, layer_config):
+    def _set_layerwise_config(self, layer_config: dict) -> bool:
         """
         Sets the layer-wise configuration based on the provided `layer_config`.
         By default, only quantize layers in blocks.
@@ -1798,7 +1797,7 @@ class AutoRound(object):
             # Apply the configuration to the corresponding layer in the model
             for key in keys:
                 setattr(m, key, layer_config[n][key])
-        need_to_quantize_lm_head = self.check_need_to_quantize_lm_head_embedding()
+        need_to_quantize_lm_head = self._check_need_to_quantize_lm_head_embedding()
         if need_to_quantize_lm_head:
             has_qlayer_outside_block = True
 
@@ -1806,7 +1805,16 @@ class AutoRound(object):
         return has_qlayer_outside_block
 
     @torch.no_grad()
-    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True):
+    def _get_block_outputs(
+        self,
+        block: torch.nn.Module,
+        input_ids: torch.Tensor,
+        input_others: torch.Tensor,
+        bs: int,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device],
+        save_output: bool = True,
+    ):
         """Compute the output of a given block of the model for a given input.
 
         Args:
@@ -1827,7 +1835,7 @@ class AutoRound(object):
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = AutoRound.sampling_inputs(
+            tmp_input_ids, tmp_input_others = AutoRound._sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
@@ -2058,7 +2066,7 @@ class AutoRound(object):
         return res
 
     @torch.no_grad()
-    def get_block_forward_func(self, name):
+    def _get_block_forward_func(self, name: str) -> Callable:
         """Gets the forward function.
 
         Args:
@@ -2204,13 +2212,15 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n in self.to_cached_layers and not isinstance(m, tuple(self.supported_types)):  ##block
                 m.orig_forward = m.forward
-                m.forward = partial(self.get_block_forward_func(n), m)
+                m.forward = partial(self._get_block_forward_func(n), m)
             elif n in self.to_cached_layers:  ##linear layer or conv1d layer
                 hook_func = self._get_cache_data_hook_for_layer(n)
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
-    def quant_layer(self, layer_name, inputs, q_inputs=None, device=torch.device("cpu")):
+    def _quantize_layer(
+        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
+    ):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
@@ -2267,7 +2277,7 @@ class AutoRound(object):
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
-        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         # best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
         gradient_accumulate_steps = self.batch_size  ##Force to low gpu
@@ -2318,7 +2328,7 @@ class AutoRound(object):
                     )
                 total_loss += loss.item() / num_elm
 
-                self.scale_loss_and_backward(scaler, loss)
+                self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
 
@@ -2333,7 +2343,7 @@ class AutoRound(object):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
-            self.step(scaler, optimizer, lr_schedule)
+            self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
         best_iter = self.iters
@@ -2346,7 +2356,7 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def register_act_max_hook(self, model):
+    def _register_act_max_hook(self, model):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -2392,7 +2402,14 @@ class AutoRound(object):
                     continue
         return hook_handles
 
-    def quantize_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+    def _quantize_block(
+        self,
+        block: torch.nn.Module,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        q_input: Union[None, torch.Tensor] = None,
+        device: Union[str, torch.device] = "cpu",
+    ):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -2423,21 +2440,21 @@ class AutoRound(object):
                 add_hook_to_module(m, hook, True)
 
         if q_input is None:
-            hook_handles = self.register_act_max_hook(block)
+            hook_handles = self._register_act_max_hook(block)
 
-            output = self.get_block_outputs(
+            output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
 
             for handle in hook_handles:
                 handle.remove()
         else:
-            output = self.get_block_outputs(
+            output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
-            hook_handles = self.register_act_max_hook(block)
+            hook_handles = self._register_act_max_hook(block)
             if hook_handles:
-                self.get_block_outputs(
+                self._get_block_outputs(
                     block,
                     q_input,
                     input_others,
@@ -2514,7 +2531,7 @@ class AutoRound(object):
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
         total_loss = 0
@@ -2529,7 +2546,7 @@ class AutoRound(object):
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-                current_input_ids, current_input_others = AutoRound.sampling_inputs(
+                current_input_ids, current_input_others = AutoRound._sampling_inputs(
                     input_ids,
                     input_others,
                     indices,
@@ -2554,7 +2571,7 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / num_elm
-                self.scale_loss_and_backward(scaler, loss)
+                self._scale_loss_and_backward(scaler, loss)
 
             if i == 0:
                 init_loss = total_loss
@@ -2572,7 +2589,7 @@ class AutoRound(object):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
-            self.step(scaler, optimizer, lr_schedule)
+            self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
         best_iter = self.iters
@@ -2596,7 +2613,7 @@ class AutoRound(object):
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             clear_memory()
-            q_outputs = self.get_block_outputs(
+            q_outputs = self._get_block_outputs(
                 block,
                 input_ids,
                 input_others,
@@ -2618,8 +2635,15 @@ class AutoRound(object):
             clear_memory(input_ids)
             return None, output
 
-    def quantize_blocks(
-        self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None
+    def _quantize_blocks(
+        self,
+        model: torch.nn.Module,
+        inputs: dict,
+        block_names: list,
+        q_input: torch.Tensor = None,
+        nblocks: int = 1,
+        device: str = "cpu",
+        pbar: tqdm = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -2675,13 +2699,13 @@ class AutoRound(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
-                quantize_block = self.quantize_block
+                quantize_block = self._quantize_block
                 if self.enable_torch_compile:
                     quantize_block = compile_func(quantize_block, device)
                 else:
                     quantize_block = quantize_block
         else:
-            quantize_block = self.quantize_block
+            quantize_block = self._quantize_block
             if self.enable_torch_compile:
                 quantize_block = compile_func(quantize_block, device)
 
@@ -2715,27 +2739,28 @@ class AutoRound(object):
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
                 for _, tmp_m in m.named_modules():
-                    if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
-                        target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                        has_gguf = any("gguf" in format_ for format_ in self.formats)
-                        if has_gguf:
-                            from auto_round.export.export_to_gguf.export import pack_gguf_layer
+                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
+                        continue
+                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                    has_gguf = any("gguf" in format_ for format_ in self.formats)
+                    if has_gguf:
+                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
-                            output_dir = self.get_save_folder_name(self.formats[0])
-                            model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
-                            pack_gguf_layer(
-                                tmp_m.tmp_name,
-                                self.model,
-                                self.formats[0],
-                                output_dir,
-                                self.layer_config,
-                                self.tokenizer,
-                                processor=self.processor if hasattr(self, "processor") else None,
-                                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                                model_type=model_type,
-                            )
-                        else:
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
+                        output_dir = self._get_save_folder_name(self.formats[0])
+                        model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
+                        pack_gguf_layer(
+                            tmp_m.tmp_name,
+                            self.model,
+                            self.formats[0],
+                            output_dir,
+                            self.layer_config,
+                            self.tokenizer,
+                            processor=self.processor if hasattr(self, "processor") else None,
+                            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                            model_type=model_type,
+                        )
+                    else:
+                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -2751,7 +2776,9 @@ class AutoRound(object):
 
         clear_memory()
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+    def save_quantized(
+        self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs
+    ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
@@ -2844,7 +2871,7 @@ class AutoRound(object):
         )
         return compressed_model
 
-    def get_quantized_layer_names_outside_blocks(self):
+    def _get_quantized_layer_names_outside_blocks(self) -> list:
         """Gets the names of quantized layers outside blocks in the model.
 
         Returns:
@@ -2868,7 +2895,8 @@ class AutoRound(object):
 
         return layer_names
 
-    def set_amp_dtype(self):
+    def _set_amp_dtype(self) -> None:
+        """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration."""
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
@@ -2888,7 +2916,7 @@ class AutoRound(object):
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
 
-    def get_optimizer(self, optimizer):
+    def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
 
         Args:
@@ -2899,11 +2927,11 @@ class AutoRound(object):
         """
         return SignSGD
 
-    def get_scaler(self):
+    def _get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""
         return None
 
-    def scale_loss_and_backward(self, scaler, loss):
+    def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
         """Scales the loss and performs backward pass.
 
         Args:
@@ -2919,7 +2947,7 @@ class AutoRound(object):
             htcore.mark_step()
         return scale_loss
 
-    def step(self, scaler, optimizer, lr_schedule):
+    def _step(self, scaler: Any, optimizer: Any, lr_schedule: Any):
         """Performs a step in the optimization process.
 
         Args:
@@ -2939,7 +2967,15 @@ class AutoRound(object):
 
     @classmethod
     @torch.no_grad()
-    def sampling_inputs(cls, input_ids, input_others, indices, seqlen, batch_dim=0, share_cache_keys=()):
+    def _sampling_inputs(
+        cls,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        indices: list[int],
+        seqlen: int,
+        batch_dim: int = 0,
+        share_cache_keys: tuple = (),
+    ):
         """Samples inputs based on the given indices and sequence length.
 
         Args:
@@ -3117,9 +3153,9 @@ class AutoRoundAdam(AutoRound):
             **kwargs,
         )
 
-        self.optimizer = self.get_optimizer(optimizer)
+        self.optimizer = self._get_optimizer(optimizer)
 
-    def get_optimizer(self, optimizer):
+    def _get_optimizer(self, optimizer):
         if optimizer is None:
             optimizer = torch.optim.AdamW
         elif isinstance(optimizer, str):
@@ -3128,7 +3164,7 @@ class AutoRoundAdam(AutoRound):
             optimizer = optimizer
         return optimizer
 
-    def get_scaler(self):
+    def _get_scaler(self):
         scaler = None
         if self.amp and not check_is_cpu(self.device):
             from torch.cuda.amp import GradScaler
@@ -3136,7 +3172,7 @@ class AutoRoundAdam(AutoRound):
             scaler = GradScaler(init_scale=1024, growth_interval=100000)
         return scaler
 
-    def scale_loss_and_backward(self, scaler, loss):
+    def _scale_loss_and_backward(self, scaler, loss):
         if scaler is not None:
             loss = scaler.scale(loss)
 
@@ -3145,7 +3181,7 @@ class AutoRoundAdam(AutoRound):
             htcore.mark_step()
         return loss
 
-    def step(self, scaler, optimizer, lr_schedule):
+    def _step(self, scaler, optimizer, lr_schedule):
         if scaler is not None:
             scaler.step(optimizer)
             optimizer.zero_grad()
