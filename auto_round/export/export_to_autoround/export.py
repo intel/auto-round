@@ -148,12 +148,12 @@ def pack_layer(layer_name, model, backend):
         None: The function modifies the model in place.
     """
     if is_nv_fp(backend) or is_mx_fp(backend):
-        from auto_round.export.export_to_autoround.export_to_fp import pack_layer
+        from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
 
         return pack_layer(layer_name, model, backend)
 
-    if is_standard_fp(backend):
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
+    if backend == "auto_round:fp8":
+        from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
         return pack_layer(layer_name, model, backend)
 
@@ -265,12 +265,12 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     """
     data_type = kwargs.get("data_type", None)
     if is_nv_fp(data_type) or is_mx_fp(data_type):  ## detect nvfp & mxfp first
-        from auto_round.export.export_to_autoround.export_to_fp import save_quantized_as_fp
+        from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
 
         return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
-    if is_standard_fp(data_type) and kwargs.get("act_bits", 16) >= 16:
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import save_quantized_as_autoround
+    if kwargs.get("data_type", "int") == "fp" and kwargs.get("bits", 16) == 8 and kwargs.get("act_bits", 16) >= 16:
+        from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
