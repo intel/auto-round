@@ -1339,11 +1339,13 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
 def _to_model_dtype(model, model_dtype):
     if model_dtype is not None:
         try:
-            if model_dtype == "float16" or model_dtype == "fp16":
+            if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
                 model = model.to(torch.float16)
-            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
+            elif (
+                model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
+            ) and model.dtype != torch.bfloat16:
                 model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32":
+            elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
                 model = model.to(torch.float32)
         except:
             logger.error("please use more device to fit the device or just use one device")
