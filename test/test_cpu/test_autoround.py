@@ -3,14 +3,14 @@ import shutil
 import sys
 import unittest
 
-from auto_round.low_cpu_mem import get_module
-
 sys.path.insert(0, "../..")
+
 import torch
 from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.low_cpu_mem import get_module
 from auto_round.eval.evaluation import simple_evaluate_user_model
 
 
@@ -358,6 +358,28 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder)
+    
+    
+    def test_embed_quant(self):
+        bits, group_size, sym = 4, 128, True
+        model_name = "facebook/opt-125m"
+        layer_config = {
+            "model.decoder.embed_tokens": {"bits": 4},
+        }
+        autoround = AutoRound(
+            model_name,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config,
+        )
+        quantized_model_path = self.save_folder
+        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_fallback_layers(self):
         bits, group_size, sym = 4, 128, True
@@ -368,6 +390,7 @@ class TestAutoRound(unittest.TestCase):
         layer_config = {
             "model.decoder.layers.0.self_attn.q_proj": {"bits": 16},
             "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
+            "model.decoder.embed_tokens": {"bits": 16},
         }
         autoround = AutoRound(
             model,

@@ -1727,7 +1727,21 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             # Skip unsupported types
             if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                continue
+                if n in self.layer_config:
+                    if not check_to_quantized(layer_config[n]):
+                        if isinstance(m, torch.nn.Embedding):
+                            if hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats):
+                                self.layer_config.pip(n)
+                                continue
+                        else:
+                            self.layer_config.pop(n)
+                            continue
+                    elif not isinstance(m, torch.nn.Embedding):
+                        logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
+                        self.layer_config.pop(n)
+                        continue
+                else:
+                    continue
 
             # If the layer is not in the config and is part of a quantization block, use default configuration
             if n not in layer_config.keys() and n in layers_in_blocks:
