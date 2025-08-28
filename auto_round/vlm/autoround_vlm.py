@@ -355,13 +355,7 @@ class AutoRoundVLM(AutoRound):
 
         all_first_block_names = [block[0] for block in all_blocks]
         if self.act_bits < 16:
-            layer_names = self.get_quantized_layer_names_outside_blocks()
-            if len(layer_names) > 0:
-                logger.warning(
-                    "quantize layers outside blocks for static activation quantizaiton"
-                    " will significantly increase calibration time"
-                )
-            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
+            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples)
         else:
             all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
 
