@@ -367,7 +367,6 @@ class TestAutoRound(unittest.TestCase):
         }
         autoround = AutoRound(
             model_name,
-            self.tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
