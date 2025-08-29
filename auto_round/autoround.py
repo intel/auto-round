@@ -86,24 +86,29 @@ from auto_round.utils import (
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
+
 class QuantConfigMeta(type):
     def __new__(mcs, name, bases, namespace):
         presets = namespace.get("PRESETS", {})
+
         def make_preset_method(preset_name):
             def preset_method(cls, **kwargs):
                 return cls(preset=preset_name, **kwargs)
+
             preset_method.__name__ = preset_name
             return classmethod(preset_method)
+
         for preset_name in presets:
             namespace[preset_name] = make_preset_method(preset_name)
         return super().__new__(mcs, name, bases, namespace)
+
 
 class QuantConfig(metaclass=QuantConfigMeta):
     PRESETS = {
         "W4A16": {
             "bits": 4,
             "sym": True,
-            "group_size":128,
+            "group_size": 128,
             "data_type": "int",
             "act_bits": 16,
         },
@@ -165,22 +170,24 @@ class QuantConfig(metaclass=QuantConfigMeta):
         },
         "FP8_STATIC": {
             "bits": 8,
-            "group_size":-1,
+            "group_size": -1,
             "data_type": "fp",
             "act_bits": 8,
-            "act_group_size":0,
+            "act_group_size": 0,
             "act_data_type": "fp",
-            "disable_act_dynamic":True
+            "disable_act_dynamic": True,
         },
-
     }
+
     def __init__(self, preset="default", **kwargs):
         config = self.PRESETS.get(preset, {}).copy()
         config.update(kwargs)
         for k, v in config.items():
             setattr(self, k, v)
+
     def as_dict(self):
         return {k: getattr(self, k) for k in self.PRESETS["default"].keys()}
+
 
 class AutoRound(object):
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
@@ -310,8 +317,6 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
-
-
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
