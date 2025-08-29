@@ -55,7 +55,30 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
-        self.add_argument("--bits", default=4, type=int, help="number of weight bits")
+        self.add_argument(
+            "--scheme",
+            default="W4A16",
+            type=str,
+            choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            help="quantization cheme",
+        )
+
+        self.add_argument("--bits", default=None, type=int, help="number of weight bits")
+        self.add_argument("--group_size", default=None, type=int, help="group size")
+        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
+        self.add_argument("--data_type", "--dtype", default=None, help="data type for tuning, 'int', 'mx_fp' and etc")
+        self.add_argument("--act_bits", default=None, type=int, help="activation bits")
+        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
+        self.add_argument(
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+        )
+
+        self.add_argument(
+            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
+        )
+        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
+
+        self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
 
         self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
 
@@ -70,8 +93,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "allowing for automatic detection and switch to HPU or CPU."
             "set --device 0,1,2 to use multiple cards.",
         )
-
-        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
 
         self.add_argument(
             "--dataset", default="NeelNanda/pile-10k", type=str, help="the dataset for quantization training"
@@ -95,8 +116,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--low_gpu_mem_usage", action="store_true", help="offload intermediate features to cpu")
 
         self.add_argument("--format", default="auto_round", type=str, help="the format to save the model")
-
-        self.add_argument("--data_type", "--dtype", default="int", help="data type for tuning, 'int', 'mx_fp' and etc")
 
         self.add_argument(
             "--scale_dtype",
@@ -175,10 +194,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="force to convert the dtype, some backends supports fp16 dtype better",
         )
 
-        self.add_argument("--act_bits", default=16, type=int, help="activation bits")
-
-        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
-
         self.add_argument(
             "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type"
         )
@@ -200,23 +215,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--enable_alg_ext", action="store_true", help="whether to enable probably better algorithm")
 
-        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
-
-        self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
-
         self.add_argument(
             "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
         )
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
-
-        self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
-        )
-
-        self.add_argument(
-            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
-        )
 
         self.add_argument(
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
@@ -293,8 +296,6 @@ class EvalArgumentParser(argparse.ArgumentParser):
 
 def setup_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
@@ -533,13 +534,20 @@ def tune(args):
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
+    sym = None  # the default value should be None now
+    if args.asym:  # if the scheme is asym, how to set it to sym is an issue
+        sym = False
+    act_dynamic = None
+    if args.disable_act_dynamic:
+        act_dynamic = False
 
     autoround = round(
         model=model,
         tokenizer=tokenizer,
+        scheme=args.scheme,
         bits=args.bits,
         group_size=args.group_size,
-        sym=not args.asym,
+        sym=sym,
         batch_size=args.batch_size,
         dataset=args.dataset,
         seqlen=args.seqlen,
@@ -566,7 +574,7 @@ def tune(args):
         to_quant_block_names=args.to_quant_block_names,
         enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
-        act_dynamic=not args.disable_act_dynamic,
+        act_dynamic=act_dynamic,
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,

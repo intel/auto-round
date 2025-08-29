@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import traceback
+from dataclasses import asdict
 from typing import Any, Callable, Union
 
 import accelerate
@@ -30,6 +31,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -109,32 +111,20 @@ class AutoRound(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = True,
-        layer_config: dict = None,
-        batch_size: int = 8,
-        amp: bool = True,
-        device: Union[str, torch.device, int] = 0,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: Union[dict, QuantizationScheme] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
-        seed: int = 42,
+        batch_size: int = 8,
+        lr: float = None,
         gradient_accumulate_steps: int = 1,
-        data_type: str = "int",
-        act_bits: int = 16,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_data_type: str = None,
-        act_dynamic: bool = True,
-        enable_torch_compile: bool = False,
+        low_gpu_mem_usage: bool = False,
+        device: Union[str, torch.device, int] = 0,
         device_map: Union[str, dict] = None,
-        disable_opt_rtn: bool = False,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
         enable_alg_ext: bool = False,
         **kwargs,
     ):
@@ -196,14 +186,18 @@ class AutoRound(object):
             ...     # ...
             ... }
         """
+        self._parse_and_set_scheme(scheme, kwargs)
+
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        amp = kwargs.pop("amp", True)
+        enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
+        minmax_lr = kwargs.pop("minmax_lr", None)
+        disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
-        super_group_size = kwargs.pop("super_group_size", None)
-        super_bits = kwargs.pop("super_bits", None)
         scale_dtype = kwargs.pop("scale_dtype", "fp16")
         nblocks = kwargs.pop("nblocks", 1)
         low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
@@ -248,49 +242,11 @@ class AutoRound(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-        # Set quantization configs
-        self.bits = bits
-        self.data_type = data_type
-        tmp_bits = infer_bits_by_data_type(self.data_type)
-        if tmp_bits is not None and tmp_bits < 16 and tmp_bits != bits:
-            logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
-            self.bits = tmp_bits
-        if tmp_bits is not None and tmp_bits < 16:
-            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                if data_type.startswith(supported_dtype):
-                    if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
-                        self.data_type = supported_dtype
-                    break
-        self.group_size = group_size
-        self.sym = sym
+        # Some other quantization configs
         self.layer_config = {} if layer_config is None else layer_config
+        if isinstance(self.layer_config, QuantizationScheme):
+            self.layer_config = asdict(self.layer_config)
         self.to_quant_block_names = to_quant_block_names
-
-        # Activation
-        self.act_group_size = act_group_size if act_group_size is not None else group_size
-        self.act_bits = act_bits if act_bits is not None else self.bits
-        self.act_sym = act_sym if act_sym is not None else self.sym
-        self.act_dynamic = act_dynamic
-        self.act_data_type = act_data_type
-        if self.act_data_type is None:
-            if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
-                self.act_data_type = data_type
-                logger.info(f"activation adopts {data_type}")
-            else:
-                self.act_data_type = "float"
-        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
-            self.act_bits = tmp_act_bits
-            logger.warning(
-                f"`act_data_type` do not"
-                f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
-            )
-        if tmp_act_bits is not None and tmp_act_bits < 16:
-            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                if self.act_data_type.startswith(supported_dtype):
-                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # could not replace FP8_e4m3
-                        self.act_data_type = supported_dtype
-                    break
 
         # Tuning hyperparameters
         self.seed = seed
@@ -320,8 +276,6 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
-        self.super_bits = super_bits
-        self.super_group_size = super_group_size
         self.disable_opt_rtn = disable_opt_rtn
         self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
 
@@ -413,6 +367,69 @@ class AutoRound(object):
             "super_bits",
             "super_group_size",
         ]
+
+    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> None:
+        """Parse and set the quantization scheme."""
+        if isinstance(scheme, QuantizationScheme):
+            scheme = asdict(scheme)
+        elif isinstance(scheme, dict):
+            scheme = scheme
+        elif isinstance(scheme, str):
+            scheme = asdict(preset_name_to_scheme(scheme))
+        scheme_keys = (
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "act_bits",
+            "act_group_size",
+            "act_sym",
+            "act_data_type",
+            "act_dynamic",
+            "super_bits",
+            "super_group_size",
+        )
+        for key in scheme_keys:
+            if key in kwargs and kwargs[key] is not None:
+                setattr(self, key, kwargs[key])
+            else:
+                setattr(self, key, scheme.get(key, None))
+            kwargs.pop(key, None)
+
+        tmp_bits = infer_bits_by_data_type(self.data_type)
+        if tmp_bits is not None and tmp_bits < 16 and tmp_bits != self.bits:
+            logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
+            self.bits = tmp_bits
+        if tmp_bits is not None and tmp_bits < 16:
+            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                if self.data_type.startswith(supported_dtype):
+                    if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
+                        self.data_type = supported_dtype
+                    break
+
+        self.act_group_size = self.act_group_size if self.act_group_size is not None else self.group_size
+        self.act_bits = self.act_bits if self.act_bits is not None else 16
+        self.act_sym = self.act_sym if self.act_sym is not None else self.sym
+
+        if self.act_data_type is None:
+            if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
+                self.act_data_type = self.data_type
+                logger.info(f"activation adopts {self.data_type}")
+            else:
+                self.act_data_type = "float"
+        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
+        if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
+            self.act_bits = tmp_act_bits
+            logger.warning(
+                f"`act_data_type` do not"
+                f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
+            )
+        if tmp_act_bits is not None and tmp_act_bits < 16:
+            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                if self.act_data_type.startswith(supported_dtype):
+                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # could not replace FP8_e4m3
+                        self.act_data_type = supported_dtype
+                    break
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
