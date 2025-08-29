@@ -40,7 +40,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode.")
 
-        self.add_argument("--bits", default=4, type=int, help="weight bits")
+        self.add_argument("--scheme", default="W4A16", type=str,
+                          choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16",
+                                   "FPW8_STATIC"], help="quantization cheme")
+
+        self.add_argument("--bits", default=None, type=int, help="number of weight bits")
+        self.add_argument("--group_size", default=None, type=int, help="group size")
+        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
+        self.add_argument("--data_type", "--dtype", default=None, help="data type for tuning, 'int', 'mx_fp' and etc")
+        self.add_argument("--act_bits", default=None, type=int, help="activation bits")
 
         self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
 
@@ -56,7 +64,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "set --device 0,1,2 to use multiple cards.",
         )
 
-        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
 
         self.add_argument(
             "--dataset",
@@ -90,8 +97,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--low_gpu_mem_usage", action="store_true", help="offload intermediate features to cpu")
 
         self.add_argument("--format", default="auto_round", type=str, help="the format to save the model")
-
-        self.add_argument("--data_type", "--dtype", default="int", help="data type for tuning, 'int', 'mx_fp' and etc")
 
         self.add_argument(
             "--scale_dtype",
@@ -154,7 +159,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="force to convert the dtype, some backends supports fp16 dtype better",
         )
 
-        self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
         self.add_argument("--fp_layers", default="", type=str, help="layers to maintain original data type")
 
@@ -220,8 +224,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
 def setup_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
@@ -438,6 +440,11 @@ def tune(args):
         "trust_remote_code": not args.disable_trust_remote_code,
         "model_dtype": args.model_dtype,
     }
+
+    sym = None  # the default value should be None now
+    if args.asym:  # if the scheme is asym, how to set it to sym is an issue
+        sym = False
+
     autoround = round(
         model,
         tokenizer,
@@ -447,7 +454,7 @@ def tune(args):
         extra_data_dir=args.extra_data_dir,
         bits=args.bits,
         group_size=args.group_size,
-        sym=not args.asym,
+        sym=sym,
         batch_size=args.batch_size,
         seqlen=seqlen,
         nblocks=args.nblocks,

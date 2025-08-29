@@ -52,9 +52,7 @@ import time
 from functools import partial
 
 import numpy as np
-import pandas as pd
-
-from ..utils import LazyImport, logger
+from auto_round.utils import LazyImport, logger
 
 vlmeval = LazyImport("vlmeval")
 
@@ -304,6 +302,7 @@ def mllm_eval(
 
             if mode == "all":
                 eval_results = dataset.evaluate(result_file, **judge_kwargs)
+                import pandas as pd
                 if eval_results is not None:
                     if not isinstance(eval_results, dict) and not isinstance(eval_results, pd.DataFrame):
                         raise TypeError("Unsupported eval result type")
