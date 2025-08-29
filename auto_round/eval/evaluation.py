@@ -26,6 +26,7 @@ def simple_evaluate_user_model(
     user_model,
     tokenizer,
     batch_size: Optional[int] = 1,
+    limit: Optional[Union[int, float]] = None,
     max_batch_size: Optional[int] = 64,
     eval_model_dtype="auto",
     add_bos_token: bool = False,
@@ -40,7 +41,7 @@ def simple_evaluate_user_model(
         add_bos_token=add_bos_token,
     )
     return lm_simple_evaluate(
-        model=hflm, model_args=None, batch_size=batch_size, max_batch_size=max_batch_size, **kwargs
+        model=hflm, model_args=None, batch_size=batch_size, max_batch_size=max_batch_size, limit=limit, **kwargs
     )
 
 
@@ -48,6 +49,7 @@ def simple_evaluate(
     model,
     model_args: Optional[Union[str, dict]] = None,
     batch_size: Optional[int] = None,
+    limit: Optional[Union[int, float]] = None,
     max_batch_size: Optional[int] = None,
     device: Optional[str] = None,
     **kwargs
@@ -61,6 +63,7 @@ def simple_evaluate(
         model=model,
         model_args=model_args,
         batch_size=batch_size,
+        limit=limit,
         max_batch_size=max_batch_size,
         device=device,
         **kwargs
