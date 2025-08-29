@@ -1,11 +1,23 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Optional
 
-__all__ = [
-    "QuantizationScheme",
-    "preset_name_to_scheme"
-]
+__all__ = ["QuantizationScheme", "preset_name_to_scheme"]
+
 
 @dataclass
 class QuantizationScheme:
@@ -25,15 +37,13 @@ class QuantizationScheme:
     def from_dict(cls, config: dict):
         return cls(**config)
 
+
 def preset_name_to_scheme(name: str) -> QuantizationScheme:
-    """ Get a QuantizationScheme instance from a preset scheme name."""
+    """Get a QuantizationScheme instance from a preset scheme name."""
     name = name.upper()
 
     if name not in PRESET_SCHEMES:
-        raise KeyError(
-            f"Unknown preset scheme name {name}, "
-            f"available names: {list(PRESET_SCHEMES.keys())}"
-        )
+        raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
 
     scheme_args = deepcopy(PRESET_SCHEMES[name])
     return scheme_args
@@ -44,69 +54,85 @@ def is_preset_scheme(name: str) -> bool:
     return name.upper() in PRESET_SCHEMES
 
 
-W4A16 = QuantizationScheme.from_dict({
-    "bits": 4,
-    "sym": True,
-    "group_size": 128,
-    "data_type": "int",
-    "act_bits": 16,
-})
+W4A16 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "sym": True,
+        "group_size": 128,
+        "data_type": "int",
+        "act_bits": 16,
+    }
+)
 
-W2A16 = QuantizationScheme.from_dict({
-    "bits": 2,
-    "sym": True,
-    "group_size": 128,
-    "data_type": "int",
-    "act_bits": 16,
-})
+W2A16 = QuantizationScheme.from_dict(
+    {
+        "bits": 2,
+        "sym": True,
+        "group_size": 128,
+        "data_type": "int",
+        "act_bits": 16,
+    }
+)
 
-W3A16 = QuantizationScheme.from_dict({
-    "bits": 3,
-    "sym": True,
-    "group_size": 128,
-    "data_type": "int",
-    "act_bits": 16,
-})
+W3A16 = QuantizationScheme.from_dict(
+    {
+        "bits": 3,
+        "sym": True,
+        "group_size": 128,
+        "data_type": "int",
+        "act_bits": 16,
+    }
+)
 
-W8A16 = QuantizationScheme.from_dict({
-    "bits": 8,
-    "sym": True,
-    "group_size": 128,
-    "data_type": "int",
-    "act_bits": 16,
-})
+W8A16 = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "sym": True,
+        "group_size": 128,
+        "data_type": "int",
+        "act_bits": 16,
+    }
+)
 
-MXFP4 = QuantizationScheme.from_dict({
-    "bits": 4,
-    "group_size": 32,
-    "data_type": "mx_fp",
-    "act_bits": 4,
-    "act_data_type": "mx_fp_rceil",
-})
+MXFP4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 32,
+        "data_type": "mx_fp",
+        "act_bits": 4,
+        "act_data_type": "mx_fp_rceil",
+    }
+)
 
-MXFP8 = QuantizationScheme.from_dict({
-    "bits": 8,
-    "group_size": 32,
-    "data_type": "mx_fp",
-    "act_bits": 8,
-    "act_data_type": "mx_fp_rceil",
-})
+MXFP8 = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "group_size": 32,
+        "data_type": "mx_fp",
+        "act_bits": 8,
+        "act_data_type": "mx_fp_rceil",
+    }
+)
 
-NVFP4 = QuantizationScheme.from_dict({
-    "bits": 4,
-    "group_size": 16,
-    "data_type": "nv_fp",
-    "act_bits": 4,
-    "act_data_type": "nv_fp_with_static_gs",
-})
+NVFP4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "nv_fp",
+        "act_bits": 4,
+        "act_data_type": "nv_fp_with_static_gs",
+    }
+)
 
-FPW8A16 = QuantizationScheme.from_dict({
-    "bits": 8,
-    "group_size": 0,
-    "data_type": "fp",
-    "act_bits": 16,
-    "act_data_type": "fp",
-})
+FPW8A16 = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "group_size": 0,
+        "data_type": "fp",
+        "act_bits": 16,
+        "act_data_type": "fp",
+    }
+)
 
 # FP8 = asdict(QuantArgs.from_dict({
 #     "bits": 8,
@@ -116,26 +142,28 @@ FPW8A16 = QuantizationScheme.from_dict({
 #     "act_data_type": "fp",
 # }))
 
-FPW8_STATIC = QuantizationScheme.from_dict({
-    "bits": 8,
-    "group_size": -1,
-    "data_type": "fp",
-    "act_bits": 8,
-    "act_group_size": 0,
-    "act_data_type": "fp",
-    "act_dynamic": False,
-})
+FPW8_STATIC = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "group_size": -1,
+        "data_type": "fp",
+        "act_bits": 8,
+        "act_group_size": 0,
+        "act_data_type": "fp",
+        "act_dynamic": False,
+    }
+)
 
 
 # TODO add gguf
 PRESET_SCHEMES = {
-"W4A16": W4A16,
-"W2A16": W2A16,
-"W3A16": W3A16,
-"W8A16": W8A16,
-"MXFP4": MXFP4,
-"MXFP8": MXFP8,
-"NVFP4": NVFP4,
-"FPW8A16": FPW8A16,
-"FPW8_STATIC": FPW8_STATIC,
+    "W4A16": W4A16,
+    "W2A16": W2A16,
+    "W3A16": W3A16,
+    "W8A16": W8A16,
+    "MXFP4": MXFP4,
+    "MXFP8": MXFP8,
+    "NVFP4": NVFP4,
+    "FPW8A16": FPW8A16,
+    "FPW8_STATIC": FPW8_STATIC,
 }

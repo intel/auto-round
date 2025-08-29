@@ -40,9 +40,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode.")
 
-        self.add_argument("--scheme", default="W4A16", type=str,
-                          choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16",
-                                   "FPW8_STATIC"], help="quantization cheme")
+        self.add_argument(
+            "--scheme",
+            default="W4A16",
+            type=str,
+            choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            help="quantization cheme",
+        )
 
         self.add_argument("--bits", default=None, type=int, help="number of weight bits")
         self.add_argument("--group_size", default=None, type=int, help="group size")
@@ -63,7 +67,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "allowing for automatic detection and switch to HPU or CPU."
             "set --device 0,1,2 to use multiple cards.",
         )
-
 
         self.add_argument(
             "--dataset",
@@ -158,7 +161,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="force to convert the dtype, some backends supports fp16 dtype better",
         )
-
 
         self.add_argument("--fp_layers", default="", type=str, help="layers to maintain original data type")
 
