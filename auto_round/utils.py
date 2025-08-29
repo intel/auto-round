@@ -2527,10 +2527,6 @@ def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
 
 
-def is_static_afp8(ar):
-    return not ar.act_dynamic and "fp8" in ar.act_data_type
-
-
 def _is_weight_fp8_activation_static_fp8(bit, group_size, sym, data_type, act_dynamic):
     return bit == 8 and group_size == -1 and sym and data_type == "fp8" and not act_dynamic
 
@@ -2542,17 +2538,6 @@ def is_weight_fp8_activation_static_fp8(config):
         config["sym"],
         config["data_type"],
         config["act_dynamic"],
-    )
-    return _is_weight_fp8_activation_static_fp8(bits, group_size, sym, data_type, act_dynamic)
-
-
-def is_torch_fp8_static(ar):
-    bits, group_size, sym, data_type, act_dynamic = (
-        ar.bits,
-        ar.group_size,
-        ar.sym,
-        ar.data_type,
-        ar.act_dynamic,
     )
     return _is_weight_fp8_activation_static_fp8(bits, group_size, sym, data_type, act_dynamic)
 
