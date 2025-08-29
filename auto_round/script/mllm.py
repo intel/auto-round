@@ -450,6 +450,7 @@ def tune(args):
     autoround = round(
         model,
         tokenizer,
+        scheme=args.scheme,
         processor=processor,
         image_processor=image_processor,
         dataset=args.dataset,

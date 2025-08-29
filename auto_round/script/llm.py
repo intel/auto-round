@@ -537,7 +537,7 @@ def tune(args):
     autoround = round(
         model=model,
         tokenizer=tokenizer,
-        scheme=args.scheme
+        scheme=args.scheme,
         bits=args.bits,
         group_size=args.group_size,
         sym=sym,
