@@ -1730,8 +1730,8 @@ class AutoRound(object):
                 if n in self.layer_config:
                     if not check_to_quantized(layer_config[n]):
                         if isinstance(m, torch.nn.Embedding):
-                            if hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats):
-                                self.layer_config.pip(n)
+                            if not (hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)):
+                                self.layer_config.pop(n)
                                 continue
                         else:
                             self.layer_config.pop(n)
