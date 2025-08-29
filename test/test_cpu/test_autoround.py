@@ -376,9 +376,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
             layer_config=layer_config,
         )
-        quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=True)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+        autoround.quantize()
 
     def test_fallback_layers(self):
         bits, group_size, sym = 4, 128, True
