@@ -2510,13 +2510,13 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
 
 
 class BackendDataType(str, Enum):
-    STANDARD_FP8 = "fp8"
+    STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
 
 
 def is_standard_fp(backend):
-    return BackendDataType.STANDARD_FP8 in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
+    return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 def is_mx_fp(backend):
@@ -2555,3 +2555,20 @@ def is_torch_fp8_static(ar):
         ar.act_dynamic,
     )
     return _is_weight_fp8_activation_static_fp8(bits, group_size, sym, data_type, act_dynamic)
+
+
+def is_wfp8afp8(ar):
+    if ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8)) and (
+        "fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8)
+    ):
+        return True
+    else:
+        return False
+
+
+def is_static_wfp8afp8(ar):
+    if ar.act_dynamic:
+        return False
+    if is_wfp8afp8(ar):
+        return True
+    return False
