@@ -55,7 +55,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
-        self.add_argument("--scheme", default="W4A16", type=str, choices=["W4A16","W2A16","W3A16","W8A16","MXFP4","MXFP8","NVFP4","FPW8A16","FPW8_STATIC"],help="quantization cheme")
+        self.add_argument(
+            "--scheme",
+            default="W4A16",
+            type=str,
+            choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            help="quantization cheme",
+        )
 
         self.add_argument("--bits", default=None, type=int, help="number of weight bits")
         self.add_argument("--group_size", default=None, type=int, help="group size")
@@ -64,7 +70,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--act_bits", default=None, type=int, help="activation bits")
         self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
         self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+        )
 
         self.add_argument(
             "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
@@ -81,10 +88,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-                 "Currently, device settings support CPU, GPU, and HPU."
-                 "The default is set to cuda:0,"
-                 "allowing for automatic detection and switch to HPU or CPU."
-                 "set --device 0,1,2 to use multiple cards.",
+            "Currently, device settings support CPU, GPU, and HPU."
+            "The default is set to cuda:0,"
+            "allowing for automatic detection and switch to HPU or CPU."
+            "set --device 0,1,2 to use multiple cards.",
         )
 
         self.add_argument(
@@ -122,7 +129,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--task",
             nargs="?",
             const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-                  "openbookqa,boolq,arc_easy,arc_challenge",
+            "openbookqa,boolq,arc_easy,arc_challenge",
             default=None,
             help="lm-eval tasks",
         )
@@ -163,12 +170,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=int,
             choices=[0, 1, 2],
             help="choose which low cpu memory mode to use. "
-                 "Can significantly reduce cpu memory footprint but cost more time."
-                 "1 means choose block-wise mode, load the weights of each block"
-                 " from disk when tuning and release the memory of the block after tuning."
-                 "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                 " minimum memory consumption and also slowest running speed."
-                 "others means not use low cpu memory. Default to 0, not use low cpu memory.",
+            "Can significantly reduce cpu memory footprint but cost more time."
+            "1 means choose block-wise mode, load the weights of each block"
+            " from disk when tuning and release the memory of the block after tuning."
+            "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+            " minimum memory consumption and also slowest running speed."
+            "others means not use low cpu memory. Default to 0, not use low cpu memory.",
         )
 
         self.add_argument(
@@ -176,7 +183,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=str,
             help="temporary work space to store the temporary files "
-                 "when using low cpu memory mode. Will remove after tuning.",
+            "when using low cpu memory mode. Will remove after tuning.",
         )
 
         self.add_argument(
@@ -236,10 +243,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=str,
             help="dataset dir for storing images/audio/videos. "
-                 "Can be a dir path or multiple dir path with format as "
-                 "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-                 "By default, it will search in the relative path, "
-                 "and if not find, will automatic download.",
+            "Can be a dir path or multiple dir path with format as "
+            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+            "By default, it will search in the relative path, "
+            "and if not find, will automatic download.",
         )
 
         self.add_argument(
@@ -264,17 +271,17 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-                 "Currently, device settings support CPU, GPU, and HPU."
-                 "The default is set to cuda:0,"
-                 "allowing for automatic detection and switch to HPU or CPU."
-                 "set --device 0,1,2 to use multiple cards.",
+            "Currently, device settings support CPU, GPU, and HPU."
+            "The default is set to cuda:0,"
+            "allowing for automatic detection and switch to HPU or CPU."
+            "set --device 0,1,2 to use multiple cards.",
         )
 
         self.add_argument(
             "--tasks",
             "--task",
             default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-                    "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+            "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
             help="lm-eval tasks",
         )
         self.add_argument(
@@ -484,10 +491,10 @@ def tune(args):
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
             if (
-                    "auto_round" not in format
-                    and "fake" not in format
-                    and "awq" not in format
-                    and "llmcompressor" not in format
+                "auto_round" not in format
+                and "fake" not in format
+                and "awq" not in format
+                and "llmcompressor" not in format
             ):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
@@ -814,15 +821,15 @@ def eval(args):
 
 
 def eval_task_by_task(
-        model,
-        device=None,
-        tasks=None,
-        tokenizer=None,
-        batch_size=None,
-        max_batch_size=64,
-        trust_remote_code=True,
-        eval_model_dtype=None,
-        retry_times=3,
+    model,
+    device=None,
+    tasks=None,
+    tokenizer=None,
+    batch_size=None,
+    max_batch_size=64,
+    trust_remote_code=True,
+    eval_model_dtype=None,
+    retry_times=3,
 ):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
