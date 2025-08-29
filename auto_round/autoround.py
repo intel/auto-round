@@ -402,7 +402,7 @@ class AutoRound(object):
             self.bits = tmp_bits
         if tmp_bits is not None and tmp_bits < 16:
             for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                if data_type.startswith(supported_dtype):
+                if self.data_type.startswith(supported_dtype):
                     if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
                         self.data_type = supported_dtype
                     break
