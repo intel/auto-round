@@ -27,6 +27,7 @@ from auto_round.inference.backend import (
     find_backend,
     get_highest_priority_backend,
     get_layer_backend,
+    is_weight_fp8_activation_static_fp8,
     process_requirement,
 )
 from auto_round.utils import (
@@ -61,7 +62,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except:
-        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
+        modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
             if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
@@ -219,6 +220,7 @@ def get_layer_config(model, quantization_config):
             - group_size (int): Group size for weight quantization.
             - data_type (str, optional): Data type for quantization (default: "int").
             - sym (bool): Whether to use symmetric quantization.
+            - act_dynamic (bool, optional): Whether to use dynamic activation quantization (default: False).
             - quant_block_list (list, optional): Predefined list of blocks to quantize.
             - to_quant_block_names (list or str, optional): Blocks to quantize (if quant_block_list is None).
             - extra_config (dict, optional): Per-layer overrides for quantization settings.
@@ -231,13 +233,14 @@ def get_layer_config(model, quantization_config):
             - "group_size" (int): Group size for quantization.
             - "data_type" (str): Data type used for quantization.
             - "sym" (bool): Whether symmetric quantization is applied.
+            - "act_dynamic" (bool): Whether dynamic activation quantization is used.
             - "clip" (bool): Whether weight clipping is enabled.
     """
     bits = quantization_config.bits
     group_size = quantization_config.group_size
     data_type = getattr(quantization_config, "data_type", "int")  # Default to "int" if not specified
     sym = quantization_config.sym
-
+    act_dynamic = getattr(quantization_config, "act_dynamic", False)
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
@@ -290,11 +293,11 @@ def get_layer_config(model, quantization_config):
             "group_size": extra_config.get(layer_name, {}).get("group_size", group_size),
             "data_type": extra_config.get(layer_name, {}).get("data_type", data_type),
             "sym": extra_config.get(layer_name, {}).get("sym", sym),
+            "act_dynamic": extra_config.get(layer_name, {}).get("act_dynamic", act_dynamic),
             "clip": extra_config.get(layer_name, {}).get("clip", False),
         }
         for layer_name in layer_names
     }
-
     return layer_configs
 
 
@@ -415,7 +418,7 @@ def _import_exllamav2_kernels():
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
     """Creates a quantized layer using the appropriate class."""
-    QuantLinear = dynamic_import_inference_linear(layer_backend, config["bits"], config["group_size"], config["sym"])
+    QuantLinear = dynamic_import_inference_linear(layer_backend, config)
     bias = layer.bias is not None
 
     # Special handling for AWQ layers
@@ -437,6 +440,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
         )
+    elif is_weight_fp8_activation_static_fp8(config):
+        return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
     try:
         return QuantLinear(
@@ -561,7 +566,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = quantization_config.backend
     else:
         backend = "auto"
-
     ##target_backend could be None
     _, backend = parse_target_device_and_backend(backend)
 
@@ -588,7 +592,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = backend[len("auto_round:") :]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
-
     if backend == "auto" or backend == "":
         best_backend = get_highest_priority_backend(
             quantization_config.bits,

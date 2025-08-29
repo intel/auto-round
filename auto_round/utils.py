@@ -106,9 +106,17 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-@lru_cache(None)
-def warning_once(self, msg: str):
-    self.warning(msg)
+@lru_cache(maxsize=None)
+def warning_once(self, msg, *args, **kwargs):
+    """
+    Log a warning message only once per unique message/arguments combination.
+
+    Args:
+        msg: The warning message format string
+        *args: Variable positional arguments for message formatting
+        **kwargs: Variable keyword arguments for message formatting and logging options
+    """
+    self.warning(msg, *args, **kwargs)
 
 
 class AutoRoundFormatter(logging.Formatter):
@@ -2517,6 +2525,21 @@ def is_mx_fp(backend):
 
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
+
+
+def _is_weight_fp8_activation_static_fp8(bit, group_size, sym, data_type, act_dynamic):
+    return bit == 8 and group_size == -1 and sym and data_type == "fp8" and not act_dynamic
+
+
+def is_weight_fp8_activation_static_fp8(config):
+    bits, group_size, sym, data_type, act_dynamic = (
+        config["bits"],
+        config["group_size"],
+        config["sym"],
+        config["data_type"],
+        config["act_dynamic"],
+    )
+    return _is_weight_fp8_activation_static_fp8(bits, group_size, sym, data_type, act_dynamic)
 
 
 def is_wfp8afp8(ar):

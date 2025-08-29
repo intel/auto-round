@@ -273,9 +273,14 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
+    from auto_round.autoround import AutoRoundFormat
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
-    if (kwargs.get("sym") is None or kwargs.get("sym")) and ("gptq" not in backend and "awq" not in backend):
+    if (
+        (kwargs.get("sym") is None or kwargs.get("sym"))
+        and ("gptq" not in backend and "awq" not in backend)
+        and (AutoRoundFormat.TORCH_FP8_STATIC.value not in backend)
+    ):
         backend = backend.replace("auto_round", "auto_round:auto_gptq")
 
     model = kwargs["model"]

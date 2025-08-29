@@ -19,7 +19,7 @@ from typing import Any, List, Optional
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
-from auto_round.utils import get_library_version, logger
+from auto_round.utils import get_library_version, is_weight_fp8_activation_static_fp8, logger
 
 BackendInfos = {}
 
@@ -170,6 +170,22 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     feature_checks=[exllamav2_feature_check],
     alias=["auto_round", "torch"],
     requirements=["auto-round>=0.5.1"],
+)
+
+# FP8 static quant
+# Weight: FP8, per-channel, may be extended to per-tensor in future
+# Activation: FP8, per-tensor
+
+BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[8],
+    priority=0,
+    feature_checks=[],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>=0.6.1.dev0"],
 )
 
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
@@ -413,7 +429,7 @@ def check_compatible(
     return True
 
 
-def dynamic_import_inference_linear(backend, bits, group_size, sym):
+def dynamic_import_inference_linear(backend, config):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
@@ -438,6 +454,13 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         ImportError:
             If required modules are missing for a backend (e.g., Intel Extension, GPTQ, auto_awq).
     """
+    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
+
+    if is_weight_fp8_activation_static_fp8(config):
+        from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear
+
+        return WeightFP8ActFP8StaticQuantLinear
+
     if "qbits" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401
@@ -825,6 +848,7 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
     # Instructional messages
     install_instructions = []
+
     for cmd in pip_cmds:
         if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
             install_instructions.append(
