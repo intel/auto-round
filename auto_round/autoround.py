@@ -687,7 +687,7 @@ class AutoRound(object):
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
-                elif is_wfp8afp8(self):  # staic wfp8afp8
+                elif is_static_wfp8afp8(self):  # staic wfp8afp8
                     format = f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
                     format = "auto_round:fp8"
