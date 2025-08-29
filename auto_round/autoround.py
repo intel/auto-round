@@ -407,7 +407,6 @@ class AutoRound(object):
                         self.data_type = supported_dtype
                     break
 
-
         self.act_group_size = self.act_group_size if self.act_group_size is not None else self.group_size
         self.act_bits = self.act_bits if self.act_bits is not None else 16
         self.act_sym = self.act_sym if self.act_sym is not None else self.sym
