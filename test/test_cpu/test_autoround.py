@@ -372,11 +372,12 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
+            nsamples=3,
             dataset=self.llm_dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_folder
-        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=True)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_fallback_layers(self):
