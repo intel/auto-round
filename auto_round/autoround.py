@@ -86,6 +86,101 @@ from auto_round.utils import (
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
+class QuantConfigMeta(type):
+    def __new__(mcs, name, bases, namespace):
+        presets = namespace.get("PRESETS", {})
+        def make_preset_method(preset_name):
+            def preset_method(cls, **kwargs):
+                return cls(preset=preset_name, **kwargs)
+            preset_method.__name__ = preset_name
+            return classmethod(preset_method)
+        for preset_name in presets:
+            namespace[preset_name] = make_preset_method(preset_name)
+        return super().__new__(mcs, name, bases, namespace)
+
+class QuantConfig(metaclass=QuantConfigMeta):
+    PRESETS = {
+        "W4A16": {
+            "bits": 4,
+            "sym": True,
+            "group_size":128,
+            "data_type": "int",
+            "act_bits": 16,
+        },
+        "W2A16": {
+            "bits": 2,
+            "sym": True,
+            "group_size": 128,
+            "data_type": "int",
+            "act_bits": 16,
+        },
+        "W3A16": {
+            "bits": 3,
+            "sym": True,
+            "group_size": 128,
+            "data_type": "int",
+            "act_bits": 16,
+        },
+        "W8A16": {
+            "bits": 8,
+            "sym": True,
+            "group_size": 128,
+            "data_type": "int",
+            "act_bits": 16,
+        },
+        "MXFP4": {
+            "bits": 4,
+            "group_size": 32,
+            "data_type": "mx_fp",
+            "act_bits": 4,
+            "act_data_type": "mx_fp_rceil",
+        },
+        "MXFP8": {
+            "bits": 8,
+            "group_size": 32,
+            "data_type": "mx_fp",
+            "act_bits": 8,
+            "act_data_type": "mx_fp_rceil",
+        },
+        "NVFP4": {
+            "bits": 4,
+            "group_size": 16,
+            "data_type": "nv_fp",
+            "act_bits": 4,
+            "act_data_type": "nv_fp_with_static_gs",
+        },
+        "FPW8A16": {
+            "bits": 8,
+            "group_size": 0,
+            "data_type": "fp",
+            "act_bits": 16,
+            "act_data_type": "fp",
+        },
+        "FP8": {
+            "bits": 8,
+            "group_size": 128,
+            "data_type": "fp",
+            "act_bits": 8,
+            "act_data_type": "fp",
+        },
+        "FP8_STATIC": {
+            "bits": 8,
+            "group_size":-1,
+            "data_type": "fp",
+            "act_bits": 8,
+            "act_group_size":0,
+            "act_data_type": "fp",
+            "disable_act_dynamic":True
+        },
+
+    }
+    def __init__(self, preset="default", **kwargs):
+        config = self.PRESETS.get(preset, {}).copy()
+        config.update(kwargs)
+        for k, v in config.items():
+            setattr(self, k, v)
+    def as_dict(self):
+        return {k: getattr(self, k) for k in self.PRESETS["default"].keys()}
 
 class AutoRound(object):
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
@@ -109,32 +204,20 @@ class AutoRound(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = True,
+        quant_config="int4",
         layer_config: dict = None,
-        batch_size: int = 8,
-        amp: bool = True,
-        device: Union[str, torch.device, int] = 0,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
-        seed: int = 42,
+        batch_size: int = 8,
+        lr: float = None,
         gradient_accumulate_steps: int = 1,
-        data_type: str = "int",
-        act_bits: int = 16,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_data_type: str = None,
-        act_dynamic: bool = True,
-        enable_torch_compile: bool = False,
+        low_gpu_mem_usage: bool = False,
+        device: Union[str, torch.device, int] = 0,
         device_map: Union[str, dict] = None,
-        disable_opt_rtn: bool = False,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
         enable_alg_ext: bool = False,
         **kwargs,
     ):
@@ -198,6 +281,20 @@ class AutoRound(object):
         """
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+
+        bits = kwargs.pop("bits", None)
+        group_size = kwargs.pop("group_size", None)
+        sym = kwargs.pop("sym", None)
+        data_type = kwargs.pop("data_type", None)
+        act_bits = kwargs.pop("act_bits", None)
+        act_group_size = kwargs.pop("act_group_size", None)
+        act_sym = kwargs.pop("act_sym", None)
+        act_data_type = kwargs.pop("act_data_type", None)
+        act_dynamic = kwargs.pop("act_dynamic", None)
+        amp = kwargs.pop("amp", True)
+        enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
+        minmax_lr = kwargs.pop("minmax_lr", None)
+        disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
@@ -213,6 +310,8 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+
+
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
