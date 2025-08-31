@@ -14,7 +14,7 @@
 import os
 import re
 from logging import getLogger
-from typing import Union
+from typing import Any, Dict, List, Union
 
 import torch
 import torch.nn as nn
@@ -209,6 +209,13 @@ def parse_target_device_and_backend(target_backend: str):
     return "auto", target_backend
 
 
+def _get_layer_config(layer_name: str, extra_config: Dict[str, Any], attributes: List[str]) -> Dict[str, Any]:
+    layer_config: Dict[str, Any] = {}
+    for attr in attributes:
+        layer_config[attr] = extra_config.get(layer_name, {}).get(attr, None)
+    return layer_config
+
+
 def get_layer_config(model, quantization_config):
     """
     get a layer-wise quantization configuration for a given model.
@@ -287,17 +294,11 @@ def get_layer_config(model, quantization_config):
     layer_names = list(set(layer_names).union(extra_config.keys()))
 
     # Construct final layer configuration
-    layer_configs = {
-        layer_name: {
-            "bits": extra_config.get(layer_name, {}).get("bits", bits),
-            "group_size": extra_config.get(layer_name, {}).get("group_size", group_size),
-            "data_type": extra_config.get(layer_name, {}).get("data_type", data_type),
-            "sym": extra_config.get(layer_name, {}).get("sym", sym),
-            "act_dynamic": extra_config.get(layer_name, {}).get("act_dynamic", act_dynamic),
-            "clip": extra_config.get(layer_name, {}).get("clip", False),
-        }
-        for layer_name in layer_names
-    }
+    attributes = ["bits", "group_size", "data_type", "sym", "clip", "act_dynamic"]
+    layer_configs = {}
+    for layer_name in layer_names:
+        layer_configs[layer_name] = _get_layer_config(layer_name, extra_config, attributes)
+
     return layer_configs
 
 

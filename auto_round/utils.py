@@ -2527,7 +2527,9 @@ def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
 
 
-def _is_weight_fp8_activation_static_fp8(bit, group_size, sym, data_type, act_dynamic):
+def _is_weight_fp8_activation_static_fp8(
+    bit: int, group_size: int, sym: bool, data_type: str, act_dynamic: bool
+) -> bool:
     return bit == 8 and group_size == -1 and sym and data_type == "fp8" and not act_dynamic
 
 
