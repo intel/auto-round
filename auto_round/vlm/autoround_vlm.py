@@ -578,7 +578,7 @@ class AutoRoundVLM(AutoRound):
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
         total_loss = 0
