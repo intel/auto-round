@@ -106,6 +106,17 @@ class AutoRound(object):
         nsamples (int): Number of calibration samples.
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
 
     def __init__(
         self,
@@ -2312,10 +2323,8 @@ class AutoRound(object):
         nsamples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
-        mse_loss = torch.nn.MSELoss().to(device)
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        # best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
         gradient_accumulate_steps = self.batch_size  ##Force to low gpu
         batch_size = 1  ##Force to low gpu
         pick_samples = batch_size * gradient_accumulate_steps
