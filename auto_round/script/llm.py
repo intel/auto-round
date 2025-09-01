@@ -318,8 +318,6 @@ def setup_parser():
 def setup_best_parser():
     parser = BasicArgumentParser()
 
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
-
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=1000, type=int, help="iterations to tune each block")
@@ -343,8 +341,6 @@ def setup_best_parser():
 def setup_light_parser():
     parser = BasicArgumentParser()
 
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
-
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
@@ -366,8 +362,6 @@ def setup_light_parser():
 
 def setup_fast_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=4, type=int, help="train batch size")
 
