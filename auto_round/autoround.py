@@ -1330,7 +1330,7 @@ class AutoRound(object):
         if has_gguf_k and not self.disable_opt_rtn:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic, self.act_data_type,self.act_bits
+            self.act_dynamic, self.act_data_type, self.act_bits
         ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
             try:
@@ -2443,7 +2443,7 @@ class AutoRound(object):
                 act_bits = config.get("act_data_type", 16)
                 if (
                     config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type,act_bits)
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
                     and check_to_quantized(config)
                 ):
                     hook = m.register_forward_hook(get_act_max_hook)
