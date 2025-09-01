@@ -374,7 +374,6 @@ def prepare_tensors(cls):
     max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-        # model.layers.0.mlp.down_proj.weight_scale_inv
         if data_torch is None:
             continue
         # we don't need these
