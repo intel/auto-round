@@ -198,4 +198,3 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
             )
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
-

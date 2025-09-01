@@ -2622,12 +2622,13 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_params)
-        
+
         if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-                from auto_round.utils import set_amax_for_all_moe_layers
-                # enable moe experts act_max automatic generation for WrapperWALayer
-                set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
-        
+            from auto_round.utils import set_amax_for_all_moe_layers
+
+            # enable moe experts act_max automatic generation for WrapperWALayer
+            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
+
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)
@@ -3213,4 +3214,3 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
-
