@@ -2179,7 +2179,7 @@ def check_need_act_calibration(
     if act_bits > 8:
         return False
     # None is dynamic
-    if is_act_dynamic == False:  # pylint: disable=E712
+    if is_act_dynamic is not None and not is_act_dynamic:
         return True
     if act_data_type is not None and "static" in act_data_type:
         return True
