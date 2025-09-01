@@ -407,6 +407,8 @@ class AutoRound(object):
             else:
                 setattr(self, key, scheme.get(key, None))
             kwargs.pop(key, None)
+        if self.act_dynamic is None:
+            self.act_dynamic = True
 
         tmp_bits = infer_bits_by_data_type(self.data_type)
         if tmp_bits is not None and tmp_bits < 16 and tmp_bits != self.bits:
@@ -1328,7 +1330,7 @@ class AutoRound(object):
         if has_gguf_k and not self.disable_opt_rtn:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic, self.act_data_type
+            self.act_dynamic, self.act_data_type,self.act_bits
         ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
             try:
@@ -2426,7 +2428,7 @@ class AutoRound(object):
         for n, m in model.named_modules():
             if (
                 hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type)
+                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
                 and check_to_quantized(m)
             ):
                 hook = m.register_forward_hook(get_act_max_hook)
@@ -2438,9 +2440,10 @@ class AutoRound(object):
                 config = self.layer_config[n]
                 act_dynamic = config.get("act_dynamic", True)
                 act_data_type = config.get("act_data_type", None)
+                act_bits = config.get("act_data_type", 16)
                 if (
                     config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type)
+                    and check_need_act_calibration(act_dynamic, act_data_type,act_bits)
                     and check_to_quantized(config)
                 ):
                     hook = m.register_forward_hook(get_act_max_hook)
