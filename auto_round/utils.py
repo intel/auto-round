@@ -41,11 +41,6 @@ if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
     deepspeed_exists = True
 
 
-deepspeed_exists = False
-if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
-    deepspeed_exists = True
-
-
 class SupportedFormats:
 
     def __init__(self):
