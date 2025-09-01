@@ -109,7 +109,7 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, *
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
             tensor_max = tensor_max.abs().max()
-    
+
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(tensor.device)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
@@ -278,4 +278,3 @@ if __name__ == "__main__":
             f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} "
             f"(error={abs(test[i] - decoded[i]).item():.3g})"
         )
-
