@@ -144,6 +144,13 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
                     break
         yield name, tensor
 
+    def is_extra_tensor(tensor_name):
+        if hasattr(cls.model, "is_fp8") and "scale" in tensor_name.split(".")[-1]:
+            return False
+        if tensor_name not in cls.model.tensor_name_list:
+            return True
+        return False
+        
     extra_tensor = {}
     if hasattr(cls.model, "name_or_path"):
         from safetensors import safe_open
@@ -159,12 +166,12 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
             with open(os.path.join(dir_path, INDEX_FILE)) as f:
                 tensor_index = json.load(f)
             for tensor_name in tensor_index["weight_map"]:
-                if tensor_name not in cls.model.tensor_name_list:
+                if is_extra_tensor(tensor_name):
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
         else:
             f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
             for tensor_name in f.keys():
-                if tensor_name not in cls.model.tensor_name_list:
+                if is_extra_tensor(tensor_name):
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
 
     for name, tensor in extra_tensor.items():
@@ -367,6 +374,7 @@ def prepare_tensors(cls):
     max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+        # model.layers.0.mlp.down_proj.weight_scale_inv
         if data_torch is None:
             continue
         # we don't need these

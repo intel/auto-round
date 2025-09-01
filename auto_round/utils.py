@@ -1369,8 +1369,17 @@ def set_fake_cuda_device_capability(func=None):
 def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
     if hasattr(model, "is_fp8"):
         return model.is_fp8
+
+    def _is_fp8_linear(module):
+        if not (isinstance(m, torch.nn.Linear) or module.__class__.__name__ == "FP8Linear"):
+            return False
+        if str(m.weight.dtype).startswith("torch.float8"):
+            return True
+        else:
+            return False
+
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) and str(m.weight.dtype).startswith("torch.float8"):
+        if _is_fp8_linear(m):
             m.is_fp8_linear = True
             if not hasattr(model, "is_fp8"):
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
@@ -1456,7 +1465,6 @@ def llm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             except OSError as e:
@@ -1569,7 +1577,6 @@ def mllm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
