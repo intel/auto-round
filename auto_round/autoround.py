@@ -437,8 +437,9 @@ class AutoRound(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
+        ### Recipe Mode ###
         self.recipe_mode = False
-        self.recipe_results = {}
+        self.recipe_results = {"recipe": {}, "results": {}}
 
     def _set_device_map_in_blocks(self, device_map: Union[str, dict, None]) -> None:
         """Sets the device map for specific blocks in the model.
@@ -1447,8 +1448,6 @@ class AutoRound(object):
             m.tmp_name = n
         self._check_compatibility()
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
-        if not self.recipe_mode:
-            self._dump_average_bits()  # leverage updated self.layer_config
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
@@ -2642,27 +2641,18 @@ class AutoRound(object):
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         if self.recipe_mode:
-            pbar = tqdm(range(0, len(block_names), nblocks))
-            for i in range(0, len(block_names), nblocks):
-                if i != 0:
-                    pbar.update(1)
-                if nblocks == 1:
-                    n = block_names[i]
-                    pbar.set_description(f"[Recipe Mode] Processing {n}")
-                    block = get_module(model, n)
-                else:
-                    names = block_names[i : min(i + nblocks, len(block_names))]
-                    pbar.set_description(
-                        f"[Recipe Mode] Processing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}"
-                    )
-                    modules = [get_module(model, n) for n in names]
-                    block = WrapperMultiblock(modules)
+            logger.info("[Recipe Mode] starts")
+            q_input_ids = None  # init value
+            for block_name in tqdm(block_names):
+                block = get_module(model, block_name)
                 if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                     block = block.to(device)
-                block_recipe_results = self._generate_block_recipe(block, input_ids, input_others)
-                for result in block_recipe_results:
-                    self.recipe_results.update({block_names[i] + "." + result: self.recipe_mp_dtype})
-            pbar.close()
+                input_ids, q_input_ids = self._generate_block_recipe(
+                    block, block_name, input_ids, q_input_ids, input_others
+                )
+                if is_hpex_available():
+                    htcore.mark_step()
+            logger.info("[Recipe Mode] ends")
             return
         ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
@@ -3001,21 +2991,6 @@ class AutoRound(object):
                 current_input_others[key] = input_others[key]
 
         return current_input_ids, current_input_others
-
-    def _dump_average_bits(self, layer_config=None):
-        """Dumps the average bits of the model based on the layer configuration."""
-        total_numel = 0
-        total_bits = 0
-        for n, m in self.model.named_modules():
-            if isinstance(m, SUPPORTED_LAYER_TYPES):
-                m_numel = m.weight.numel()
-                layer_config = self.layer_config if layer_config is None else layer_config
-                m_bits = layer_config[n]["bits"] if n in layer_config else self.bits
-                total_numel += m_numel
-                total_bits += m_numel * m_bits
-        avg_bits = round(total_bits / total_numel, 3)
-        logger.info(f"current average bits of model: {avg_bits}")
-        return avg_bits
 
 
 class AutoRoundAdam(AutoRound):

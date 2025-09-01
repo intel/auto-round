@@ -2646,8 +2646,47 @@ def get_best_combination(combination_list, numel_list, loss_list, loss_numel_rat
     # Find the index of the smallest rank sum
     best_index = rank_sums.index(min(rank_sums))
 
-    # Return the best combination
-    return combination_list[best_index]
+    # Return the best index
+    return best_index
+
+
+def get_avg_bits(module):
+    """
+    Calculates the average number of bits per weight element for supported layers in a given module.
+
+    Iterates through all named modules in the module, accumulating the total number of weight elements
+    and the corresponding bit usage, including additional scale bits for specific data types.
+
+    Args:
+        module: A neural network module containing layers to be analyzed.
+
+    Returns:
+        float: The average number of bits per weight element across all supported layers.
+
+    Note:
+        - Only layers of types specified in SUPPORTED_LAYER_TYPES are considered.
+        - For certain data types ("fp4_v2", "nv_fp4", "mx_fp4", "mx_fp8"), scale bits are added.
+        - For "fp4_v2" and "nv_fp4", an additional 32 global scale bits are included.
+    """
+    all_numel = 0
+    all_bits = 0
+    for n, m in module.named_modules():
+        if isinstance(m, SUPPORTED_LAYER_TYPES):
+            m_numel = m.weight.numel()
+            all_numel += m_numel
+            w_bits = m.bits * m_numel
+            all_bits += w_bits
+            if m.data_type in ("fp4_v2", "nv_fp", "mx_fp", "nv_fp4", "mx_fp4", "mx_fp8"):
+                scale_bits = 8 * (m_numel // m.group_size)
+                if m.data_type in ("fp4_v2", "nv_fp"):
+                    scale_bits += 32  # global scale bits
+                all_bits += scale_bits
+            else: # woq
+                scale_bits = 16 * (m_numel // m.group_size)
+                all_bits += scale_bits
+
+    avg_bits = all_bits / all_numel if all_numel > 0 else 0
+    return round(avg_bits, 6)
 
 
 def _generate_recipe(
@@ -2676,19 +2715,27 @@ def _generate_recipe(
     Returns:
         dict: A dictionary containing the quantization recipe for each layer, excluding the "lm_head" layer.
     """
-    self.recipe_mode = True
     self.recipe_mp_dtype = mp_dtype
     self.recipe_mp_config = mp_config
+    # traverse all blocks with self.recipe_mode=True
+    self.recipe_mode = True
     self.quantize()
-    recipe_layer_config = copy.deepcopy(self.layer_config)
-    recipe_layer_config.update(self.recipe_results)
-    self._dump_average_bits(layer_config=recipe_layer_config)
     self.recipe_mode = False
+    # combine self.layer_config with self.recipe_results["recipe"]
+    recipe_layer_config = copy.deepcopy(self.layer_config)
+    recipe_layer_config.update(self.recipe_results["recipe"])
     recipe_layer_config.pop("lm_head")  # lm_head is not included in the recipe
-    return recipe_layer_config
+    self.recipe_results["recipe"] = recipe_layer_config
+    # dump average bits of all blocks
+    avg_bits_all_block = 0
+    for block_name, result in self.recipe_results["results"].items():
+        avg_bits_all_block += result["bits"]
+    avg_bits_all_block /= len(self.recipe_results["results"])
+    logger.info(f"[Recipe Mode] Average bits of all blocks: {round(avg_bits_all_block, 3)}")
+    return self.recipe_results
 
 
-def _generate_block_recipe(self, block, input_ids, input_others):
+def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, input_others):
     from itertools import combinations
 
     from auto_round.utils import (
@@ -2737,20 +2784,9 @@ def _generate_block_recipe(self, block, input_ids, input_others):
     )
 
     # generate reference output of sample input_ids
-    reference_output = self.get_block_outputs(
-        block,
-        input_ids[:sample_num],
-        input_others,
-        bs=self.batch_size,
-        device=self.device,
-        cache_device=self.cache_device,
-        save_output=True,
-    )
-
-    # generate q_output of sample input_ids and get loss
-    def get_loss(q_block):
-        q_output = self.get_block_outputs(
-            q_block,
+    def get_output(block, input_ids):
+        output = self.get_block_outputs(
+            block,
             input_ids[:sample_num],
             input_others,
             bs=self.batch_size,
@@ -2758,37 +2794,66 @@ def _generate_block_recipe(self, block, input_ids, input_others):
             cache_device=self.cache_device,
             save_output=True,
         )
+        if is_hpex_available():
+            htcore.mark_step()
+        return output
+
+    reference_output = get_output(block, input_ids)
+    q_input_ids = input_ids if q_input_ids is None else q_input_ids
+    # generate q_output of sample input_ids and get loss
+    def get_loss(q_block, q_input_ids):
+        q_output = get_output(q_block, q_input_ids)
         total_loss = 0
         mse_loss = torch.nn.MSELoss(reduction="sum").to(self.device)
         for i in range(len(q_output)):
             loss = mse_loss(  # pylint: disable=not-callable
                 q_output[i].to(torch.float32), reference_output[i].to(torch.float32)
             )
-            total_loss += loss
+            total_loss += float(loss)
         if is_hpex_available():
             htcore.mark_step()
-        return loss
+        return total_loss
 
     combination_list = []
-    numel_list = []
+    avg_bits_list = []
     loss_list = []
     for hp_layers in combinations(quantizable_layers, quantizable_num):
         combination_list.append(hp_layers)
-        # get numel
-        numel = get_numel(block, hp_layers)
-        numel_list.append(numel)
         # get loss
         block = create_mp_block(block, hp_layers, self.recipe_mp_dtype)
-        loss = get_loss(block)
+        # get average bits
+        avg_bits = get_avg_bits(block)
+        avg_bits_list.append(avg_bits)
+        loss = get_loss(block, q_input_ids)
         loss_list.append(loss)
         block = recover_mp_block(block, hp_layers, raw_dtype)
         if is_hpex_available():
             htcore.mark_step()
-        logger.debug(f"{hp_layers}, {loss}, {numel}")
+        logger.debug(f"{hp_layers}, {loss}, {avg_bits}")
 
-    hp_layers = get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio)
-    logger.info(f"[Recipe Mode] Mix precision layers in this block: {hp_layers}")
-    return hp_layers
+    # get target hp layers
+    best_index = get_best_combination(combination_list, avg_bits_list, loss_list, loss_numel_ratio)
+    target_hp_layers, target_avg_bits = combination_list[best_index], avg_bits_list[best_index]
+    logger.info(f"[Recipe Mode] Recipe results of {block_name}:\n Mix precision layers: {target_hp_layers}; \nAverage bits: {target_avg_bits}.")
+    # generate output of quantized block of sample input_ids
+    block = create_mp_block(block, target_hp_layers, self.recipe_mp_dtype)
+    q_output = get_output(block, q_input_ids)
+    block = recover_mp_block(block, target_hp_layers, raw_dtype)
+    # update recipe and results
+    for layer_name in target_hp_layers:
+        self.recipe_results["recipe"].update({block_name + "." + layer_name: self.recipe_mp_dtype})
+    self.recipe_results["results"].update(
+        {
+            block_name: {
+                "mp_layers": target_hp_layers,
+                "bits": target_avg_bits,
+            }
+        }
+    )
+    if is_hpex_available():
+        htcore.mark_step()
+
+    return reference_output, q_output
 
 
 ###############################################################################################
