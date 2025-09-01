@@ -180,7 +180,7 @@ def quant_mx_rceil(
 
 
 # HPU returns error with Habana software 1.22.0, so skip torch.compile here.
-if not is_hpex_available():
+if False and not is_hpex_available():
     quant_mx = torch.compile(quant_mx)
     quant_mx_rceil = torch.compile(quant_mx_rceil)
 
