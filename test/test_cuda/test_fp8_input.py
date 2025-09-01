@@ -3,7 +3,6 @@ import shutil
 import sys
 import unittest
 
-
 sys.path.insert(0, "../..")
 import torch
 import transformers
@@ -95,9 +94,10 @@ class TestAutoRound(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.55)
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
-    
+
     def test_fp8_model_gguf(self):
         from llama_cpp import Llama
+
         model_name = "Qwen/Qwen3-0.6B-FP8"
 
         ar = AutoRound(model=model_name, iters=0)

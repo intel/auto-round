@@ -150,7 +150,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         if tensor_name not in cls.model.tensor_name_list:
             return True
         return False
-        
+
     extra_tensor = {}
     if hasattr(cls.model, "name_or_path"):
         from safetensors import safe_open
