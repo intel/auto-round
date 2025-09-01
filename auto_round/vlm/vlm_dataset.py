@@ -54,6 +54,8 @@ class VLMDataset(Dataset):
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.COCO_URL.keys()}.")
         for index, row in df.iterrows():
+            if nsamples > 0 and index + 1 > nsamples:
+                break
             assert "id" in row and "caption" in row
             caption_id = row["id"]
             caption_text = row["caption"]

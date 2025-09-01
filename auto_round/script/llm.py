@@ -253,7 +253,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="the template for building training dataset. It can be a custom one.",
         )
 
-        ## ===================== diffusers model ==================
+        ## ===================== diffusion model ==================
         self.add_argument(
             "--guidance_scale",
             default=7.5,
@@ -271,7 +271,21 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=50,
             type=int,
         )
-
+        self.add_argument(
+            "--prompt_file", default=None, type=str, help="the prompt file to load prmpt."
+        )
+        self.add_argument(
+            "--prompt", default=None, type=str, help="the prompt for test."
+        )
+        self.add_argument(
+            "--metrics",
+            "--metric",
+            default="clip",
+            help="support clip, clip-iqa, imagereward",
+        )
+        self.add_argument(
+            "--image_save_dir", default="./tmp_image_save", type=str, help="path to save generated images"
+        )
 
 
 class EvalArgumentParser(argparse.ArgumentParser):
@@ -310,7 +324,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )
 
-        ## ======================= diffusers model =======================
+        ## ======================= diffusion model =======================
         self.add_argument(
             "--prompt_file", default=None, type=str, help="the prompt file to load prmpt."
         )
@@ -663,6 +677,37 @@ def tune(args):
     model.eval()
     clear_memory()
 
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+
+    # diffusion model has different evaluation path
+    if isinstance(round, type(AutoRoundVLM)):
+        pipe.to(model.dtype)
+        pipe.transformer = model
+        device_str = detect_device(device_str)
+        pipe = pipe.to(device_str)
+        if pipe.dtype != eval_model_dtype and eval_model_dtype != "auto":
+            pipe.to(getattr(torch, eval_model_dtype))
+
+        gen_kwargs = {
+            "guidance_scale": args.guidance_scale,
+            "output_type": "pil",
+            "num_inference_steps": args.num_inference_steps,
+            "generator": None,
+        }
+        if not os.path.exists(args.image_save_dir):
+            os.makedirs(args.image_save_dir)
+
+        if args.prompt is not None:
+            outputs = pipeline(prompt=args.prompts, **gen_kwargs)
+            outputs.images[0].save(os.path.join(args.image_save_dir, "img.png"))
+            logger.info(f"Image generated with prompt {args.prompt} is saved as {os.path.join(args.image_save_dir, 'img.png')}")
+
+        if args.prompt_file is not None:
+            from auto_round.vlm.eval import diffusion_eval
+            metrics = args.metrics.split(",")
+            diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs)
+        return
+
     lm_eval_version = get_library_version("lm-eval")
 
     eval_folder = folders[-1]
@@ -684,7 +729,6 @@ def tune(args):
 
     import time
 
-    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     tmp_act_bits = infer_bits_by_data_type(args.act_data_type)
     if tmp_act_bits is not None:
         act_bits = tmp_act_bits
