@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import copy
 import os
 import re
@@ -376,9 +377,7 @@ class AutoRound(object):
         self.infer_bs_coeff = 1
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
-
         self._check_configs()
-
         torch.set_printoptions(precision=3, sci_mode=True)
 
         if is_optimum_habana_available():
@@ -1933,7 +1932,6 @@ class AutoRound(object):
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
-
                     self.model(*data_new)
                 else:
                     self.model(**data_new)
@@ -2387,7 +2385,7 @@ class AutoRound(object):
                 module.act_max = act_max
             else:
                 act_max = act_max.to(module.act_max.device)
-                if is_nv_fp(self.data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
                     module.act_max = torch.max(
                         torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
                     )
@@ -2624,11 +2622,13 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_params)
-
-        if self.enable_quanted_input:
-            if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-                # Enable moe experts act_max automatic generation for WrapperWALayer
+        
+        if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                from auto_round.utils import set_amax_for_all_moe_layers
+                # enable moe experts act_max automatic generation for WrapperWALayer
                 set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
+        
+        if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             clear_memory()
@@ -3213,3 +3213,4 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
+
