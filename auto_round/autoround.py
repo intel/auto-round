@@ -106,6 +106,7 @@ class AutoRound(object):
         nsamples (int): Number of calibration samples.
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
+
     bits: int | None
     group_size: int | None
     sym: bool | None
