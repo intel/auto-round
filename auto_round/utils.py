@@ -2176,7 +2176,8 @@ def get_reciprocal(tensor):
 def check_need_act_calibration(is_act_dynamic:Union[bool,None], act_data_type:Union[str,None]=None,act_bits:int=16)->bool:
     if act_bits>8:
         return False
-    if is_act_dynamic == False: ## None is dynamic
+    # None is dynamic
+    if is_act_dynamic == False:  # pylint: disable=E0401 E712
         return True
     if act_data_type is not None and "static" in act_data_type:
         return True
