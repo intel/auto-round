@@ -167,9 +167,9 @@ PRESET_SCHEMES = {
     "FPW8_STATIC": FPW8_STATIC,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
-for key,value in GGUF_CONFIG.items():
-    value.pop("mostly",None)
+
+for key, value in GGUF_CONFIG.items():
+    value.pop("mostly", None)
     value.pop("embedding", None)
     value.pop("lm_head", None)
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
-

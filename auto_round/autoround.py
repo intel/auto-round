@@ -143,7 +143,7 @@ class AutoRound(object):
         Args:
             model (torch.nn.Module | str): Model object or model name to load.
             tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
-            scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configrations
+            scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
             bits (int, optional): Weight quantization bits. Defaults to 4.
             group_size (int, optional): Weight quantization group size. Defaults to 128.
             sym (bool, optional): Symmetric weight quantization. Defaults to True.
@@ -204,7 +204,7 @@ class AutoRound(object):
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
         lr = kwargs.pop("lr", None)
-        enable_alg_ext=kwargs.pop("enable_alg_ext",False)
+        enable_alg_ext = kwargs.pop("enable_alg_ext", False)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
         disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
@@ -1132,7 +1132,7 @@ class AutoRound(object):
             NotImplementedError: If multiple non-fake GGUF formats are specified.
         """
         gguf_scheme = False
-        if isinstance(self.scheme,str) and "gguf" in self.scheme.lower():
+        if isinstance(self.scheme, str) and "gguf" in self.scheme.lower():
             gguf_scheme = True
 
         if not hasattr(self, "formats") and not gguf_scheme:
