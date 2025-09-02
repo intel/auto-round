@@ -636,18 +636,14 @@ class TestAutoRound(unittest.TestCase):
         ):
             raise ValueError("mixed bits is not correct")
 
-
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
-            ar = AutoRound("facebook/opt-125m", scheme="W3A16", nsamples=1, iters=1,layer_config=layer_config)
+            ar = AutoRound("facebook/opt-125m", scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
             ar.quantize()
         with self.assertRaises(ValueError):
-            layer_config = {"model.decoder.layers.2.self_attn": {"bit": 2}} # should be bits
+            layer_config = {"model.decoder.layers.2.self_attn": {"bit": 2}}  # should be bits
             ar = AutoRound("facebook/opt-125m", scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
-
-
-
 
 
 if __name__ == "__main__":

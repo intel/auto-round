@@ -295,10 +295,10 @@ class AutoRound(object):
         self.layer_config = {} if layer_config is None else layer_config
         # Check and convert to dict
         for key, item in self.layer_config.items():
-            if isinstance(item,QuantizationScheme):
+            if isinstance(item, QuantizationScheme):
                 config = asdict(item)
                 tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys: ## Pop None value to be override
+                for tmp_key in tmp_keys:  ## Pop None value to be override
                     if config[tmp_key] is None:
                         config.pop(tmp_key)
                 self.layer_config[key] = config
@@ -308,7 +308,9 @@ class AutoRound(object):
                 if item_keys not in expected_keys:
                     for item_key in item_keys:
                         if item_key not in expected_keys:
-                            raise ValueError(f"the key {item_key} in layer_config for layer {key} is not valid, only {expected_keys} are supported")
+                            raise ValueError(
+                                f"the key {item_key} in layer_config for layer {key} is not valid, only {expected_keys} are supported"
+                            )
 
         self.to_quant_block_names = to_quant_block_names
 
@@ -2097,7 +2099,7 @@ class AutoRound(object):
                     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                         self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
                     else:
-                        # Change this if new device is supportted
+                        # Change this if new device is supported
                         if str(self.model.device) == "cpu" and (
                             self.device.startswith("xpu") or self.device.startswith("cuda")
                         ):
@@ -3214,7 +3216,7 @@ class AutoRoundAdam(AutoRound):
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
-        device_map: Union[str,int, torch.device, dict] = 0,
+        device_map: Union[str, int, torch.device, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
         optimizer="AdamW",
