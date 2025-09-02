@@ -12,20 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import os
-import torch
 
-from tqdm import tqdm
+import numpy as np
+import torch
 from PIL import Image
+from tqdm import tqdm
 
 from auto_round.diffusion.diffusion_dataset import get_diffusion_dataloader
 
 
 def compute_clip(prompts, images, device: str = "cuda"):
     from torchmetrics.multimodal import CLIPScore
+
     clip_model = CLIPScore(model_name_or_path="openai/clip-vit-large-patch14").to(device)
-    for prompt, img_path in tqdm(zip(prompts, images), desc=f"Computing CLIP score"):
+    for prompt, img_path in tqdm(zip(prompts, images), desc="Computing CLIP score"):
         image_data = Image.open(img_path).convert("RGB")
         image_tensor = torch.from_numpy(np.array(image_data)).permute(2, 0, 1)
         clip_model.update(image_tensor.to(torch.float32).to(device).unsqueeze(0), prompt)
@@ -35,10 +36,9 @@ def compute_clip(prompts, images, device: str = "cuda"):
 
 def compute_clip_iqa(prompts, images, device: str = "cuda"):
     from torchmetrics.multimodal import CLIPImageQualityAssessment
-    clip_model = CLIPImageQualityAssessment(
-        model_name_or_path="openai/clip-vit-large-patch14"
-    ).to(device)
-    for prompt, img_path in tqdm(zip(prompts, images), desc=f"Computing CLIP-IQA score"):
+
+    clip_model = CLIPImageQualityAssessment(model_name_or_path="openai/clip-vit-large-patch14").to(device)
+    for prompt, img_path in tqdm(zip(prompts, images), desc="Computing CLIP-IQA score"):
         image_data = Image.open(img_path).convert("RGB")
         image_tensor = torch.from_numpy(np.array(image_data)).permute(2, 0, 1)
         clip_model.update(image_tensor.to(torch.float32).to(device).unsqueeze(0))
@@ -46,21 +46,24 @@ def compute_clip_iqa(prompts, images, device: str = "cuda"):
     return {"CLIP-IQA": result}
 
 
-def compute_image_reward_metrics(prompts, images, device = "cuda"):
+def compute_image_reward_metrics(prompts, images, device="cuda"):
     import ImageReward
+
     image_reward_model = ImageReward.load("ImageReward-v1.0", device=device)
     scores = []
     for prompt, img_path in tqdm(zip(prompts, images), desc="Computing image reward metrics"):
         score = image_reward_model.score(prompt, img_path)
         scores.append(score)
 
-    return  {"ImageReward": np.mean(scores)}
+    return {"ImageReward": np.mean(scores)}
+
 
 metric_map = {
     "clip": compute_clip,
     "clip-iqa": compute_clip_iqa,
     "imagereward": compute_image_reward_metrics,
 }
+
 
 def diffusion_eval(
     pipe,
@@ -90,7 +93,7 @@ def diffusion_eval(
         if len(new_prompts) == 0:
             continue
 
-        output =  pipe(prompt=new_prompts, **gen_kwargs)
+        output = pipe(prompt=new_prompts, **gen_kwargs)
         for idx, image_id in enumerate(new_ids):
             output.images[idx].save(os.path.join(image_save_dir, str(image_id) + ".png"))
 
@@ -99,5 +102,5 @@ def diffusion_eval(
         result.update(metric_map[metric](prompt_list, image_list, pipe.device))
 
     import tabulate
-    print(tabulate.tabulate(result.items(), tablefmt="grid"))
 
+    print(tabulate.tabulate(result.items(), tablefmt="grid"))

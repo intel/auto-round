@@ -12,39 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
 from copy import deepcopy
 from typing import Union
-from collections import defaultdict
 
 import torch
 from torch import autocast
 from tqdm import tqdm
 
-
 from auto_round import AutoRound
-from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.utils import (
-    check_to_quantized,
-    clear_memory,
-    extract_block_names_to_str,
-    find_matching_blocks,
-    get_block_names,
-    logger,
-    to_device,
-    to_dtype,
-    block_forward,
-    is_nv_fp,
-    collect_best_params,
-    mv_module_from_gpu,
-    check_need_act_calibration,
-    get_module,
-    flatten_list,
-    compile_func,
-)
-from auto_round.wrapper import unwrapper_block, wrapper_block
 from auto_round.diffusion.diffusion_dataset import get_diffusion_dataloader
 from auto_round.export.export_to_gguf.config import ModelType
-from auto_round.wrapper import WrapperMultiblock
+from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.utils import (
+    block_forward,
+    check_need_act_calibration,
+    check_to_quantized,
+    clear_memory,
+    collect_best_params,
+    compile_func,
+    extract_block_names_to_str,
+    find_matching_blocks,
+    flatten_list,
+    get_block_names,
+    get_module,
+    is_nv_fp,
+    logger,
+    mv_module_from_gpu,
+    to_device,
+    to_dtype,
+)
+from auto_round.wrapper import WrapperMultiblock, unwrapper_block, wrapper_block
 
 output_config = {
     "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
@@ -259,7 +257,11 @@ class AutoRoundDiffusion(AutoRound):
                         prompt=prompts,
                         guidance_scale=self.guidance_scale,
                         num_inference_steps=self.num_inference_steps,
-                        generator=None if self.generator_seed is None else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed),
+                        generator=(
+                            None
+                            if self.generator_seed is None
+                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+                        ),
                     )
                 except NotImplementedError:
                     pass
@@ -298,9 +300,18 @@ class AutoRoundDiffusion(AutoRound):
                 m = m.to("meta")
         # torch.cuda.empty_cache()
 
-
     @torch.no_grad()
-    def _get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True, only_return_hidden_states=False):
+    def _get_block_outputs(
+        self,
+        block,
+        input_ids,
+        input_others,
+        bs,
+        device,
+        cache_device,
+        save_output=True,
+        only_return_hidden_states=False,
+    ):
         """Compute the output of a given block of the model for a given input.
 
         Args:
@@ -325,7 +336,9 @@ class AutoRoundDiffusion(AutoRound):
             tmp_input_ids, tmp_input_others = AutoRound._sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
-            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, only_return_hidden_states)
+            tmp_output = block_forward(
+                block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, only_return_hidden_states
+            )
 
             if len(output_config.get(block.__class__.__name__, ["hidden_states"])) > 1:
                 tmp_output = dict(zip(output_config[block.__class__.__name__], tmp_output))
@@ -337,7 +350,9 @@ class AutoRoundDiffusion(AutoRound):
                             if self.batch_size == 1:
                                 tensor_to_update[name].append(out.to(cache_device))
                             else:
-                                tensor_to_update[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
+                                tensor_to_update[name].extend(
+                                    list(torch.split(out.to(cache_device), 1, dim=self.batch_dim))
+                                )
                 tmp_output = tmp_output.pop("hidden_states")
 
             tmp_output = tmp_output.to(cache_device)
@@ -354,9 +369,8 @@ class AutoRoundDiffusion(AutoRound):
 
         if self.low_gpu_mem_usage:
             clear_memory()
- 
-        return output, input_others
 
+        return output, input_others
 
     def _quantize_blocks(
         self,
@@ -473,8 +487,9 @@ class AutoRoundDiffusion(AutoRound):
 
         clear_memory()
 
-
-    def _quantize_block(self, block, input_ids, input_others, q_input=None, q_input_others=None, device=torch.device("cpu")):
+    def _quantize_block(
+        self, block, input_ids, input_others, q_input=None, q_input_others=None, device=torch.device("cpu")
+    ):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -491,14 +506,26 @@ class AutoRoundDiffusion(AutoRound):
             hook_handles = self._register_act_max_hook(block)
 
             output, output_others = self._get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device, only_return_hidden_states=False
+                block,
+                input_ids,
+                input_others,
+                self.batch_size * self.infer_bs_coeff,
+                device,
+                self.cache_device,
+                only_return_hidden_states=False,
             )
 
             for handle in hook_handles:
                 handle.remove()
         else:
             output, output_others = self._get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device, only_return_hidden_states=False
+                block,
+                input_ids,
+                input_others,
+                self.batch_size * self.infer_bs_coeff,
+                device,
+                self.cache_device,
+                only_return_hidden_states=False,
             )
             hook_handles = self._register_act_max_hook(block)
             if hook_handles:
@@ -613,7 +640,13 @@ class AutoRoundDiffusion(AutoRound):
                 current_output = to_device(current_output, device)
 
                 output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, only_return_hidden_states=False
+                    block,
+                    current_input_ids,
+                    current_input_others,
+                    self.amp,
+                    self.amp_dtype,
+                    device,
+                    only_return_hidden_states=False,
                 )
                 if len(output_config.get(block.__class__.__name__, ["hidden_states"])) > 1:
                     output_q = output_q[output_config[block.__class__.__name__].index("hidden_states")]
@@ -690,7 +723,6 @@ class AutoRoundDiffusion(AutoRound):
             clear_memory(input_ids)
 
             return None, None, output, output_others
-
 
     def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
@@ -799,7 +831,6 @@ class AutoRoundDiffusion(AutoRound):
                 cnt = 1
             cnt += 1
 
-
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
 
@@ -812,8 +843,5 @@ class AutoRoundDiffusion(AutoRound):
         Returns:
             object: The compressed model object.
         """
-        compressed_model = super().save_quantized(
-            output_dir=output_dir, format=format, inplace=inplace, **kwargs
-        )
+        compressed_model = super().save_quantized(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
         return compressed_model
-

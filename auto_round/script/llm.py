@@ -271,12 +271,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=int,
         )
-        self.add_argument(
-            "--prompt_file", default=None, type=str, help="the prompt file to load prmpt."
-        )
-        self.add_argument(
-            "--prompt", default=None, type=str, help="the prompt for test."
-        )
+        self.add_argument("--prompt_file", default=None, type=str, help="the prompt file to load prmpt.")
+        self.add_argument("--prompt", default=None, type=str, help="the prompt for test.")
         self.add_argument(
             "--metrics",
             "--metric",
@@ -325,12 +321,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
         )
 
         ## ======================= diffusion model =======================
-        self.add_argument(
-            "--prompt_file", default=None, type=str, help="the prompt file to load prmpt."
-        )
-        self.add_argument(
-            "--prompt", default=None, type=str, help="the prompt for test."
-        )
+        self.add_argument("--prompt_file", default=None, type=str, help="the prompt file to load prmpt.")
+        self.add_argument("--prompt", default=None, type=str, help="the prompt for test.")
         self.add_argument(
             "--metrics",
             "--metric",
@@ -489,7 +481,7 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.utils import llm_load_model, mllm_load_model, diffuison_load_model
+    from auto_round.utils import diffuison_load_model, llm_load_model, mllm_load_model
 
     if args.mllm:
         if os.path.exists(os.path.join(model_name, "model_index.json")):
@@ -519,7 +511,7 @@ def tune(args):
             model_dtype=args.model_dtype,
         )
 
-    from auto_round import AutoRound, AutoRoundAdam, AutoRoundMLLM, AutoRoundDiffusion
+    from auto_round import AutoRound, AutoRoundAdam, AutoRoundDiffusion, AutoRoundMLLM
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -691,7 +683,11 @@ def tune(args):
             "guidance_scale": args.guidance_scale,
             "output_type": "pil",
             "num_inference_steps": args.num_inference_steps,
-            "generator": None if args.generator_seed is None else torch.Generator(device=pipe.device).manual_seed(args.generator_seed),
+            "generator": (
+                None
+                if args.generator_seed is None
+                else torch.Generator(device=pipe.device).manual_seed(args.generator_seed)
+            ),
         }
         if not os.path.exists(args.image_save_dir):
             os.makedirs(args.image_save_dir)
@@ -699,10 +695,13 @@ def tune(args):
         if args.prompt is not None:
             outputs = pipe(prompt=args.prompts, **gen_kwargs)
             outputs.images[0].save(os.path.join(args.image_save_dir, "img.png"))
-            logger.info(f"Image generated with prompt {args.prompt} is saved as {os.path.join(args.image_save_dir, 'img.png')}")
+            logger.info(
+                f"Image generated with prompt {args.prompt} is saved as {os.path.join(args.image_save_dir, 'img.png')}"
+            )
 
         if args.prompt_file is not None:
             from auto_round.diffusion.eval import diffusion_eval
+
             metrics = args.metrics.split(",")
             diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs)
         return

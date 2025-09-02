@@ -445,7 +445,11 @@ def get_block_names(model, quant_vision=False):
         return block_names
 
     def _get_vlm_block_names(model, quant_vision=False):
-        if hasattr(model, "config") and hasattr(model.config, "model_type") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "model_type")
+            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
+        ):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
@@ -480,7 +484,15 @@ def collect_best_params(block):
     return params
 
 
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu"), only_return_hidden_states=True):
+def block_forward(
+    block,
+    input_ids,
+    input_others,
+    amp=False,
+    amp_dtype=torch.float16,
+    device=torch.device("cpu"),
+    only_return_hidden_states=True,
+):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -1612,6 +1624,7 @@ def mllm_load_model(
 
     return model, processor, tokenizer, image_processor
 
+
 def diffuison_load_model(
     pretrained_model_name_or_path,
     device="cpu",
@@ -1620,6 +1633,7 @@ def diffuison_load_model(
     **kwargs,
 ):
     from diffusers import AutoPipelineForText2Image
+
     pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype)
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer

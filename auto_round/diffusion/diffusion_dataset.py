@@ -13,19 +13,22 @@
 # limitations under the License.
 
 import os
-import pandas as pd
 from typing import Dict
 
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
 from auto_round.utils import logger
 
+
 class DiffusionDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    COCO_URL = {"coco2014": "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv"}
+    COCO_URL = {
+        "coco2014": "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv"
+    }
 
     def __init__(
         self,
@@ -38,16 +41,18 @@ class DiffusionDataset(Dataset):
 
         if os.path.exists(dataset_path):
             logger.info(f"use dataset {dataset_path}, loading from disk...")
-            df = pd.read_csv(dataset_path, sep='\t')
+            df = pd.read_csv(dataset_path, sep="\t")
         else:
-            import requests
             from io import StringIO
+
+            import requests
+
             dataset_path = "coco2014"
 
             if dataset_path in self.COCO_URL:
                 logger.info(f"use dataset {dataset_path}, downloading ...")
                 text_data = requests.get(self.COCO_URL[dataset_path]).text
-                df = pd.read_csv(StringIO(text_data), sep='\t')
+                df = pd.read_csv(StringIO(text_data), sep="\t")
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.COCO_URL.keys()}.")
         for index, row in df.iterrows():
@@ -64,6 +69,7 @@ class DiffusionDataset(Dataset):
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         return self.caption_ids[i], self.captions[i]
+
 
 def get_diffusion_dataloader(
     dataset="coco2014",
