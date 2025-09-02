@@ -139,7 +139,7 @@ class QuantLinear(nn.Module):
 
     def post_init(self):
         pass
-
+    
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
@@ -155,7 +155,7 @@ class QuantLinear(nn.Module):
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
             W = W.t()
 
-        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
+        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
@@ -185,6 +185,7 @@ class QuantLinear(nn.Module):
             self.input_global_scale = input_global_scale.to(torch.float32).to(device)
         return
 
+    torch.compiler.disable()
     def pack_fp4_to_uint8(self, x: torch.Tensor) -> torch.Tensor:
         """
         Packs a tensor with values in the fp4 range into uint8.
