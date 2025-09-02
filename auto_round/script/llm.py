@@ -32,6 +32,7 @@ import os
 import re
 import sys
 
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -40,7 +41,7 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     set_cuda_visible_devices,
 )
-from auto_round.schemes import PRESET_SCHEMES
+
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -534,7 +535,6 @@ def tune(args):
     scheme = args.scheme.upper()
     if scheme  not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
-
     autoround = round(
         model=model,
         tokenizer=tokenizer,
