@@ -1747,10 +1747,21 @@ class AutoRound(object):
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
 
         # Iterate through all modules in the model
+        is_gguf = hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
         for n, m in self.model.named_modules():
             # Skip unsupported types
             if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                continue
+                if n in self.layer_config:
+                    if not isinstance(m, torch.nn.Embedding):
+                        logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
+                        self.layer_config.pop(n)
+                        continue
+                    if not is_gguf:
+                        if not check_to_quantized(layer_config[n]):
+                            self.layer_config.pop(n)
+                            continue
+                else:
+                    continue
 
             # If the layer is not in the config and is part of a quantization block, use default configuration
             if n not in layer_config.keys() and n in layers_in_blocks:
