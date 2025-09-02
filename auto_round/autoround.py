@@ -540,7 +540,7 @@ class AutoRound(object):
                             if isinstance(module, torch.nn.Linear):
                                 full_gpu_block = (block_num // num_gpus) * num_gpus
                                 if i >= full_gpu_block:
-                                    # If the number of blocks exceeds the number of GPUs, 
+                                    # If the number of blocks exceeds the number of GPUs,
                                     # distribute the remaining blocks in multiples of the number of GPUs
                                     device_index = i % num_gpus
                                 else:
