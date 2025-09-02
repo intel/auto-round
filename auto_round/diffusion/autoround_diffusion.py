@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ from auto_round.utils import (
     compile_func,
 )
 from auto_round.wrapper import unwrapper_block, wrapper_block
-from .diffusion_dataset import get_diffusion_dataloader
+from auto_round.diffusion.diffusion_dataset import get_diffusion_dataloader
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.wrapper import WrapperMultiblock
 
