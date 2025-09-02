@@ -83,6 +83,8 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
+    _is_fp8_model,
+    _is_fp8_linear
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -957,7 +959,7 @@ class AutoRound(object):
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
 
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
 
         if isinstance(self.dataset, str):
@@ -1183,7 +1185,7 @@ class AutoRound(object):
         m = get_module(self.model, name)
 
         # if m.__class__.__name__ == "FP8Linear":
-        if hasattr(m, "is_fp8_linear"):
+        if _is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
 
@@ -1333,7 +1335,7 @@ class AutoRound(object):
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
         return self.model, self.layer_config
@@ -1401,7 +1403,7 @@ class AutoRound(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 block = block.to(self.device)
-                if hasattr(self.model, "is_fp8"):
+                if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -1586,9 +1588,9 @@ class AutoRound(object):
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             for n, m in self.model.named_modules():
-                if hasattr(m, "is_fp8_linear"):
+                if _is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
                     set_module(self.model, n, new_layer)
 
@@ -1636,7 +1638,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if hasattr(layer, "is_fp8"):
+                if _is_fp8_model(self.model):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
@@ -1986,7 +1988,7 @@ class AutoRound(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -2441,9 +2443,9 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             for n, m in block.named_modules():
-                if hasattr(m, "is_fp8_linear"):
+                if _is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
