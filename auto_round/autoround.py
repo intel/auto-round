@@ -680,6 +680,9 @@ class AutoRound(object):
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
+                    logger.warning(
+                        f"AutoRound supports export for this format: {format}, but quantized model loading is not yet available."
+                    )
                 elif is_wfp8afp8(self):  # staic wfp8afp8
                     format = "auto_round:fp8"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
@@ -690,19 +693,23 @@ class AutoRound(object):
                         "for the current quantization configuration, "
                         "please change to `fake` format for research purpose"
                     )
-
                 formats[index] = format
             elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
-
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
+                    logger.warning(
+                        f"AutoRound supports export for this format: {format}, but quantized model loading is not yet available."
+                    )
                 elif not is_wfp8afp8(self):
                     logger.error(
                         "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
+            else:
+                if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
+                    logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
