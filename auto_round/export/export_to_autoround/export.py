@@ -40,7 +40,7 @@ from auto_round.utils import (
     set_module,
 )
 
-from .utils import check_neq_config
+from .utils import REQUIRED_CONFIG_KEYS, check_neq_config
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
@@ -313,12 +313,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
-                layer_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                act_bits=quantization_config["act_bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
+                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
             )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
@@ -410,3 +405,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
