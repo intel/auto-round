@@ -346,8 +346,9 @@ def tune(args):
 
     model, processor, tokenizer, image_processor = mllm_load_model(
         model_name,
+        device="cpu",
         torch_dtype=torch_dtype,
-        use_auto_mapping=use_auto_mapping,
+        use_auto_mapping=False,
         trust_remote_code=not args.disable_trust_remote_code,
         model_dtype=args.model_dtype,
     )
@@ -473,7 +474,6 @@ def tune(args):
         truncation=args.truncation,
         nsamples=args.nsamples,
         low_gpu_mem_usage=args.low_gpu_mem_usage,
-        device=device_str,
         seed=args.seed,
         gradient_accumulate_steps=args.gradient_accumulate_steps,
         scale_dtype=args.scale_dtype,

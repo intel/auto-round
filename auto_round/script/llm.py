@@ -85,6 +85,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--device",
             "--devices",
+            "--device_map",
             default="0",
             type=str,
             help="the device to be used for tuning. "
@@ -219,7 +220,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
         )
 
-        self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
         self.add_argument(
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
@@ -439,8 +439,8 @@ def tune(args):
     if args.mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(
             model_name,
-            device=device_str,
-            use_auto_mapping=use_auto_mapping,
+            device="cpu",
+            use_auto_mapping=False,
             trust_remote_code=not args.disable_trust_remote_code,
             model_dtype=args.model_dtype,
         )
@@ -448,9 +448,9 @@ def tune(args):
     else:
         model, tokenizer, low_cpu_mem_usage = llm_load_model(
             model_name,
-            use_auto_mapping=use_auto_mapping,
+            use_auto_mapping=False,
             trust_remote_code=not args.disable_trust_remote_code,
-            device=device_str,
+            device="cpu",
             low_cpu_mem_mode=args.low_cpu_mem_mode,
             low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir,
             model_dtype=args.model_dtype,
@@ -550,7 +550,6 @@ def tune(args):
         lr=args.lr,
         minmax_lr=args.minmax_lr,
         enable_quanted_input=not args.disable_quanted_input,
-        device=device_str,
         amp=not args.disable_amp,
         nsamples=args.nsamples,
         seed=args.seed,

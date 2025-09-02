@@ -84,7 +84,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupport_meta_device,
+    unsupport_meta_device, get_max_vram,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -132,8 +132,7 @@ class AutoRound(object):
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
-        device: Union[str, torch.device, int] = 0,
-        device_map: Union[str, dict] = None,
+        device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
         **kwargs,
@@ -220,16 +219,45 @@ class AutoRound(object):
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        device = kwargs.pop("device", None)
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
+
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
-        if device is not None and "," in str(device):
+        if device_map is not None and "," in str(device_map):
             raise ValueError(
                 "API does not support explicit set multiple devices,"
-                " please set CUDA_VISIBLE_DEVICES yourself and use `device=auto` instead"
+                " please set CUDA_VISIBLE_DEVICES=0,1 yourself"
             )
+
+        # Set device, must place after model loading
+        if isinstance(device_map, (str, torch.device, int)):
+            self.device = detect_device(device_map)
+        elif isinstance(device_map,dict) and device_map:
+            tmp_devices=[]
+            for val in device_map.values():
+                if isinstance(val, (str, torch.device, int)): # coudle optimize
+                    tmp_device = detect_device(self.device_map)
+                    tmp_device = tmp_device.split(":")[0]
+                    tmp_devices.append(tmp_device)
+            tmp_devices = set(tmp_devices)
+            if len(tmp_devices) > 1:
+                logger.warning(f"there are multiple device types in the device_map, "
+                               f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device ")
+
+            self.device = tmp_devices[0]
+
+
+        if isinstance(device_map, dict) and device_map:
+            self.device_map = device_map
+        else:
+            self.device_map = None
+        self._set_device_map_in_blocks(self.device_map)
+
 
         if not disable_deterministic_algorithms:
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
@@ -240,7 +268,7 @@ class AutoRound(object):
         self.quantized = False
         if isinstance(model, str):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
-                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
+                model, device="cpu", low_cpu_mem_mode=low_cpu_mem_usage, # always load cpu first
             )
         elif tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
@@ -310,7 +338,7 @@ class AutoRound(object):
         if unsupport_meta_device(model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+                "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
             )
         model = _handle_moe_model(model)
         self.model = model.eval()
@@ -320,10 +348,7 @@ class AutoRound(object):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
 
-        # Set device, must place after model loading
-        self.device = detect_device(device)  # must place after llm_load_model, because this one will convert auto
-        self.device_map = device_map
-        self._set_device_map_in_blocks(self.device_map)
+
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
@@ -2034,13 +2059,12 @@ class AutoRound(object):
             layer_names = []
 
         if self.low_gpu_mem_usage or (
-            str(self.model.device == "cpu")
-            and len(block_names) == 1
+            len(block_names) == 1
             and len(layer_names) == 0
             and not self.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
         ):
-            ## low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
+            # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
         else:
             try:
@@ -2048,7 +2072,16 @@ class AutoRound(object):
                     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                         pass
                     else:
-                        self.model = self.model.to(self.device)
+                        # Change this if new device is support
+                        if str(self.model.device)=="cpu" and (self.device.startswith("xpu") or self.device.startswith("cuda")):
+                            # Must call the dispatch_model from accelerate.big_modeling instead of accelerate
+                            from accelerate.big_modeling import dispatch_model,infer_auto_device_map
+                            max_memory = get_max_vram() # TODO model is not evenly split
+                            device_map = infer_auto_device_map(self.model,max_memory=max_memory)
+
+                            self.model = dispatch_model(self.model, device_map=device_map)
+                        else:
+                            self.model = self.model.to(self.device)
                 all_inputs = self.cache_inter_data(
                     block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
                 )
@@ -2489,8 +2522,6 @@ class AutoRound(object):
                     set_module(block, n, new_layer)
 
         if self.device_map is not None:
-            from accelerate import dispatch_model
-
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
