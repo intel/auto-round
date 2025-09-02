@@ -2553,6 +2553,7 @@ def is_static_wfp8afp8(ar):
         return True
     return False
 
+
 def bytes_to_gigabytes(bytes) -> int:
     """
     Converts bytes to gigabytes.
@@ -2565,7 +2566,8 @@ def bytes_to_gigabytes(bytes) -> int:
     """
     return bytes / 1024 / 1024 / 1024
 
-def get_device_memory(i=0)  -> int:
+
+def get_device_memory(i=0) -> int:
     """
     Gets the available memory on the specified CUDA device.
 
@@ -2581,24 +2583,25 @@ def get_device_memory(i=0)  -> int:
     available_memory = total_memory - reserved_memory  # Approximation of free memory
     return available_memory
 
+
 def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, float, float]:
     """
-    Analyzes the model's memory usage and block structure, and calculates memory consumption 
+    Analyzes the model's memory usage and block structure, and calculates memory consumption
     for specific components of the model.
-    
+
     Args:
         model (torch.nn.Module): The neural network model to analyze.
         nsamples (int): The number of samples in the input batch.
         seqlen (int): The sequence length of the input data.
         amp_dtype (torch.dtype): The data type used for mixed precision (e.g., torch.bfloat16 or torch.float32).
-    
+
     Returns:
         tuple: A tuple containing the following:
             - block_num (int): The number of blocks (ModuleLists) in the model.
             - block_memory (float): The memory consumption (in GB) of the first block's linear layers.
-            - others_memory (float): The memory consumption (in GB) of all other linear layers 
+            - others_memory (float): The memory consumption (in GB) of all other linear layers
                 excluding the first block.
-            - input_output_memory (float): The memory consumption (in GB) for input and output 
+            - input_output_memory (float): The memory consumption (in GB) for input and output
                 tensors of the first block, assuming bfloat16 or float32 precision.
     """
     cnt = 0
@@ -2606,29 +2609,33 @@ def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, floa
     block_num = 0
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            cnt+=1 # find the first modulelist
-            if cnt==2: # find the second modulelist
-                cnt-=1
+            cnt += 1  # find the first modulelist
+            if cnt == 2:  # find the second modulelist
+                cnt -= 1
                 block_num = len(m)
                 for name, module in m[0].named_modules():
                     if isinstance(module, torch.nn.Linear):
-                        param_size = sum(p.numel() for p in module.parameters()) * module.weight.element_size() # Assuming parameters are float32 (4 bytes each)
+                        param_size = (
+                            sum(p.numel() for p in module.parameters()) * module.weight.element_size()
+                        )  # Assuming parameters are float32 (4 bytes each)
                         block_memory += param_size
                 block_memory = block_memory / 1024**3
                 break
-    
+
     # Calculate all block linear memory except for the second modulelist
     total_linear_memory = 0
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
             for name, module in m[-1].named_modules():
                 if isinstance(module, torch.nn.Linear):
-                    param_size = sum(p.numel() for p in module.parameters()) * module.weight.element_size() # Assuming parameters are float32 (4 bytes each)
+                    param_size = (
+                        sum(p.numel() for p in module.parameters()) * module.weight.element_size()
+                    )  # Assuming parameters are float32 (4 bytes each)
                     total_linear_memory += param_size
             break
     total_linear_memory = total_linear_memory / 1024**3  # Convert to GB
     others_memory = total_linear_memory - block_memory * block_num
-    
+
     # Get the shape of input of the first layer block
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
@@ -2638,7 +2645,7 @@ def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, floa
                     break
             break
     # assuming bfloat16, input and output
-    input_bytes = 2 if amp_dtype != torch.float32 else 4 
-    input_output_memory = 2 * (seqlen * input_shape * input_bytes * nsamples) / 1024**3 
+    input_bytes = 2 if amp_dtype != torch.float32 else 4
+    input_output_memory = 2 * (seqlen * input_shape * input_bytes * nsamples) / 1024**3
 
     return block_num, block_memory, others_memory, input_output_memory

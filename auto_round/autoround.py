@@ -58,7 +58,9 @@ from auto_round.utils import (
     detect_device,
     find_matching_blocks,
     flatten_list,
+    get_block_info,
     get_block_names,
+    get_device_memory,
     get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
@@ -85,8 +87,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    get_device_memory,
-    get_block_info,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -506,33 +506,34 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def set_auto_device_map(self) -> None:    
+    def set_auto_device_map(self) -> None:
         num_gpus = torch.cuda.device_count() - 1
         if num_gpus == 0:
             self.device_map = None
-        
-        block_num, block_memory, others_memory, input_ouput_memory = \
-            get_block_info(self.model, self.nsamples, self.seqlen, self.amp_dtype)
-        device_0_memory= get_device_memory()
+
+        block_num, block_memory, others_memory, input_ouput_memory = get_block_info(
+            self.model, self.nsamples, self.seqlen, self.amp_dtype
+        )
+        device_0_memory = get_device_memory()
         memory_usage_expansion_factor = 13
         # input_ouput_memory = 30
         # TODO concat memory?
         device_0_block_num = int(
-                (device_0_memory - input_ouput_memory - others_memory* memory_usage_expansion_factor) // 
-                (block_memory * memory_usage_expansion_factor)
-            )
+            (device_0_memory - input_ouput_memory - others_memory * memory_usage_expansion_factor)
+            // (block_memory * memory_usage_expansion_factor)
+        )
 
         cuda_devices = [f"cuda:{i+1}" for i in range(num_gpus)]
-        
+
         cnt = 0
         device_map = {}
         # Iterate through all expert Linear layers and assign them to GPUs
         for n, m in self.model.named_modules():
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                cnt+=1 # find the first modulelist
-                if cnt==2: # find the second modulelist
-                    cnt-=1
-                    for i in range(device_0_block_num,block_num):
+                cnt += 1  # find the first modulelist
+                if cnt == 2:  # find the second modulelist
+                    cnt -= 1
+                    for i in range(device_0_block_num, block_num):
                         for name, module in m[i].named_modules():
                             if isinstance(module, torch.nn.Linear):
                                 full_gpu_block = (block_num // num_gpus) * num_gpus
@@ -540,15 +541,15 @@ class AutoRound(object):
                                     # If there are more blocks than GPUs, distribute the remaining blocks evenly
                                     device_index = i % num_gpus
                                     # extra_block_num = block_num - full_gpu_block
-                                    
+
                                     # device_index = (i - full_gpu_block) if (i - full_gpu_block) < num_gpus else \
                                     #     (i - full_gpu_block)  // (extra_block_num // num_gpus) % num_gpus
                                 else:
                                     device_index = i // (block_num // num_gpus) % num_gpus
                                 device_map.update({n + "." + str(i) + "." + name: cuda_devices[device_index]})
-        self.device_map= device_map
+        self.device_map = device_map
         self._set_device_map_in_blocks(self.device_map)
-    
+
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
