@@ -34,7 +34,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.bits, 2)
         ar.quantize()
 
-    def test_mxfp4_rtn(self):
+    def test_mxfp4(self):
         ar = AutoRound(self.model_name, scheme="MXFP4", nsamples=1, iters=1)
         self.assertEqual(ar.bits, 4)
         self.assertEqual(ar.act_bits, 4)

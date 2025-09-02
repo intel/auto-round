@@ -35,7 +35,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_autogptq_format(self):
-        for group_size in [128]:
+        for group_size in [-1, 32, 128]:
             bits, sym = 4, False
             autoround = AutoRound(
                 self.model,
