@@ -149,7 +149,7 @@ class QuantLinear(nn.Module):
         elif torch.xpu.is_available():
             device = "xpu:0"
 
-        W = linear.weight.data.to(device).clone()  # TODO check is nesscessory
+        W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
