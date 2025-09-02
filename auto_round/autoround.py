@@ -692,15 +692,15 @@ class AutoRound(object):
                     )
 
                 formats[index] = format
-            elif format == "llmcompressor":
+            elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-                    format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+                    format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
                     logger.error(
-                        "Currently, the llmcompressor format only supports MXFP/NVFP/FP8. "
+                        "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
 
@@ -734,7 +734,7 @@ class AutoRound(object):
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
-                if format == "llmcompressor":
+                if format == "llm_compressor":
                     if is_nv_fp(self.act_data_type):
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
@@ -745,7 +745,7 @@ class AutoRound(object):
                         and self.act_bits == act_bits
                         and self.act_dynamic
                     ), (
-                        f"Currently only support to export llmcompressor format for dynamic quantized"
+                        f"Currently only support to export llm_compressor format for dynamic quantized"
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
                     )
@@ -1496,7 +1496,7 @@ class AutoRound(object):
                     or "gptq" in formats[0]
                     or "auto_round" in formats[0]
                     or "gguf" in formats[0]
-                    or "llmcompressor" in formats[0]
+                    or "llm_compressor" in formats[0]
                 )
                 and self.inplace
             ):
@@ -2844,8 +2844,8 @@ class AutoRound(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
-        if format == "llmcompressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-            format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+        if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -3226,3 +3226,4 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
+

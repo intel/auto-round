@@ -36,8 +36,9 @@ class TestLLMC(unittest.TestCase):
             iters=0,
         )
         autoround.quantize()
-        autoround.save_quantized("./saved", format="llmcompressor", inplace=True)
+        autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
 
 
 if __name__ == "__main__":
     unittest.main()
+

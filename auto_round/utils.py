@@ -54,7 +54,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
-            "llmcompressor",
+            "llm_compressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -2552,3 +2552,4 @@ def is_static_wfp8afp8(ar):
     if is_wfp8afp8(ar):
         return True
     return False
+
