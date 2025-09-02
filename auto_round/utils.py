@@ -2559,7 +2559,7 @@ def is_static_wfp8afp8(ar):
     return False
 
 
-def get_max_vram(ratio: float = 0.15) -> dict:
+def get_max_vram(ratio: float = 0.9) -> dict:
     max_memory = {}
     if torch.cuda.is_available():  # NVIDIA CUDA
         num_devices = torch.cuda.device_count()
