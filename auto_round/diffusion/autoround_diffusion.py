@@ -140,7 +140,7 @@ class AutoRoundDiffusion(AutoRound):
         model_kwargs: dict = None,
         guidance_scale: float = 7.5,
         num_inference_steps: int = 1,
-        generator: object = None,
+        generator_seed: int = None,
         **kwargs,
     ):
         all_blocks = get_block_names(model)
@@ -151,7 +151,7 @@ class AutoRoundDiffusion(AutoRound):
         self.pipe = pipe
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
-        self.generator = generator
+        self.generator_seed = generator_seed
 
         if iters > 0 or check_need_act_calibration(act_dynamic, act_data_type):
             if dataset is None:
@@ -260,7 +260,7 @@ class AutoRoundDiffusion(AutoRound):
                         prompt=prompts,
                         guidance_scale=self.guidance_scale,
                         num_inference_steps=self.num_inference_steps,
-                        generator=self.generator
+                        generator=None if self.generator_seed is None else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed),
                     )
                 except NotImplementedError:
                     pass
@@ -409,9 +409,6 @@ class AutoRoundDiffusion(AutoRound):
         if self.enable_torch_compile:
             quantize_block = compile_func(quantize_block, device)
 
-        if pbar is None:
-            pbar = tqdm(range(0, len(block_names), nblocks))
-
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
@@ -462,9 +459,8 @@ class AutoRoundDiffusion(AutoRound):
                         )
                     else:
                         PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
-        pbar.set_description("Quantizing done")
         pbar.update(1)
-        pbar.close()
+
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):

@@ -268,7 +268,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument(
             "--generator_seed",
-            default=50,
+            default=None,
             type=int,
         )
         self.add_argument(
@@ -535,8 +535,7 @@ def tune(args):
                 "pipe": pipe,
                 "guidance_scale": args.guidance_scale,
                 "num_inference_steps": args.num_inference_steps,
-                #"generator": torch.Generator(device=device_str).manual_seed(args.generator_seed) if args.generator_seed else None,
-                "generator": None,
+                "generator_seed": args.generator_seed,
             }
         else:
             round = AutoRoundMLLM
@@ -692,7 +691,7 @@ def tune(args):
             "guidance_scale": args.guidance_scale,
             "output_type": "pil",
             "num_inference_steps": args.num_inference_steps,
-            "generator": None,
+            "generator_seed": args.generator_seed,
         }
         if not os.path.exists(args.image_save_dir):
             os.makedirs(args.image_save_dir)
