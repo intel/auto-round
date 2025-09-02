@@ -139,7 +139,7 @@ class QuantLinear(nn.Module):
 
     def post_init(self):
         pass
-    
+
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
@@ -186,6 +186,7 @@ class QuantLinear(nn.Module):
         return
 
     torch.compiler.disable()
+
     def pack_fp4_to_uint8(self, x: torch.Tensor) -> torch.Tensor:
         """
         Packs a tensor with values in the fp4 range into uint8.
