@@ -389,8 +389,10 @@ class AutoRound(object):
         elif isinstance(scheme, dict):
             scheme = scheme
         elif isinstance(scheme, str):
-            scheme = asdict(preset_name_to_scheme(scheme))
+            scheme = scheme.upper()
             self.scheme = scheme
+            scheme = asdict(preset_name_to_scheme(scheme))
+
         scheme_keys = (
             "bits",
             "group_size",
@@ -1146,10 +1148,11 @@ class AutoRound(object):
             if not (len(formats) == 1 and "gguf" in formats[0]):
                 raise NotImplementedError("Only one GGUF format can be set at a time.")
             target_format: str = formats[0]
-            tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
+
         else:
             target_format = self.scheme.lower()
 
+        tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Embedding):
                 key: str = "lm_head" if tie_word_embeddings else "embedding"
@@ -3072,13 +3075,13 @@ class AutoRound(object):
 
         return current_input_ids, current_input_others
 
-
 class AutoRoundAdam(AutoRound):
     """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
 
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
+        scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configrations
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
@@ -3121,93 +3124,55 @@ class AutoRoundAdam(AutoRound):
     Returns:
         The quantized model.
     """
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
 
     def __init__(
+
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = True,
-        layer_config=None,
-        batch_size: int = 8,
-        amp: bool = True,
-        device: Union[str, torch.device, int] = 0,
-        lr_scheduler=None,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: Union[dict, QuantizationScheme] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: int = 0,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
-        sampler: str = "rand",
-        seed: int = 42,
-        nblocks: int = 1,
+        batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        act_bits: int = 16,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_data_type: str = None,
-        act_dynamic: bool = True,
-        to_quant_block_names: Union[str, list] = None,
-        enable_norm_bias_tuning: bool = False,
-        enable_torch_compile: bool = False,
+        low_gpu_mem_usage: bool = False,
+        device: Union[str, torch.device, int] = 0,
         device_map: Union[str, dict] = None,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
         optimizer="AdamW",
-        super_bits: int = None,
-        super_group_size: int = None,
-        disable_opt_rtn: bool = False,
         **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(
             model=model,
             tokenizer=tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             layer_config=layer_config,
             batch_size=batch_size,
-            amp=amp,
             device=device,
-            lr_scheduler=lr_scheduler,
             dataset=dataset,
-            enable_quanted_input=enable_quanted_input,
-            enable_minmax_tuning=enable_minmax_tuning,
-            lr=lr,
-            minmax_lr=minmax_lr,
             low_gpu_mem_usage=low_gpu_mem_usage,
-            low_cpu_mem_usage=low_cpu_mem_usage,
             iters=iters,
             seqlen=seqlen,
             nsamples=nsamples,
-            sampler=sampler,
             seed=seed,
-            nblocks=nblocks,
             gradient_accumulate_steps=gradient_accumulate_steps,
-            not_use_best_mse=not_use_best_mse,
-            dynamic_max_gap=dynamic_max_gap,
-            data_type=data_type,
-            scale_dtype=scale_dtype,
-            act_bits=act_bits,
-            act_group_size=act_group_size,
-            act_sym=act_sym,
-            act_data_type=act_data_type,
-            act_dynamic=act_dynamic,
-            to_quant_block_names=to_quant_block_names,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
-            super_bits=super_bits,
-            super_group_size=super_group_size,
-            disable_opt_rtn=disable_opt_rtn,
             **kwargs,
         )
 

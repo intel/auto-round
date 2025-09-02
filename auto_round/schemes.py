@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import copy
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Optional
@@ -167,7 +167,8 @@ PRESET_SCHEMES = {
     "FPW8_STATIC": FPW8_STATIC,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
-for key,value in GGUF_CONFIG.items():
+for key,val in GGUF_CONFIG.items():
+    value = copy.deepcopy(val)
     value.pop("mostly",None)
     value.pop("embedding", None)
     value.pop("lm_head", None)
