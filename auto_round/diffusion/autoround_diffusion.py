@@ -100,7 +100,7 @@ class AutoRoundDiffusion(AutoRound):
     def __init__(
         self,
         model: torch.nn.Module,
-        pipe,
+        pipe: object,
         tokenizer=None,
         bits: int = 4,
         group_size: int = 128,
@@ -137,7 +137,6 @@ class AutoRoundDiffusion(AutoRound):
         enable_norm_bias_tuning: bool = False,
         truncation: bool = None,
         enable_torch_compile: bool = False,
-        model_kwargs: dict = None,
         guidance_scale: float = 7.5,
         num_inference_steps: int = 1,
         generator_seed: int = None,

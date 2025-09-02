@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import os
 import pandas as pd
 from typing import Dict
@@ -21,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
-from ..utils import logger
+from auto_round.utils import logger
 
 class DiffusionDataset(Dataset):
     """Dataset for supervised fine-tuning."""

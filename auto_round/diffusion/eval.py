@@ -47,7 +47,7 @@ def compute_clip_iqa(prompts, images, device: str = "cuda"):
 
 
 def compute_image_reward_metrics(prompts, images, device = "cuda"):
-    import ImageReward as ImageReward
+    import ImageReward
     image_reward_model = ImageReward.load("ImageReward-v1.0", device=device)
     scores = []
     for prompt, img_path in tqdm(zip(prompts, images), desc="Computing image reward metrics"):
