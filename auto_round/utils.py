@@ -2552,3 +2552,31 @@ def is_static_wfp8afp8(ar):
     if is_wfp8afp8(ar):
         return True
     return False
+
+def bytes_to_gigabytes(bytes) -> int:
+    """
+    Converts bytes to gigabytes.
+
+    Args:
+        bytes (int): The number of bytes.
+
+    Returns:
+        int: The equivalent number of gigabytes.
+    """
+    return bytes / 1024 / 1024 / 1024
+
+def get_device_memory(i=0)  -> int:
+    """
+    Gets the available memory on the specified CUDA device.
+
+    Args:
+        i (int, optional): Device index. Defaults to 0.
+
+    Returns:
+        int: Available memory in gigabytes.
+    """
+    total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
+    reserved_memory = bytes_to_gigabytes(torch.cuda.memory_reserved(i))
+    allocated_memory = bytes_to_gigabytes(torch.cuda.memory_allocated(i))
+    available_memory = total_memory - reserved_memory  # Approximation of free memory
+    return available_memory
