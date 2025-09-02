@@ -21,10 +21,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
-from ..special_model_handler import check_mllm_model_batch
 from ..utils import logger
 
-class VLMDataset(Dataset):
+class DiffusionDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
     COCO_URL = {"coco2014": "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv"}
@@ -32,7 +31,6 @@ class VLMDataset(Dataset):
     def __init__(
         self,
         dataset_path,
-        extra_data_dir=None,
         nsamples=512,
     ) -> None:
         super().__init__()
@@ -61,15 +59,6 @@ class VLMDataset(Dataset):
             caption_text = row["caption"]
             self.caption_ids.append(caption_id)
             self.captions.append(caption_text)
- 
-        self.extra_data_dir = extra_data_dir
-
-        self.image_fold = None
-        if extra_data_dir is not None:
-            image_fold = _extract_data_dir(self.extra_data_dir)
-            if isinstance(image_fold, dict):
-                image_fold = image_fold["image"]
-            self.image_fold = image_fold
 
     def __len__(self):
         return len(self.captions)
@@ -77,9 +66,8 @@ class VLMDataset(Dataset):
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         return self.caption_ids[i], self.captions[i]
 
-def get_vlm_dataloader(
+def get_diffusion_dataloader(
     dataset="coco2014",
-    extra_data_dir=None,
     bs=1,
     seed=42,
     nsamples=512,
@@ -89,13 +77,12 @@ def get_vlm_dataloader(
 
     Args:
         Dataset_name (str): The name or path of the dataset.
-        extra_data_dir (str): The path for extra data such as images, audio or videos.
         bs (int, optional): The batch size. Defaults to 4.
 
     Returns:
         DataLoader: The DataLoader for the calibrated datasets.
     """
-    dataset = VLMDataset(dataset, extra_data_dir, nsamples)
+    dataset = DiffusionDataset(dataset, nsamples)
     set_seed(seed)
     dataloader_params = {"batch_size": bs, "shuffle": True}
 

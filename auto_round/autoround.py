@@ -213,6 +213,7 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
 
         if kwargs:
             logger.warning(f"Unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -234,8 +235,8 @@ class AutoRound(object):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
             )
-        #elif tokenizer is None and iters > 0:
-        #    raise ValueError("A tokenizer must be set for non-str model input")
+        elif not self.diffusion and tokenizer is None and iters > 0:
+           raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):
             raise RuntimeError(
@@ -324,7 +325,7 @@ class AutoRound(object):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
             )
-        elif tokenizer is None and iters > 0:
+        elif not self.diffusion and tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):

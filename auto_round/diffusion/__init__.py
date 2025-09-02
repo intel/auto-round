@@ -13,5 +13,5 @@
 # limitations under the License.
 
 #from .mllm_dataset import get_mllm_dataloader
-from .autoround_vlm import AutoRoundVLM
+from .autoround_diffusion import AutoRoundDiffusion
 from ..utils import LazyImport

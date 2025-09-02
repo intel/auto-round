@@ -421,12 +421,18 @@ def get_block_names(model, quant_vision=False):
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
-    def _get_llm_block_names(model):
-        block_names = []
+    def _search_block(model):
         target_modules = []
         for n, m in model.named_children():
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
                 target_modules.append((n, m))
+            else:
+                target_modules.extend(_search_block(m))
+        return target_modules
+
+    def _get_llm_block_names(model):
+        block_names = []
+        target_modules = _search_block(model)
         for i, target_m in enumerate(target_modules):
             block_names.append([])
             for n, m in target_m[1].named_children():
@@ -1601,7 +1607,7 @@ def mllm_load_model(
 
     return model, processor, tokenizer, image_processor
 
-def vlm_load_model(
+def diffuison_load_model(
     pretrained_model_name_or_path,
     device="cpu",
     torch_dtype="auto",

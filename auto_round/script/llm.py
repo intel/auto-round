@@ -489,11 +489,11 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.utils import llm_load_model, mllm_load_model, vlm_load_model
+    from auto_round.utils import llm_load_model, mllm_load_model, diffuison_load_model
 
     if args.mllm:
         if os.path.exists(os.path.join(model_name, "model_index.json")):
-            pipe, model = vlm_load_model(
+            pipe, model = diffuison_load_model(
                 model_name,
                 device=device_str,
                 model_dtype=args.model_dtype,
@@ -519,7 +519,7 @@ def tune(args):
             model_dtype=args.model_dtype,
         )
 
-    from auto_round import AutoRound, AutoRoundAdam, AutoRoundMLLM, AutoRoundVLM
+    from auto_round import AutoRound, AutoRoundAdam, AutoRoundMLLM, AutoRoundDiffusion
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -530,7 +530,7 @@ def tune(args):
         round = AutoRoundAdam
     if args.mllm:
         if os.path.exists(os.path.join(model_name, "model_index.json")):
-            round = AutoRoundVLM
+            round = AutoRoundDiffusion
             mllm_kwargs = {
                 "pipe": pipe,
                 "guidance_scale": args.guidance_scale,
@@ -680,7 +680,7 @@ def tune(args):
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
 
     # diffusion model has different evaluation path
-    if isinstance(round, type(AutoRoundVLM)):
+    if getattr(autoround, "diffusion", False):
         pipe.to(model.dtype)
         pipe.transformer = model
         device_str = detect_device(device_str)
@@ -698,12 +698,12 @@ def tune(args):
             os.makedirs(args.image_save_dir)
 
         if args.prompt is not None:
-            outputs = pipeline(prompt=args.prompts, **gen_kwargs)
+            outputs = pipe(prompt=args.prompts, **gen_kwargs)
             outputs.images[0].save(os.path.join(args.image_save_dir, "img.png"))
             logger.info(f"Image generated with prompt {args.prompt} is saved as {os.path.join(args.image_save_dir, 'img.png')}")
 
         if args.prompt_file is not None:
-            from auto_round.vlm.eval import diffusion_eval
+            from auto_round.diffusion.eval import diffusion_eval
             metrics = args.metrics.split(",")
             diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs)
         return

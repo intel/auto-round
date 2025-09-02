@@ -13,7 +13,7 @@
 # limitations under the License.
 from auto_round.autoround import AutoRound, AutoRoundAdam
 from auto_round.mllm import AutoRoundMLLM
-from auto_round.vlm import AutoRoundVLM
+from auto_round.diffusion import AutoRoundDiffusion
 from auto_round.utils import LazyImport
 
 

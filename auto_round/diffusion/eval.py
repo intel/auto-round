@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-from auto_round.vlm.vlm_dataset import get_vlm_dataloader
-
 import numpy as np
-from tqdm import tqdm
-
+import os
 import torch
+
+from tqdm import tqdm
 from PIL import Image
+
+from auto_round.diffusion.diffusion_dataset import get_diffusion_dataloader
 
 
 def compute_clip(prompts, images, device: str = "cuda"):
@@ -70,7 +70,7 @@ def diffusion_eval(
     batch_size,
     gen_kwargs,
 ):
-    dataloader, _, _ = get_vlm_dataloader(prompt_file, nsamples=1, bs=batch_size)
+    dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=10, bs=batch_size)
     prompt_list = []
     image_list = []
     for image_ids, prompts in dataloader:
