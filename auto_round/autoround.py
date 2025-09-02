@@ -22,8 +22,8 @@ from dataclasses import asdict
 from typing import Any, Callable, Union
 
 import accelerate
-from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 import torch
+from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -243,7 +243,7 @@ class AutoRound(object):
         elif isinstance(device_map, dict) and device_map:
             tmp_devices = []
             for val in device_map.values():
-                if isinstance(val, (str, torch.device, int)): # could optimize
+                if isinstance(val, (str, torch.device, int)):  # could optimize
                     tmp_device = detect_device(self.device_map)
                     tmp_device = tmp_device.split(":")[0]
                     tmp_devices.append(tmp_device)
@@ -2081,11 +2081,14 @@ class AutoRound(object):
                         self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
                     else:
                         # Change this if new device is support
-                        if str(self.model.device)=="cpu" and (self.device.startswith("xpu") or self.device.startswith("cuda")):
-                            max_memory = get_max_vram() # TODO model is not evenly split
+                        if str(self.model.device) == "cpu" and (
+                            self.device.startswith("xpu") or self.device.startswith("cuda")
+                        ):
+                            max_memory = get_max_vram()  # TODO model is not evenly split
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
-                            device_map = infer_auto_device_map(self.model,max_memory=max_memory,no_split_module_classes=no_split_modules)
-
+                            device_map = infer_auto_device_map(
+                                self.model, max_memory=max_memory, no_split_module_classes=no_split_modules
+                            )
 
                             self.model = dispatch_model(self.model, device_map=device_map)
                         else:
@@ -2095,10 +2098,7 @@ class AutoRound(object):
                     block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
                 )
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    accelerate.hooks.remove_hook_from_submodules(
-                        self.model
-                    )
-
+                    accelerate.hooks.remove_hook_from_submodules(self.model)
 
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
