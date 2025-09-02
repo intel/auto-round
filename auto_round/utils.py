@@ -2569,7 +2569,7 @@ def bytes_to_gigabytes(bytes) -> int:
 
 def get_device_memory(i=0) -> int:
     """
-    Gets the available memory on the specified CUDA device.
+    Gets the available memory on the specified device.
 
     Args:
         i (int, optional): Device index. Defaults to 0.
@@ -2577,10 +2577,15 @@ def get_device_memory(i=0) -> int:
     Returns:
         int: Available memory in gigabytes.
     """
-    total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
-    reserved_memory = bytes_to_gigabytes(torch.cuda.memory_reserved(i))
-    allocated_memory = bytes_to_gigabytes(torch.cuda.memory_allocated(i))
-    available_memory = total_memory - reserved_memory  # Approximation of free memory
+    if torch.cuda.is_available():
+        total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
+        reserved_memory = bytes_to_gigabytes(torch.cuda.memory_reserved(i))
+        allocated_memory = bytes_to_gigabytes(torch.cuda.memory_allocated(i))
+        available_memory = total_memory - reserved_memory  # Approximation of free memory
+    elif torch.xpu.is_available():
+        raise RuntimeError("XPU does not support device_map='auto' currently.")
+    else:
+        raise RuntimeError("No supported device found (CUDA or XPU).")
     return available_memory
 
 
@@ -2614,7 +2619,7 @@ def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, floa
                 cnt -= 1
                 block_num = len(m)
                 for name, module in m[0].named_modules():
-                    if isinstance(module, torch.nn.Linear):
+                    if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
                         param_size = (
                             sum(p.numel() for p in module.parameters()) * module.weight.element_size()
                         )  # Assuming parameters are float32 (4 bytes each)
@@ -2627,7 +2632,7 @@ def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, floa
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
             for name, module in m[-1].named_modules():
-                if isinstance(module, torch.nn.Linear):
+                if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
                     param_size = (
                         sum(p.numel() for p in module.parameters()) * module.weight.element_size()
                     )  # Assuming parameters are float32 (4 bytes each)
@@ -2637,14 +2642,15 @@ def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, floa
     others_memory = total_linear_memory - block_memory * block_num
 
     # Get the shape of input of the first layer block
+    # input_shape = model.config.hidden_size
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
             for name, module in m[0].named_modules():
-                if isinstance(module, torch.nn.Linear):
-                    input_shape = module.in_features
+                if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
+                    input_shape = module.in_features if isinstance(torch.nn.Linear) else module.weight.shape[0]
                     break
             break
-    # assuming bfloat16, input and output
+    # assuming bfloat16 or float32, input and output
     input_bytes = 2 if amp_dtype != torch.float32 else 4
     input_output_memory = 2 * (seqlen * input_shape * input_bytes * nsamples) / 1024**3
 
