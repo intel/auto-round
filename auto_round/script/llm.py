@@ -691,7 +691,7 @@ def tune(args):
             "guidance_scale": args.guidance_scale,
             "output_type": "pil",
             "num_inference_steps": args.num_inference_steps,
-            "generator_seed": args.generator_seed,
+            "generator": None if args.generator_seed is None else torch.Generator(device=pipe.device).manual_seed(args.generator_seed),
         }
         if not os.path.exists(args.image_save_dir):
             os.makedirs(args.image_save_dir)
