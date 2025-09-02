@@ -220,7 +220,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
         )
 
-
         self.add_argument(
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )

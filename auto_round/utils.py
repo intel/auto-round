@@ -547,7 +547,7 @@ def detect_device_count():
             return 0
 
 
-def detect_device(device: Union[str,int,torch.device]=None) -> str:
+def detect_device(device: Union[str, int, torch.device] = None) -> str:
     """Detects the appropriate computation device.
 
     This function determines the device to use for computations. It can take
@@ -2559,13 +2559,13 @@ def is_static_wfp8afp8(ar):
     return False
 
 
-def get_max_vram(ratio:float=0.15)->dict:
+def get_max_vram(ratio: float = 0.15) -> dict:
     max_memory = {}
     if torch.cuda.is_available():  # NVIDIA CUDA
         num_devices = torch.cuda.device_count()
         for i in range(num_devices):
             total_mem = torch.cuda.get_device_properties(i).total_memory
-            max_mem_gb = int(total_mem / 1024 ** 3 * ratio)
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
             max_memory[i] = f"{max_mem_gb}GiB"
     elif torch.xpu.is_available():  # TODO need verification
         num_devices = torch.xpu.device_count()
