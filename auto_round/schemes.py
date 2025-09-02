@@ -154,7 +154,6 @@ FPW8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
-# TODO add gguf
 PRESET_SCHEMES = {
     "W4A16": W4A16,
     "W2A16": W2A16,
