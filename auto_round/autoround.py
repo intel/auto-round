@@ -3075,13 +3075,14 @@ class AutoRound(object):
 
         return current_input_ids, current_input_others
 
+
 class AutoRoundAdam(AutoRound):
     """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
 
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
-        scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configrations
+        scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
@@ -3124,6 +3125,7 @@ class AutoRoundAdam(AutoRound):
     Returns:
         The quantized model.
     """
+
     bits: int | None
     group_size: int | None
     sym: bool | None
@@ -3137,7 +3139,6 @@ class AutoRoundAdam(AutoRound):
     super_group_size: int | None
 
     def __init__(
-
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,

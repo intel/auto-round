@@ -533,7 +533,7 @@ def tune(args):
     if args.disable_act_dynamic:
         act_dynamic = False
     scheme = args.scheme.upper()
-    if scheme  not in PRESET_SCHEMES:
+    if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
     autoround = round(
         model=model,
