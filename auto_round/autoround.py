@@ -32,7 +32,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme, PRESET_SCHEMES
+from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -128,7 +128,7 @@ class AutoRound(object):
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str,dict, QuantizationScheme]] = None,
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
         seqlen: int = 2048,
@@ -295,7 +295,7 @@ class AutoRound(object):
         self.layer_config = {} if layer_config is None else layer_config
         # Check and convert to dict
         for key, item in self.layer_config.items():
-            if isinstance(item,str):
+            if isinstance(item, str):
                 item = asdict(preset_name_to_scheme(item.upper()))
                 self.layer_config[key] = item
 
@@ -3213,7 +3213,7 @@ class AutoRoundAdam(AutoRound):
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str,dict, QuantizationScheme]] = None,
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
         seqlen: int = 2048,
