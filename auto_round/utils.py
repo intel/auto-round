@@ -421,18 +421,23 @@ def get_block_names(model, quant_vision=False):
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
-    def _search_block(model):
+    def _search_block(name, module):
+        if hasattr(type(module), "__name__") and "ModuleList" in type(module).__name__:
+            return [(name, module)]
         target_modules = []
-        for n, m in model.named_children():
+        for n, m in module.named_children():
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                target_modules.append((n, m))
+                target_modules.append((".".join((name, n)), m))
             else:
-                target_modules.extend(_search_block(m))
+                target_modules.extend(_search_block(".".join((name, n)), m))
         return target_modules
 
     def _get_llm_block_names(model):
         block_names = []
-        target_modules = _search_block(model)
+        target_modules = []
+        for n, m in model.named_children():
+            target_modules.extend(_search_block(n, m))
+
         for i, target_m in enumerate(target_modules):
             block_names.append([])
             for n, m in target_m[1].named_children():
