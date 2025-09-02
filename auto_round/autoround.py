@@ -507,6 +507,7 @@ class AutoRound(object):
             module.tuning_device = device
 
     def set_auto_device_map(self) -> None:
+        """Automatically sets the device map for the model based on available GPUs and memory constraints."""
         num_gpus = torch.cuda.device_count() - 1
         if num_gpus == 0:
             self.device_map = None
@@ -516,7 +517,8 @@ class AutoRound(object):
         )
         device_0_memory = get_device_memory()
         memory_usage_expansion_factor = 13
-        # input_ouput_memory = 30
+        if self.low_gpu_mem_usage:
+            input_ouput_memory = 0
         # TODO concat memory?
         device_0_block_num = int(
             (device_0_memory - input_ouput_memory - others_memory * memory_usage_expansion_factor)
@@ -538,12 +540,9 @@ class AutoRound(object):
                             if isinstance(module, torch.nn.Linear):
                                 full_gpu_block = (block_num // num_gpus) * num_gpus
                                 if i >= full_gpu_block:
-                                    # If there are more blocks than GPUs, distribute the remaining blocks evenly
+                                    # If the number of blocks exceeds the number of GPUs, 
+                                    # distribute the remaining blocks in multiples of the number of GPUs
                                     device_index = i % num_gpus
-                                    # extra_block_num = block_num - full_gpu_block
-
-                                    # device_index = (i - full_gpu_block) if (i - full_gpu_block) < num_gpus else \
-                                    #     (i - full_gpu_block)  // (extra_block_num // num_gpus) % num_gpus
                                 else:
                                     device_index = i // (block_num // num_gpus) % num_gpus
                                 device_map.update({n + "." + str(i) + "." + name: cuda_devices[device_index]})
