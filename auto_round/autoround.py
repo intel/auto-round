@@ -130,14 +130,12 @@ class AutoRound(object):
         seqlen: int = 2048,
         nsamples: int = 128,
         batch_size: int = 8,
-        lr: float = None,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
         device: Union[str, torch.device, int] = 0,
         device_map: Union[str, dict] = None,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        enable_alg_ext: bool = False,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -145,6 +143,7 @@ class AutoRound(object):
         Args:
             model (torch.nn.Module | str): Model object or model name to load.
             tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
+            scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configrations
             bits (int, optional): Weight quantization bits. Defaults to 4.
             group_size (int, optional): Weight quantization group size. Defaults to 128.
             sym (bool, optional): Symmetric weight quantization. Defaults to True.
@@ -173,7 +172,7 @@ class AutoRound(object):
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
-                - lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                - enable_alg_ext, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, low_cpu_mem_usage, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
@@ -198,11 +197,14 @@ class AutoRound(object):
             ...     # ...
             ... }
         """
+        self.scheme = None
         self._parse_and_set_scheme(scheme, kwargs)
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
+        lr = kwargs.pop("lr", None)
+        enable_alg_ext=kwargs.pop("enable_alg_ext",False)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
         disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
@@ -388,6 +390,7 @@ class AutoRound(object):
             scheme = scheme
         elif isinstance(scheme, str):
             scheme = asdict(preset_name_to_scheme(scheme))
+            self.scheme = scheme
         scheme_keys = (
             "bits",
             "group_size",
@@ -1128,19 +1131,24 @@ class AutoRound(object):
         Raises:
             NotImplementedError: If multiple non-fake GGUF formats are specified.
         """
-        if not hasattr(self, "formats"):
+        gguf_scheme = False
+        if isinstance(self.scheme,str) and "gguf" in self.scheme.lower():
+            gguf_scheme = True
+
+        if not hasattr(self, "formats") and not gguf_scheme:
             return False
 
-        has_gguf: bool = any("gguf" in fmt for fmt in self.formats)
+        has_gguf: bool = gguf_scheme or any("gguf" in fmt for fmt in self.formats)
         if not has_gguf:
             return False
-
-        formats: list[str] = [fmt for fmt in self.formats if "fake" not in fmt]
-        if not (len(formats) == 1 and "gguf" in formats[0]):
-            raise NotImplementedError("Only one GGUF format can be set at a time.")
-
-        target_format: str = formats[0]
-        tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
+        if hasattr(self, "formats"):
+            formats: list[str] = [fmt for fmt in self.formats if "fake" not in fmt]
+            if not (len(formats) == 1 and "gguf" in formats[0]):
+                raise NotImplementedError("Only one GGUF format can be set at a time.")
+            target_format: str = formats[0]
+            tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
+        else:
+            target_format = self.scheme.lower()
 
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Embedding):

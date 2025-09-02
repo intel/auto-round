@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -44,8 +45,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--scheme",
             default="W4A16",
             type=str,
-            choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
-            help="quantization cheme",
+            help="quantization scheme",
         )
 
         self.add_argument("--bits", default=None, type=int, help="number of weight bits")
@@ -446,6 +446,9 @@ def tune(args):
     sym = None  # the default value should be None now
     if args.asym:  # if the scheme is asym, how to set it to sym is an issue
         sym = False
+
+    if args.scheme  not in PRESET_SCHEMES:
+        raise ValueError(f"{args.scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
     autoround = round(
         model,

@@ -39,9 +39,8 @@ from auto_round.utils import (
     get_model_dtype,
     infer_bits_by_data_type,
     set_cuda_visible_devices,
-    str2bool,
 )
-
+from auto_round.schemes import PRESET_SCHEMES
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -59,7 +58,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--scheme",
             default="W4A16",
             type=str,
-            choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
             help="quantization cheme",
         )
 
@@ -394,9 +393,7 @@ def tune(args):
 
     if args.eval_bs is None:
         args.eval_bs = "auto"
-
-    import transformers
-    from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils import detect_device, get_library_version, logger
 
@@ -419,7 +416,7 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    ##must set this before import torch
+    # Must set this before import torch
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
@@ -490,7 +487,7 @@ def tune(args):
                 and "awq" not in format
                 and "llmcompressor" not in format
             ):
-                ##TODO gptq could support some mixed precision config
+                # TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
     lm_head_layer_name = "lm_head"
@@ -501,7 +498,7 @@ def tune(args):
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys
             for item in tied_keys:
-                if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
+                if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     logger.warning(
                         "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
@@ -534,6 +531,9 @@ def tune(args):
     act_dynamic = None
     if args.disable_act_dynamic:
         act_dynamic = False
+
+    if args.scheme  not in PRESET_SCHEMES:
+        raise ValueError(f"{args.scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
     autoround = round(
         model=model,

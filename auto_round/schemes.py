@@ -154,7 +154,6 @@ FPW8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
-
 # TODO add gguf
 PRESET_SCHEMES = {
     "W4A16": W4A16,
@@ -167,3 +166,10 @@ PRESET_SCHEMES = {
     "FPW8A16": FPW8A16,
     "FPW8_STATIC": FPW8_STATIC,
 }
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+for key,value in GGUF_CONFIG.items():
+    value.pop("mostly",None)
+    value.pop("embedding", None)
+    value.pop("lm_head", None)
+    PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
+
