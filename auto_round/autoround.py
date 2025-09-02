@@ -671,10 +671,11 @@ class AutoRound(object):
             format = formats[index]
             w_fp8 = self.data_type == "fp" and self.bits == 8
             act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
-            if (w_fp8 or act_fp8) and format not in ["auto_round","llmcompressor"]:
+            if (w_fp8 or act_fp8) and format not in ["auto_round", "llmcompressor"]:
                 error_msg = (
                     f"is only supported to export auto_round or llmcompressor format,"
-                    f" but got {formats}, please check.")
+                    f" but got {formats}, please check."
+                )
                 error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
                 error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
                 logger.error(error_msg)
