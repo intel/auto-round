@@ -309,7 +309,8 @@ class AutoRound(object):
                     for item_key in item_keys:
                         if item_key not in expected_keys:
                             raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is not valid, only {expected_keys} are supported"
+                                f"the key {item_key} in layer_config for layer {key} is invalid,"
+                                f" only {expected_keys} are supported"
                             )
 
         self.to_quant_block_names = to_quant_block_names
