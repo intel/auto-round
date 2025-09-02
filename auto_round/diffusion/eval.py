@@ -70,7 +70,7 @@ def diffusion_eval(
     batch_size,
     gen_kwargs,
 ):
-    dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=10, bs=batch_size)
+    dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=-1, bs=batch_size)
     prompt_list = []
     image_list = []
     for image_ids, prompts in dataloader:
