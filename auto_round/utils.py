@@ -2629,26 +2629,24 @@ def get_block_info(model, nsamples, seqlen, amp_dtype) -> tuple[int, float, floa
 
     # Calculate all block linear memory except for the second modulelist
     total_linear_memory = 0
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            for name, module in m[-1].named_modules():
-                if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
-                    param_size = (
-                        sum(p.numel() for p in module.parameters()) * module.weight.element_size()
-                    )  # Assuming parameters are float32 (4 bytes each)
-                    total_linear_memory += param_size
-            break
+    all_blocks = get_block_names(model)
+    m = get_module(model, all_blocks[0][-1])
+    for name, module in m.named_modules():
+        if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
+            param_size = (
+                sum(p.numel() for p in module.parameters()) * module.weight.element_size()
+            )  # Assuming parameters are float32 (4 bytes each)
+            total_linear_memory += param_size
+
     total_linear_memory = total_linear_memory / 1024**3  # Convert to GB
     others_memory = total_linear_memory - block_memory * block_num
 
-    # Get the shape of input of the first layer block
+    # Get the shape of input of the first layer of first block
     # input_shape = model.config.hidden_size
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            for name, module in m[0].named_modules():
-                if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
-                    input_shape = module.in_features if isinstance(torch.nn.Linear) else module.weight.shape[0]
-                    break
+    m = get_module(model, all_blocks[0][0])
+    for name, module in m.named_modules():
+        if isinstance(module, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
+            input_shape = module.in_features if isinstance(module, torch.nn.Linear) else module.weight.shape[0]
             break
     # assuming bfloat16 or float32, input and output
     input_bytes = 2 if amp_dtype != torch.float32 else 4
