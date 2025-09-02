@@ -60,7 +60,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="W4A16",
             type=str,
             # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
-            help="quantization cheme",
+            help="quantization scheme",
         )
 
         self.add_argument("--bits", default=None, type=int, help="number of weight bits")
