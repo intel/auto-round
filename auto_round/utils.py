@@ -2600,56 +2600,6 @@ def recover_mp_block(block, mp_layers, raw_dtype):
     return block
 
 
-def get_numel(block, hp_layers):
-    """Get the total number of elements in the specified layers of a block.
-
-    Args:
-        block (torch.nn.Module): The model block.
-        hp_layers (list): List of layer names to include.
-
-    Returns:
-        int: Total number of elements in the specified layers.
-    """
-    numel = 0
-    for layer_name in hp_layers:
-        layer = get_module(block, layer_name)
-        numel += layer.weight.numel()
-    return numel
-
-
-def get_best_combination(combination_list, numel_list, loss_list, loss_numel_ratio=2.0):
-    """Selects the best combination from a list based on the ranks of two criteria: numel_list and loss_list.
-
-    Each combination is ranked by its position in the sorted numel_list and loss_list. The loss rank is scaled
-    by `loss_numel_ratio` to adjust its importance relative to the numel rank. The combination with the lowest
-    sum of ranks is selected as the best.
-
-    Args:
-        combination_list (list): List of candidate combinations.
-        numel_list (list): List of numerical values representing the size or complexity of each combination.
-        loss_list (list): List of loss values associated with each combination.
-        loss_numel_ratio (float, optional): Scaling factor for the loss rank relative to the numel rank. Default is 2.0.
-
-    Returns:
-        The combination from `combination_list` with the lowest combined rank based on numel and loss.
-    """
-    # Get ranks for numel_list and
-    numel_ranks = [sorted(numel_list).index(x) for x in numel_list]
-    loss_ranks = [(sorted(loss_list).index(x)) * loss_numel_ratio for x in loss_list]
-
-    # Calculate rank sums
-    rank_sums = [x + y for x, y in zip(numel_ranks, loss_ranks)]
-    logger.debug(f"numel_ranks: {numel_ranks}")
-    logger.debug(f"loss_ranks: {loss_ranks}")
-    logger.debug(f"rank sum: {rank_sums}")
-
-    # Find the index of the smallest rank sum
-    best_index = rank_sums.index(min(rank_sums))
-
-    # Return the best index
-    return best_index
-
-
 def get_avg_bits(module):
     """
     Calculates the average number of bits per weight element for supported layers in a given module.
@@ -2699,8 +2649,6 @@ def _generate_recipe(
     # special mix-precision configuration
     mp_config={
         "mp_ratio": 1 / 3,
-        "loss_weight": 2.0,
-        "numel_weight": 1.0,
     },
 ):
     """
@@ -2710,7 +2658,7 @@ def _generate_recipe(
         mp_dtype (dict, optional): Dictionary specifying the mixed-precision data types for weights and activations.
             Defaults to {"data_type": "mx_fp8", "act_data_type": "mx_fp8"}.
         mp_config (dict, optional): Dictionary specifying the mixed-precision configuration parameters such as
-            ratio, loss weight, and numel weight. Defaults to {"mp_ratio": 1/3, "loss_weight": 2.0, "numel_weight": 1.0}.
+            ratio, loss weight, and numel weight. Defaults to {"mp_ratio": 1/3}.
 
     Returns:
         dict: A dictionary containing the quantization recipe for each layer, excluding the "lm_head" layer.
@@ -2738,29 +2686,20 @@ def _generate_recipe(
 def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, input_others):
     from itertools import combinations
 
-    from auto_round.utils import (
-        DTYPE_INFO_MAPPING,
-        create_mp_block,
-        get_best_combination,
-        get_numel,
-        recover_mp_block,
-    )
-
     # fetch mix-precision recipe configuration
     sample_num = self.recipe_mp_config.get("sample_num", 8)
-    mp_ratio = self.recipe_mp_config.get("mp_ratio", 1 / 3)
-    loss_weight = float(self.recipe_mp_config.get("loss_weight", 2.0))
-    numel_weight = float(self.recipe_mp_config.get("numel_weight", 1.0))
-    loss_numel_ratio = loss_weight / numel_weight
-
-    # calculate the number of layers to use mix-precision
     quantizable_layers = [n for n, m in block.named_modules() if isinstance(m, SUPPORTED_LAYER_TYPES)]
-    mp_ratio_list = [f"{i}/{len(quantizable_layers)}" for i in range(1, len(quantizable_layers))]
-    quantizable_num = int(mp_ratio * len(quantizable_layers))  # It's ceiling
-    logger.warning_once(
-        f"[Recipe Mode] {len(quantizable_layers)} layers are detected, so the available mp_ratio values are {mp_ratio_list}"
-    )
-    logger.warning_once(f"[Recipe Mode] {quantizable_num} layers of each block use the mixed precision.")
+    target_bits = self.recipe_mp_config.get("target_bits", None)
+    if target_bits is None:
+        mp_ratio = self.recipe_mp_config.get("mp_ratio", 1 / 3)
+
+        # calculate the number of layers to use mix-precision
+        mp_ratio_list = [f"{i}/{len(quantizable_layers)}" for i in range(1, len(quantizable_layers))]
+        quantizable_num = int(mp_ratio * len(quantizable_layers))  # It's ceiling
+        logger.warning_once(
+            f"[Recipe Mode] {len(quantizable_layers)} layers are detected, so the available mp_ratio values are {mp_ratio_list}"
+        )
+        logger.warning_once(f"[Recipe Mode] {quantizable_num} layers of each block use the mixed precision.")
     # fetch raw low-bits dtype of block for recovering mix-precision block
     layer = get_module(block, quantizable_layers[0])
     raw_dtype = {
@@ -2812,7 +2751,7 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
             total_loss += float(loss)
         if is_hpex_available():
             htcore.mark_step()
-        return total_loss
+        return round(total_loss, 6)
 
     combination_list = []
     avg_bits_list = []
@@ -2831,22 +2770,27 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
             htcore.mark_step()
         logger.debug(f"{hp_layers}, {loss}, {avg_bits}")
 
-    # get target hp layers
-    best_index = get_best_combination(combination_list, avg_bits_list, loss_list, loss_numel_ratio)
-    target_hp_layers, target_avg_bits = combination_list[best_index], avg_bits_list[best_index]
-    logger.info(f"[Recipe Mode] Recipe results of {block_name}:\n Mix precision layers: {target_hp_layers}; \nAverage bits: {target_avg_bits}.")
+    # get combination with lowest loss
+    best_loss = float("inf")
+    for i, (loss, avg_bits) in enumerate(zip(loss_list, avg_bits_list)):
+        if best_loss > loss:
+            best_loss = loss
+            best_avg_bits = avg_bits
+            best_combination = combination_list[i]
+
+    logger.info(f"[Recipe Mode] Recipe results of {block_name}:\nMix precision layers: {best_combination};\nAverage bits: {best_avg_bits}.")
     # generate output of quantized block of sample input_ids
-    block = create_mp_block(block, target_hp_layers, self.recipe_mp_dtype)
+    block = create_mp_block(block, best_combination, self.recipe_mp_dtype)
     q_output = get_output(block, q_input_ids)
-    block = recover_mp_block(block, target_hp_layers, raw_dtype)
+    block = recover_mp_block(block, best_combination, raw_dtype)
     # update recipe and results
-    for layer_name in target_hp_layers:
+    for layer_name in best_combination:
         self.recipe_results["recipe"].update({block_name + "." + layer_name: self.recipe_mp_dtype})
     self.recipe_results["results"].update(
         {
             block_name: {
-                "mp_layers": target_hp_layers,
-                "bits": target_avg_bits,
+                "mp_layers": best_combination,
+                "bits": best_avg_bits,
             }
         }
     )
