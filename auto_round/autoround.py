@@ -40,6 +40,8 @@ from auto_round.utils import (
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
     _gguf_args_check,
+    _is_fp8_linear,
+    _is_fp8_model,
     block_forward,
     check_and_mark_fp8_model,
     check_is_cpu,
@@ -83,8 +85,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    _is_fp8_model,
-    _is_fp8_linear
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
