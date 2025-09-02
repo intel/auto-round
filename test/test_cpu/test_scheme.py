@@ -2,6 +2,8 @@ import shutil
 import sys
 import unittest
 
+from auto_round.schemes import QuantizationScheme
+
 sys.path.insert(0, "../..")
 
 from auto_round import AutoRound
@@ -41,6 +43,30 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.data_type, "mx_fp")
         self.assertEqual(ar.act_data_type, "mx_fp_rceil")
         ar.quantize()
+
+    def test_scheme_in_layer_config(self):
+        layer_config = {"model.decoder.layers.2.self_attn": {"bits": 2},
+                        "model.decoder.layers.3.self_attn.v_proj": QuantizationScheme(bits=8),
+                        "model.decoder.layers.4.self_attn.k_proj": QuantizationScheme.from_dict({"group_size": 64})}
+        ar = AutoRound(self.model_name, scheme="W3A16", nsamples=1, iters=1,layer_config=layer_config)
+
+        ar.quantize()
+        for n,m in ar.model.named_modules():
+            if n == "model.decoder.layers.2.self_attn.q_proj":
+                self.assertEqual(m.bits, 2)
+            if n == "model.decoder.layers.2.self_attn.k_proj":
+                self.assertEqual(m.bits, 2)
+            if n == "model.decoder.layers.3.self_attn.v_proj":
+                self.assertEqual(m.bits, 8)
+            if n == "model.decoder.layers.4.self_attn.k_proj":
+                self.assertEqual(m.group_size, 64)
+
+
+
+
+
+
+
 
 
 if __name__ == "__main__":

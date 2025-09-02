@@ -128,7 +128,7 @@ class AutoRound(object):
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: Union[dict, QuantizationScheme] = None,
+        layer_config: dict[str, Union[dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
         seqlen: int = 2048,
@@ -236,6 +236,8 @@ class AutoRound(object):
             raise ValueError(
                 "API does not support explicit set multiple devices," " please set CUDA_VISIBLE_DEVICES=0,1 yourself"
             )
+        if device_map is None:
+            device_map = 0
 
         # Set device, must place after model loading
         if isinstance(device_map, (str, torch.device, int)):
@@ -291,8 +293,23 @@ class AutoRound(object):
 
         # Some other quantization configs
         self.layer_config = {} if layer_config is None else layer_config
-        if isinstance(self.layer_config, QuantizationScheme):
-            self.layer_config = asdict(self.layer_config)
+        # Check and convert to dict
+        for key, item in self.layer_config.items():
+            if isinstance(item,QuantizationScheme):
+                config = asdict(item)
+                tmp_keys = copy.deepcopy(list(config.keys()))
+                for tmp_key in tmp_keys: ## Pop None value to be override
+                    if config[tmp_key] is None:
+                        config.pop(tmp_key)
+                self.layer_config[key] = config
+            else:
+                item_keys = item.keys()
+                expected_keys = list(QuantizationScheme.__annotations__.keys())
+                if item_keys not in expected_keys:
+                    for item_key in item_keys:
+                        if item_key not in expected_keys:
+                            raise ValueError(f"the key {item_key} in layer_config for layer {key} is not valid, only {expected_keys} are supported")
+
         self.to_quant_block_names = to_quant_block_names
 
         # Tuning hyperparameters
@@ -2080,7 +2097,7 @@ class AutoRound(object):
                     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                         self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
                     else:
-                        # Change this if new device is support
+                        # Change this if new device is supportted
                         if str(self.model.device) == "cpu" and (
                             self.device.startswith("xpu") or self.device.startswith("cuda")
                         ):
@@ -3197,8 +3214,7 @@ class AutoRoundAdam(AutoRound):
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
-        device: Union[str, torch.device, int] = 0,
-        device_map: Union[str, dict] = None,
+        device_map: Union[str,int, torch.device, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
         optimizer="AdamW",
@@ -3210,7 +3226,6 @@ class AutoRoundAdam(AutoRound):
             scheme=scheme,
             layer_config=layer_config,
             batch_size=batch_size,
-            device=device,
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
             iters=iters,

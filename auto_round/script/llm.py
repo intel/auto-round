@@ -83,9 +83,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
 
         self.add_argument(
+            "--device_map",
             "--device",
             "--devices",
-            "--device_map",
             default="0",
             type=str,
             help="the device to be used for tuning. "
@@ -265,6 +265,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         )
         self.add_argument("--mllm", action="store_true", help="whether to eval multi-modal model.")
         self.add_argument(
+            "--device_map",
             "--device",
             "--devices",
             default="0",
