@@ -139,7 +139,7 @@ class QuantLinear(nn.Module):
 
     def post_init(self):
         pass
-    
+
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
