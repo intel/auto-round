@@ -22,6 +22,7 @@ from dataclasses import asdict
 from typing import Any, Callable, Union
 
 import accelerate
+from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 import torch
 from torch import autocast
 from tqdm import tqdm
@@ -242,7 +243,7 @@ class AutoRound(object):
         elif isinstance(device_map,dict) and device_map:
             tmp_devices=[]
             for val in device_map.values():
-                if isinstance(val, (str, torch.device, int)): # coudle optimize
+                if isinstance(val, (str, torch.device, int)): # could optimize
                     tmp_device = detect_device(self.device_map)
                     tmp_device = tmp_device.split(":")[0]
                     tmp_devices.append(tmp_device)
@@ -1037,8 +1038,6 @@ class AutoRound(object):
 
         # Dispatch multi-GPU model if necessary
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-            from accelerate.big_modeling import dispatch_model
-
             dispatch_model(model, model.hf_device_map)
 
         def register_act_hook(model):
@@ -1068,8 +1067,6 @@ class AutoRound(object):
         try:
             # Move model to target device
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                from accelerate.big_modeling import dispatch_model
-
                 dispatch_model(self.model, self.model.hf_device_map)
             else:
                 model = model.to(self.device)
@@ -1474,7 +1471,6 @@ class AutoRound(object):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
                 # Dispatch model if needed
                 if self.device_map is not None:
-                    from accelerate import dispatch_model
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -1736,8 +1732,6 @@ class AutoRound(object):
             enable_quanted_input = False
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
-            from accelerate.big_modeling import dispatch_model
-
             dispatch_model(self.model, self.model.hf_device_map)
 
         if enable_quanted_input:
@@ -2083,28 +2077,36 @@ class AutoRound(object):
             try:
                 if not self.model.device.type == "meta":
                     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                        pass
+                        self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
                     else:
                         # Change this if new device is support
                         if str(self.model.device)=="cpu" and (self.device.startswith("xpu") or self.device.startswith("cuda")):
-                            # Must call the dispatch_model from accelerate.big_modeling instead of accelerate
-                            from accelerate.big_modeling import dispatch_model,infer_auto_device_map
+                            # TODO device mismatch
+
                             max_memory = get_max_vram() # TODO model is not evenly split
-                            device_map = infer_auto_device_map(self.model,max_memory=max_memory)
+                            no_split_modules = getattr(self.model, "_no_split_modules", [])
+                            device_map = infer_auto_device_map(self.model,max_memory=max_memory,no_split_module_classes=no_split_modules)
 
                             self.model = dispatch_model(self.model, device_map=device_map)
                         else:
                             self.model = self.model.to(self.device)
+
                 all_inputs = self.cache_inter_data(
                     block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
                 )
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model
+                    )
+
+
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
                     if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
                         logger.warning(
-                            "we strongly recommend using more GPUs in calibration."
+                            "we recommend using more GPUs in calibration."
                             " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
                         )
                     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
