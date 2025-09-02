@@ -47,7 +47,7 @@ class TestAutoRound(unittest.TestCase):
     def test_scheme_in_layer_config(self):
         layer_config = {
             "model.decoder.layers.2.self_attn": {"bits": 2},
-            "model.decoder.layers.3.self_attn.v_proj": QuantizationScheme(bits=8),
+            "model.decoder.layers.3.self_attn.v_proj": "W8A16",
             "model.decoder.layers.4.self_attn.k_proj": QuantizationScheme.from_dict({"group_size": 64}),
         }
         ar = AutoRound(self.model_name, scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
