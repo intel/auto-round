@@ -58,7 +58,6 @@ from auto_round.utils import (
     detect_device,
     find_matching_blocks,
     flatten_list,
-    get_block_info,
     get_block_names,
     get_device_memory,
     get_layer_config_by_gguf_format,
@@ -217,6 +216,7 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+        self.mem_expansion_factor = kwargs.pop("mem_expansion_factor", None)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -464,8 +464,8 @@ class AutoRound(object):
             self.device_map = None
         if not device_map:
             return
-        if self.device_map == "auto":
-            self.set_auto_device_map()
+        if  self.device_map == "auto" and device_map == "auto":
+            return
         if isinstance(device_map, str):
             device_map = device_map.replace(" ", "")
             infos = device_map.split(",")
@@ -506,48 +506,84 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def set_auto_device_map(self) -> None:
-        """Automatically sets the device map for the model based on available GPUs and memory constraints."""
-        num_gpus = torch.cuda.device_count() - 1
-        if num_gpus == 0:
+    def get_block_info(self, block, input_ids, supported_types=SUPPORTED_LAYER_TYPES) -> tuple[float, float]:
+        """
+        Analyzes the model's memory usage and block structure, and calculates memory consumption
+        for specific components of the model.
+
+        Args:
+            model (torch.nn.Module): The neural network model to analyze.
+            nsamples (int): The number of samples in the input batch.
+            seqlen (int): The sequence length of the input data.
+            amp_dtype (torch.dtype): The data type used for mixed precision (e.g., torch.bfloat16 or torch.float32).
+
+        Returns:
+            tuple: A tuple containing the following:
+                - block_num (int): The number of blocks (ModuleLists) in the model.
+                - block_memory (float): The memory consumption (in GB) of the first block's linear layers.
+                - others_memory (float): The memory consumption (in GB) of all other linear layers
+                    excluding the first block.
+                - input_output_memory (float): The memory consumption (in GB) for input and output
+                    tensors of the first block, assuming bfloat16 or float32 precision.
+        """
+        # Calculate all block linear memory
+        total_linear_memory = 0
+        for name, module in block.named_modules():
+            if isinstance(module, supported_types):
+                param_size = (
+                    sum(p.numel() for p in module.parameters()) * module.weight.element_size()
+                )  # Assuming parameters are float32 (4 bytes each)
+                total_linear_memory += param_size
+        block_memory = total_linear_memory / 1024**3  # Convert to GB
+        if self.low_gpu_mem_usage:
+            return block_memory, 0
+
+        # assuming bfloat16 or float32, input and output
+        input_bytes = 2 if self.amp_dtype != torch.float32 else 4
+        input_output_memory = 2 * sum(tensor.numel() for tensor in input_ids) * input_bytes / 1024**3
+
+
+        return block_memory, input_output_memory
+    
+    def set_auto_device_map_in_block(self, block, input_ids, supported_types=SUPPORTED_LAYER_TYPES) -> None:
+        """Automatically sets the device map for the block based on available GPUs and memory constraints."""
+        num_gpus = torch.cuda.device_count()
+        if num_gpus <= 1:
             self.device_map = None
 
-        block_num, block_memory, others_memory, input_ouput_memory = get_block_info(
-            self.model, self.nsamples, self.seqlen, self.amp_dtype
-        )
         device_0_memory = get_device_memory()
-        memory_usage_expansion_factor = 13
-        if self.low_gpu_mem_usage:
-            input_ouput_memory = 0
-        # TODO concat memory?
-        device_0_block_num = int(
-            (device_0_memory - input_ouput_memory - others_memory * memory_usage_expansion_factor)
-            // (block_memory * memory_usage_expansion_factor)
+        block_memory, input_ouput_memory = self.get_block_info(
+            block, input_ids
         )
+        
+        mem_expansion_factor = 13 if self.mem_expansion_factor is None else self.mem_expansion_factor
 
-        cuda_devices = [f"cuda:{i+1}" for i in range(num_gpus)]
+        if block_memory * mem_expansion_factor < device_0_memory:
+            return  # fit in one GPU
 
-        cnt = 0
+        cuda_devices = [f"cuda:{i}" for i in range(num_gpus)] # only support cuda now
         device_map = {}
-        # Iterate through all expert Linear layers and assign them to GPUs
-        for n, m in self.model.named_modules():
-            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                cnt += 1  # find the first modulelist
-                if cnt == 2:  # find the second modulelist
-                    cnt -= 1
-                    for i in range(device_0_block_num, block_num):
-                        for name, module in m[i].named_modules():
-                            if isinstance(module, torch.nn.Linear):
-                                full_gpu_block = (block_num // num_gpus) * num_gpus
-                                if i >= full_gpu_block:
-                                    # If the number of blocks exceeds the number of GPUs,
-                                    # distribute the remaining blocks in multiples of the number of GPUs
-                                    device_index = i % num_gpus
-                                else:
-                                    device_index = i // (block_num // num_gpus) % num_gpus
-                                device_map.update({n + "." + str(i) + "." + name: cuda_devices[device_index]})
-        self.device_map = device_map
-        self._set_device_map_in_blocks(self.device_map)
+        device_memory = {device: get_device_memory(index) for index, device in enumerate(cuda_devices)}
+        device_memory["cuda:0"] = device_0_memory - input_ouput_memory
+
+        device_idx = 0
+        for n, m in block.named_modules():
+            if isinstance(m, supported_types):
+                layer_name = block.tmp_name + "." + n
+                layer_memory = sum(p.numel() for p in m.parameters()) * m.weight.element_size() / 1024**3
+                if layer_memory * mem_expansion_factor < device_memory[cuda_devices[device_idx]]:
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_expansion_factor
+                else:
+                    device_idx += 1
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_expansion_factor
+                    if device_idx >= len(cuda_devices):
+                        raise ValueError(
+                            f"model is too large to fit in {num_gpus} GPUs, "
+                            "please set device_map manually or use more GPUS."
+                        )
+        self._set_device_map_in_blocks(device_map)
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -2507,6 +2543,10 @@ class AutoRound(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
+        if self.device_map == "auto":
+            self.set_auto_device_map_in_block(block, input_ids)
+ 
+        
         if self.device_map is not None:
             from accelerate import dispatch_model
 
