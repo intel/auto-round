@@ -2814,7 +2814,7 @@ class AutoRound(object):
             self.sym
             and self.enable_alg_ext
             and self.super_group_size is None
-            and ((self.data_type.startswith("int") and self.act_bits>=8) or self.data_type.startswith("mx"))
+            and ((self.data_type.startswith("int") and self.act_bits >= 8) or self.data_type.startswith("mx"))
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
