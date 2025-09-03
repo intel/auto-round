@@ -520,9 +520,9 @@ class AutoRound(object):
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
 
-        if self.act_bits <= 8 and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
+        # if self.act_bits <= 8 and self.enable_torch_compile:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
 
         if self.low_cpu_mem_usage and self.enable_torch_compile:
             self.enable_torch_compile = False
@@ -2811,20 +2811,19 @@ class AutoRound(object):
                     to_dtype(input_others[key][i], tmp_dtype)
 
         if (
-            self.act_bits > 8
-            and self.sym
+            self.sym
             and self.enable_alg_ext
             and self.super_group_size is None
-            and self.data_type.startswith("int")
+            and ((self.data_type.startswith("int") and self.act_bits>=8) or self.data_type.startswith("mx"))
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
-                quantize_block = self.quantize_block_ext  ##must use self.quantize_block_ext
-                if self.bits > 2:
+                quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
+                if self.bits > 2 and not self.data_type.startswith("mx"):
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2; use with caution."
+                        "algorithm extension has only undergone limited validation on INT2 and mxfp4; use with caution."
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")
