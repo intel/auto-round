@@ -636,6 +636,11 @@ class TestAutoRound(unittest.TestCase):
         ):
             raise ValueError("mixed bits is not correct")
 
+    def test_alg_ext(self):
+        model_name = "facebook/opt-125m"
+        ar = AutoRound(model_name, scheme="W2A16",iters=1,nsamples=1)
+        ar.quantize()
+
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
