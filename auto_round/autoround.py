@@ -681,7 +681,8 @@ class AutoRound(object):
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
                     logger.warning(
-                        f"AutoRound supports export for this format: {format}, but quantized model loading is not yet available."
+                        f"AutoRound supports export for this format: {format}, "
+                        "but quantized model loading is not yet available."
                     )
                 elif is_wfp8afp8(self):  # staic wfp8afp8
                     format = "auto_round:fp8"
@@ -701,7 +702,8 @@ class AutoRound(object):
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                     logger.warning(
-                        f"AutoRound supports export for this format: {format}, but quantized model loading is not yet available."
+                        f"AutoRound supports export for this format: {format}, "
+                        "but quantized model loading is not yet available."
                     )
                 elif not is_wfp8afp8(self):
                     logger.error(
@@ -3234,3 +3236,4 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
+
