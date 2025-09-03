@@ -724,7 +724,7 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate
 
             tasks, model_args, device_str = _eval_init(
-                args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype
+                args.tasks, eval_folder, args.device_map, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
             if "llama" in args.model.lower():
@@ -754,7 +754,7 @@ def eval(args):
     import time
 
     tasks, model_args, device_str = _eval_init(
-        args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype
+        args.tasks, args.model, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
     )
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES

@@ -242,7 +242,6 @@ class TestGGUF(unittest.TestCase):
                 "group_size": 32,
                 "sym": False,
                 "data_type": "int_asym_dq",
-                "scale_dtype": torch.float32,
                 "super_bits": 6,
                 "super_group_size": 8,
                 "in_blocks": False,

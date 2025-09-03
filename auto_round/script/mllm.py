@@ -327,7 +327,7 @@ def tune(args):
         if format not in SUPPORTED_FORMATS:
             raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
-    ##must set this before import torch
+    # Must set this before import torch
     set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
@@ -596,8 +596,8 @@ def setup_lmms_parser():
 
 
 def lmms_eval(args):
-    set_cuda_visible_devices(args.device)
-    device_str, parallelism = get_device_and_parallelism(args.device)
+    set_cuda_visible_devices(args.device_map)
+    device_str, parallelism = get_device_and_parallelism(args.device_map)
 
     from auto_round.mllm import lmms_eval
 
