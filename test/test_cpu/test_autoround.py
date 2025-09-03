@@ -638,7 +638,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_alg_ext(self):
         model_name = "facebook/opt-125m"
-        ar = AutoRound(model_name, scheme="W2A16",iters=1,nsamples=1)
+        ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1)
         ar.quantize()
 
     def test_invalid_layer_config(self):
