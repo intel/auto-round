@@ -2740,6 +2740,7 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
     reference_output = get_output(block, input_ids)
     q_input_ids = input_ids if q_input_ids is None else q_input_ids
     # generate q_output of sample input_ids and get loss
+    @torch.no_grad()
     def get_loss(q_block, q_input_ids):
         q_output = get_output(q_block, q_input_ids)
         total_loss = 0
@@ -2753,6 +2754,29 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
             htcore.mark_step()
         return round(total_loss, 6)
 
+    # get mxfp8 loss
+    hp_layers = quantizable_layers
+    block = create_mp_block(block, hp_layers, self.recipe_mp_dtype)
+    mxfp8_loss = get_loss(block, q_input_ids)
+    block = recover_mp_block(block, hp_layers, raw_dtype)
+    hp_layers = []
+    block = create_mp_block(block, hp_layers, self.recipe_mp_dtype)
+    mxfp4_loss = get_loss(block, q_input_ids)
+    block = recover_mp_block(block, hp_layers, raw_dtype)
+    logger.info(f"loss_ratio [mxfp4_loss / mxfp8_loss]: {mxfp4_loss/mxfp8_loss}")
+    if is_hpex_available():
+        htcore.mark_step()
+    if int(block_name.split(".")[-1]) == 0:
+        self.target_loss_ratio = (mxfp4_loss / mxfp8_loss) * (1 - mp_ratio)
+        logger.warning_once(f"[Recipe Mode] Based on the mp_ratio, we set the target_loss_ratio: {self.target_loss_ratio}")
+    if mxfp4_loss / mxfp8_loss > self.target_loss_ratio:
+        quantizable_num += 1
+        logger.warning(f"[Recipe Mode] Due to [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} > {self.target_loss_ratio}")
+        logger.warning(f"[Recipe Mode] Set {quantizable_num} layers using mixed precision for this block.")
+    elif mxfp4_loss / mxfp8_loss < 1:  # special case for llama3.3 70B
+        quantizable_num -= 1
+        logger.warning(f"[Recipe Mode] Due to [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} < 1")
+        logger.warning(f"[Recipe Mode] Set {quantizable_num} layers using mixed precision for this block.")
     combination_list = []
     avg_bits_list = []
     loss_list = []
