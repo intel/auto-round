@@ -20,8 +20,7 @@ class TestAutoRoundCmd(unittest.TestCase):
         python_path = sys.executable
 
         ##test llm script
-        res = os.system(
-            f"cd ../.. && {python_path} -m auto_round -h")
+        res = os.system(f"cd ../.. && {python_path} -m auto_round -h")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
