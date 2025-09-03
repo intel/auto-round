@@ -186,20 +186,33 @@ class QuantLinear(nn.Module):
         return
 
 
+def pack_fp4_to_uint8(scaled_tensor: torch.Tensor):
+    if scaled_tensor.device.type == "cuda":
+        return pack_fp4_to_uint8_cuda(scaled_tensor)
+    else:
+        return pack_fp4_to_uint8_cpu(scaled_tensor)
+
+
+# The torch.compile with dynamic=True is incompatible with multiple threads
+# https://github.com/pytorch/pytorch/issues/126024
+@torch.compiler.disable()
+def pack_fp4_to_uint8_cpu(x: torch.Tensor) -> torch.Tensor:
+    return _pack_fp4_to_uint8(x)
+
+
 # Adapted from https://github.com/neuralmagic/compressed-tensors/pull/400
 @torch.compile(fullgraph=True, dynamic=True)
-def pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
+def pack_fp4_to_uint8_cuda(x: torch.Tensor) -> torch.Tensor:
     """
     Packs a tensor with values in the fp4 range into uint8.
-    As there are 16 valid fp4 values, two fp4 values can be
-    packed into one uint8. Each fp4 value is mapped to its
-    particular index (e.g. 0.5 is mapped to index 1, 6.0 is mapped
-    to index 7) which is then represented using 4 bits. Consecutive
-    pairs of 4 bits are then packed into an uint8.
 
     :param x: tensor to pack
     returns: a packed tensor in uint8
     """
+    return _pack_fp4_to_uint8(x)
+
+
+def _pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
 
     m, n = x.shape
     device = x.device
