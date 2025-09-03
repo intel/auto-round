@@ -1339,11 +1339,13 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
 def _to_model_dtype(model, model_dtype):
     if model_dtype is not None:
         try:
-            if model_dtype == "float16" or model_dtype == "fp16":
+            if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
                 model = model.to(torch.float16)
-            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
+            elif (
+                model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
+            ) and model.dtype != torch.bfloat16:
                 model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32":
+            elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
                 model = model.to(torch.float32)
         except:
             logger.error("please use more device to fit the device or just use one device")
@@ -1364,11 +1366,31 @@ def set_fake_cuda_device_capability(func=None):
     return orig_func
 
 
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if hasattr(model, "is_fp8"):
+def _is_fp8_model(model: torch.nn.Module) -> bool:
+    if not hasattr(model, "is_fp8"):
+        return False
+    else:
         return model.is_fp8
+
+
+def _is_fp8_linear(module: torch.nn.Module) -> bool:
+    if hasattr(module, "is_fp8_linear"):
+        return module.is_fp8_linear
+    if not (isinstance(module, torch.nn.Linear) or module.__class__.__name__ == "FP8Linear"):
+        return False
+    if module.weight is None:
+        return False
+    if str(module.weight.dtype).startswith("torch.float8"):
+        return True
+    else:
+        return False
+
+
+def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
+    if _is_fp8_model(model):
+        return True
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) and str(m.weight.dtype).startswith("torch.float8"):
+        if _is_fp8_linear(m):
             m.is_fp8_linear = True
             if not hasattr(model, "is_fp8"):
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
@@ -1454,7 +1476,6 @@ def llm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             except OSError as e:
@@ -1567,7 +1588,6 @@ def mllm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
@@ -2500,13 +2520,13 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
 
 
 class BackendDataType(str, Enum):
-    STANDARD_FP8 = "fp8"
+    STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
 
 
 def is_standard_fp(backend):
-    return BackendDataType.STANDARD_FP8 in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
+    return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 def is_mx_fp(backend):
@@ -2517,5 +2537,18 @@ def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
 
 
-def is_static_afp8(ar):
-    return not ar.act_dynamic and "fp8" in ar.act_data_type
+def is_wfp8afp8(ar):
+    if ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8)) and (
+        "fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8)
+    ):
+        return True
+    else:
+        return False
+
+
+def is_static_wfp8afp8(ar):
+    if ar.act_dynamic:
+        return False
+    if is_wfp8afp8(ar):
+        return True
+    return False

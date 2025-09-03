@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 import copy
 import os
 import re
@@ -41,6 +40,8 @@ from auto_round.utils import (
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
     _gguf_args_check,
+    _is_fp8_linear,
+    _is_fp8_model,
     block_forward,
     check_and_mark_fp8_model,
     check_is_cpu,
@@ -73,7 +74,8 @@ from auto_round.utils import (
     is_nv_fp,
     is_optimum_habana_available,
     is_standard_fp,
-    is_static_afp8,
+    is_static_wfp8afp8,
+    is_wfp8afp8,
     llm_load_model,
     logger,
     mv_module_from_gpu,
@@ -215,7 +217,7 @@ class AutoRound(object):
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
 
         if kwargs:
-            logger.warning(f"Unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+            logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
         if device is not None and "," in str(device):
             raise ValueError(
@@ -255,6 +257,12 @@ class AutoRound(object):
         if tmp_bits is not None and tmp_bits < 16 and tmp_bits != bits:
             logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
+        if tmp_bits is not None and tmp_bits < 16:
+            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                if data_type.startswith(supported_dtype):
+                    if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
+                        self.data_type = supported_dtype
+                    break
         self.group_size = group_size
         self.sym = sym
         self.layer_config = {} if layer_config is None else layer_config
@@ -267,9 +275,9 @@ class AutoRound(object):
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
-            if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
+            if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
                 self.act_data_type = data_type
-                logger.info(f"Activation adopts {data_type}")
+                logger.info(f"activation adopts {data_type}")
             else:
                 self.act_data_type = "float"
         tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
@@ -279,6 +287,12 @@ class AutoRound(object):
                 f"`act_data_type` do not"
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
+        if tmp_act_bits is not None and tmp_act_bits < 16:
+            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                if self.act_data_type.startswith(supported_dtype):
+                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # could not replace FP8_e4m3
+                        self.act_data_type = supported_dtype
+                    break
 
         # Tuning hyperparameters
         self.seed = seed
@@ -348,9 +362,10 @@ class AutoRound(object):
         self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
-            logger.warning("Force to use bf16 to for quantization tuning when enabling activation quantization")
+            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
-            self.model = self.model.to(torch.bfloat16)
+            if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
+                self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
@@ -369,7 +384,7 @@ class AutoRound(object):
         torch.set_printoptions(precision=3, sci_mode=True)
 
         if is_optimum_habana_available():
-            logger.info("Optimum Habana is available, import htcore explicitly.")
+            logger.info("optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
@@ -482,7 +497,7 @@ class AutoRound(object):
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
             logger.warning(
-                f"Multiple devices have been set for layer {name}, keeping original device {module.tuning_device}"
+                f"multiple devices have been set for layer {name}, keeping original device {module.tuning_device}"
             )
         else:
             module.tuning_device = device
@@ -503,7 +518,7 @@ class AutoRound(object):
         ValueError, TypeError: If any of the configurations are invalid.
         """
         if not isinstance(self.model, torch.nn.Module):
-            raise TypeError("Model must be an instance of torch.nn.Module")
+            raise TypeError("model must be an instance of torch.nn.Module")
         if self.bits <= 0:
             raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
@@ -525,28 +540,28 @@ class AutoRound(object):
 
         if self.act_bits <= 8:
             logger.warning(
-                "Activation quantization is an experimental feature with limited support and a complex API. "
+                "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
             )
 
         if is_mx_fp(self.data_type) and self.group_size != 32:
-            logger.warning("Dtype mx_fp should only support group_size of 32 in real deployment")
+            logger.warning("dtype mx_fp should only support group_size of 32 in real deployment")
 
         if is_nv_fp(self.data_type) and (self.group_size != 16):
-            logger.warning("Dtype nv_fp should only support group_size of 16 in real deployment")
+            logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
                 if self.iters > 0:  # GGUF should log this warning, but we don't know the format here
                     logger.warning(
-                        f"Reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
+                        f"reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
                         f" is smaller than batch_size({self.batch_size})"
                     )
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
                 logger.warning(
-                    f"Reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
+                    f"reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size"
                 )
@@ -656,26 +671,36 @@ class AutoRound(object):
             format = formats[index]
             if format == "auto_round":
                 if self.sym and "int" in self.data_type:
-                    format = format.replace("auto_round", "auto_round:auto_gptq")
-                    formats[index] = format
-                if self.bits == 4 and not self.sym and "int" in self.data_type:
+                    format = "auto_round:auto_gptq"
+                elif self.bits == 4 and not self.sym and "int" in self.data_type:
                     enable_awq = all(
                         config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
                     )
                     if enable_awq:
-                        formats[index] = format.replace("auto_round", "auto_round:auto_awq")
-                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type) or is_standard_fp(self.data_type):
-                    format = format.replace("auto_round", f"auto_round:{self.data_type}")
-                    formats[index] = format
+                        format = "auto_round:auto_awq"
+                elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
+                    format = f"auto_round:{self.data_type}"
+                elif is_wfp8afp8(self):  # staic wfp8afp8
+                    format = "auto_round:fp8"
+                elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
+                    format = "auto_round:fp8"
+                elif self.act_bits < 16:
+                    raise ValueError(
+                        "AutoRound format does not support exporting "
+                        "for the current quantization configuration, "
+                        "please change to `fake` format for research purpose"
+                    )
+
+                formats[index] = format
             elif format == "llmcompressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
                     format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
                     formats[index] = format
-                elif not is_standard_fp(self.data_type):
+                elif not is_wfp8afp8(self):
                     logger.error(
-                        "Currently, the llmcompressor format only supports MXFP/NVFP/StandardFP8. "
+                        "Currently, the llmcompressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
 
@@ -934,7 +959,7 @@ class AutoRound(object):
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
 
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
 
         if isinstance(self.dataset, str):
@@ -1160,7 +1185,7 @@ class AutoRound(object):
         m = get_module(self.model, name)
 
         # if m.__class__.__name__ == "FP8Linear":
-        if hasattr(m, "is_fp8_linear"):
+        if _is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
 
@@ -1248,7 +1273,7 @@ class AutoRound(object):
         Returns:
             tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
         """
-        if self.amp:
+        if self.amp and self.model.dtype != self.amp_dtype:
             self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
@@ -1277,7 +1302,7 @@ class AutoRound(object):
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic, self.act_data_type
-        ):  ##TODO, mixed datatype has bug
+        ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
             try:
                 self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
@@ -1310,7 +1335,7 @@ class AutoRound(object):
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
         return self.model, self.layer_config
@@ -1378,7 +1403,7 @@ class AutoRound(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 block = block.to(self.device)
-                if hasattr(self.model, "is_fp8"):
+                if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -1405,7 +1430,7 @@ class AutoRound(object):
 
                 if (
                     is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
-                ) or is_static_afp8(self):
+                ) or is_static_wfp8afp8(self):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for Linear
@@ -1488,7 +1513,7 @@ class AutoRound(object):
             logger.warning("could not find blocks, exit with original model")
             return self.model, self.layer_config
 
-        if self.amp:
+        if self.amp and self.model.dtype != self.amp_dtype:
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self._get_quantized_layer_names_outside_blocks()
@@ -1563,9 +1588,9 @@ class AutoRound(object):
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             for n, m in self.model.named_modules():
-                if hasattr(m, "is_fp8_linear"):
+                if _is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
                     set_module(self.model, n, new_layer)
 
@@ -1613,7 +1638,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if hasattr(layer, "is_fp8"):
+                if _is_fp8_model(self.model):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
@@ -1724,10 +1749,21 @@ class AutoRound(object):
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
 
         # Iterate through all modules in the model
+        is_gguf = hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
         for n, m in self.model.named_modules():
             # Skip unsupported types
             if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                continue
+                if n in self.layer_config:
+                    if not isinstance(m, torch.nn.Embedding):
+                        logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
+                        self.layer_config.pop(n)
+                        continue
+                    if not is_gguf:
+                        if not check_to_quantized(layer_config[n]):
+                            self.layer_config.pop(n)
+                            continue
+                else:
+                    continue
 
             # If the layer is not in the config and is part of a quantization block, use default configuration
             if n not in layer_config.keys() and n in layers_in_blocks:
@@ -1737,25 +1773,28 @@ class AutoRound(object):
 
             # If the layer is partially configured, fill in missing values
             elif n in layer_config.keys():
+                if "data_type" in layer_config[n] and "bits" not in layer_config[n]:
+                    tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
+                    if tmp_bits is not None and tmp_bits != self.bits:
+                        logger.warning(
+                            f"'data_type' do not match the specified 'bits' setting for {n}."
+                            f" Resetting 'bits' to {tmp_bits}."
+                        )
+                        layer_config[n]["bits"] = tmp_bits
+                if "act_data_type" in layer_config[n] and "act_bits" not in layer_config[n]:
+                    tmp_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
+                    if tmp_bits is not None and tmp_bits != self.act_bits:
+                        logger.warning(
+                            f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
+                            f" Resetting 'act_bits' to {tmp_bits}."
+                        )
+                        layer_config[n]["act_bits"] = tmp_bits
+
                 for key in keys:
                     if key not in layer_config[n].keys():
                         layer_config[n][key] = getattr(self, key)
                 layer_config[n]["fixed_by_user"] = True
-                # Check dtype and act_dtype
-                tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
-                if tmp_bits is not None and tmp_bits != layer_config[n]["bits"]:
-                    logger.warning(
-                        f"'data_type' do not match the specified 'bits' setting for {n}."
-                        f" Resetting 'bits' to {tmp_bits}."
-                    )
-                    layer_config[n]["bits"] = tmp_bits
-                tmp_act_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
-                if tmp_act_bits is not None and tmp_act_bits != layer_config[n]["act_bits"]:
-                    logger.warning(
-                        f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
-                        f" Resetting 'act_bits' to {tmp_act_bits}."
-                    )
-                    layer_config[n]["act_bits"] = tmp_act_bits
+
             # If the layer is not in the config and not part of a quantization block,
             # use default configuration and set specific values
             else:
@@ -1960,7 +1999,7 @@ class AutoRound(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -2030,11 +2069,16 @@ class AutoRound(object):
             layer_names = []
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
-        tmp_dtype = None
+
+        tmp_dtype = None  # TODO delete this as most model is not fp32 now
         ## have bug if block name is not the first block
         if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
             tmp_dtype = self.model.dtype
-            self.model = self.model.to(torch.bfloat16) if self.amp else self.model.to(torch.float32)  ##model on cpu
+            if self.amp:
+                if self.model.dtype != self.model.dtype:
+                    self.model = self.model.to(torch.bfloat16)
+            else:
+                self.model = self.model.to(torch.float32)  ##model on cpu
 
         self.last_cache_name = last_cache_name
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
@@ -2410,9 +2454,9 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        if hasattr(self.model, "is_fp8"):
+        if _is_fp8_model(self.model):
             for n, m in block.named_modules():
-                if hasattr(m, "is_fp8_linear"):
+                if _is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
@@ -2885,7 +2929,7 @@ class AutoRound(object):
 
     def _set_amp_dtype(self) -> None:
         """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration."""
-        self.amp_dtype = torch.float16
+        self.amp_dtype = torch.bfloat16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
         if self.device == "cpu" or "hpu" in self.device:
@@ -2899,7 +2943,8 @@ class AutoRound(object):
                     f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
                 )
             else:
-                self.model = self.model.to(self.amp_dtype)
+                if self.model.dtype != self.amp_dtype:
+                    self.model = self.model.to(self.amp_dtype)
         else:
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)

@@ -3,15 +3,15 @@ import shutil
 import sys
 import unittest
 
-from auto_round.low_cpu_mem import get_module
-
 sys.path.insert(0, "../..")
+
 import torch
 from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.low_cpu_mem import get_module
 
 
 class LLMDataLoader:
@@ -359,6 +359,25 @@ class TestAutoRound(unittest.TestCase):
         model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder)
 
+    def test_embed_quant(self):
+        bits, group_size, sym = 4, 128, True
+        model_name = "facebook/opt-125m"
+        layer_config = {
+            "model.decoder.embed_tokens": {"bits": 4},
+        }
+        autoround = AutoRound(
+            model_name,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            nsamples=3,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config,
+        )
+        autoround.quantize()
+
     def test_fallback_layers(self):
         bits, group_size, sym = 4, 128, True
         model_name = "facebook/opt-125m"
@@ -368,6 +387,7 @@ class TestAutoRound(unittest.TestCase):
         layer_config = {
             "model.decoder.layers.0.self_attn.q_proj": {"bits": 16},
             "model.decoder.layers.1.self_attn.k_proj": {"bits": 16},
+            "model.decoder.embed_tokens": {"bits": 16},
         }
         autoround = AutoRound(
             model,
@@ -603,6 +623,18 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(len(dequant_weight.shape), 3)
         self.assertEqual(dequant_weight.shape[0], 32)
         self.assertEqual(dequant_weight.shape.numel(), 32 * 5760 * 1440)
+
+    def test_mixed_bit_setting(self):
+        model_name = "facebook/opt-125m"
+        layer_config = {"model.decoder.layers.7.fc1": {"bits": 8, "act_bits": 8}}
+        ar = AutoRound(model_name, data_type="mx_fp4", act_bits=4, iters=0, layer_config=layer_config)
+        ar.quantize()
+        layer_config = ar.layer_config
+        if (
+            layer_config["model.decoder.layers.7.fc1"]["bits"] != 8
+            or layer_config["model.decoder.layers.7.fc1"]["act_bits"] != 8
+        ):
+            raise ValueError("mixed bits is not correct")
 
 
 if __name__ == "__main__":
