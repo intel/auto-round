@@ -418,8 +418,8 @@ def tune(args):
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     # Must set this before import torch
-    set_cuda_visible_devices(args.device)
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
+    set_cuda_visible_devices(args.device_map)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
 

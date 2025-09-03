@@ -328,8 +328,8 @@ def tune(args):
             raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     ##must set this before import torch
-    set_cuda_visible_devices(args.device)
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
+    set_cuda_visible_devices(args.device_map)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
 
@@ -517,8 +517,8 @@ def tune(args):
 
 
 def vlmeval(args):
-    set_cuda_visible_devices(args.device)
-    device_str, parallelism = get_device_and_parallelism(args.device)
+    set_cuda_visible_devices(args.device_map)
+    device_str, parallelism = get_device_and_parallelism(args.device_map)
     if parallelism:
         os.environ["AUTO_SPLIT"] = "1"
     if isinstance(args.tasks, str):
