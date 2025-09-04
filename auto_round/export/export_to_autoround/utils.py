@@ -45,3 +45,12 @@ def check_neq_config(config: dict, **expected) -> dict[str, tuple]:
 
     # 3. Collect mismatches
     return {key: (config[key], expected[key]) for key in REQUIRED_CONFIG_KEYS if config[key] != expected[key]}
+
+
+def _get_device() -> torch.device:
+        """Selects best available device (CUDA > XPU > CPU)."""
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return torch.device("xpu:0")
+        return torch.device("cpu")

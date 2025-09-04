@@ -39,7 +39,7 @@ from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.utils import is_mx_fp, is_nv_fp
-
+from .utils import _get_device
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
 E8M0_EXPONENT_BIAS = 127
@@ -139,17 +139,13 @@ class QuantLinear(nn.Module):
 
     def post_init(self):
         pass
-
+    
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
-        if linear.bias is not None:
-            self.bias = linear.bias.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
+        device = _get_device()
+        if getattr(linear, "bias", None) is not None:
+            self.bias = linear.bias.detach().to(torch.float16)
 
-        W = linear.weight.data.to(device).clone()
+        W = linear.weight.data.detach().to(device)
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
@@ -163,7 +159,8 @@ class QuantLinear(nn.Module):
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
                 scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
             )
-            scaled_tensor = cast_to_fp4(torch.clamp(scaled_tensor, -6.0, 6.0))
+            scaled_tensor.clamp_(-6.0, 6.0)
+            scaled_tensor = cast_to_fp4(scaled_tensor)
         else:
             scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
         scaled_tensor = revert_tensor_by_pad(scaled_tensor, orig_shape=orig_shape, pad_len=pad_len)
@@ -245,3 +242,4 @@ def _pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
     packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
 
     return packed.reshape(m, n // 2)
+

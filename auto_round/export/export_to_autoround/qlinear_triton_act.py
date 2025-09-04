@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-
+from .utils import _get_device
 logger = getLogger(__name__)
 
 
@@ -117,6 +117,7 @@ class QuantLinear(nn.Module):
         pass
 
     def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None):
+        device = _get_device()
         scales_t = scales.t().contiguous()
 
         self.act_scales.data.copy_(act_scales.squeeze().clone())
@@ -124,9 +125,6 @@ class QuantLinear(nn.Module):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
@@ -183,3 +181,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+

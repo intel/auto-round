@@ -33,7 +33,7 @@ from auto_round.utils import (
     set_module,
 )
 
-from .utils import REQUIRED_CONFIG_KEYS, check_neq_config
+from .utils import REQUIRED_CONFIG_KEYS, check_neq_config, _get_device
 
 
 class FP8WOQLinear(torch.nn.Module):
@@ -86,11 +86,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         None: The function modifies the model in place.
     """
     if packing_device is None:
-        packing_device = "cpu"
-        if torch.cuda.is_available():
-            packing_device = "cuda"
-        elif torch.xpu.is_available():
-            packing_device = "xpu"
+        packing_device = _get_device()
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -200,11 +196,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    packing_device = "cpu"
-    if torch.cuda.is_available():
-        packing_device = "cuda"
-    elif torch.xpu.is_available():
-        packing_device = "xpu"
+    packing_device = _get_device()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
 
@@ -280,3 +272,4 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
