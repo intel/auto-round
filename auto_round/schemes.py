@@ -14,7 +14,7 @@
 import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import List, Optional
+from typing import Generator, List, Optional
 
 __all__ = ["QuantizationScheme", "preset_name_to_scheme"]
 
@@ -41,6 +41,33 @@ class QuantizationScheme:
     @classmethod
     def get_attributes(cls: "QuantizationScheme") -> List[str]:
         return [field.name for field in fields(cls)]
+
+    def __getitem__(self, key: str):
+        if key not in self.get_attributes():
+            raise KeyError(f"{key} is not a valid attribute")
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value: None | int | str):
+        if key not in self.get_attributes():
+            raise KeyError(f"{key} is not a valid attribute")
+        setattr(self, key, value)
+
+    def items(self):
+        return ((field, getattr(self, field)) for field in self.get_attributes())
+
+    def keys(self):
+        return self.get_attributes()
+
+    def values(self):
+        return (getattr(self, field) for field in self.get_attributes())
+
+    def __eq__(self, other: "QuantizationScheme") -> bool:
+        if not isinstance(other, QuantizationScheme):
+            return False
+        for field in self.get_attributes():
+            if getattr(self, field) != getattr(other, field):
+                return False
+        return True
 
 
 def preset_name_to_scheme(name: str) -> QuantizationScheme:

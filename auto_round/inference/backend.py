@@ -19,6 +19,7 @@ from typing import Any, List, Optional
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version, is_weight_fp8_activation_static_fp8, logger
 
 BackendInfos = {}
@@ -105,6 +106,21 @@ gptqmodel_marlin_feature_check = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=1, out_feature_multiplier=64
 )
 
+
+def torch_fp8_static_check(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+    if not is_weight_fp8_activation_static_fp8(config):
+        return False
+    from auto_round.schemes import FPW8_STATIC
+
+    return config == FPW8_STATIC
+
+
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
@@ -184,7 +200,7 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[8],
     priority=0,
-    feature_checks=[],
+    feature_checks=[torch_fp8_static_check],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.6.0"],
 )
@@ -733,7 +749,6 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
             If the specified backend is not supported.
             If no compatible backend is found for the given layer configuration.
     """
-    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
     # Check if the provided backend is in BackendInfos
     backend = find_backend(backend)
 

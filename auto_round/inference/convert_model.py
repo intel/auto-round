@@ -309,7 +309,7 @@ def get_layer_config(model, quantization_config):
         layer_extra_config = extra_config.get(layer_name, {})
         for scheme_attr in quant_scheme_attrs:
             layer_config[scheme_attr] = layer_extra_config.get(scheme_attr, getattr(default_quant_scheme, scheme_attr))
-        layer_configs[layer_name] = layer_config
+        layer_configs[layer_name] = QuantizationScheme.from_dict(layer_config)
 
     return layer_configs
 
