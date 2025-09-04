@@ -61,6 +61,15 @@ class QuantizationScheme:
     def values(self):
         return (getattr(self, field) for field in self.get_attributes())
 
+    def get(self, key: str, default=None):
+        if key not in self.get_attributes():
+            return default
+        res = getattr(self, key)
+        # In case the attribute is explicitly set to None, return default
+        if res is None:
+            return default
+        return getattr(self, key)
+
     def __eq__(self, other: "QuantizationScheme") -> bool:
         if not isinstance(other, QuantizationScheme):
             return False
