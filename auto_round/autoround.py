@@ -235,16 +235,13 @@ class AutoRound(object):
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
-        if device_map is not None and ("," in str(device_map) or device_map != "auto"):
-            raise ValueError(
-                "API does not support explicit set multiple devices," " please set CUDA_VISIBLE_DEVICES=0,1 yourself"
-            )
         if device_map is None:
             device_map = 0
 
         # Set device, must place after model loading
         if isinstance(device_map, (str, torch.device, int)):
             self.device = detect_device(device_map)
+
         elif isinstance(device_map, dict) and device_map:
             tmp_devices = []
             for val in device_map.values():
@@ -263,6 +260,10 @@ class AutoRound(object):
 
         if (isinstance(device_map, dict) and device_map) or device_map == "auto":
             self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
         else:
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
@@ -639,20 +640,28 @@ class AutoRound(object):
             self.device_map = None
             return
 
-        device_0_memory = get_device_memory()
+        if hasattr(self, "device_list") and self.device_list:
+            cuda_devices = [f"cuda:{i}" for i in self.device_list]
+            device_0 = cuda_devices[0]
+        else:
+            cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
+            device_0 = "cuda:0"
+
+        device_0_memory = get_device_memory(self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0)
         block_memory, input_ouput_memory = self._estimate_tuning_block_mem(
             block, input_ids
         )
         
         mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
-
-        if (block_memory * mem_per_param_scale + input_ouput_memory)  < device_0_memory:
+        if self.iters == 0:
+            mem_per_param_scale = 1 # for rtn 
+        
+        if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
             return  # fit in one GPU
 
-        cuda_devices = [f"cuda:{i}" for i in range(num_gpus)] # only support cuda now
         device_map = {}
-        device_memory = {device: get_device_memory(index) for index, device in enumerate(cuda_devices)}
-        device_memory["cuda:0"] = device_0_memory - input_ouput_memory
+        device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
+        device_memory[device_0] = device_0_memory - input_ouput_memory
 
         device_idx = 0
         # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
@@ -679,7 +688,6 @@ class AutoRound(object):
                             f"Block {block.tmp_name} not fit in available GPU memory. "
                             "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
                         )
-  
         self._set_device_map_in_blocks(device_map)
 
     def _dq_check(self) -> None:
@@ -1587,6 +1595,9 @@ class AutoRound(object):
                 block = block.to(self.device)
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
+                
+                self._set_auto_device_map_in_block(block, input_ids)
+                
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module

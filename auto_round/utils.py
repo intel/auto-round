@@ -574,6 +574,10 @@ def detect_device(device: Union[str, int, torch.device] = None) -> str:
     if is_valid_digit(device):
         dev_idx = int(device)
         device = "auto"
+    if isinstance(device, str) and "," in device: # device is "0,1,2"
+        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
+        dev_idx = device_list[0] if device_list else None
+        device = "auto"
     if device is None or device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
