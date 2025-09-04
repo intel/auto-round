@@ -59,7 +59,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 Delivers strong performance even at 2–3 bits [example models](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b), with leading results at 4 bits [benchmark](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard).
 
 ✅ **Ecosystem Integration**
-Seamlessly works with **Transformers, vLLM,** TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
+Seamlessly works with **Transformers, vLLM,** and more.
 
 ✅ **Multiple Formats Export**
 Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
