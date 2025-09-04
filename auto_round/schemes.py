@@ -183,6 +183,7 @@ FPW8_STATIC = QuantizationScheme.from_dict(
         "act_group_size": 0,
         "act_data_type": "fp",
         "act_dynamic": False,
+        "act_sym": True,
     }
 )
 
