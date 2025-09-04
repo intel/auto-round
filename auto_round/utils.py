@@ -33,6 +33,7 @@ from packaging import version
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
+from auto_round.schemes import QuantizationScheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -524,7 +525,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
-    if isinstance(config, dict):
+    if isinstance(config, (dict, QuantizationScheme)):
         bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
     elif hasattr(config, "orig_layer"):

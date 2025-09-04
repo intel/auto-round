@@ -254,6 +254,8 @@ def get_layer_config(model, quantization_config):
         act_bits=act_bits,
         act_group_size=act_group_size,
         act_sym=act_sym,
+        act_data_type=act_data_type,
+        act_dynamic=act_dynamic,
     )
 
     # Determine the quantization block list
@@ -310,7 +312,6 @@ def get_layer_config(model, quantization_config):
         for scheme_attr in quant_scheme_attrs:
             layer_config[scheme_attr] = layer_extra_config.get(scheme_attr, getattr(default_quant_scheme, scheme_attr))
         layer_configs[layer_name] = QuantizationScheme.from_dict(layer_config)
-
     return layer_configs
 
 
