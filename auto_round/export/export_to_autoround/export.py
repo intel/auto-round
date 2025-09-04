@@ -267,7 +267,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if is_nv_fp(data_type) or is_mx_fp(data_type):  ## detect nvfp & mxfp first
         from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
 
-        return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round", **kwargs)
+        return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round:llm_compressor", **kwargs)
 
     if kwargs.get("data_type", "int") == "fp" and kwargs.get("bits", 16) == 8 and kwargs.get("act_bits", 16) >= 16:
         from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround

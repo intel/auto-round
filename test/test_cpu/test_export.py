@@ -25,7 +25,7 @@ class TestAutoRound(unittest.TestCase):
     def setUpClass(self):
         model_name = "facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -47,6 +47,7 @@ class TestAutoRound(unittest.TestCase):
                 seqlen=2,
                 dataset=self.llm_dataloader,
             )
+
             autoround.quantize()
             quantized_model_path = "./saved"
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
@@ -56,7 +57,7 @@ class TestAutoRound(unittest.TestCase):
                 continue
             quantization_config = AutoRoundConfig()
             model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
+                quantized_model_path, device_map="auto", trust_remote_code=True, quantization_config=quantization_config
             )
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"

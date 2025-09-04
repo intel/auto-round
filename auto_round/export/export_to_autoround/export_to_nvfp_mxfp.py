@@ -157,8 +157,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
     quantization_config["packing_format"] = backend
-    quantization_config["scale_format"] = ("e8m0",)
-    quantization_config["scale_calculation_mode"] = ("even",)
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
