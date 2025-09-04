@@ -47,7 +47,7 @@ __all__ = [
 ]
 
 
-@torch.compile()
+
 def pack_layer(name, model, backend):
     if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
