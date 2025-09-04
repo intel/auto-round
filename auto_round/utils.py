@@ -421,13 +421,23 @@ def get_block_names(model, quant_vision=False):
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
+    def _search_block(name, module):
+        if hasattr(type(module), "__name__") and "ModuleList" in type(module).__name__:
+            return [(name, module)]
+        target_modules = []
+        for n, m in module.named_children():
+            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                target_modules.append((".".join((name, n)), m))
+            else:
+                target_modules.extend(_search_block(".".join((name, n)), m))
+        return target_modules
+
     def _get_llm_block_names(model):
         block_names = []
         target_modules = []
-        for n, m in model.named_modules():
-            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                target_modules.append((n, m))
-                break  ## only find the first modulelist, may be not robust
+        for n, m in model.named_children():
+            target_modules.extend(_search_block(n, m))
+
         for i, target_m in enumerate(target_modules):
             block_names.append([])
             for n, m in target_m[1].named_children():
@@ -474,7 +484,15 @@ def collect_best_params(block):
     return params
 
 
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+def block_forward(
+    block,
+    input_ids,
+    input_others,
+    amp=False,
+    amp_dtype=torch.float16,
+    device=torch.device("cpu"),
+    only_return_hidden_states=True,
+):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -484,6 +502,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     amp: A boolean indicating whether to use automatic mixed precision.
     amp_dtype: The data type for automatic mixed precision.
     device: The target device.
+    only_return_hidden_states: if the output has more than one tenor, only return the hidden_states tensor
 
     Returns:
     output: The output of the forward pass.
@@ -500,7 +519,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
             output = block(input_ids, *input_tuple, **input_others)
     else:
         output = block(input_ids, *input_tuple, **input_others)
-    if isinstance(output, list) or isinstance(output, tuple):
+    if only_return_hidden_states and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[0]
     return output
 
@@ -1622,6 +1641,21 @@ def mllm_load_model(
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
+
+
+def diffuison_load_model(
+    pretrained_model_name_or_path,
+    device="cpu",
+    torch_dtype="auto",
+    model_dtype=None,
+    **kwargs,
+):
+    from diffusers import AutoPipelineForText2Image
+
+    pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype)
+    pipe = _to_model_dtype(pipe, model_dtype)
+    model = pipe.transformer
+    return pipe, model.to(device)
 
 
 def is_pure_text_model(model):

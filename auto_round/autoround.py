@@ -228,6 +228,7 @@ class AutoRound(object):
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -277,7 +278,7 @@ class AutoRound(object):
                 device="cpu",
                 low_cpu_mem_mode=low_cpu_mem_usage,  # always load cpu first
             )
-        elif tokenizer is None and iters > 0:
+        elif not self.diffusion and tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):
@@ -361,7 +362,7 @@ class AutoRound(object):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
             )
-        elif tokenizer is None and iters > 0:
+        elif not self.diffusion and tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):
@@ -1625,7 +1626,7 @@ class AutoRound(object):
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
-            pbar = None  # move the alg warning outside pbar
+            pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -1667,6 +1668,8 @@ class AutoRound(object):
                     f"Expected exactly one packing format when 'is_packing_immediate' is True, "
                     f"but got {len(self.formats)} formats."
                 )
+        pbar.set_description("Quantizing done")
+        pbar.close()
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -2834,9 +2837,6 @@ class AutoRound(object):
             if self.enable_torch_compile:
                 quantize_block = compile_func(quantize_block, device)
 
-        if pbar is None:
-            pbar = tqdm(range(0, len(block_names), nblocks))
-
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
@@ -2886,9 +2886,8 @@ class AutoRound(object):
                         )
                     else:
                         PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
-        pbar.set_description("Quantizing done")
         pbar.update(1)
-        pbar.close()
+
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
