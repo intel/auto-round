@@ -221,7 +221,6 @@ def get_layer_config(model, quantization_config):
             - group_size (int): Group size for weight quantization.
             - data_type (str, optional): Data type for quantization (default: "int").
             - sym (bool): Whether to use symmetric quantization.
-            - act_dynamic (bool, optional): Whether to use dynamic activation quantization (default: False).
             - quant_block_list (list, optional): Predefined list of blocks to quantize.
             - to_quant_block_names (list or str, optional): Blocks to quantize (if quant_block_list is None).
             - extra_config (dict, optional): Per-layer overrides for quantization settings.
@@ -234,7 +233,6 @@ def get_layer_config(model, quantization_config):
             - "group_size" (int): Group size for quantization.
             - "data_type" (str): Data type used for quantization.
             - "sym" (bool): Whether symmetric quantization is applied.
-            - "act_dynamic" (bool): Whether dynamic activation quantization is used.
             - "clip" (bool): Whether weight clipping is enabled.
     """
     bits = quantization_config.bits
