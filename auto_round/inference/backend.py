@@ -73,15 +73,16 @@ class BackendInfo:
     requirements: Optional[List[str]] = None
 
 
-def feature_multiply_checker(in_feature, out_feature, group_size, in_feature_multiplier, out_feature_multiplier=None):
+def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
     return in_feature % in_feature_multiplier == 0 and out_feature % out_feature_multiplier == 0
 
 
 def feature_multiply_checker_group_size(
-    in_feature, out_feature, group_size, in_feature_multiplier, out_feature_multiplier=None
+    in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
 ):
+    group_size = config["group_size"]
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
     return (
@@ -410,7 +411,7 @@ def check_compatible(backend_name, device, config, packing_format, in_features, 
         return False
 
     for check in backend.feature_checks:
-        if not check(in_features, out_features, group_size):
+        if not check(in_features, out_features, config):
             return False
 
     if check_requirements and backend.requirements is not None:
