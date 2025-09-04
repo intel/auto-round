@@ -24,7 +24,7 @@ import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Callable, Tuple, Union
+from typing import Any, Callable, Dict, Tuple, Union
 
 import cpuinfo
 import torch
@@ -2558,7 +2558,7 @@ def _is_weight_fp8_activation_static_fp8(bit: int, group_size: int, sym: bool, d
     return bit == 8 and group_size == -1 and sym and data_type == "fp" and not act_dynamic
 
 
-def is_weight_fp8_activation_static_fp8(config):
+def is_weight_fp8_activation_static_fp8(config: Dict):
     bits, group_size, sym, data_type, act_dynamic = (
         config["bits"],
         config["group_size"],
