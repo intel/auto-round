@@ -2766,16 +2766,17 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
     logger.info(f"loss_ratio [mxfp4_loss / mxfp8_loss]: {mxfp4_loss/mxfp8_loss}")
     if is_hpex_available():
         htcore.mark_step()
-    if int(block_name.split(".")[-1]) == 0:
-        self.target_loss_ratio = (mxfp4_loss / mxfp8_loss) * (1 - mp_ratio)
-        logger.warning_once(f"[Recipe Mode] Based on the mp_ratio, we set the target_loss_ratio: {self.target_loss_ratio}")
-    if mxfp4_loss / mxfp8_loss > self.target_loss_ratio:
-        quantizable_num += 1
-        logger.warning(f"[Recipe Mode] Due to [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} > {self.target_loss_ratio}")
+    # aggressive mode
+    top_loss_ratio = 6
+    target_loss_ratio = 2
+    logger.warning_once(f"[Recipe Mode] Aggressive mode, we set the top_loss_ratio: {top_loss_ratio}, target_loss_ratio: {target_loss_ratio}")
+    if mxfp4_loss / mxfp8_loss > top_loss_ratio:
+        logger.warning(f"[Recipe Mode] Due to loss_ratio [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} > {top_loss_ratio}")
+        quantizable_num = len(quantizable_layers)
         logger.warning(f"[Recipe Mode] Set {quantizable_num} layers using mixed precision for this block.")
-    elif mxfp4_loss / mxfp8_loss < 1:  # special case for llama3.3 70B
-        quantizable_num -= 1
-        logger.warning(f"[Recipe Mode] Due to [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} < 1")
+    elif target_loss_ratio < mxfp4_loss / mxfp8_loss <= top_loss_ratio:
+        logger.warning(f"[Recipe Mode] Due to loss_ratio [mxfp4_loss / mxfp8_loss]:{target_loss_ratio} < {mxfp4_loss / mxfp8_loss} <= {top_loss_ratio}")
+        quantizable_num = quantizable_num + 1
         logger.warning(f"[Recipe Mode] Set {quantizable_num} layers using mixed precision for this block.")
     combination_list = []
     avg_bits_list = []
@@ -2802,7 +2803,7 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
             best_avg_bits = avg_bits
             best_combination = combination_list[i]
 
-    logger.info(f"[Recipe Mode] Recipe results of {block_name}:\nMix precision layers: {best_combination};\nAverage bits: {best_avg_bits}.")
+    logger.info(f"[Recipe Mode] Recipe results of {block_name}:\nMix precision layers: {best_combination};\nAverage bits: {best_avg_bits}; Loss ratio: {best_loss/mxfp8_loss}.")
     # generate output of quantized block of sample input_ids
     block = create_mp_block(block, best_combination, self.recipe_mp_dtype)
     q_output = get_output(block, q_input_ids)
