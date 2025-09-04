@@ -55,4 +55,3 @@ def _get_device() -> torch.device:
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         return torch.device("xpu:0")
     return torch.device("cpu")
-
