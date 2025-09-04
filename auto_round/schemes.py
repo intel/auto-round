@@ -13,8 +13,8 @@
 # limitations under the License.
 import copy
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, fields
+from typing import List, Optional
 
 __all__ = ["QuantizationScheme", "preset_name_to_scheme"]
 
@@ -32,10 +32,15 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
+    clip: Optional[bool] = False
 
     @classmethod
     def from_dict(cls, config: dict):
         return cls(**config)
+
+    @classmethod
+    def get_attributes(cls: "QuantizationScheme") -> List[str]:
+        return [field.name for field in fields(cls)]
 
 
 def preset_name_to_scheme(name: str) -> QuantizationScheme:

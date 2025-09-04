@@ -30,6 +30,7 @@ from auto_round.inference.backend import (
     is_weight_fp8_activation_static_fp8,
     process_requirement,
 )
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -240,7 +241,23 @@ def get_layer_config(model, quantization_config):
     group_size = quantization_config.group_size
     data_type = getattr(quantization_config, "data_type", "int")  # Default to "int" if not specified
     sym = quantization_config.sym
+
+    act_bits = getattr(quantization_config, "act_bits", None)
+    act_group_size = getattr(quantization_config, "act_group_size", False)
+    act_sym = getattr(quantization_config, "act_sym", None)
+    act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
+
+    default_quant_scheme = QuantizationScheme(
+        bits=bits,
+        group_size=group_size,
+        data_type=data_type,
+        sym=sym,
+        act_bits=act_bits,
+        act_group_size=act_group_size,
+        act_sym=act_sym,
+    )
+
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
@@ -287,17 +304,15 @@ def get_layer_config(model, quantization_config):
     layer_names = list(set(layer_names).union(extra_config.keys()))
 
     # Construct final layer configuration
-    layer_configs = {
-        layer_name: {
-            "bits": extra_config.get(layer_name, {}).get("bits", bits),
-            "group_size": extra_config.get(layer_name, {}).get("group_size", group_size),
-            "data_type": extra_config.get(layer_name, {}).get("data_type", data_type),
-            "sym": extra_config.get(layer_name, {}).get("sym", sym),
-            "act_dynamic": extra_config.get(layer_name, {}).get("act_dynamic", act_dynamic),
-            "clip": extra_config.get(layer_name, {}).get("clip", False),
-        }
-        for layer_name in layer_names
-    }
+    layer_configs = {}
+    quant_scheme_attrs = QuantizationScheme.get_attributes()
+    for layer_name in layer_names:
+        layer_config = {}
+        layer_extra_config = extra_config.get(layer_name, {})
+        for scheme_attr in quant_scheme_attrs:
+            layer_config[scheme_attr] = layer_extra_config.get(scheme_attr, getattr(default_quant_scheme, scheme_attr))
+        layer_configs[layer_name] = layer_config
+
     return layer_configs
 
 
