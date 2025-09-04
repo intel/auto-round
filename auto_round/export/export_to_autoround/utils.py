@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import torch
 
 REQUIRED_CONFIG_KEYS = (
     "data_type",
@@ -54,3 +55,4 @@ def _get_device() -> torch.device:
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         return torch.device("xpu:0")
     return torch.device("cpu")
+
