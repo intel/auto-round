@@ -151,8 +151,10 @@ def pack_layer(layer_name, model, backend):
         from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
 
         return pack_layer(layer_name, model, backend)
+    # breakpoint()
+    from auto_round.autoround import AutoRoundFormat
 
-    if backend == "auto_round:fp8":
+    if backend == "auto_round:fp8" or backend == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}":
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
         return pack_layer(layer_name, model, backend)

@@ -93,8 +93,7 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
     def dequant_weight_online(self):
         if self.pre_dequantized:
             return self.weight
-        fp8_weight = self.weight
-        qdq_weight = fp8_weight.to(self.dtype) * self.weight_scale.unsqueeze(1)
+        qdq_weight = self.weight.to(self.dtype) * self.weight_scale.unsqueeze(1)
         return qdq_weight
 
     def pre_dequantize(self):
@@ -113,6 +112,7 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
 
     @torch.no_grad()
     def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
+
         qdq_input = self.qdq_input(bf16_input)
         qdq_weight = self.dequant_weight_online()
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
