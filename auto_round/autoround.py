@@ -2642,13 +2642,13 @@ class AutoRound(object):
         input_others = to_device(input_others, self.cache_device)
         if self.recipe_mode:
             logger.info("[Recipe Mode] starts")
-            q_input_ids = None  # init value
+            q_input_ids, ref_q_input_ids = None, None  # init value
             for block_name in tqdm(block_names):
                 block = get_module(model, block_name)
                 if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                     block = block.to(device)
-                input_ids, q_input_ids = self._generate_block_recipe(
-                    block, block_name, input_ids, q_input_ids, input_others
+                input_ids, q_input_ids, ref_q_input_ids = self._generate_block_recipe(
+                    block, block_name, input_ids, q_input_ids, ref_q_input_ids, input_others
                 )
                 if is_hpex_available():
                     htcore.mark_step()

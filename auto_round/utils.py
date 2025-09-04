@@ -2683,7 +2683,7 @@ def _generate_recipe(
     return self.recipe_results
 
 
-def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, input_others):
+def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, ref_q_input_ids, input_others):
     from itertools import combinations
 
     # fetch mix-precision recipe configuration
@@ -2739,6 +2739,7 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
 
     reference_output = get_output(block, input_ids)
     q_input_ids = input_ids if q_input_ids is None else q_input_ids
+    ref_q_input_ids = input_ids if ref_q_input_ids is None else ref_q_input_ids
     # generate q_output of sample input_ids and get loss
     @torch.no_grad()
     def get_loss(q_block, q_input_ids):
@@ -2757,6 +2758,7 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
     # get mxfp8 loss
     hp_layers = quantizable_layers
     block = create_mp_block(block, hp_layers, self.recipe_mp_dtype)
+    ref_q_output = get_output(block, ref_q_input_ids)
     mxfp8_loss = get_loss(block, q_input_ids)
     block = recover_mp_block(block, hp_layers, raw_dtype)
     hp_layers = []
@@ -2767,8 +2769,8 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
     if is_hpex_available():
         htcore.mark_step()
     # aggressive mode
-    top_loss_ratio = 6
-    target_loss_ratio = 2
+    top_loss_ratio = 4
+    target_loss_ratio = 1.5
     logger.warning_once(f"[Recipe Mode] Aggressive mode, we set the top_loss_ratio: {top_loss_ratio}, target_loss_ratio: {target_loss_ratio}")
     if mxfp4_loss / mxfp8_loss > top_loss_ratio:
         logger.warning(f"[Recipe Mode] Due to loss_ratio [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} > {top_loss_ratio}")
@@ -2777,6 +2779,10 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
     elif target_loss_ratio < mxfp4_loss / mxfp8_loss <= top_loss_ratio:
         logger.warning(f"[Recipe Mode] Due to loss_ratio [mxfp4_loss / mxfp8_loss]:{target_loss_ratio} < {mxfp4_loss / mxfp8_loss} <= {top_loss_ratio}")
         quantizable_num = quantizable_num + 1
+        logger.warning(f"[Recipe Mode] Set {quantizable_num} layers using mixed precision for this block.")
+    elif mxfp4_loss / mxfp8_loss <= 1.0:
+        logger.warning(f"[Recipe Mode] Due to loss_ratio [mxfp4_loss / mxfp8_loss]: {mxfp4_loss / mxfp8_loss} <= 1.0")
+        quantizable_num = 0
         logger.warning(f"[Recipe Mode] Set {quantizable_num} layers using mixed precision for this block.")
     combination_list = []
     avg_bits_list = []
@@ -2822,7 +2828,7 @@ def _generate_block_recipe(self, block, block_name, input_ids, q_input_ids, inpu
     if is_hpex_available():
         htcore.mark_step()
 
-    return reference_output, q_output
+    return reference_output, q_output, ref_q_output
 
 
 ###############################################################################################
