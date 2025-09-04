@@ -518,7 +518,6 @@ class AutoRound(object):
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
 
-
         if self.low_cpu_mem_usage and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
