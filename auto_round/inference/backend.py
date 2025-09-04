@@ -114,8 +114,6 @@ def torch_fp8_static_check(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
-    if not is_weight_fp8_activation_static_fp8(config):
-        return False
     from auto_round.schemes import FPW8_STATIC
 
     return config == FPW8_STATIC
