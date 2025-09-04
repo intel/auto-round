@@ -229,7 +229,7 @@ class AutoRound(object):
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
-        # Scale factor for RAM usage per parameter. 
+        # Scale factor for RAM usage per parameter.
         self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
 
         if kwargs:
@@ -553,7 +553,7 @@ class AutoRound(object):
             self.device_map = None
         if not device_map:
             return
-        if  self.device_map == "auto" and device_map == "auto":
+        if self.device_map == "auto" and device_map == "auto":
             return
         if isinstance(device_map, str):
             device_map = device_map.replace(" ", "")
@@ -622,16 +622,15 @@ class AutoRound(object):
             return block_memory, 0
 
         # Assuming bfloat16 or float32, input and output
-        input_output_memory = 2 * sum(tensor.numel() * tensor.element_size() for tensor in input_ids)  / 1024**3
-
+        input_output_memory = 2 * sum(tensor.numel() * tensor.element_size() for tensor in input_ids) / 1024**3
 
         return block_memory, input_output_memory
-    
+
     def _set_auto_device_map_in_block(self, block, input_ids) -> None:
         """Automatically sets the device map for the block based on available GPUs and memory constraints."""
         if torch.cuda.is_available():
             num_gpus = torch.cuda.device_count()
-        elif  torch.xpu.is_available():
+        elif torch.xpu.is_available():
             logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
             return
         else:
@@ -647,15 +646,15 @@ class AutoRound(object):
             cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
             device_0 = "cuda:0"
 
-        device_0_memory = get_device_memory(self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0)
-        block_memory, input_ouput_memory = self._estimate_tuning_block_mem(
-            block, input_ids
+        device_0_memory = get_device_memory(
+            self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
         )
-        
+        block_memory, input_ouput_memory = self._estimate_tuning_block_mem(block, input_ids)
+
         mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
         if self.iters == 0:
-            mem_per_param_scale = 1 # for rtn 
-        
+            mem_per_param_scale = 1  # for rtn
+
         if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
             return  # fit in one GPU
 
@@ -1595,9 +1594,9 @@ class AutoRound(object):
                 block = block.to(self.device)
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
-                
+
                 self._set_auto_device_map_in_block(block, input_ids)
-                
+
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -2666,8 +2665,7 @@ class AutoRound(object):
 
         if self.device_map == "auto":
             self._set_auto_device_map_in_block(block, input_ids)
- 
-        
+
         if self.device_map is not None:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):

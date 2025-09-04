@@ -105,12 +105,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=float,
             help="minmax learning rate, if None, it will beset to be the same with lr",
         )
-        
+
         self.add_argument(
             "--mem_per_param_scale",
             default=13,
             type=float,
-            help="scale factor for memory per parameter, used to adjust memory usage estimation."
+            help="scale factor for memory per parameter, used to adjust memory usage estimation.",
         )
 
         self.add_argument("--seed", default=42, type=int, help="random seed")

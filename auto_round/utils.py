@@ -574,7 +574,7 @@ def detect_device(device: Union[str, int, torch.device] = None) -> str:
     if is_valid_digit(device):
         dev_idx = int(device)
         device = "auto"
-    if isinstance(device, str) and "," in device: # device is "0,1,2"
+    if isinstance(device, str) and "," in device:  # device is "0,1,2"
         device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
         dev_idx = device_list[0] if device_list else None
         device = "auto"
@@ -2593,6 +2593,7 @@ def get_device_memory(i=0) -> int:
     else:
         raise RuntimeError("No supported device found (CUDA or XPU).")
     return total_memory
+
 
 def get_max_vram(ratio: float = 0.9) -> dict:
     max_memory = {}
