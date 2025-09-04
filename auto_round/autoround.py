@@ -216,7 +216,8 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
-        self.mem_expansion_factor = kwargs.pop("mem_expansion_factor", None)
+        # Scale factor for RAM usage per parameter. 
+        self.ram_per_param_scale = kwargs.pop("ram_per_param_scale", None)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -506,39 +507,34 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def get_block_info(self, block, input_ids, supported_types=SUPPORTED_LAYER_TYPES) -> tuple[float, float]:
+    def get_block_mem(self, block, input_ids, supported_types=SUPPORTED_LAYER_TYPES) -> tuple[float, float]:
         """
-        Analyzes the model's memory usage and block structure, and calculates memory consumption
-        for specific components of the model.
+        Calculates the memory consumption of a specific block in the model.
 
         Args:
-            model (torch.nn.Module): The neural network model to analyze.
-            nsamples (int): The number of samples in the input batch.
-            seqlen (int): The sequence length of the input data.
-            amp_dtype (torch.dtype): The data type used for mixed precision (e.g., torch.bfloat16 or torch.float32).
+            block (torch.nn.Module): The block of the model to analyze.
+            input_ids (torch.Tensor): The input tensor for the block.
+            supported_types (tuple): A tuple of supported layer types to consider for memory calculation.
 
         Returns:
             tuple: A tuple containing the following:
-                - block_num (int): The number of blocks (ModuleLists) in the model.
-                - block_memory (float): The memory consumption (in GB) of the first block's linear layers.
-                - others_memory (float): The memory consumption (in GB) of all other linear layers
-                    excluding the first block.
+                - block_memory (float): The memory consumption (in GB) of the block's linear layers.
                 - input_output_memory (float): The memory consumption (in GB) for input and output
-                    tensors of the first block, assuming bfloat16 or float32 precision.
+                  tensors of the block, assuming bfloat16 or float32 precision.
         """
-        # Calculate all block linear memory
-        total_linear_memory = 0
+        # Calculate all block parameters memory
+        total_param_mem = 0
         for name, module in block.named_modules():
             if isinstance(module, supported_types):
                 param_size = (
                     sum(p.numel() for p in module.parameters()) * module.weight.element_size()
                 )  # Assuming parameters are float32 (4 bytes each)
-                total_linear_memory += param_size
-        block_memory = total_linear_memory / 1024**3  # Convert to GB
+                total_param_mem += param_size
+        block_memory = total_param_mem / 1024**3  # Convert to GB
         if self.low_gpu_mem_usage:
             return block_memory, 0
 
-        # assuming bfloat16 or float32, input and output
+        # Assuming bfloat16 or float32, input and output
         input_bytes = 2 if self.amp_dtype != torch.float32 else 4
         input_output_memory = 2 * sum(tensor.numel() for tensor in input_ids) * input_bytes / 1024**3
 
@@ -552,13 +548,13 @@ class AutoRound(object):
             self.device_map = None
 
         device_0_memory = get_device_memory()
-        block_memory, input_ouput_memory = self.get_block_info(
+        block_memory, input_ouput_memory = self.get_block_mem(
             block, input_ids
         )
         
-        mem_expansion_factor = 13 if self.mem_expansion_factor is None else self.mem_expansion_factor
+        ram_per_param_scale = 13 if self.ram_per_param_scale is None else self.ram_per_param_scale
 
-        if block_memory * mem_expansion_factor < device_0_memory:
+        if (block_memory * ram_per_param_scale + input_ouput_memory)  < device_0_memory:
             return  # fit in one GPU
 
         cuda_devices = [f"cuda:{i}" for i in range(num_gpus)] # only support cuda now
@@ -567,22 +563,32 @@ class AutoRound(object):
         device_memory["cuda:0"] = device_0_memory - input_ouput_memory
 
         device_idx = 0
+        # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
         for n, m in block.named_modules():
             if isinstance(m, supported_types):
                 layer_name = block.tmp_name + "." + n
                 layer_memory = sum(p.numel() for p in m.parameters()) * m.weight.element_size() / 1024**3
-                if layer_memory * mem_expansion_factor < device_memory[cuda_devices[device_idx]]:
+                if device_idx == 0 and layer_memory * ram_per_param_scale < device_memory[cuda_devices[device_idx]]:
                     device_map[layer_name] = cuda_devices[device_idx]
-                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_expansion_factor
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * ram_per_param_scale
+                elif device_idx == 0:
+                    device_idx += 1  # Move to the next device once device 0 is full
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * ram_per_param_scale
                 else:
-                    device_idx += 1
-                    device_map[layer_name] = cuda_devices[device_idx]
-                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_expansion_factor
-                    if device_idx >= len(cuda_devices):
-                        raise ValueError(
-                            f"model is too large to fit in {num_gpus} GPUs, "
-                            "please set device_map manually or use more GPUS."
+                    # Calculate the target device index based on even distribution
+                    sorted_devices = sorted(cuda_devices, key=lambda d: device_memory[d], reverse=True)
+                    device_idx = sorted_devices[0]
+                    if layer_memory * ram_per_param_scale < device_memory[device_idx]:
+                        device_map[layer_name] = device_idx
+                        device_memory[device_idx] -= layer_memory * ram_per_param_scale
+                    else:
+                        logger.warning(
+                            f"Layer {layer_name} may not fit in available GPU memory. "
+                            "Consider lowering ram_per_param_scale, using more GPUs, "
+                            "or reducing model size."
                         )
+  
         self._set_device_map_in_blocks(device_map)
 
     def _dq_check(self) -> None:
