@@ -72,8 +72,8 @@ def ref_nvfp4_quant(x, global_scale, block_size=16, v=0, scale_coeff=1.0):
     assert x.ndim == 2
     m, n = x.shape
     if isinstance(scale_coeff, torch.Tensor):
-        scale_coeff = scale_coeff.view(-1, 1)
-    vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32) * scale_coeff.to(x.device)
+        scale_coeff = scale_coeff.view(-1, 1).to(x.device)
+    vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32) * scale_coeff
     scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
     scale = torch.clamp(scale, min=FLOAT8_E4M3_MIN, max=FLOAT8_E4M3_MAX)
     scale = float8_e4m3fn_ste(scale).to(torch.float32)  ##e4m3 does not support torch compile
