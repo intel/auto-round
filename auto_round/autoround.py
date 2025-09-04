@@ -404,7 +404,10 @@ class AutoRound(object):
             logger.info("optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
-
+        if self.data_type.startswith("nv_fp") and self.iters != 0 :
+            logger.warning(
+                "`iters=0` is recommended when tuning nvfp dtype for now. We may provide better algorithm in the future."
+            )
         self.serialization_keys = [
             "bits",
             "group_size",
