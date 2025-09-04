@@ -356,9 +356,7 @@ BackendInfos["hpu_zp"] = BackendInfo(
 )
 
 
-def check_compatible(
-    backend_name, device, bits, group_size, sym, packing_format, in_features, out_features, check_requirements=True
-):
+def check_compatible(backend_name, device, config, packing_format, in_features, out_features, check_requirements=True):
     """Checks if the given configuration is compatible with the specified backend.
 
     Args:
@@ -388,7 +386,7 @@ def check_compatible(
     - If the packing format does not match, it must be convertible.
     """
     backend = BackendInfos[backend_name]
-
+    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
     # Check if device is supported by the backend
     if device not in backend.device:
         return False
@@ -685,7 +683,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
     )
 
 
-def get_all_compatible_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
+def get_all_compatible_backend(device, backend, orig_backend, config, in_features, out_features):
     # Get packing format from the original backend
     packing_format = BackendInfos[orig_backend].packing_format
 
@@ -693,16 +691,14 @@ def get_all_compatible_backend(device, backend, orig_backend, bits, group_size, 
     compatible_backends = [
         key
         for key in BackendInfos.keys()
-        if check_compatible(
-            key, device, bits, group_size, sym, packing_format, in_features, out_features, check_requirements=False
-        )
+        if check_compatible(key, device, config, packing_format, in_features, out_features, check_requirements=False)
     ]
 
     # Return the first compatible backend or an empty list if none found
     return compatible_backends
 
 
-def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
+def get_layer_backend(device, backend, orig_backend, config, in_features, out_features):
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
     This function first checks if the specified backend supports the layer with the provided configuration.
@@ -736,8 +732,10 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
             If the specified backend is not supported.
             If no compatible backend is found for the given layer configuration.
     """
+    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
     # Check if the provided backend is in BackendInfos
     backend = find_backend(backend)
+
     if backend not in BackendInfos.keys():
         raise ValueError(f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection.")
 
@@ -746,13 +744,13 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
     # Find and store other compatible backends
     supported_backends = []
     for key in BackendInfos.keys():
-        if check_compatible(key, device, bits, group_size, sym, packing_format, in_features, out_features):
+        if check_compatible(key, device, config, packing_format, in_features, out_features):
             supported_backends.append(key)
 
     # Raise an error if no compatible backends are found
     if len(supported_backends) == 0:
         supported_backends_need_package = get_all_compatible_backend(
-            device, backend, orig_backend, bits, group_size, sym, in_features, out_features
+            device, backend, orig_backend, config, in_features, out_features
         )
 
         if len(supported_backends_need_package) > 0:

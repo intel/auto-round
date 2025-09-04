@@ -407,9 +407,7 @@ def _get_layer_backend(target_device, target_backend, orig_backend, config, in_f
         target_device,
         target_backend,
         orig_backend,
-        config["bits"],
-        config["group_size"],
-        config["sym"],
+        config,
         in_features,
         out_features,
     )
