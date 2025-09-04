@@ -67,6 +67,7 @@ def calculate_gparam(tensor, group_size=16, device="cpu"):
     return global_scale
 
 
+
 def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):
     assert global_scale.dtype == torch.float32
     assert x.ndim == 2
@@ -74,7 +75,7 @@ def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):
     vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32)
     scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
     scale = torch.clamp(scale, min=FLOAT8_E4M3_MIN, max=FLOAT8_E4M3_MAX)
-    scale = float8_e4m3fn_ste(scale).to(torch.float32)  ##e4m3 does not support torch compile
+    scale = (scale).to(torch.float32)  ##e4m3 does not support torch compile
     output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
     scaled_x = x.to(torch.float32) * output_scale + v
     clipped_x = torch.clamp(scaled_x, -6.0, 6.0)
@@ -193,7 +194,6 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
     assert (not isinstance(global_scale, torch.Tensor)) or global_scale.dtype == torch.float32
     assert x.ndim == 2
     m, n = x.shape
-    device = x.device
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.unsqueeze(dim=-1).to(x.device)
     vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32) * max_scale
