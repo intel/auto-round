@@ -185,7 +185,7 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     priority=0,
     feature_checks=[],
     alias=["auto_round", "torch"],
-    requirements=["auto-round>=0.6.1.dev0"],
+    requirements=["auto-round>0.6.0"],
 )
 
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
