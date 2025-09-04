@@ -149,15 +149,17 @@ class QuantLinear(nn.Module):
         elif torch.xpu.is_available():
             device = "xpu:0"
 
-        W = linear.weight.data.to(device).clone()  # TODO check is nesscessory
+        W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
             W = W.t()
 
-        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
+        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
+        scales = scales.to(device)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
+            global_scale = global_scale.to(device)
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
                 scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
             )
