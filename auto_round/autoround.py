@@ -2027,11 +2027,11 @@ class AutoRound(object):
                 continue
             try:
                 if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
+                    self.model(data_new, use_cache=False)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new)
+                    self.model(*data_new, use_cache=False)
                 else:
-                    self.model(**data_new)
+                    self.model(**data_new, use_cache=False)
             except NotImplementedError:
                 pass
             except RuntimeError as error:
