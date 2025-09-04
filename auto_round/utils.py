@@ -570,7 +570,7 @@ def detect_device_count():
             return 0
 
 
-def detect_device(device=None):
+def detect_device(device: Union[str, int, torch.device] = None) -> str:
     """Detects the appropriate computation device.
 
     This function determines the device to use for computations. It can take
@@ -2229,8 +2229,13 @@ def get_reciprocal(tensor):
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
 
-def check_need_act_calibration(is_act_dynamic, act_data_type=None):
-    if not is_act_dynamic:
+def check_need_act_calibration(
+    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: int = 16
+) -> bool:
+    if act_bits > 8:
+        return False
+    # None is dynamic
+    if is_act_dynamic is not None and not is_act_dynamic:
         return True
     if act_data_type is not None and "static" in act_data_type:
         return True
@@ -2590,3 +2595,23 @@ def is_static_wfp8afp8(ar):
     if is_wfp8afp8(ar):
         return True
     return False
+
+
+def get_max_vram(ratio: float = 0.9) -> dict:
+    max_memory = {}
+    if torch.cuda.is_available():  # NVIDIA CUDA
+        num_devices = torch.cuda.device_count()
+        for i in range(num_devices):
+            total_mem = torch.cuda.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+    elif torch.xpu.is_available():  # TODO need verification
+        num_devices = torch.xpu.device_count()
+        for i in range(num_devices):
+            total_mem = torch.xpu.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+
+    else:
+        raise RuntimeError("No CUDA or XPU devices found.")
+    return max_memory
