@@ -435,7 +435,11 @@ def get_block_names(model, quant_vision=False):
         return block_names
 
     def _get_vlm_block_names(model, quant_vision=False):
-        if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "model_type")
+            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
+        ):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
