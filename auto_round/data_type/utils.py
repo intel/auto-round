@@ -170,6 +170,7 @@ def ceil_ste(x: torch.Tensor):
     return (x.ceil() - x).detach() + x
 
 
+@torch._dynamo.disable()
 def float8_e4m3fn_ste(x: torch.Tensor):
     """Straight-Through Estimator (STE) for float8.
 
