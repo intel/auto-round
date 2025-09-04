@@ -443,7 +443,11 @@ def get_block_names(model, quant_vision=False):
         return block_names
 
     def _get_vlm_block_names(model, quant_vision=False):
-        if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "model_type")
+            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
+        ):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
@@ -555,7 +559,7 @@ def detect_device_count():
             return 0
 
 
-def detect_device(device=None):
+def detect_device(device: Union[str, int, torch.device] = None) -> str:
     """Detects the appropriate computation device.
 
     This function determines the device to use for computations. It can take
@@ -1374,11 +1378,31 @@ def set_fake_cuda_device_capability(func=None):
     return orig_func
 
 
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if hasattr(model, "is_fp8"):
+def _is_fp8_model(model: torch.nn.Module) -> bool:
+    if not hasattr(model, "is_fp8"):
+        return False
+    else:
         return model.is_fp8
+
+
+def _is_fp8_linear(module: torch.nn.Module) -> bool:
+    if hasattr(module, "is_fp8_linear"):
+        return module.is_fp8_linear
+    if not (isinstance(module, torch.nn.Linear) or module.__class__.__name__ == "FP8Linear"):
+        return False
+    if module.weight is None:
+        return False
+    if str(module.weight.dtype).startswith("torch.float8"):
+        return True
+    else:
+        return False
+
+
+def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
+    if _is_fp8_model(model):
+        return True
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) and str(m.weight.dtype).startswith("torch.float8"):
+        if _is_fp8_linear(m):
             m.is_fp8_linear = True
             if not hasattr(model, "is_fp8"):
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
@@ -1464,7 +1488,6 @@ def llm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             except OSError as e:
@@ -1577,7 +1600,6 @@ def mllm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
@@ -2181,8 +2203,13 @@ def get_reciprocal(tensor):
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
 
-def check_need_act_calibration(is_act_dynamic, act_data_type=None):
-    if not is_act_dynamic:
+def check_need_act_calibration(
+    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: int = 16
+) -> bool:
+    if act_bits > 8:
+        return False
+    # None is dynamic
+    if is_act_dynamic is not None and not is_act_dynamic:
         return True
     if act_data_type is not None and "static" in act_data_type:
         return True
@@ -2557,3 +2584,23 @@ def is_static_wfp8afp8(ar):
     if is_wfp8afp8(ar):
         return True
     return False
+
+
+def get_max_vram(ratio: float = 0.9) -> dict:
+    max_memory = {}
+    if torch.cuda.is_available():  # NVIDIA CUDA
+        num_devices = torch.cuda.device_count()
+        for i in range(num_devices):
+            total_mem = torch.cuda.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+    elif torch.xpu.is_available():  # TODO need verification
+        num_devices = torch.xpu.device_count()
+        for i in range(num_devices):
+            total_mem = torch.xpu.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+
+    else:
+        raise RuntimeError("No CUDA or XPU devices found.")
+    return max_memory
