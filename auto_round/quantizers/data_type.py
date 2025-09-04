@@ -1,22 +1,45 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from typing import Any, Callable, Dict, List, Union
 
 import torch
 
-from auto_round.quantizers.base import BaseQuantizer, QuantizerType
-from auto_round.utils import logger, get_layer_config_by_gguf_format, check_to_quantized, _gguf_args_check, get_lm_head_name, get_module
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
+from auto_round.quantizers.base import BaseQuantizer, QuantizerType
+from auto_round.utils import (
+    _gguf_args_check,
+    check_to_quantized,
+    get_layer_config_by_gguf_format,
+    get_lm_head_name,
+    get_module,
+    logger,
+)
+
 
 class ModeQuantizer(BaseQuantizer):
     quantizer_type = QuantizerType.DATA_TYPE
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-    
+
+
 @BaseQuantizer.register("gguf")
 class GGUFQuantizer(ModeQuantizer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-    
+
     def _apply_config_to_layer(
         self,
         layer_name: str,
@@ -50,7 +73,7 @@ class GGUFQuantizer(ModeQuantizer):
         self.layer_config[layer_name]["scale_dtype"] = scale_dtype
         setattr(get_module(self.model, layer_name), "act_bits", act_bits)
         setattr(get_module(self.model, layer_name), "scale_dtype", scale_dtype)
-    
+
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
         super()._check_compatibility()
@@ -86,7 +109,7 @@ class GGUFQuantizer(ModeQuantizer):
                     self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
                         self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ
                     )
-    
+
     def _check_need_to_quantize_lm_head_embedding(self) -> bool:
         """Checks if LM head and embedding layers need quantization for GGUF format.
 
@@ -138,14 +161,14 @@ class GGUFQuantizer(ModeQuantizer):
             return True
 
         return False
-        
+
     def _set_layerwise_config(self, layer_config):
         has_qlayer_outside_block = super()._set_layerwise_config(layer_config)
         need_to_quantize_lm_head = self._check_need_to_quantize_lm_head_embedding()
         if need_to_quantize_lm_head:
             has_qlayer_outside_block = True
         return has_qlayer_outside_block
-    
+
     def _pack_layer(self, module):
         from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
@@ -166,7 +189,7 @@ class GGUFQuantizer(ModeQuantizer):
                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                 model_type=model_type,
             )
-    
+
     def _parse_format_to_list(self, format: str) -> list:
         """Parses the format string into a list of formats.
 
@@ -184,7 +207,7 @@ class GGUFQuantizer(ModeQuantizer):
         _gguf_args_check(self, format, model_type=ModelType.TEXT)
         if self.vlm:
             _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
-        
+
         formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
         if self.scale_dtype != torch.float32:
             only_gguf = True
@@ -199,8 +222,7 @@ class GGUFQuantizer(ModeQuantizer):
                 logger.info("change `scale_dtype` to `torch.float32`")
         formats = super()._parse_format_to_list(format)
         return formats
-    
-    
+
 
 @BaseQuantizer.register("mxfp")
 class MXFPQuantizer(ModeQuantizer):

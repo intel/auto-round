@@ -14,22 +14,23 @@
 
 from __future__ import annotations
 
-import re
-import os
-import sys
 import copy
-import traceback
 import functools
+import os
+import re
+import sys
+import traceback
 from dataclasses import asdict
-from typing import Any, Callable, Dict, List, Union
 from enum import IntEnum
+from typing import Any, Callable, Dict, List, Union
 
-import torch
 import accelerate
+import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from transformers import set_seed
 
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -86,7 +87,6 @@ from auto_round.utils import (
     to_dtype,
     unsupport_meta_device,
 )
-from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 
 
 class QuantizerType(IntEnum):
@@ -99,7 +99,7 @@ class BaseQuantizer:
     _quantizer_classes: dict[QuantizerType, dict[str, type[BaseQuantizer]]] = {
         QuantizerType.MODE: {},
         QuantizerType.MODEL_TYPE: {},
-        QuantizerType.DATA_TYPE: {}
+        QuantizerType.DATA_TYPE: {},
     }
     _HOOKABLE_FUNC = ["quantize", "save_quantized", "quantize_and_save"]
     _pre_functions: Dict[str, List[Callable]] = {}
@@ -134,7 +134,7 @@ class BaseQuantizer:
         enable_torch_compile: bool = False,
         seed: int = 42,
         **kwargs,
-        ):
+    ):
         """Initialize AutoRound with quantization and tuning configuration.
 
         Args:
@@ -580,7 +580,7 @@ class BaseQuantizer:
             )
         else:
             module.tuning_device = device
-    
+
     def _check_configs(self) -> None:
         """Checks if the configurations are valid.
 
@@ -660,7 +660,6 @@ class BaseQuantizer:
         else:
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
-
 
     def _get_quantized_layer_names_outside_blocks(self) -> list:
         """Gets the names of quantized layers outside blocks in the model.
@@ -802,7 +801,6 @@ class BaseQuantizer:
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
-
 
     def _set_layerwise_config(self, layer_config: dict) -> bool:
         """
@@ -977,7 +975,7 @@ class BaseQuantizer:
                         "Currently, the llmcompressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
-        
+
         # Remove duplicates from formats list
         def remove_duplicates(lst):
             seen = set()
@@ -1236,47 +1234,52 @@ class BaseQuantizer:
 
     def _register_pre_func(self, func_name: str):
         """Registering a decorator for a pre-function"""
+
         def decorator(func):
             if func_name not in self._pre_functions:
                 self._pre_functions[func_name] = []
             self._pre_functions[func_name].append(func)
             return func
+
         return decorator
-    
+
     def _register_after_func(self, func_name: str):
         """Registering a decorator for a post-function"""
+
         def decorator(func):
             if func_name not in self._after_functions:
                 self._after_functions[func_name] = []
             self._after_functions[func_name].append(func)
             return func
+
         return decorator
-    
+
     def _wrap_function(self, func, func_name: str):
         """Wrapping functions to add pre- and after-execution logic"""
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             # run pre-functions
             if func_name in self._pre_functions:
                 for pre_func in self._pre_functions[func_name]:
                     pre_func(*args, **kwargs)
-            
+
             # run ori-func
             result = func(*args, **kwargs)
-            
+
             # run after-functions
             if func_name in self._after_functions:
                 for after_func in self._after_functions[func_name]:
                     after_func(*args, **kwargs)
-            
+
             return result
+
         return wrapper
-    
-    
+
     def _register_hooks(self):
         """register all hook functions"""
-        self._register_pre_func('quantize')(self._check_compatibility)
-    
+        self._register_pre_func("quantize")(self._check_compatibility)
+
     @classmethod
     def register(cls, *names: str):
         def func(quantizer: BaseQuantizer) -> BaseQuantizer:

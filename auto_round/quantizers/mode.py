@@ -1,24 +1,61 @@
-import time
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import copy
+import time
 import traceback
 from typing import Any, Callable, Union
 
-import torch
-from torch import autocast
 import accelerate
+import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
+from torch import autocast
 from tqdm import tqdm
 
-from auto_round.sign_sgd import SignSGD
-from auto_round.quantizers.base import BaseQuantizer, QuantizerType
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+from auto_round.quantizers.base import BaseQuantizer, QuantizerType
+from auto_round.sign_sgd import SignSGD
 from auto_round.utils import (
-    check_to_quantized, logger, get_block_names, clear_memory, mv_module_from_gpu, _is_fp8_model, _is_fp8_linear,
-    check_seqlen_compatible, convert_fp8_layer_to_linear, set_module, get_max_vram, init_cache, to_device,
-    check_skippable_keywords, reset_params, to_dtype, compile_func, get_module, is_nv_fp, block_forward,
-    collect_best_params, check_need_act_calibration, check_is_cpu, is_optimum_habana_available, htcore)
+    _is_fp8_linear,
+    _is_fp8_model,
+    block_forward,
+    check_is_cpu,
+    check_need_act_calibration,
+    check_seqlen_compatible,
+    check_skippable_keywords,
+    check_to_quantized,
+    clear_memory,
+    collect_best_params,
+    compile_func,
+    convert_fp8_layer_to_linear,
+    get_block_names,
+    get_max_vram,
+    get_module,
+    htcore,
+    init_cache,
+    is_nv_fp,
+    is_optimum_habana_available,
+    logger,
+    mv_module_from_gpu,
+    reset_params,
+    set_module,
+    to_device,
+    to_dtype,
+)
+from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+
 
 @torch.no_grad()
 def _sampling_inputs(
@@ -67,34 +104,51 @@ def _sampling_inputs(
 
     return current_input_ids, current_input_others
 
+
 class ModeQuantizer(BaseQuantizer):
     quantizer_type = QuantizerType.MODE
+
 
 @BaseQuantizer.register("Tune")
 class TuneQuantizer(ModeQuantizer):
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            scheme="W4A16",
-            layer_config=None,
-            dataset="NeelNanda/pile-10k",
-            iters=200,
-            seqlen=2048,
-            nsamples=128,
-            batch_size=8,
-            gradient_accumulate_steps=1,
-            low_gpu_mem_usage=False,
-            device_map=0,
-            enable_torch_compile=False,
-            seed=42,
-            **kwargs):
+        self,
+        model,
+        tokenizer=None,
+        scheme="W4A16",
+        layer_config=None,
+        dataset="NeelNanda/pile-10k",
+        iters=200,
+        seqlen=2048,
+        nsamples=128,
+        batch_size=8,
+        gradient_accumulate_steps=1,
+        low_gpu_mem_usage=False,
+        device_map=0,
+        enable_torch_compile=False,
+        seed=42,
+        **kwargs,
+    ):
         super().__init__(
-            model, tokenizer, scheme, layer_config, dataset, iters, seqlen, nsamples, batch_size,
-            gradient_accumulate_steps, low_gpu_mem_usage, device_map, enable_torch_compile, seed, **kwargs)
+            model,
+            tokenizer,
+            scheme,
+            layer_config,
+            dataset,
+            iters,
+            seqlen,
+            nsamples,
+            batch_size,
+            gradient_accumulate_steps,
+            low_gpu_mem_usage,
+            device_map,
+            enable_torch_compile,
+            seed,
+            **kwargs,
+        )
         self.optimizer = self._get_optimizer(None)
-        
+
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
 
@@ -113,7 +167,7 @@ class TuneQuantizer(ModeQuantizer):
 
             scaler = GradScaler(init_scale=1024, growth_interval=100000)
         return scaler
-    
+
     def _scale_loss_and_backward(self, scaler, loss):
         if scaler is not None:
             loss = scaler.scale(loss)
@@ -122,7 +176,7 @@ class TuneQuantizer(ModeQuantizer):
         if is_optimum_habana_available():
             htcore.mark_step()
         return loss
-    
+
     def _step(self, scaler: Any, optimizer: Any, lr_schedule: Any):
         """Performs a step in the optimization process.
 
@@ -566,7 +620,6 @@ class TuneQuantizer(ModeQuantizer):
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
             return None, output
-
 
     def _quantize_blocks(
         self,
