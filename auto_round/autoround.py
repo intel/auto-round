@@ -1561,7 +1561,8 @@ class AutoRound(object):
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
-                self._set_auto_device_map_in_block(block, input_ids)
+                if self.device_map == "auto":
+                    self._set_auto_device_map_in_block(block, input_ids)
 
                 # Dispatch model if needed
                 if self.device_map is not None:
