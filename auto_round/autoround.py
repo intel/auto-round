@@ -59,9 +59,11 @@ from auto_round.utils import (
     convert_fp8_layer_to_linear,
     convert_fp8_model_to_16b_model,
     detect_device,
+    estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
     get_block_names,
+    get_device_memory,
     get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
@@ -228,20 +230,19 @@ class AutoRound(object):
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+        # Scale factor for RAM usage per parameter.
+        self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
-        if device_map is not None and "," in str(device_map):
-            raise ValueError(
-                "API does not support explicit set multiple devices," " please set CUDA_VISIBLE_DEVICES=0,1 yourself"
-            )
         if device_map is None:
             device_map = 0
 
         # Set device, must place after model loading
         if isinstance(device_map, (str, torch.device, int)):
             self.device = detect_device(device_map)
+
         elif isinstance(device_map, dict) and device_map:
             tmp_devices = []
             for val in device_map.values():
@@ -258,8 +259,12 @@ class AutoRound(object):
 
             self.device = tmp_devices[0]
 
-        if isinstance(device_map, dict) and device_map:
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
             self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
         else:
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
@@ -543,6 +548,8 @@ class AutoRound(object):
             self.device_map = None
         if not device_map:
             return
+        if self.device_map == "auto" and device_map == "auto":
+            return
         if isinstance(device_map, str):
             device_map = device_map.replace(" ", "")
             infos = device_map.split(",")
@@ -582,6 +589,71 @@ class AutoRound(object):
             )
         else:
             module.tuning_device = device
+
+    def _set_auto_device_map_in_block(self, block: torch.nn.Module, input_ids: list[torch.Tensor]) -> None:
+        """Automatically sets the device map for the block based on available GPUs and memory constraints."""
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+        elif torch.xpu.is_available():
+            logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
+            return
+        else:
+            raise RuntimeError("No CUDA or XPU devices found.")
+        if num_gpus <= 1:
+            self.device_map = None
+            return
+
+        if hasattr(self, "device_list") and self.device_list:
+            cuda_devices = [f"cuda:{i}" for i in self.device_list]
+            device_0 = cuda_devices[0]
+        else:
+            cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
+            device_0 = "cuda:0"
+
+        device_0_memory = get_device_memory(
+            self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
+        )
+        block_memory, input_ouput_memory = estimate_tuning_block_mem(block, input_ids)
+        if self.low_gpu_mem_usage:
+            input_ouput_memory = 0
+
+        mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
+        if self.iters == 0:
+            mem_per_param_scale = 1  # for rtn
+
+        if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
+            return  # fit in one GPU
+
+        device_map = {}
+        device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
+        device_memory[device_0] = device_0_memory - input_ouput_memory
+
+        device_idx = 0
+        # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
+        for n, m in block.named_modules():
+            if check_to_quantized(m):
+                layer_name = block.tmp_name + "." + n
+                layer_memory = m.weight.nbytes / 1024**3
+                if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
+                elif device_idx == 0:
+                    device_idx += 1  # Move to the next device once device 0 is full
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
+                else:
+                    # Calculate the target device index based on even distribution
+                    sorted_devices = sorted(cuda_devices, key=lambda d: device_memory[d], reverse=True)
+                    device_idx = sorted_devices[0]
+                    if layer_memory * mem_per_param_scale < device_memory[device_idx]:
+                        device_map[layer_name] = device_idx
+                        device_memory[device_idx] -= layer_memory * mem_per_param_scale
+                    else:
+                        logger.warning_once(
+                            f"Block {block.tmp_name} not fit in available GPU memory. "
+                            "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
+                        )
+        self._set_device_map_in_blocks(device_map)
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -1488,6 +1560,10 @@ class AutoRound(object):
                 block = block.to(self.device)
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
+
+                if self.device_map == "auto":
+                    self._set_auto_device_map_in_block(block, input_ids)
+
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -2550,6 +2626,9 @@ class AutoRound(object):
                 if _is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
+
+        if self.device_map == "auto":
+            self._set_auto_device_map_in_block(block, input_ids)
 
         if self.device_map is not None:
             for n, m in block.named_modules():
