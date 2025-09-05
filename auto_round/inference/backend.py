@@ -55,7 +55,7 @@ class BackendInfo:
             indicate higher priority. Defaults to 0.
         convertable_format: A list of strings specifying the formats that the backend
             can convert from. Defaults to an empty list.
-        check_list: A list of feature check functions (e.g., validation methods)
+        checkers: A list of check functions (e.g., validation methods)
             used to verify whether the backend supports certain features. Defaults to
             an empty list.
         alias: An optional list of strings representing alternative names for the
@@ -70,7 +70,7 @@ class BackendInfo:
     group_size: Optional[List[int]] = None
     priority: int = 0  ##higher is better
     convertable_format: List[str] = field(default_factory=list)
-    check_list: List[Any] = field(default_factory=list)
+    checkers: List[Any] = field(default_factory=list)
     alias: Optional[List[str]] = None
     requirements: Optional[List[str]] = None
 
@@ -129,7 +129,7 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     dtype=["float16"],
     ##16, 384,768 accuracy issue
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
-    check_list=[exllamav2_feature_checker],
+    checkers=[exllamav2_feature_checker],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
     requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
 )
@@ -142,7 +142,7 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     group_size=None,
     dtype=["float16"],
     priority=0,
-    check_list=[exllamav2_feature_checker],
+    checkers=[exllamav2_feature_checker],
     alias=["auto_gptq:tritonv2"],
     requirements=["torch<2.6.0", "auto-gptq>=0.7.1", "triton>=2.0"],
 )
@@ -154,7 +154,7 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     bits=[2, 3, 4, 8],
     group_size=None,
     priority=1,
-    check_list=[exllamav2_feature_checker],
+    checkers=[exllamav2_feature_checker],
     alias=["auto_gptq:cuda"],
     dtype=["float16"],
     convertable_format=["int32_zp"],
@@ -171,7 +171,7 @@ BackendInfos["auto_round:tritonv2"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 4, 8],
     priority=2,
-    check_list=[feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["auto_round", "tritonv2", "triton"],
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
 )
@@ -183,7 +183,7 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    check_list=[exllamav2_feature_checker],
+    checkers=[exllamav2_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -199,7 +199,7 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[8],
     priority=0,
-    check_list=[torch_fp8_static_checker],
+    checkers=[torch_fp8_static_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.6.0"],
 )
@@ -212,7 +212,7 @@ BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 4, 8],
     priority=2,
-    check_list=[feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["tritonv2", "tritonv2_zp", "triton"],
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
 )
@@ -224,7 +224,7 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    check_list=[exllamav2_feature_checker],
+    checkers=[exllamav2_feature_checker],
     alias=["torch", "torch_zp"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -237,7 +237,7 @@ BackendInfos["gptqmodel:marlin"] = BackendInfo(
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
     priority=6,
-    check_list=[gptqmodel_marlin_feature_checker],
+    checkers=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -250,7 +250,7 @@ BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
     priority=6,
-    check_list=[gptqmodel_marlin_feature_checker],
+    checkers=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -263,7 +263,7 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     group_size=[-1, 32, 64, 128],  ##16 seems has accuracy issue
     dtype=["float16", "bfloat16"],
     priority=5,
-    check_list=[exllamav2_feature_checker],
+    checkers=[exllamav2_feature_checker],
     alias=["exllamav2"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -287,7 +287,7 @@ BackendInfos["qbits"] = BackendInfo(
     bits=[2, 4, 8],
     group_size=None,
     priority=1,
-    check_list=[],
+    checkers=[],
     alias=["itrex", "qbits"],
     dtype=["float16", "bfloat16"],
     convertable_format=["int32"],
@@ -302,7 +302,7 @@ BackendInfos["qbits_zp"] = BackendInfo(
     group_size=None,
     dtype=["float16", "bfloat16"],
     priority=1,
-    check_list=[],
+    checkers=[],
     alias=["itrex", "qbits"],
     convertable_format=["int32_zp"],
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
@@ -316,7 +316,7 @@ BackendInfos["auto_round:qbits_awq"] = BackendInfo(
     group_size=None,
     dtype=["float16", "bfloat16"],
     priority=1,
-    check_list=[],
+    checkers=[],
     alias=["itrex", "qbits"],
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
@@ -328,7 +328,7 @@ BackendInfos["ipex_gptq"] = BackendInfo(
     bits=[4],
     group_size=None,
     priority=5,
-    check_list=[],
+    checkers=[],
     dtype=["float16", "bfloat16"],
     convertable_format=["int32_zp"],
     alias=["ipex"],
@@ -343,7 +343,7 @@ BackendInfos["ipex_awq"] = BackendInfo(
     group_size=None,
     priority=1,
     dtype=["float16", "bfloat16"],
-    check_list=[],
+    checkers=[],
     alias=["ipex"],
     convertable_format=["awq"],
     requirements=["intel-extension-for-pytorch>=2.6"],
@@ -425,7 +425,7 @@ def check_compatible(backend_name, device, config, packing_format, in_features, 
     else:
         return False
 
-    for check in backend.check_list:
+    for check in backend.checkers:
         if not check(in_features, out_features, config):
             return False
 
