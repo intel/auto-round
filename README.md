@@ -19,7 +19,7 @@ AutoRound
 AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
 Hugging Face Spaces,
 e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
-and [fbaldassarri](https://huggingface.co/fbaldassarri).
+and [fbaldassarri](https://huggingface.co/fbaldassarri). Please check out [User guide](./docs/step_by_step.md) for more details
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -33,13 +33,12 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
   all bits other than 3 bits. Example
-  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-ar). **A more advanced algorithm** tailored for specific configurations may be available in
+  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound)
+  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound). **A more advanced algorithm** tailored for specific configurations may be available in
   v0.6.2.
 
 [2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
-  to [Intel/DeepSeek-R1-0528-int2-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-ar), [Intel/DeepSeek-R1-0528-int4-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-ar)
-  and [Intel/DeepSeek-R1-0528-int4-asym-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-asym-ar) for
+  to [OPEA/DeepSeek-R1-0528-int2-mixed-AutoRound](https://huggingface.co/OPEA/DeepSeek-R1-0528-int2-mixed-AutoRound) and [OPEA/DeepSeek-R1-0528-int4-AutoRound](https://huggingface.co/OPEA/DeepSeek-R1-0528-int4-AutoRound) for
   more details.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
@@ -112,7 +111,6 @@ pip install auto-round-lib
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
-Please check out [User guide](./docs/step_by_step.md) for more details
 ### Command Line Usage
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
@@ -322,6 +320,7 @@ Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ,
 
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
+
 
 
 
