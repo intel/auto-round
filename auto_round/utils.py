@@ -2680,4 +2680,3 @@ def _get_packing_device(device: str | torch.device | None = "auto") -> torch.dev
             raise ValueError(f"Invalid device string: {device}") from e
 
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
-

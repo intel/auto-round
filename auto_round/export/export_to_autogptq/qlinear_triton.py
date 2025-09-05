@@ -136,4 +136,3 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
 
 __all__ = ["QuantLinear"]
-

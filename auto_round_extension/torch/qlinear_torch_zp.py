@@ -341,4 +341,3 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
-

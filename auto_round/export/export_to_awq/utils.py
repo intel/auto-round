@@ -321,4 +321,3 @@ def clear_memory(weight=None):
         del weight
     gc.collect()
     torch.cuda.empty_cache()
-
