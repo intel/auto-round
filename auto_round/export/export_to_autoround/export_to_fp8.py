@@ -25,13 +25,13 @@ from tqdm import tqdm
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    _get_device,
     check_start_with_block_name,
     check_to_quantized,
     filter_quantization_config,
     get_module,
     logger,
     set_module,
-    _get_device,
 )
 
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
@@ -273,4 +273,3 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
