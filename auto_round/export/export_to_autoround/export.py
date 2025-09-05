@@ -40,8 +40,7 @@ from auto_round.utils import (
     set_module,
 )
 
-from .utils import REQUIRED_CONFIG_KEYS, check_neq_config
-
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
     """
@@ -405,3 +404,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

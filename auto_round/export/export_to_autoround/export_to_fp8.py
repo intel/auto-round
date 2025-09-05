@@ -34,7 +34,7 @@ from auto_round.utils import (
     _get_device,
 )
 
-from .utils import REQUIRED_CONFIG_KEYS, check_neq_config
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 
 
 class FP8WOQLinear(torch.nn.Module):

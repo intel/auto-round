@@ -820,8 +820,9 @@ class AutoRound(object):
                 if "llm_compressor" in format:
                     if is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type:
                         logger.warning(
-                            f"AutoRound supports export for this format: {format}, "
-                            "but quantized model loading is not yet available."
+                            f"AutoRound supports exporting to format '{format}', "
+                            "but loading quantized models in this format is not yet supported. "
+                            "It is currently recommended to export to the 'llm_compressor' format."
                         )
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
