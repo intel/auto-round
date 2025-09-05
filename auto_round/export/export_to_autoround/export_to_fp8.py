@@ -23,6 +23,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     _get_device,
@@ -33,8 +34,6 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-
-from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 
 
 class FP8WOQLinear(torch.nn.Module):

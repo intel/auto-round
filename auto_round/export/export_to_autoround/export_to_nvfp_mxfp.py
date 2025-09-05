@@ -24,6 +24,7 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -39,7 +40,6 @@ from auto_round.utils import (
 from auto_round.wrapper import WrapperWALayer
 
 from .qlinear_fp import QuantLinear
-from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 
 __all__ = [
     "pack_layer",
@@ -284,4 +284,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
