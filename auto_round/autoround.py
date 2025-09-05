@@ -590,7 +590,7 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def _set_auto_device_map_in_block(self, block, input_ids) -> None:
+    def _set_auto_device_map_in_block(self, block: torch.nn.Module, input_ids: list[torch.Tensor]) -> None:
         """Automatically sets the device map for the block based on available GPUs and memory constraints."""
         if torch.cuda.is_available():
             num_gpus = torch.cuda.device_count()

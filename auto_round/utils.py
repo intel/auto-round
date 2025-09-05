@@ -2580,7 +2580,7 @@ def bytes_to_gigabytes(bytes) -> int:
     return bytes / 1024 / 1024 / 1024
 
 
-def get_device_memory(i=0) -> int:
+def get_device_memory(i: int=0) -> int:
     """
     Gets the available memory on the specified device.
 
@@ -2599,7 +2599,7 @@ def get_device_memory(i=0) -> int:
     return total_memory
 
 
-def estimate_tuning_block_mem(block, input_ids) -> tuple[float, float]:
+def estimate_tuning_block_mem( block: torch.nn.Module, input_ids: list[torch.Tensor]) -> tuple[float, float]:
     """
     Calculates the memory consumption of a specific block in the model.
 
