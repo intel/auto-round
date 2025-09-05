@@ -111,4 +111,3 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
         if hasattr(model, "generation_config"):
             setattr(model.generation_config, "do_sample", True)
         model.save_pretrained(output_dir, safe_serialization=safe_serialization)
-

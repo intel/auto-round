@@ -599,4 +599,3 @@ def prepare_tensors(cls):
                 if cls.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
                     continue
                 clean_module_parameter(module, weight_name.split(".")[-1])
-
