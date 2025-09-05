@@ -2817,9 +2817,10 @@ class AutoRound(object):
 
                 AutoRound.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-                if self.bits > 2 and not self.data_type.startswith("mx"):
+                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2,mxfp4 and nvfp4; use with caution."
+                        "algorithm extension has only undergone limited validation on "
+                        "INT2,mxfp4 and nvfp4; use with caution."
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")

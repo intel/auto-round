@@ -1,3 +1,7 @@
+Average accuracy of hellaswag,lambada_openai,mmlu,piqa,winogrande.
+
+We evaluated using a fake model since we currently have no access to devices for running the real models. However, we have verified that in most cases the fake model closely matches the real model.
+
 | mxfp4 g32         | llama3.1-8B-Instruct | Qwen2-7.5-Instruct | Phi4    | Qwen3-32B |
 |-------------------|----------------------|--------------------|---------|-----------|
 | RTN               | 0.62124              | 0.65502            | 0.71674 | 0.69006   |
