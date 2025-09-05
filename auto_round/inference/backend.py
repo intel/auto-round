@@ -471,7 +471,6 @@ def dynamic_import_inference_linear(backend, config):
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
 
     if AutoRoundFormat.TORCH_FP8_STATIC.value in backend:
-        logger.warning_once("FP8 static quantization is still experimental.")
         from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear
 
         return WeightFP8ActFP8StaticQuantLinear

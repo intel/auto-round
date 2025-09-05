@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from abc import abstractmethod
+
 from typing import Optional, Union
 
 import torch
@@ -79,8 +79,11 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
     @classmethod
     def from_original(cls, config, original_layer):
         """
-        Create an WeightFP8ActFP8StaticQuantLinear layer from an original linear layer.
+        Create an `WeightFP8ActFP8StaticQuantLinear` layer from an original linear layer.
         """
+        logger.warning_once(
+            "FP8 static quantization is still in experimental stage, the inference speed might be slow."
+        )
         device = original_layer.weight.device
         with torch.device(device):
             qdq_linear = cls(
