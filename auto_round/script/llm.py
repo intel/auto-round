@@ -104,6 +104,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="minmax learning rate, if None, it will beset to be the same with lr",
         )
 
+        self.add_argument(
+            "--mem_per_param_scale",
+            default=13,
+            type=float,
+            help="Scale factor for memory per parameter, used to adjust memory usage estimation for tuning",
+        )
+
         self.add_argument("--seed", default=42, type=int, help="random seed")
 
         self.add_argument("--adam", action="store_true", help="whether to use adam optimizer instead of SignSGD")
@@ -436,7 +443,7 @@ def tune(args):
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     # Must set this before import torch
-    set_cuda_visible_devices(args.device_map)
+    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch

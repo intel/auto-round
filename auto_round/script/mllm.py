@@ -328,7 +328,7 @@ def tune(args):
             raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     # Must set this before import torch
-    set_cuda_visible_devices(args.device_map)
+    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
