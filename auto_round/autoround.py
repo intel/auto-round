@@ -32,7 +32,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -402,9 +402,7 @@ class AutoRound(object):
         self.infer_bs_coeff = 1
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
-
         self._check_configs()
-
         torch.set_printoptions(precision=3, sci_mode=True)
 
         if is_optimum_habana_available():
@@ -524,10 +522,6 @@ class AutoRound(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
-
-        if self.act_bits <= 8 and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
 
         if self.low_cpu_mem_usage and self.enable_torch_compile:
             self.enable_torch_compile = False
@@ -1594,8 +1588,6 @@ class AutoRound(object):
                 if (
                     is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
                 ) or is_static_wfp8afp8(self):
-                    from auto_round.utils import set_amax_for_all_moe_layers
-
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -2105,12 +2097,11 @@ class AutoRound(object):
                 continue
             try:
                 if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
+                    self.model(data_new, use_cache=False)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
-
-                    self.model(*data_new)
+                    self.model(*data_new, use_cache=False)
                 else:
-                    self.model(**data_new)
+                    self.model(**data_new, use_cache=False)
             except NotImplementedError:
                 pass
             except RuntimeError as error:
@@ -2574,7 +2565,7 @@ class AutoRound(object):
                 module.act_max = act_max
             else:
                 act_max = act_max.to(module.act_max.device)
-                if is_nv_fp(self.data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
                     module.act_max = torch.max(
                         torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
                     )
@@ -2814,10 +2805,11 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
+        if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+            # enable moe experts act_max automatic generation for WrapperWALayer
+            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
+
         if self.enable_quanted_input:
-            if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-                # Enable moe experts act_max automatic generation for WrapperWALayer
-                set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             clear_memory()
@@ -2889,20 +2881,19 @@ class AutoRound(object):
                     to_dtype(input_others[key][i], tmp_dtype)
 
         if (
-            self.act_bits > 8
-            and self.sym
+            self.sym
             and self.enable_alg_ext
             and self.super_group_size is None
-            and self.data_type.startswith("int")
+            and ((self.data_type.startswith("int") and self.act_bits >= 8) or self.data_type.startswith("mx"))
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
-                quantize_block = self.quantize_block_ext  ##must use self.quantize_block_ext
-                if self.bits > 2:
+                quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
+                if self.bits > 2 and not self.data_type.startswith("mx"):
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2; use with caution."
+                        "algorithm extension has only undergone limited validation on INT2 and mxfp4; use with caution."
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")

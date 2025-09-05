@@ -246,7 +246,7 @@ class WrapperLinear(torch.nn.Module):
             data_type=self.act_data_type,
             max_scale=act_max_scale,
             tensor_max=act_max,
-            global_scale=getattr(self, "weight_global_scale", None),
+            global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
 
