@@ -66,11 +66,11 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
 ]
 
 
-def pack_layer(name, model, backend):
+def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  ##dese not support lm-head
         return
     layer = get_module(model, name)
-
+    orig_device = layer.weight.device
     if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
@@ -80,8 +80,6 @@ def pack_layer(name, model, backend):
 
     group_size = layer.group_size
     sym = layer.sym
-
-    device = layer.weight.device
 
     QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
 
@@ -101,7 +99,7 @@ def pack_layer(name, model, backend):
         bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
     )
 
-    new_layer.device = device
+    new_layer.device = orig_device
     set_module(model, name, new_layer)
     qlayer = new_layer
     scale = layer.scale
@@ -118,10 +116,10 @@ def pack_layer(name, model, backend):
     sig = inspect.signature(qlayer.pack)
     param_count = len(sig.parameters)
     if param_count == 2:
-        qlayer.pack(layer, scale)
+        qlayer.pack(layer, scale, device)
     else:
-        qlayer.pack(layer, scale, zero, None)
-    qlayer.to(device)
+        qlayer.pack(layer, scale, zero, None, device)
+    qlayer.to(orig_device)
     if hasattr(layer, "weight"):
         layer.weight = None
     if hasattr(layer, "bias"):
@@ -136,6 +134,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    device = kwargs.get("device", None)
     image_processor = kwargs.get("image_processor", None)
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
@@ -193,14 +192,14 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend)
+                    pack_layer(name, model, backend, device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
                 pass
     if output_dir is None:
         return model
-
+    quantization_config["provider"] = "auto-round"
     quantization_config["quant_method"] = "gptq"
     quantization_config.pop("dataset", None)  ## pile-10k is not supported in gptq
     quantization_config["desc_act"] = False  ## for autogptq API
@@ -259,3 +258,4 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

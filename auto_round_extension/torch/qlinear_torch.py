@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import transformers
 
+from auto_round.utils import _get_packing_device
+
 logger = getLogger(__name__)
 
 
@@ -87,16 +89,12 @@ class QuantLinear(nn.Module):
         pass
 
     # @torch.compile() ## cpu side has bug
-    def pack_248_bits(self, linear, scales, zeros, g_idx=None):
+    def pack_248_bits(self, linear, scales, zeros, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
@@ -150,16 +148,12 @@ class QuantLinear(nn.Module):
             self.qzeros = qzeros.cpu()
 
     # @torch.compile()
-    def pack_3bits(self, linear, scales, zeros, g_idx=None):
+    def pack_3bits(self, linear, scales, zeros, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
@@ -267,11 +261,11 @@ class QuantLinear(nn.Module):
             qzeros[:] = full_row.unsqueeze(0)
             self.qzeros = qzeros.cpu()
 
-    def pack(self, linear, scales, zeros, g_idx=None):
+    def pack(self, linear, scales, zeros, g_idx=None, device=None):
         if self.bits in [2, 4, 8]:
-            return self.pack_248_bits(linear, scales, zeros, g_idx)
+            return self.pack_248_bits(linear, scales, zeros, g_idx, device)
         elif self.bits in [3]:
-            return self.pack_3bits(linear, scales, zeros, g_idx)
+            return self.pack_3bits(linear, scales, zeros, g_idx, device)
         else:
             raise ValueError("Only 2,3,4,8 bits are supported.")
 
@@ -345,3 +339,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+

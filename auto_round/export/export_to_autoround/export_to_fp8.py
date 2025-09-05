@@ -26,7 +26,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
-    _get_device,
+    _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
     filter_quantization_config,
@@ -68,7 +68,7 @@ class FP8WOQLinear(torch.nn.Module):
             self.register_buffer("input_scale", input_scale.to(dtype))
 
 
-def pack_layer(layer_name, model, data_type, packing_device=None):
+def pack_layer(layer_name, model, data_type, device=None):
     """
      Packs a model layer for quantization based on its type and configuration.
 
@@ -85,8 +85,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
     Returns:
         None: The function modifies the model in place.
     """
-    if packing_device is None:
-        packing_device = _get_device()
+    packing_device = _get_packing_device(device)
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -97,7 +96,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
     if not check_to_quantized(layer):
         return
 
-    device = layer.weight.device
+    orig_device = layer.weight.device
     scale = layer.scale.view(-1)
     zp = layer.zp
     weight = layer.weight
@@ -139,7 +138,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         dtype=model.dtype,
     )
 
-    my_linear.to(device)
+    my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
 
 
@@ -148,7 +147,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
@@ -161,6 +159,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    device = kwargs.get("device", None)
     image_processor = kwargs.get("image_processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
@@ -196,14 +195,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    packing_device = _get_device()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
 
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, kwargs.get("data_type", "fp8"), packing_device)
+                    pack_layer(name, model, kwargs.get("data_type", "fp8"), device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -272,3 +270,4 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

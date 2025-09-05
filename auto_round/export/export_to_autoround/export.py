@@ -125,13 +125,13 @@ def pack_qact_layer(name, model):
 
     qlayer.to("cpu")
 
-    qlayer.pack(layer, scale, zp, act_scale, w_bf16_to_fp8_scale)
+    qlayer.pack(layer, scale, zp, act_scale, w_bf16_to_fp8_scale, device)
     qlayer.to(device)
 
 
-def pack_layer(layer_name, model, backend):
+def pack_layer(layer_name, model, backend, device=None):
     """
-     Packs a model layer for quantization based on its type and configuration.
+    Packs a model layer for quantization based on its type and configuration.
 
     This function retrieves the specified layer from the model, checks its
     compatibility for quantization, and replaces it with a quantized version
@@ -149,12 +149,12 @@ def pack_layer(layer_name, model, backend):
     if is_nv_fp(backend) or is_mx_fp(backend):
         from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
 
-        return pack_layer(layer_name, model, backend)
+        return pack_layer(layer_name, model, backend, device)
 
     if backend == "auto_round:fp8":
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
-        return pack_layer(layer_name, model, backend)
+        return pack_layer(layer_name, model, backend, device)
 
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
@@ -169,7 +169,7 @@ def pack_layer(layer_name, model, backend):
     if not check_to_quantized(layer):
         return
 
-    device = layer.weight.device
+    orig_device = layer.weight.device
     bits = layer.bits
     group_size = layer.group_size
     sym = layer.sym
@@ -194,7 +194,7 @@ def pack_layer(layer_name, model, backend):
         new_layer = QuantLinear(  ##pylint: disable=E1123
             bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
         )
-        new_layer.device = device
+        new_layer.device = orig_device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
         import auto_round_extension.torch.qlinear_torch
@@ -211,9 +211,9 @@ def pack_layer(layer_name, model, backend):
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
-            qlayer.pack(layer, scale)
+            qlayer.pack(layer, scale, device=device)
         else:
-            qlayer.pack(layer, scale, zp, None)
+            qlayer.pack(layer, scale, zp, None, device=device)
         qlayer.to(device)
     else:
         scale = scale.to(torch.float32).t().contiguous()
@@ -225,14 +225,9 @@ def pack_layer(layer_name, model, backend):
         if bits != 4:
             logger.error("AutoAWQ format only supports 4-bits quantization.")
         qlayer = QuantLinear.from_linear(
-            linear=layer,
-            w_bit=bits,
-            group_size=group_size,
-            init_only=False,
-            scales=scale,
-            zeros=zp,
+            linear=layer, w_bit=bits, group_size=group_size, init_only=False, scales=scale, zeros=zp, device=device
         )
-        qlayer.to(device)
+        qlayer.to(orig_device)
         set_module(model, layer_name, qlayer)
     if hasattr(layer, "weight"):
         layer.weight = None
@@ -287,7 +282,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
     quantization_config["packing_format"] = backend
-
+    device = kwargs.get("device", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     image_processor = kwargs.get("image_processor", None)
@@ -331,7 +326,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend)
+                    pack_layer(name, model, backend, device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -404,3 +399,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
