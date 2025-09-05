@@ -45,4 +45,3 @@ def check_neq_config(config: dict, **expected) -> dict[str, tuple]:
 
     # 3. Collect mismatches
     return {key: (config[key], expected[key]) for key in REQUIRED_CONFIG_KEYS if config[key] != expected[key]}
-
