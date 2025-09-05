@@ -812,6 +812,24 @@ class AutoRound(object):
         if format == "fake":
             return format
         format = format.replace("q*_", f"q{self.bits}_")
+
+        # format check for fp8
+        w_fp8 = self.data_type == "fp" and self.bits == 8
+        act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
+        if (w_fp8 or act_fp8) and re.search("^auto_round|^llmcompressor", format) is None:
+            error_msg = (
+                f"is only supported to export auto_round or llmcompressor format," f" but got {format}, please check."
+            )
+            error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
+            error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
+            logger.error(error_msg)
+            sys.exit(-1)
+        if (w_fp8 or act_fp8) and re.search("^auto_round", format) is not None:
+            logger.warning(
+                "please note that there is currently no FP8 kernel for the AutoRound format."
+                " Recommend using llm_compresor format currently."
+            )
+
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
@@ -826,9 +844,10 @@ class AutoRound(object):
                         and self.act_bits == act_bits
                         and self.act_dynamic
                     ), (
-                        f"Currently only support to export llmcompressor format for dynamic quantized"
-                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
-                        f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
+                        f"Currently only support to export llmcompressor format for sym dynamic quantized"
+                        f" W{self.bits}A{self.act_bits} model with group_size={group_size},"
+                        f" but got bits={self.bits}, group_size={self.group_size}, sym={self.sym},"
+                        f" act_bits={self.act_bits}"
                     )
                 elif format != "fake" and not is_nv_fp(format):
                     logger.warning(
