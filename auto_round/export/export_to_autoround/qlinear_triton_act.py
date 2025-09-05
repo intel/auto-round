@@ -40,6 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
+
 from auto_round.utils import _get_packing_device
 
 logger = getLogger(__name__)
