@@ -747,7 +747,7 @@ class AutoRound(object):
             logger.warning(
                 "please note that there is currently no FP8 kernel for the AutoRound format."
                 " recommend using llm_compresor format currently."
-                )
+            )
 
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
