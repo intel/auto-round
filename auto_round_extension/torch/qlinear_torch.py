@@ -127,7 +127,6 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous()
-            zeros -= 1
             # zeros = zeros.numpy().astype(np.uint32)
             qzeros = torch.zeros(
                 (zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=self.device, dtype=torch.int32
@@ -143,7 +142,6 @@ class QuantLinear(nn.Module):
                 col += 1
             self.qzeros = qzeros.cpu()
         else:
-            zeros -= 1
             shape = scales_t.shape
             value = 0
             for j in range(0, (32 // self.bits)):
@@ -338,7 +336,6 @@ class QuantLinear(nn.Module):
             repeat_scales = self.scales.repeat_interleave(self.group_size, dim=0)
             repeat_zeros = zeros.repeat_interleave(self.group_size, dim=0)
             weights = repeat_scales * (weight - repeat_zeros)
-
         weights = weights.to(x_dtype)
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)
@@ -348,3 +345,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+

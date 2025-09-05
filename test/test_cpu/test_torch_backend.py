@@ -6,7 +6,6 @@ import pytest
 
 sys.path.insert(0, "../..")
 
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -82,7 +81,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -93,7 +92,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, torch_dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -123,7 +122,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
