@@ -1430,7 +1430,7 @@ def llm_load_model(
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
-    if "deepseek" in pretrained_model_name_or_path.lower():
+    if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
     if low_cpu_mem_tmp_dir is None:
