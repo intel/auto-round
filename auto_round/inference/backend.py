@@ -98,16 +98,16 @@ in_output_feature_multiply_checker_32 = functools.partial(
     feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
 
-exllamav2_feature_check = functools.partial(
+exllamav2_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=32
 )
 
-gptqmodel_marlin_feature_check = functools.partial(
+gptqmodel_marlin_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=1, out_feature_multiplier=64
 )
 
 
-def torch_fp8_static_check(
+def torch_fp8_static_checker(
     in_feature: int,
     out_feature: int,
     config: QuantizationScheme,
@@ -128,7 +128,7 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     dtype=["float16"],
     ##16, 384,768 accuracy issue
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
-    feature_checks=[exllamav2_feature_check],
+    feature_checks=[exllamav2_feature_checker],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
     requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
 )
@@ -141,7 +141,7 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     group_size=None,
     dtype=["float16"],
     priority=0,
-    feature_checks=[exllamav2_feature_check],
+    feature_checks=[exllamav2_feature_checker],
     alias=["auto_gptq:tritonv2"],
     requirements=["torch<2.6.0", "auto-gptq>=0.7.1", "triton>=2.0"],
 )
@@ -153,7 +153,7 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     bits=[2, 3, 4, 8],
     group_size=None,
     priority=1,
-    feature_checks=[exllamav2_feature_check],
+    feature_checks=[exllamav2_feature_checker],
     alias=["auto_gptq:cuda"],
     dtype=["float16"],
     convertable_format=["int32_zp"],
@@ -182,7 +182,7 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[exllamav2_feature_check],
+    feature_checks=[exllamav2_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -198,7 +198,7 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[8],
     priority=0,
-    feature_checks=[torch_fp8_static_check],
+    feature_checks=[torch_fp8_static_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.6.0"],
 )
@@ -223,7 +223,7 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[exllamav2_feature_check],
+    feature_checks=[exllamav2_feature_checker],
     alias=["torch", "torch_zp"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -236,7 +236,7 @@ BackendInfos["gptqmodel:marlin"] = BackendInfo(
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
     priority=6,
-    feature_checks=[gptqmodel_marlin_feature_check],
+    feature_checks=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -249,7 +249,7 @@ BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
     priority=6,
-    feature_checks=[gptqmodel_marlin_feature_check],
+    feature_checks=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -262,7 +262,7 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     group_size=[-1, 32, 64, 128],  ##16 seems has accuracy issue
     dtype=["float16", "bfloat16"],
     priority=5,
-    feature_checks=[exllamav2_feature_check],
+    feature_checks=[exllamav2_feature_checker],
     alias=["exllamav2"],
     requirements=["gptqmodel>=2.0"],
 )
