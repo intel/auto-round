@@ -60,8 +60,8 @@ def pack_layer(layer_name, model, backend):
 
         return pack_layer(layer_name, model, backend)
 
-    ## passed as no other llmcompressor format is supported yet
-    logger.warning("No other llmcompressor packing format(except NVFP&MXFP) is supported yet, skip packing")
+    ## passed as no other llm_compressor format is supported yet
+    logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
     return
 
 

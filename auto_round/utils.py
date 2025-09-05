@@ -54,7 +54,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
-            "llmcompressor",
+            "llm_compressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -2647,3 +2647,12 @@ def get_max_vram(ratio: float = 0.9) -> dict:
     else:
         raise RuntimeError("No CUDA or XPU devices found.")
     return max_memory
+
+
+def _get_device() -> torch.device:
+    """Selects best available device (CUDA > XPU > CPU)."""
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu:0")
+    return torch.device("cpu")

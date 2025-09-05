@@ -23,8 +23,10 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    _get_device,
     check_start_with_block_name,
     check_to_quantized,
     filter_quantization_config,
@@ -32,8 +34,6 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-
-from .utils import check_neq_config
 
 
 class FP8WOQLinear(torch.nn.Module):
@@ -86,11 +86,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         None: The function modifies the model in place.
     """
     if packing_device is None:
-        packing_device = "cpu"
-        if torch.cuda.is_available():
-            packing_device = "cuda"
-        elif torch.xpu.is_available():
-            packing_device = "xpu"
+        packing_device = _get_device()
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -187,12 +183,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
-                layer_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                act_bits=quantization_config["act_bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
+                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
             )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
@@ -205,11 +196,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    packing_device = "cpu"
-    if torch.cuda.is_available():
-        packing_device = "cuda"
-    elif torch.xpu.is_available():
-        packing_device = "xpu"
+    packing_device = _get_device()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
 
