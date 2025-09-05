@@ -2594,6 +2594,7 @@ def get_device_memory(i=0) -> int:
         raise RuntimeError("No supported device found (CUDA or XPU).")
     return total_memory
 
+
 def estimate_tuning_block_mem(block, input_ids) -> tuple[float, float]:
     """
     Calculates the memory consumption of a specific block in the model.
@@ -2620,6 +2621,7 @@ def estimate_tuning_block_mem(block, input_ids) -> tuple[float, float]:
     input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
 
     return block_memory, input_output_memory
+
 
 def get_max_vram(ratio: float = 0.9) -> dict:
     max_memory = {}
