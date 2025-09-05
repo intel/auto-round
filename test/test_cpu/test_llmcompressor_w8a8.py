@@ -33,6 +33,8 @@ class TestLLMC(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             act_bits=act_bits,
+            seqlen=8,
+            nsamples=2,
             iters=0,
         )
         autoround.quantize()
