@@ -2885,16 +2885,21 @@ class AutoRound(object):
             self.sym
             and self.enable_alg_ext
             and self.super_group_size is None
-            and ((self.data_type.startswith("int") and self.act_bits >= 8) or self.data_type.startswith("mx"))
+            and (
+                (self.data_type.startswith("int") and self.act_bits >= 8)
+                or self.data_type.startswith("mx")
+                or self.data_type.startswith("nv")
+            )
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-                if self.bits > 2 and not self.data_type.startswith("mx"):
+                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2 and mxfp4; use with caution."
+                        "algorithm extension has only undergone limited validation on "
+                        "INT2,mxfp4 and nvfp4; use with caution."
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")
