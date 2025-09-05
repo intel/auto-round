@@ -21,13 +21,13 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
+from auto_round.autoround import AutoRoundFormat
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
     find_backend,
     get_highest_priority_backend,
     get_layer_backend,
-    is_weight_fp8_activation_static_fp8,
     process_requirement,
 )
 from auto_round.schemes import QuantizationScheme
@@ -452,7 +452,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
         )
-    elif is_weight_fp8_activation_static_fp8(config):
+    elif AutoRoundFormat.TORCH_FP8_STATIC.value in layer_backend:
         return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
     try:

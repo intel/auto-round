@@ -2561,17 +2561,6 @@ def _is_weight_fp8_activation_static_fp8(
     return bit == 8 and group_size == -1 and sym and data_type == "fp" and not act_dynamic
 
 
-def is_weight_fp8_activation_static_fp8(config: Dict):
-    bits, group_size, sym, data_type, act_dynamic = (
-        config["bits"],
-        config["group_size"],
-        config["sym"],
-        config["data_type"],
-        config["act_dynamic"],
-    )
-    return _is_weight_fp8_activation_static_fp8(bits, group_size, sym, data_type, act_dynamic)
-
-
 def is_wfp8afp8(ar):
     if ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8)) and (
         "fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8)
