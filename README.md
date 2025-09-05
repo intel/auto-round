@@ -35,7 +35,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
   all bits other than 3 bits. Example
   models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
   and [Intel/DeepSeek-R1-0528-q2ks-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-ar). **A more advanced algorithm** tailored for specific configurations may be available in
-  v0.6.1.
+  v0.6.2.
 
 [2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
   to [Intel/DeepSeek-R1-0528-int2-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-ar), [Intel/DeepSeek-R1-0528-int4-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-ar)

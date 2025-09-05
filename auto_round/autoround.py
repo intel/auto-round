@@ -33,7 +33,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -1520,8 +1520,6 @@ class AutoRound(object):
                 if (
                     is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
                 ) or is_static_wfp8afp8(self):
-                    from auto_round.utils import set_amax_for_all_moe_layers
-
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -2031,11 +2029,11 @@ class AutoRound(object):
                 continue
             try:
                 if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
+                    self.model(data_new, use_cache=False)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new)
+                    self.model(*data_new, use_cache=False)
                 else:
-                    self.model(**data_new)
+                    self.model(**data_new, use_cache=False)
             except NotImplementedError:
                 pass
             except RuntimeError as error:
@@ -2737,8 +2735,6 @@ class AutoRound(object):
             unwrapper_block(block, best_params)
 
         if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-            from auto_round.utils import set_amax_for_all_moe_layers
-
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
