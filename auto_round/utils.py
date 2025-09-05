@@ -2594,6 +2594,32 @@ def get_device_memory(i=0) -> int:
         raise RuntimeError("No supported device found (CUDA or XPU).")
     return total_memory
 
+def estimate_tuning_block_mem(block, input_ids) -> tuple[float, float]:
+    """
+    Calculates the memory consumption of a specific block in the model.
+
+    Args:
+        block (torch.nn.Module): The block of the model to analyze.
+        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - block_memory (float): The memory consumption (in GB) of the block's linear layers.
+            - input_output_memory (float): The memory consumption (in GB) for input and output
+                tensors of the block.
+    """
+    # Calculate all block parameters memory
+    total_param_mem = 0
+    for name, module in block.named_modules():
+        if check_to_quantized(module):
+            param_size = module.weight.nbytes
+            total_param_mem += param_size
+    block_memory = total_param_mem / 1024**3  # Convert to GB
+
+    # Assuming bfloat16 or float32, input and output
+    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    return block_memory, input_output_memory
 
 def get_max_vram(ratio: float = 0.9) -> dict:
     max_memory = {}

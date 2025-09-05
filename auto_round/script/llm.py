@@ -110,7 +110,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--mem_per_param_scale",
             default=13,
             type=float,
-            help="scale factor for memory per parameter, used to adjust memory usage estimation.",
+            help="Scale factor for memory per parameter, used to adjust memory usage estimation for tuning",
         )
 
         self.add_argument("--seed", default=42, type=int, help="random seed")

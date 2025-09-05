@@ -59,6 +59,7 @@ from auto_round.utils import (
     convert_fp8_layer_to_linear,
     convert_fp8_model_to_16b_model,
     detect_device,
+    estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
     get_block_names,
@@ -595,37 +596,6 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
-    def _estimate_tuning_block_mem(self, block, input_ids) -> tuple[float, float]:
-        """
-        Calculates the memory consumption of a specific block in the model.
-
-        Args:
-            block (torch.nn.Module): The block of the model to analyze.
-            input_ids (torch.Tensor): The input tensor for the block.
-
-        Returns:
-            tuple: A tuple containing the following:
-                - block_memory (float): The memory consumption (in GB) of the block's linear layers.
-                - input_output_memory (float): The memory consumption (in GB) for input and output
-                  tensors of the block, assuming bfloat16 or float32 precision.
-        """
-        # Calculate all block parameters memory
-        total_param_mem = 0
-        for name, module in block.named_modules():
-            if check_to_quantized(module):
-                param_size = (
-                    sum(p.numel() for p in module.parameters()) * module.weight.element_size()
-                )  # Assuming parameters are float32 (4 bytes each)
-                total_param_mem += param_size
-        block_memory = total_param_mem / 1024**3  # Convert to GB
-        if self.low_gpu_mem_usage:
-            return block_memory, 0
-
-        # Assuming bfloat16 or float32, input and output
-        input_output_memory = 2 * sum(tensor.numel() * tensor.element_size() for tensor in input_ids) / 1024**3
-
-        return block_memory, input_output_memory
-
     def _set_auto_device_map_in_block(self, block, input_ids) -> None:
         """Automatically sets the device map for the block based on available GPUs and memory constraints."""
         if torch.cuda.is_available():
@@ -649,7 +619,9 @@ class AutoRound(object):
         device_0_memory = get_device_memory(
             self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
         )
-        block_memory, input_ouput_memory = self._estimate_tuning_block_mem(block, input_ids)
+        block_memory, input_ouput_memory = estimate_tuning_block_mem(block, input_ids)
+        if self.low_gpu_mem_usage:
+            input_ouput_memory = 0
 
         mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
         if self.iters == 0:
@@ -667,7 +639,7 @@ class AutoRound(object):
         for n, m in block.named_modules():
             if check_to_quantized(m):
                 layer_name = block.tmp_name + "." + n
-                layer_memory = sum(p.numel() for p in m.parameters()) * m.weight.element_size() / 1024**3
+                layer_memory = m.weight.nbytes / 1024**3
                 if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
                     device_map[layer_name] = cuda_devices[device_idx]
                     device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
