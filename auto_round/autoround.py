@@ -744,7 +744,10 @@ class AutoRound(object):
             logger.error(error_msg)
             sys.exit(-1)
         if (w_fp8 or act_fp8) and re.search("^auto_round", format) is not None:
-            logger.warning("please note that there is currently no FP8 kernel for the AutoRound format.")
+            logger.warning(
+                "please note that there is currently no FP8 kernel for the AutoRound format."
+                " recommend using llm_compresor format currently."
+                )
 
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
