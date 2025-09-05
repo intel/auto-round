@@ -41,7 +41,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from .utils import _get_device
+from auto_round.utils import _get_device
 
 logger = getLogger(__name__)
 
@@ -183,3 +183,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+

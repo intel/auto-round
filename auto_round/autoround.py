@@ -840,7 +840,7 @@ class AutoRound(object):
                 elif format != "fake" and (not is_nv_fp(format) or "static_gs" not in self.act_data_type):
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
-                        " with fp8 or nv_fp4_with_static_gs dtype activation for activation quantization."
+                        " with fp8 or nv_fp4 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
                     format = "fake"
@@ -3287,3 +3287,4 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
+

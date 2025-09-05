@@ -31,9 +31,10 @@ from auto_round.utils import (
     get_module,
     logger,
     set_module,
+    _get_device,
 )
 
-from .utils import REQUIRED_CONFIG_KEYS, _get_device, check_neq_config
+from .utils import REQUIRED_CONFIG_KEYS, check_neq_config
 
 
 class FP8WOQLinear(torch.nn.Module):
@@ -272,3 +273,4 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
