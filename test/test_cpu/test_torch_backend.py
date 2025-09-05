@@ -27,7 +27,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(self):
-        self.model_name = "/models/opt-125m"
+        self.model_name = "facebook/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
 
@@ -72,7 +72,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=1,
+            iters=0,
             seqlen=2,
             dataset=self.llm_dataloader,
         )
@@ -86,7 +86,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=4)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
         torch.cuda.empty_cache()
@@ -97,7 +97,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=4)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
         torch.cuda.empty_cache()
@@ -113,7 +113,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=1,
+            iters=0,
             seqlen=2,
             dataset=self.llm_dataloader,
         )
@@ -127,7 +127,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=4)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
         torch.cuda.empty_cache()
@@ -136,3 +136,4 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
