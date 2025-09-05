@@ -44,7 +44,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.data_type, "mx_fp")
         self.assertEqual(ar.act_data_type, "mx_fp_rceil")
         ar.quantize()
-    
+
     def test_fp8_static(self):
         ar = AutoRound(self.model_name, scheme="FPW8_STATIC", nsamples=1, iters=1)
         self.assertEqual(ar.bits, 8)
@@ -68,7 +68,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.data_type, "mx_fp")
         self.assertEqual(ar.act_data_type, "mx_fp_rceil")
         ar.quantize()
-    
+
     def test_fp8_static_rtn(self):
         ar = AutoRound(self.model_name, scheme="FPW8_STATIC", nsamples=1, iters=0)
         self.assertEqual(ar.bits, 8)
@@ -97,8 +97,7 @@ class TestAutoRound(unittest.TestCase):
                 self.assertEqual(m.bits, 8)
             if n == "model.decoder.layers.4.self_attn.k_proj":
                 self.assertEqual(m.group_size, 64)
-    
+
 
 if __name__ == "__main__":
     unittest.main()
-
