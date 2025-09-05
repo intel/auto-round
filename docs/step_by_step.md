@@ -116,7 +116,6 @@ AutoRound supports several quantization configurations:
 - **Int3 Weight Only**
 - **Int2 Weight Only**
 - **Mixed bits Weight only**
-- **FP8 Weight and Activation**
 
 ### Supported export Formats
 
