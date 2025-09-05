@@ -38,7 +38,7 @@ def recover_qweight(qdq_weight, scale):
     return (qdq_weight / scale).to(torch.int8)
 
 
-def pack_layer(layer_name, model, backend):
+def pack_layer(layer_name, model, backend, device=None):
     """
     Packs a model layer for quantization based on its type and configuration.
 
@@ -58,7 +58,7 @@ def pack_layer(layer_name, model, backend):
     if is_nv_fp(backend) or is_mx_fp(backend):
         from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
-        return pack_layer(layer_name, model, backend)
+        return pack_layer(layer_name, model, backend, device)
 
     ## passed as no other llm_compressor format is supported yet
     logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")

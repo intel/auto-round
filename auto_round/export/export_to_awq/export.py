@@ -43,7 +43,7 @@ from auto_round.utils import (
 )
 
 
-def pack_layer(name, model, backend):
+def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  ##dese not support lm-head
         return
     layer = get_module(model, name)
@@ -72,6 +72,7 @@ def pack_layer(name, model, backend):
         init_only=False,
         scales=scale,
         zeros=zp,
+        device=device,
     )
     set_module(model, name, q_linear)
     if hasattr(layer, "weight"):
@@ -85,6 +86,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
     to_quant_block_names = kwargs.get("to_quant_block_names", None)
+    device = kwargs.get("device", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     image_processor = kwargs.get("image_processor", None)
@@ -124,7 +126,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, compressed_model, backend)
+                    pack_layer(name, compressed_model, backend, device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -141,11 +143,10 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
-
+    quantization_config["provider"] = "auto-round"
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
-
     quantization_config["modules_to_not_convert"] = modules_to_not_convert
     ##check module quantized in block, this may have bug for mixed precision quantization
     filter_quantization_config(quantization_config)

@@ -1419,7 +1419,7 @@ class AutoRound(object):
                         model_type=model_type,
                     )
                 else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
 
                 # if self.low_gpu_mem_usage:
                 #     clear_memory()
@@ -2973,7 +2973,9 @@ class AutoRound(object):
                             model_type=model_type,
                         )
                     else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
+                        PACKING_LAYER_WITH_FORMAT[target_backend](
+                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
+                        )
         pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -3080,6 +3082,7 @@ class AutoRound(object):
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
+            device=self.device,
             **kwargs,
         )
         return compressed_model

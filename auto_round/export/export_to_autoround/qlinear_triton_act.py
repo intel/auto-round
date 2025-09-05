@@ -41,7 +41,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.utils import _get_device
+from auto_round.utils import _get_packing_device
 
 logger = getLogger(__name__)
 
@@ -118,8 +118,8 @@ class QuantLinear(nn.Module):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None):
-        device = _get_device()
+    def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
 
         self.act_scales.data.copy_(act_scales.squeeze().clone())
