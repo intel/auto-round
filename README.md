@@ -28,6 +28,9 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## 🆕 What's New
 
+[2025/09] AutoRound now includes experimental support for the mxfp4 and nvfp4 dtypes. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
+. We currently recommend exporting to the LLM-Compressor format.
+
 [2025/08] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
  for some accuracy results. 
 
