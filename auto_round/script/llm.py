@@ -511,7 +511,7 @@ def tune(args):
                 "auto_round" not in format
                 and "fake" not in format
                 and "awq" not in format
-                and "llmcompressor" not in format
+                and "llm_compressor" not in format
             ):
                 # TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")

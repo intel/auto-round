@@ -324,7 +324,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(
-            output_dir=quantized_model_path, inplace=True, format="llmcompressor"
+            output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
@@ -368,7 +368,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -412,7 +412,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")

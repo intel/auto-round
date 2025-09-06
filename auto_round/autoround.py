@@ -698,7 +698,7 @@ class AutoRound(object):
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
 
-        if self.act_bits <= 8:
+        if self.act_bits <= 8 and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
@@ -850,19 +850,21 @@ class AutoRound(object):
                         "for the current quantization configuration, "
                         "please change to `fake` format for research purpose"
                     )
-
                 formats[index] = format
-            elif format == "llmcompressor":
+            elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-                    format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+                    format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
                     logger.error(
-                        "Currently, the llmcompressor format only supports MXFP/NVFP/FP8. "
+                        "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
+            else:
+                if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
+                    logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -894,8 +896,13 @@ class AutoRound(object):
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
-                if format == "llmcompressor":
-                    if is_nv_fp(self.act_data_type):
+                if "llm_compressor" in format:
+                    if is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type:
+                        logger.warning(
+                            f"AutoRound supports exporting to format '{format}', "
+                            "but loading quantized models in this format is not yet supported. "
+                            "It is currently recommended to export to the 'llm_compressor' format."
+                        )
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
@@ -906,10 +913,11 @@ class AutoRound(object):
                         and self.act_dynamic
                     ), (
                         f"Currently only support to export llmcompressor format for dynamic quantized"
-                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
-                        f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
+                        f" W{bits}Afp{act_bits} model, but got bits={self.bits}, data_type={self.data_type}"
+                        f" group_size={self.group_size}, sym={self.sym}"
+                        f", act_bits={self.act_bits}, act_data_type={self.act_data_type}"
                     )
-                elif format != "fake" and not is_nv_fp(format):
+                elif format != "fake" and (not is_nv_fp(format) or "static_gs" not in self.act_data_type):
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
                         " with fp8 or nv_fp4 dtype activation for activation quantization."
@@ -1418,7 +1426,7 @@ class AutoRound(object):
                         model_type=model_type,
                     )
                 else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
 
                 # if self.low_gpu_mem_usage:
                 #     clear_memory()
@@ -1659,7 +1667,7 @@ class AutoRound(object):
                     or "gptq" in formats[0]
                     or "auto_round" in formats[0]
                     or "gguf" in formats[0]
-                    or "llmcompressor" in formats[0]
+                    or "llm_compressor" in formats[0]
                 )
                 and self.inplace
             ):
@@ -2972,7 +2980,9 @@ class AutoRound(object):
                             model_type=model_type,
                         )
                     else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
+                        PACKING_LAYER_WITH_FORMAT[target_backend](
+                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
+                        )
         pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -3024,8 +3034,8 @@ class AutoRound(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
-        if format == "llmcompressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-            format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+        if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -3079,6 +3089,7 @@ class AutoRound(object):
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
+            device=self.device,
             **kwargs,
         )
         return compressed_model

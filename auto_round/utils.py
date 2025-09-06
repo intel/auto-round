@@ -55,7 +55,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
-            "llmcompressor",
+            "llm_compressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -2662,3 +2662,36 @@ def get_max_vram(ratio: float = 0.9) -> dict:
     else:
         raise RuntimeError("No CUDA or XPU devices found.")
     return max_memory
+
+
+def _get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
+    """
+    Selects the packing device.
+    - "auto": choose best available (CUDA > XPU > CPU).
+    - str: parsed by torch.device (e.g., "cuda:2", "cpu").
+    - torch.device: returned as-is.
+    - None: treated as "auto".
+
+    Args:
+        device: Target device spec ("auto", "cuda:0", "xpu:0", "cpu", or torch.device).
+
+    Returns:
+        torch.device: The resolved device.
+    """
+    if device is None or (isinstance(device, str) and device.lower() == "auto"):
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return torch.device("xpu:0")
+        return torch.device("cpu")
+
+    if isinstance(device, torch.device):
+        return device
+
+    if isinstance(device, str):
+        try:
+            return torch.device(device)
+        except Exception as e:
+            raise ValueError(f"Invalid device string: {device}") from e
+
+    raise TypeError(f"Unsupported device type: {type(device)} ({device})")
