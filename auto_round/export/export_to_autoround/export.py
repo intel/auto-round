@@ -25,7 +25,6 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-
 from auto_round.autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
