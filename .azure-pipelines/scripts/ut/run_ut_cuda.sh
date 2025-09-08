@@ -45,7 +45,10 @@ function run_unit_test() {
     uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+    sed -i '/^lm-eval/d;/^vllm/d;/^lm-eval/d' requirements.txt
     uv pip install -r requirements.txt
+    uv pip install git+https://github.com/EleutherAI/lm-evaluation-harness.git@0.4.9.1
+    uv pip install git+https://github.com/vllm-project/vllm.git
 
     uv pip list
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
