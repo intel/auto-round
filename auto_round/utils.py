@@ -24,11 +24,8 @@ import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
-
-from typing import Any, Callable, Dict, Tuple, Union
-
 from pathlib import Path
-
+from typing import Any, Callable, Dict, Tuple, Union
 
 import cpuinfo
 import torch
