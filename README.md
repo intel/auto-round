@@ -84,7 +84,7 @@ Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
 
-🟨 Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
+✅ Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
 
 
 ## Installation
@@ -164,25 +164,25 @@ configuration to suit your specific requirements and available resources.
 ### API Usage
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "Qwen/Qwen3-0.6B"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+# Load a model (supports BF16/FP16/FP8/FP32)
+model_name_or_path = "Qwen/Qwen3-0.6B"
 
-bits, group_size, sym = 4, 128, True
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
+# Available schemes: "W2A16", "W3A16", "W4A16", "NVFP4", "MXFP4" (no real kernels), "GGUF:Q4_K_M", etc.
+ar = AutoRound(model_name_or_path, scheme="W4A16")
 
-## the best accuracy, 4-5X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
+# Highest accuracy (4–5× slower). 
+# `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30% slower.
+# ar = AutoRound(model_name_or_path, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
-## 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, bits=bits, group_size=group_size, sym=sym )
+# Faster quantization (2–3× speedup) with slight accuracy drop at W4G128.
+# ar = AutoRound(model_name_or_path, tokenizer, nsamples=128, iters=50, lr=5e-3)
 
+# Save quantized model
 output_dir = "./tmp_autoround"
-## format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format="auto_round")
+# Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m"
+ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 <details>
