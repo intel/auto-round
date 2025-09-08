@@ -29,6 +29,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
     check_to_quantized,
+    copy_python_files_from_model_cache,
     filter_quantization_config,
     get_block_names,
     get_module,
@@ -274,3 +275,9 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
+

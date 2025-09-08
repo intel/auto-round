@@ -17,7 +17,16 @@ import os
 import torch
 
 from auto_round.export.export_to_llmcompressor.config import quantization_config
-from auto_round.utils import detect_device, get_module, is_mx_fp, is_nv_fp, is_standard_fp, logger, set_module
+from auto_round.utils import (
+    copy_python_files_from_model_cache,
+    detect_device,
+    get_module,
+    is_mx_fp,
+    is_nv_fp,
+    is_standard_fp,
+    logger,
+    set_module,
+)
 from auto_round.wrapper import WrapperWALayer
 
 from .export_to_fp import save_quantized_as_fp
@@ -111,3 +120,9 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
         if hasattr(model, "generation_config"):
             setattr(model.generation_config, "do_sample", True)
         model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+
+    try:
+        copy_python_files_from_model_cache(model, output_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
+
