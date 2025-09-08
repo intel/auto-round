@@ -155,7 +155,7 @@ auto-round-fast \
 
 </details>
 
-In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
+In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `enable_alg_ext` for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
 ### API Usage
