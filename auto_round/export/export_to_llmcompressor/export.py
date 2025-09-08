@@ -125,4 +125,3 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
         copy_python_files_from_model_cache(model, output_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
-
