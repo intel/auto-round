@@ -278,7 +278,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_lm_head(self):
+    def test_lm_head_layer_config_way(self):
         bits, group_size, sym = 4, -1, False
         layer_config = {"lm_head": {"data_type": "int"}}
         autoround = AutoRound(
@@ -368,7 +368,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
+        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1)
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(
@@ -671,6 +671,11 @@ class TestAutoRound(unittest.TestCase):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attn": {"bit": 2}}  # should be bits
             ar = AutoRound("facebook/opt-125m", scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
+
+    def test_quant_lm_head(self):
+        model_name = "Qwen/Qwen3-8B"
+        ar = AutoRound(model_name, quant_lm_head=True, iters=1, nsamples=1, seqlen=32)
+        ar.quantize()
 
 
 if __name__ == "__main__":
