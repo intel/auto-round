@@ -18,7 +18,7 @@ import re
 import sys
 import time
 import traceback
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any, Callable, Union
 
 import accelerate
@@ -387,26 +387,11 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-    def _get_scheme_keys(self) -> tuple[str]:
-        scheme_keys = (
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "act_bits",
-            "act_group_size",
-            "act_sym",
-            "act_data_type",
-            "act_dynamic",
-            "super_bits",
-            "super_group_size",
-        )
-        return scheme_keys
-
     def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
         """Parse and set the layer-wise quantization configuration."""
         # Some other quantization configs
         self.layer_config = {} if layer_config is None else layer_config
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
         for key, item in self.layer_config.items():
             if isinstance(item, str):
                 item = asdict(preset_name_to_scheme(item.upper()))
@@ -421,16 +406,14 @@ class AutoRound(object):
                 self.layer_config[key] = config
             elif isinstance(item, dict):
                 item_keys = item.keys()
-                expected_keys = list(QuantizationScheme.__annotations__.keys())
-                if item_keys not in expected_keys:
+                if item_keys not in scheme_keys:
                     for item_key in item_keys:
-                        if item_key not in expected_keys:
+                        if item_key not in scheme_keys:
                             raise ValueError(
                                 f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {expected_keys} are supported"
+                                f" only {scheme_keys} are supported"
                             )
 
-        scheme_keys = self._get_scheme_keys()
         if not self.quant_lm_head or (isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf")):
             return
         for n, _ in self.model.named_modules():
@@ -467,8 +450,8 @@ class AutoRound(object):
             scheme = scheme.upper()
             self.scheme = scheme
             scheme = asdict(preset_name_to_scheme(scheme))
-
-        for key in self._get_scheme_keys():
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        for key in scheme_keys:
             if key in kwargs and kwargs[key] is not None:
                 setattr(self, key, kwargs[key])
             else:
