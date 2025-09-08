@@ -16,10 +16,10 @@ AutoRound
 
 ## 🚀 What is AutoRound?
 
-AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
-Hugging Face Spaces,
-e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
-and [fbaldassarri](https://huggingface.co/fbaldassarri). Please check out [User guide](./docs/step_by_step.md) for more details
+AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
+It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. 
+For more details, see our [paper](https://arxiv.org/pdf/2309.05516) for more details and explore quantized models available on several Hugging Face Spaces, e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
+and [fbaldassarri](https://huggingface.co/fbaldassarri).For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -169,7 +169,7 @@ from auto_round import AutoRound
 # Load a model (supports BF16/FP16/FP8/FP32)
 model_name_or_path = "Qwen/Qwen3-0.6B"
 
-# Available schemes: "W2A16", "W3A16", "W4A16", "NVFP4", "MXFP4" (no real kernels), "GGUF:Q4_K_M", etc.
+# Available schemes: "W2A16", "W3A16", "W4A16", "W8A16", "NVFP4", "MXFP4" (no real kernels), "GGUF:Q4_K_M", etc.
 ar = AutoRound(model_name_or_path, scheme="W4A16")
 
 # Highest accuracy (4–5× slower).
