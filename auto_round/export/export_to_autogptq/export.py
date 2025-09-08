@@ -74,7 +74,7 @@ def pack_layer(name, model, backend, device=None):
     if not isinstance(layer, SUPPORTED_LAYER_TYPES):  # already packed
         return
 
-    orig_device = layer.weight.device # must place after 74
+    orig_device = layer.weight.device  # must place after 74
     bits = layer.bits
     if bits > 8:
         return

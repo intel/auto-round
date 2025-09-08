@@ -48,7 +48,6 @@ class TestAutoRound(unittest.TestCase):
                 dataset=self.llm_dataloader,
             )
 
-
             quantized_model_path = "./saved"
             autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
 
