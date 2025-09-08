@@ -183,7 +183,7 @@ FPW8A16 = QuantizationScheme.from_dict(
 #     "act_data_type": "fp",
 # }))
 
-FPW8_STATIC = QuantizationScheme.from_dict(
+FP8_STATIC = QuantizationScheme.from_dict(
     {
         "bits": 8,
         "group_size": -1,
@@ -205,7 +205,7 @@ PRESET_SCHEMES = {
     "MXFP8": MXFP8,
     "NVFP4": NVFP4,
     "FPW8A16": FPW8A16,
-    "FPW8_STATIC": FPW8_STATIC,
+    "FP8_STATIC": FP8_STATIC,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 

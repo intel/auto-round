@@ -36,8 +36,8 @@ class TestGGUF(unittest.TestCase):
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {self.model_name} "
-            f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
+            f"cd ../.. && {python_path} -m auto_round --model benzart/gemma-2b-it-fine-tuning-for-code-test "
+            f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

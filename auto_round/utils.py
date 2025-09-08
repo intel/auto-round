@@ -24,7 +24,11 @@ import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
+
 from typing import Any, Callable, Dict, Tuple, Union
+
+from pathlib import Path
+
 
 import cpuinfo
 import torch
@@ -1220,6 +1224,8 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     )
 
     is_mistral_format = False
+    if isinstance(dir_model, str):
+        dir_model = Path(dir_model)
 
     hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):

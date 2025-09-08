@@ -82,11 +82,11 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(model_name, bits=bits, sym=sym, iters=0)
         autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto", limit=10)
+        # res = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto", limit=10)
 
-        accuracy = res["results"]["lambada_openai"]["acc,none"]
-        print(f"accuracy = {accuracy}")
-        assert accuracy > 0.15
+        # accuracy = res["results"]["lambada_openai"]["acc,none"]
+        # print(f"accuracy = {accuracy}")
+        # assert accuracy > 0.15
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
 

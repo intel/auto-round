@@ -590,6 +590,8 @@ def prepare_tensors(cls):
         # # save cpu memory, but slow
         if cls.low_cpu_mem_usage:
             for weight_name in clean_weight_list:
+                if cls.model_arch == gguf.MODEL_ARCH.GEMMA:
+                    continue
                 module = get_module(cls.model, ".".join(weight_name.split(".")[:-1]))
                 for key in ["scale", "zp", "d_scale", "wmin", "d_wmin", "imatrix"]:
                     if hasattr(module, key):

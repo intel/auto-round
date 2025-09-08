@@ -299,7 +299,6 @@ class AutoRound(object):
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
         check_and_mark_fp8_model(model)
-        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -358,7 +357,6 @@ class AutoRound(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
             )
-        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -1088,7 +1086,8 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    logger.info("out of VRAM, falling back to CPU")
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
@@ -1097,7 +1096,6 @@ class AutoRound(object):
                         },
                     )
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
 
             # Overwrite the module's weights with the quantized version
@@ -1239,6 +1237,7 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
+                    logger.error(cuda_error_msg)
                     # Final fallback: warn and use CPU-only quantization
                     logger.warning(
                         "Fallback to CPU. "
@@ -1256,7 +1255,6 @@ class AutoRound(object):
                     self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
                     self.device = orig_device
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
         finally:
             # Always remove hooks
@@ -1401,7 +1399,8 @@ class AutoRound(object):
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
                 try:
-                    logger.warning("Out of VRAM, falling back to CPU.")
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU.")
                     m.to("cpu")
                     m = WrapperLinear(
                         m,
@@ -1411,7 +1410,6 @@ class AutoRound(object):
                     )
                     m = m.unwrapper({})
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
 
         # Step 3: Optional immediate packing/export
@@ -1652,6 +1650,10 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             m.tmp_name = n
         self._check_compatibility()
+        formats = self.formats if hasattr(self, "formats") else None
+        # It is best to modify the model structure in the quantize function and check the format,
+        # because it may cause the gguf format to not be exported normally.
+        self.model = _handle_moe_model(self.model, formats=formats)
         self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
