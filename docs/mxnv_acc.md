@@ -12,4 +12,4 @@ We evaluated using a fake model since we currently have no access to devices for
 |-------------------|----------------------|--------------------|---------|-----------|
 | RTN               | 0.68756              | 0.6906             | 0.72962 | 0.71636   |
 | AutoRound         | 0.69184              | 0.69728            | 0.73058 | 0.73062   |
-| AutoRound+alg_ext | 0.69648              | 0.6989             | 0.7318  |           |
+| AutoRound+alg_ext | 0.69648              | 0.6989             | 0.7318  | 0.72948    |

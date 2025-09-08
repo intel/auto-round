@@ -224,7 +224,7 @@ class QuantLinear(nn.Module):
                 col += 1
                 qzeros[:, col] |= (zeros[:, i] >> 2) & 1
                 i += 1
-                # packed_zeros = (zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = (zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits + 1
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -233,7 +233,7 @@ class QuantLinear(nn.Module):
                 col += 1
                 qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
                 i += 1
-                # packed_zeros = (zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = (zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits + 2
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
