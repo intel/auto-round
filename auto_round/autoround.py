@@ -234,6 +234,11 @@ class AutoRound(object):
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
+        if not disable_deterministic_algorithms:
+            if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+            torch.use_deterministic_algorithms(True, warn_only=False)
+
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
@@ -270,10 +275,7 @@ class AutoRound(object):
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
 
-        if not disable_deterministic_algorithms:
-            if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
-                os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-            torch.use_deterministic_algorithms(True, warn_only=False)
+
 
         # Model related
         self.quantized = False
