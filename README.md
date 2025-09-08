@@ -251,22 +251,13 @@ is limited. For more information, please refer to the AutoRoundMLLM [readme](./a
 
 ```python
 from auto_round import AutoRoundMLLM
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 
-## load the model
-model_name = "Qwen/Qwen2-VL-2B-Instruct"
-model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-
-## quantize the model
-bits, group_size, sym = 4, 128, True
-autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size, sym=sym)
-autoround.quantize()
-
-# save the quantized model, set format='auto_gptq' or 'auto_awq' to use other formats
+# Load the model
+model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
+# Quantize the model
+ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir, format="auto_round", inplace=True)
+ar.quantize_and_save(output_dir)
 ```
 
 </details>
