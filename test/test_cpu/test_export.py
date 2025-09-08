@@ -37,9 +37,9 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
+            model_name = "facebook/opt-125m"
             autoround = AutoRound(
-                self.model,
-                self.tokenizer,
+                model=model_name,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -49,7 +49,7 @@ class TestAutoRound(unittest.TestCase):
             )
 
             quantized_model_path = "./saved"
-            autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
@@ -67,9 +67,9 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, True
+            model_name = "facebook/opt-125m"
             autoround = AutoRound(
-                self.model,
-                self.tokenizer,
+                model=model_name,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -93,9 +93,9 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
+            model_name = "facebook/opt-125m"
             autoround = AutoRound(
-                self.model,
-                self.tokenizer,
+                model=model_name,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -105,7 +105,7 @@ class TestAutoRound(unittest.TestCase):
             )
             quantized_model_path = "./saved"
 
-            autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_round:auto_awq")
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
             # quantization_config = AutoRoundConfig(
             #     backend="cpu"
