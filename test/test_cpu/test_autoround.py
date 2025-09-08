@@ -674,7 +674,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_quant_lm_head(self):
         model_name = "Qwen/Qwen3-8B"
-        ar = AutoRound(model_name, quant_lm_head=True,iters=1,nsamples=1,seqlen=32)
+        ar = AutoRound(model_name, quant_lm_head=True, iters=1, nsamples=1, seqlen=32)
         ar.quantize()
 
 
