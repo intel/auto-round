@@ -673,8 +673,8 @@ class TestAutoRound(unittest.TestCase):
             ar = AutoRound("facebook/opt-125m", scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
 
     def test_quant_lm_head(self):
-        model_name = "facebook/opt-125m"
-        ar = AutoRound(model_name, quant_lm_head=True)
+        model_name = "Qwen/Qwen3-8B"
+        ar = AutoRound(model_name, quant_lm_head=True,iters=1,nsamples=1,seqlen=32)
         ar.quantize()
 
 
