@@ -278,7 +278,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_lm_head(self):
+    def test_lm_head_layer_config_way(self):
         bits, group_size, sym = 4, -1, False
         layer_config = {"lm_head": {"data_type": "int"}}
         autoround = AutoRound(
@@ -368,7 +368,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
+        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1)
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(

@@ -169,7 +169,7 @@ def pack_layer(layer_name, model, backend, device=None):
     if not check_to_quantized(layer):
         return
 
-    orig_device = layer.weight.device
+    orig_device = layer.weight.device if hasattr(layer, "weight") else "cpu"
     bits = layer.bits
     group_size = layer.group_size
     sym = layer.sym

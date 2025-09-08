@@ -70,7 +70,7 @@ def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  ##dese not support lm-head
         return
     layer = get_module(model, name)
-    orig_device = layer.weight.device
+    orig_device = layer.weight.device if hasattr(layer, "weight") else "cpu"
     if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
