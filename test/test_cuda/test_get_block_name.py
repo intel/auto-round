@@ -103,25 +103,25 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Qwen2-VL-2B-Instruct"
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        self.check_block_names(block_names, ["model.layers"], [28])
+        self.check_block_names(block_names, ["model.language_model.layers"], [28])
 
         block_names = get_block_names(model, quant_vision=True)
-        self.check_block_names(block_names, ["visual.blocks", "model.layers"], [32, 28])
+        self.check_block_names(block_names, ["model.visual.blocks", "model.language_model.layers"], [32, 28])
         assert not is_pure_text_model(model)
 
     def test_Llama32(self):
         model_name = "/models/Llama-3.2-11B-Vision-Instruct"
         model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        self.check_block_names(block_names, ["language_model.model.layers"], [40])
+        self.check_block_names(block_names, ["model.language_model.layers"], [40])
 
         block_names = get_block_names(model, quant_vision=True)
         self.check_block_names(
             block_names,
             [
-                "vision_model.transformer.layers",
-                "vision_model.global_transformer.layers",
-                "language_model.model.layers",
+                "model.vision_model.transformer.layers",
+                "model.vision_model.global_transformer.layers",
+                "model.language_model.layers",
             ],
             [32, 8, 40],
         )
@@ -154,11 +154,11 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/gemma-3-12b-it"
         model = Gemma3ForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        self.check_block_names(block_names, ["language_model.model.layers"], [48])
+        self.check_block_names(block_names, ["model.language_model.layers"], [48])
 
         block_names = get_block_names(model, quant_vision=True)
         self.check_block_names(
-            block_names, ["vision_tower.vision_model.encoder.layers", "language_model.model.layers"], [27, 48]
+            block_names, ["model.vision_tower.vision_model.encoder.layers", "model.language_model.layers"], [27, 48]
         )
         assert not is_pure_text_model(model)
 
@@ -166,11 +166,11 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Mistral-Small-3.1-24B-Instruct-2503"
         model = Mistral3ForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        self.check_block_names(block_names, ["language_model.model.layers"], [40])
+        self.check_block_names(block_names, ["model.language_model.layers"], [40])
 
         block_names = get_block_names(model, quant_vision=True)
         self.check_block_names(
-            block_names, ["vision_tower.transformer.layers", "language_model.model.layers"], [24, 40]
+            block_names, ["model.vision_tower.transformer.layers", "model.language_model.layers"], [24, 40]
         )
         assert not is_pure_text_model(model)
 
