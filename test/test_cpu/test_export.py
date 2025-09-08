@@ -25,7 +25,7 @@ class TestAutoRound(unittest.TestCase):
     def setUpClass(self):
         model_name = "facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -47,6 +47,7 @@ class TestAutoRound(unittest.TestCase):
                 seqlen=2,
                 dataset=self.llm_dataloader,
             )
+
             autoround.quantize()
             quantized_model_path = "./saved"
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
@@ -56,7 +57,7 @@ class TestAutoRound(unittest.TestCase):
                 continue
             quantization_config = AutoRoundConfig()
             model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
+                quantized_model_path, device_map="auto", trust_remote_code=True, quantization_config=quantization_config
             )
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
@@ -217,6 +218,7 @@ class TestAutoRound(unittest.TestCase):
             iters=0,
             act_bits=8,
             nsamples=2,
+            seqlen=2,
             data_type="fp8",
             act_data_type="fp8",
             act_dynamic=False,
@@ -248,6 +250,7 @@ class TestAutoRound(unittest.TestCase):
             iters=1,
             act_bits=8,
             nsamples=2,
+            seqlen=2,
             data_type="fp8",
             act_data_type="fp8",
             act_dynamic=False,
@@ -294,7 +297,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(
-            output_dir=quantized_model_path, inplace=True, format="llmcompressor"
+            output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
@@ -338,7 +341,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -382,7 +385,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")

@@ -32,6 +32,7 @@ import os
 import re
 import sys
 
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -39,7 +40,6 @@ from auto_round.utils import (
     get_model_dtype,
     infer_bits_by_data_type,
     set_cuda_visible_devices,
-    str2bool,
 )
 
 
@@ -55,11 +55,33 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
-        self.add_argument("--bits", default=4, type=int, help="number of weight bits")
+        self.add_argument(
+            "--scheme",
+            default="W4A16",
+            type=str,
+            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            help="quantization scheme",
+        )
 
-        self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
+        self.add_argument("--bits", default=None, type=int, help="number of weight bits")
+        self.add_argument("--group_size", default=None, type=int, help="group size")
+        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
+        self.add_argument("--data_type", "--dtype", default=None, help="data type for tuning, 'int', 'mx_fp' and etc")
+        self.add_argument("--act_bits", default=None, type=int, help="activation bits")
+        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
+        self.add_argument(
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+        )
 
         self.add_argument(
+            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
+        )
+        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
+
+        self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
+
+        self.add_argument(
+            "--device_map",
             "--device",
             "--devices",
             default="0",
@@ -71,8 +93,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "set --device 0,1,2 to use multiple cards.",
         )
 
-        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
-
         self.add_argument(
             "--dataset", default="NeelNanda/pile-10k", type=str, help="the dataset for quantization training"
         )
@@ -82,6 +102,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=float,
             help="minmax learning rate, if None, it will beset to be the same with lr",
+        )
+
+        self.add_argument(
+            "--mem_per_param_scale",
+            default=13,
+            type=float,
+            help="Scale factor for memory per parameter, used to adjust memory usage estimation for tuning",
         )
 
         self.add_argument("--seed", default=42, type=int, help="random seed")
@@ -96,8 +123,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--format", default="auto_round", type=str, help="the format to save the model")
 
-        self.add_argument("--data_type", "--dtype", default="int", help="data type for tuning, 'int', 'mx_fp' and etc")
-
         self.add_argument(
             "--scale_dtype",
             default="fp16",
@@ -106,24 +131,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         self.add_argument(
-            "--tasks",
-            "--task",
-            nargs="?",
-            const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-            "openbookqa,boolq,arc_easy,arc_challenge",
-            default=None,
-            help="lm-eval tasks",
-        )
-
-        self.add_argument(
             "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model"
         )
-
-        self.add_argument(
-            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning"
-        )
-
-        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
 
         self.add_argument("--disable_amp", action="store_true", help="disable amp")
 
@@ -175,10 +184,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="force to convert the dtype, some backends supports fp16 dtype better",
         )
 
-        self.add_argument("--act_bits", default=16, type=int, help="activation bits")
-
-        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
-
         self.add_argument(
             "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type"
         )
@@ -200,26 +205,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--enable_alg_ext", action="store_true", help="whether to enable probably better algorithm")
 
-        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
-
-        self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
-
         self.add_argument(
             "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
-        )
-
-        self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
-
-        self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
-        )
-
-        self.add_argument(
-            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
-        )
-
-        self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )
 
         self.add_argument(
@@ -253,6 +240,38 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="the template for building training dataset. It can be a custom one.",
         )
 
+        ## ======================= eval =======================
+        self.add_argument(
+            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning"
+        )
+
+        self.add_argument(
+            "--tasks",
+            "--task",
+            nargs="?",
+            const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
+            "openbookqa,boolq,arc_easy,arc_challenge",
+            default=None,
+            help="lm-eval tasks",
+        )
+
+        self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
+
+        self.add_argument(
+            "--limit",
+            type=float,
+            default=None,
+            metavar="N|0<N<1",
+            help="Limit the number of examples per task. "
+            "If <1, limit is a percentage of the total number of examples.",
+        )
+
+        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
+
+        self.add_argument(
+            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+        )
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -263,6 +282,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         )
         self.add_argument("--mllm", action="store_true", help="whether to eval multi-modal model.")
         self.add_argument(
+            "--device_map",
             "--device",
             "--devices",
             default="0",
@@ -289,12 +309,18 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )
+        self.add_argument(
+            "--limit",
+            type=float,
+            default=None,
+            metavar="N|0<N<1",
+            help="Limit the number of examples per task. "
+            "If <1, limit is a percentage of the total number of examples.",
+        )
 
 
 def setup_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
@@ -316,8 +342,6 @@ def setup_parser():
 
 def setup_best_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
@@ -342,8 +366,6 @@ def setup_best_parser():
 def setup_light_parser():
     parser = BasicArgumentParser()
 
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
-
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
@@ -365,8 +387,6 @@ def setup_light_parser():
 
 def setup_fast_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=4, type=int, help="train batch size")
 
@@ -399,9 +419,7 @@ def tune(args):
 
     if args.eval_bs is None:
         args.eval_bs = "auto"
-
-    import transformers
-    from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils import detect_device, get_library_version, logger
 
@@ -424,9 +442,9 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    ##must set this before import torch
-    set_cuda_visible_devices(args.device)
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
+    # Must set this before import torch
+    # set_cuda_visible_devices(args.device_map)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
 
@@ -446,8 +464,8 @@ def tune(args):
     if args.mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(
             model_name,
-            device=device_str,
-            use_auto_mapping=use_auto_mapping,
+            device="cpu",
+            use_auto_mapping=False,
             trust_remote_code=not args.disable_trust_remote_code,
             model_dtype=args.model_dtype,
         )
@@ -455,9 +473,9 @@ def tune(args):
     else:
         model, tokenizer, low_cpu_mem_usage = llm_load_model(
             model_name,
-            use_auto_mapping=use_auto_mapping,
+            use_auto_mapping=False,
             trust_remote_code=not args.disable_trust_remote_code,
-            device=device_str,
+            device="cpu",
             low_cpu_mem_mode=args.low_cpu_mem_mode,
             low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir,
             model_dtype=args.model_dtype,
@@ -493,9 +511,9 @@ def tune(args):
                 "auto_round" not in format
                 and "fake" not in format
                 and "awq" not in format
-                and "llmcompressor" not in format
+                and "llm_compressor" not in format
             ):
-                ##TODO gptq could support some mixed precision config
+                # TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
     lm_head_layer_name = "lm_head"
@@ -506,7 +524,7 @@ def tune(args):
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys
             for item in tied_keys:
-                if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
+                if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     logger.warning(
                         "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
@@ -533,13 +551,22 @@ def tune(args):
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
-
+    sym = None  # the default value should be None now
+    if args.asym:  # if the scheme is asym, how to set it to sym is an issue
+        sym = False
+    act_dynamic = None
+    if args.disable_act_dynamic:
+        act_dynamic = False
+    scheme = args.scheme.upper()
+    if scheme not in PRESET_SCHEMES:
+        raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
     autoround = round(
         model=model,
         tokenizer=tokenizer,
+        scheme=scheme,
         bits=args.bits,
         group_size=args.group_size,
-        sym=not args.asym,
+        sym=sym,
         batch_size=args.batch_size,
         dataset=args.dataset,
         seqlen=args.seqlen,
@@ -548,7 +575,6 @@ def tune(args):
         lr=args.lr,
         minmax_lr=args.minmax_lr,
         enable_quanted_input=not args.disable_quanted_input,
-        device=device_str,
         amp=not args.disable_amp,
         nsamples=args.nsamples,
         seed=args.seed,
@@ -566,7 +592,7 @@ def tune(args):
         to_quant_block_names=args.to_quant_block_names,
         enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
-        act_dynamic=not args.disable_act_dynamic,
+        act_dynamic=act_dynamic,
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
@@ -633,12 +659,8 @@ def tune(args):
     import time
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-    tmp_act_bits = infer_bits_by_data_type(args.act_data_type)
-    if tmp_act_bits is not None:
-        act_bits = tmp_act_bits
-    else:
-        act_bits = args.act_bits
-    if act_bits <= 8 or eval_gguf_model:
+
+    if autoround.act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
@@ -686,6 +708,7 @@ def tune(args):
                 tokenizer=tokenizer,
                 device=device_str,
                 tasks=args.tasks,
+                limit=args.limit,
                 batch_size=args.eval_bs,
                 eval_model_dtype=eval_model_dtype,
             )
@@ -704,6 +727,7 @@ def tune(args):
                 tokenizer,
                 tasks=tasks,
                 batch_size=args.eval_bs,
+                limit=args.limit,
                 device=device_str,
                 eval_model_dtype=eval_model_dtype,
                 add_bos_token=add_bos_token,
@@ -717,19 +741,25 @@ def tune(args):
                 device=device_str,
                 tasks=args.tasks,
                 batch_size=args.eval_bs,
+                limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
 
             tasks, model_args, device_str = _eval_init(
-                args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype
+                args.tasks, eval_folder, args.device_map, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
             if "llama" in args.model.lower():
                 model_args += ",add_bos_token=True"
             res = simple_evaluate(
-                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs
+                model="hf",
+                model_args=model_args,
+                tasks=tasks,
+                device=device_str,
+                batch_size=args.eval_bs,
+                limit=args.limit,
             )
             print(make_table(res))
             print("evaluation running time=%ds" % (time.time() - st))
@@ -753,7 +783,7 @@ def eval(args):
     import time
 
     tasks, model_args, device_str = _eval_init(
-        args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype
+        args.tasks, args.model, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
     )
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
@@ -791,7 +821,9 @@ def eval(args):
         )
         model.eval()
         st = time.time()
-        res = simple_evaluate_user_model(model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
+        res = simple_evaluate_user_model(
+            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit
+        )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
     else:
@@ -805,6 +837,7 @@ def eval(args):
             tasks=tasks,
             device=device_str,
             batch_size=batch_size,
+            limit=args.limit,
         )
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
@@ -818,6 +851,7 @@ def eval_task_by_task(
     tasks=None,
     tokenizer=None,
     batch_size=None,
+    limit=None,
     max_batch_size=64,
     trust_remote_code=True,
     eval_model_dtype=None,
@@ -890,7 +924,7 @@ def eval_task_by_task(
         while retry_times:
             try:
                 res = lm_simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size
+                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit
                 )
                 break
             except Exception as e:
@@ -902,7 +936,7 @@ def eval_task_by_task(
                             hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1
+                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1, limit=limit
                         )
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:

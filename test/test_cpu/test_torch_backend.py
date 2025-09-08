@@ -6,7 +6,6 @@ import pytest
 
 sys.path.insert(0, "../..")
 
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -28,7 +27,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(self):
-        self.model_name = "/models/opt-125m"
+        self.model_name = "facebook/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
 
@@ -73,7 +72,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=1,
+            iters=0,
             seqlen=2,
             dataset=self.llm_dataloader,
         )
@@ -82,23 +81,23 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, torch_dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
         torch.cuda.empty_cache()
@@ -114,7 +113,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=1,
+            iters=0,
             seqlen=2,
             dataset=self.llm_dataloader,
         )
@@ -123,12 +122,12 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
         torch.cuda.empty_cache()

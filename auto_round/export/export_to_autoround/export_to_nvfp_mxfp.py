@@ -24,8 +24,10 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
     filter_quantization_config,
@@ -39,7 +41,6 @@ from auto_round.utils import (
 from auto_round.wrapper import WrapperWALayer
 
 from .qlinear_fp import QuantLinear
-from .utils import check_neq_config
 
 __all__ = [
     "pack_layer",
@@ -47,11 +48,10 @@ __all__ = [
 ]
 
 
-def pack_layer(name, model, backend):
+def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
     layer = get_module(model, name)
-
     if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
@@ -60,6 +60,7 @@ def pack_layer(name, model, backend):
         layer = wp_layer.orig_layer
         set_module(model, name, layer)
 
+    orig_device = layer.weight.device
     data_type = layer.data_type
     act_bits = layer.act_bits
     act_data_type = layer.act_data_type
@@ -68,14 +69,13 @@ def pack_layer(name, model, backend):
         return
     group_size = layer.group_size
     sym = layer.sym
-    device = layer.weight.device
 
     if is_nv_fp(act_data_type) and act_bits <= 8:
         if not getattr(layer, "input_global_scale", None):
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
 
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")  # , model.device
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")
             setattr(layer, "input_global_scale", input_global_scale)
             delattr(layer, "act_max")
 
@@ -106,19 +106,16 @@ def pack_layer(name, model, backend):
         act_data_type=act_data_type,
     )
 
-    new_layer.device = device
+    new_layer.device = orig_device
     set_module(model, name, new_layer)
     qlayer = new_layer
     scale = layer.scale
     global_scale = getattr(layer, "weight_global_scale", None)
     input_global_scale = getattr(layer, "input_global_scale", None)
     # zero = layer.zp
-    # so far can only pack layer on CPU
-    qlayer.to("cpu")
-    layer, scale = layer.to("cpu"), scale.to("cpu")
-    qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale)
+    qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
     ## no zeros to handle, as mxfp not support asym quantization
-    qlayer.to(device)
+    qlayer.to(orig_device)
 
 
 def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
@@ -144,6 +141,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         ValueError: If the backend is not supported.
     """
     model = kwargs["model"]
+    device = kwargs.get("device", None)
     backend = kwargs.get("backend", None)
     bits = kwargs.get("bits", None)
     data_type = kwargs.get("data_type", None)
@@ -157,8 +155,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
     quantization_config["packing_format"] = backend
-    quantization_config["scale_format"] = ("e8m0",)
-    quantization_config["scale_calculation_mode"] = ("even",)
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -205,12 +201,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
-                layer_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                act_bits=quantization_config["act_bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
+                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
             )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
@@ -229,7 +220,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend)
+                    pack_layer(name, model, backend, device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):

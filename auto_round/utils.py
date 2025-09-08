@@ -54,7 +54,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
-            "llmcompressor",
+            "llm_compressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -435,7 +435,11 @@ def get_block_names(model, quant_vision=False):
         return block_names
 
     def _get_vlm_block_names(model, quant_vision=False):
-        if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "model_type")
+            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
+        ):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
@@ -547,7 +551,7 @@ def detect_device_count():
             return 0
 
 
-def detect_device(device=None):
+def detect_device(device: Union[str, int, torch.device] = None) -> str:
     """Detects the appropriate computation device.
 
     This function determines the device to use for computations. It can take
@@ -573,6 +577,10 @@ def detect_device(device=None):
     dev_idx = None
     if is_valid_digit(device):
         dev_idx = int(device)
+        device = "auto"
+    if isinstance(device, str) and "," in device:  # device is "0,1,2"
+        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
+        dev_idx = device_list[0] if device_list else None
         device = "auto"
     if device is None or device == "auto":
         if torch.cuda.is_available():
@@ -1422,6 +1430,8 @@ def llm_load_model(
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
+    if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
+        logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
     if low_cpu_mem_tmp_dir is None:
         low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
@@ -2191,8 +2201,13 @@ def get_reciprocal(tensor):
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
 
-def check_need_act_calibration(is_act_dynamic, act_data_type=None):
-    if not is_act_dynamic:
+def check_need_act_calibration(
+    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: int = 16
+) -> bool:
+    if act_bits > 8:
+        return False
+    # None is dynamic
+    if is_act_dynamic is not None and not is_act_dynamic:
         return True
     if act_data_type is not None and "static" in act_data_type:
         return True
@@ -2552,3 +2567,116 @@ def is_static_wfp8afp8(ar):
     if is_wfp8afp8(ar):
         return True
     return False
+
+
+def bytes_to_gigabytes(bytes) -> int:
+    """
+    Converts bytes to gigabytes.
+
+    Args:
+        bytes (int): The number of bytes.
+
+    Returns:
+        int: The equivalent number of gigabytes.
+    """
+    return bytes / 1024 / 1024 / 1024
+
+
+def get_device_memory(i: int = 0) -> int:
+    """
+    Gets the available memory on the specified device.
+
+    Args:
+        i (int, optional): Device index. Defaults to 0.
+
+    Returns:
+        int: Available memory in gigabytes.
+    """
+    if torch.cuda.is_available():
+        total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
+    elif torch.xpu.is_available():
+        raise RuntimeError("XPU does not support device_map='auto' currently.")
+    else:
+        raise RuntimeError("No supported device found (CUDA or XPU).")
+    return total_memory
+
+
+def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: list[torch.Tensor]) -> tuple[float, float]:
+    """
+    Calculates the memory consumption of a specific block in the model.
+
+    Args:
+        block (torch.nn.Module): The block of the model to analyze.
+        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - block_memory (float): The memory consumption (in GB) of the block's linear layers.
+            - input_output_memory (float): The memory consumption (in GB) for input and output
+                tensors of the block.
+    """
+    # Calculate all block parameters memory
+    total_param_mem = 0
+    for name, module in block.named_modules():
+        if check_to_quantized(module):
+            param_size = module.weight.nbytes
+            total_param_mem += param_size
+    block_memory = total_param_mem / 1024**3  # Convert to GB
+
+    # Assuming bfloat16 or float32, input and output
+    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    return block_memory, input_output_memory
+
+
+def get_max_vram(ratio: float = 0.9) -> dict:
+    max_memory = {}
+    if torch.cuda.is_available():  # NVIDIA CUDA
+        num_devices = torch.cuda.device_count()
+        for i in range(num_devices):
+            total_mem = torch.cuda.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+    elif torch.xpu.is_available():  # TODO need verification
+        num_devices = torch.xpu.device_count()
+        for i in range(num_devices):
+            total_mem = torch.xpu.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+
+    else:
+        raise RuntimeError("No CUDA or XPU devices found.")
+    return max_memory
+
+
+def _get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
+    """
+    Selects the packing device.
+    - "auto": choose best available (CUDA > XPU > CPU).
+    - str: parsed by torch.device (e.g., "cuda:2", "cpu").
+    - torch.device: returned as-is.
+    - None: treated as "auto".
+
+    Args:
+        device: Target device spec ("auto", "cuda:0", "xpu:0", "cpu", or torch.device).
+
+    Returns:
+        torch.device: The resolved device.
+    """
+    if device is None or (isinstance(device, str) and device.lower() == "auto"):
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return torch.device("xpu:0")
+        return torch.device("cpu")
+
+    if isinstance(device, torch.device):
+        return device
+
+    if isinstance(device, str):
+        try:
+            return torch.device(device)
+        except Exception as e:
+            raise ValueError(f"Invalid device string: {device}") from e
+
+    raise TypeError(f"Unsupported device type: {type(device)} ({device})")

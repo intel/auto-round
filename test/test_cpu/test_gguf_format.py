@@ -54,7 +54,15 @@ class TestGGUF(unittest.TestCase):
     def test_q4_0(self):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            data_type="int",
+            nsamples=1,
+            seqlen=8,
         )
         quantized_model_path = "./saved"
 
@@ -101,6 +109,7 @@ class TestGGUF(unittest.TestCase):
             # sym=sym,
             iters=1,
             nsamples=1,
+            seqlen=10,
             # data_type="int"
         )
         quantized_model_path = "./saved"
@@ -197,6 +206,7 @@ class TestGGUF(unittest.TestCase):
             sym=True,
             iters=0,
             nsamples=8,
+            seqlen=2,
             data_type="rtn_int_sym_dq",
             super_group_size=16,
             super_bits=6,
@@ -242,10 +252,8 @@ class TestGGUF(unittest.TestCase):
                 "group_size": 32,
                 "sym": False,
                 "data_type": "int_asym_dq",
-                "scale_dtype": torch.float32,
                 "super_bits": 6,
                 "super_group_size": 8,
-                "in_blocks": False,
             },
             "model.embed_tokens": {"bits": 6, "group_size": 32, "super_bits": 6, "super_group_size": 8},
             "model.layers.12.mlp.gate_proj": {"bits": 3},

@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -40,7 +41,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode.")
 
-        self.add_argument("--bits", default=4, type=int, help="weight bits")
+        self.add_argument(
+            "--scheme",
+            default="W4A16",
+            type=str,
+            help="quantization scheme",
+        )
+
+        self.add_argument("--bits", default=None, type=int, help="number of weight bits")
+        self.add_argument("--group_size", default=None, type=int, help="group size")
+        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
+        self.add_argument("--data_type", "--dtype", default=None, help="data type for tuning, 'int', 'mx_fp' and etc")
+        self.add_argument("--act_bits", default=None, type=int, help="activation bits")
 
         self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
 
@@ -55,8 +67,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "allowing for automatic detection and switch to HPU or CPU."
             "set --device 0,1,2 to use multiple cards.",
         )
-
-        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
 
         self.add_argument(
             "--dataset",
@@ -90,8 +100,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--low_gpu_mem_usage", action="store_true", help="offload intermediate features to cpu")
 
         self.add_argument("--format", default="auto_round", type=str, help="the format to save the model")
-
-        self.add_argument("--data_type", "--dtype", default="int", help="data type for tuning, 'int', 'mx_fp' and etc")
 
         self.add_argument(
             "--scale_dtype",
@@ -153,8 +161,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="force to convert the dtype, some backends supports fp16 dtype better",
         )
-
-        self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
         self.add_argument("--fp_layers", default="", type=str, help="layers to maintain original data type")
 
@@ -220,8 +226,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
 def setup_parser():
     parser = BasicArgumentParser()
-
-    parser.add_argument("--group_size", default=128, type=int, help="group size")
 
     parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
 
@@ -323,9 +327,9 @@ def tune(args):
         if format not in SUPPORTED_FORMATS:
             raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
-    ##must set this before import torch
-    set_cuda_visible_devices(args.device)
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
+    # Must set this before import torch
+    # set_cuda_visible_devices(args.device_map)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
 
@@ -342,8 +346,9 @@ def tune(args):
 
     model, processor, tokenizer, image_processor = mllm_load_model(
         model_name,
+        device="cpu",
         torch_dtype=torch_dtype,
-        use_auto_mapping=use_auto_mapping,
+        use_auto_mapping=False,
         trust_remote_code=not args.disable_trust_remote_code,
         model_dtype=args.model_dtype,
     )
@@ -438,16 +443,26 @@ def tune(args):
         "trust_remote_code": not args.disable_trust_remote_code,
         "model_dtype": args.model_dtype,
     }
+
+    sym = None  # the default value should be None now
+    if args.asym:  # if the scheme is asym, how to set it to sym is an issue
+        sym = False
+
+    scheme = args.scheme.upper()
+    if scheme not in PRESET_SCHEMES:
+        raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
+
     autoround = round(
         model,
         tokenizer,
+        scheme=args.scheme,
         processor=processor,
         image_processor=image_processor,
         dataset=args.dataset,
         extra_data_dir=args.extra_data_dir,
         bits=args.bits,
         group_size=args.group_size,
-        sym=not args.asym,
+        sym=sym,
         batch_size=args.batch_size,
         seqlen=seqlen,
         nblocks=args.nblocks,
@@ -459,7 +474,6 @@ def tune(args):
         truncation=args.truncation,
         nsamples=args.nsamples,
         low_gpu_mem_usage=args.low_gpu_mem_usage,
-        device=device_str,
         seed=args.seed,
         gradient_accumulate_steps=args.gradient_accumulate_steps,
         scale_dtype=args.scale_dtype,
@@ -503,8 +517,8 @@ def tune(args):
 
 
 def vlmeval(args):
-    set_cuda_visible_devices(args.device)
-    device_str, parallelism = get_device_and_parallelism(args.device)
+    set_cuda_visible_devices(args.device_map)
+    device_str, parallelism = get_device_and_parallelism(args.device_map)
     if parallelism:
         os.environ["AUTO_SPLIT"] = "1"
     if isinstance(args.tasks, str):
@@ -582,8 +596,8 @@ def setup_lmms_parser():
 
 
 def lmms_eval(args):
-    set_cuda_visible_devices(args.device)
-    device_str, parallelism = get_device_and_parallelism(args.device)
+    set_cuda_visible_devices(args.device_map)
+    device_str, parallelism = get_device_and_parallelism(args.device_map)
 
     from auto_round.mllm import lmms_eval
 
