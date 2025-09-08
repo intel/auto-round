@@ -19,13 +19,14 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
+from auto_round.utils import LazyImport
 from auto_round.diffusion.diffusion_dataset import get_diffusion_dataloader
 
+metrics = LazyImport("torchmetrics.multimodal")
+reward = LazyImport("ImageReward")
 
 def compute_clip(prompts, images, device: str = "cuda"):
-    from torchmetrics.multimodal import CLIPScore
-
-    clip_model = CLIPScore(model_name_or_path="openai/clip-vit-large-patch14").to(device)
+    clip_model = metrics.CLIPScore(model_name_or_path="openai/clip-vit-large-patch14").to(device)
     for prompt, img_path in tqdm(zip(prompts, images), desc="Computing CLIP score"):
         image_data = Image.open(img_path).convert("RGB")
         image_tensor = torch.from_numpy(np.array(image_data)).permute(2, 0, 1)
@@ -35,9 +36,7 @@ def compute_clip(prompts, images, device: str = "cuda"):
 
 
 def compute_clip_iqa(prompts, images, device: str = "cuda"):
-    from torchmetrics.multimodal import CLIPImageQualityAssessment
-
-    clip_model = CLIPImageQualityAssessment(model_name_or_path="openai/clip-vit-large-patch14").to(device)
+    clip_model = metrics.CLIPImageQualityAssessment(model_name_or_path="openai/clip-vit-large-patch14").to(device)
     for prompt, img_path in tqdm(zip(prompts, images), desc="Computing CLIP-IQA score"):
         image_data = Image.open(img_path).convert("RGB")
         image_tensor = torch.from_numpy(np.array(image_data)).permute(2, 0, 1)
@@ -47,9 +46,7 @@ def compute_clip_iqa(prompts, images, device: str = "cuda"):
 
 
 def compute_image_reward_metrics(prompts, images, device="cuda"):
-    import ImageReward
-
-    image_reward_model = ImageReward.load("ImageReward-v1.0", device=device)
+    image_reward_model = reward.load("ImageReward-v1.0", device=device)
     scores = []
     for prompt, img_path in tqdm(zip(prompts, images), desc="Computing image reward metrics"):
         score = image_reward_model.score(prompt, img_path)
@@ -73,7 +70,7 @@ def diffusion_eval(
     batch_size,
     gen_kwargs,
 ):
-    dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=-1, bs=batch_size)
+    dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=2, bs=batch_size)
     prompt_list = []
     image_list = []
     for image_ids, prompts in dataloader:

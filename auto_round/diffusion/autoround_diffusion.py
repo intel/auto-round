@@ -589,7 +589,7 @@ class AutoRoundDiffusion(AutoRound):
             logger.info(dump_info)
             unwrapper_block(block, {})  ## TODO Quant layer should change
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            return output, output
+            return output, output_others, output, output_others
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(

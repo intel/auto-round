@@ -1643,16 +1643,18 @@ def mllm_load_model(
     return model, processor, tokenizer, image_processor
 
 
-def diffuison_load_model(
+def diffusion_load_model(
     pretrained_model_name_or_path,
     device="cpu",
     torch_dtype="auto",
     model_dtype=None,
     **kwargs,
 ):
-    from diffusers import AutoPipelineForText2Image
+    pipelines = LazyImport("diffusers.pipelines")
 
-    pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path, torch_dtype=torch_dtype)
+    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+            pretrained_model_name_or_path, torch_dtype=torch_dtype
+    )
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
     return pipe, model.to(device)

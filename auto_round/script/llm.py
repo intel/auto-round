@@ -474,11 +474,18 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.utils import diffuison_load_model, llm_load_model, mllm_load_model
+    from auto_round.utils import diffusion_load_model, llm_load_model, mllm_load_model
 
     if args.mllm:
-        if os.path.exists(os.path.join(model_name, "model_index.json")):
-            pipe, model = diffuison_load_model(
+        if not os.path.isdir(model_name):
+            try:
+                from huggingface_hub import hf_hub_download
+                index_file = hf_hub_download(model_name, "model_index.json")
+            except:
+                index_file = None
+
+        if os.path.exists(os.path.join(model_name, "model_index.json")) or index_file is not None:
+            pipe, model = diffusion_load_model(
                 model_name,
                 device="cpu",
                 model_dtype=args.model_dtype,
