@@ -111,7 +111,9 @@ def _handle_special_model(model):
     return model
 
 
-def _handle_moe_model(model):
+def _handle_moe_model(model, formats=None):
+    if formats is not None and any(["gguf" in format_ for format_ in formats]):
+        return model
     if hasattr(model.config, "model_type") and model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
         from tqdm import tqdm
 
