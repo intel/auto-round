@@ -275,8 +275,6 @@ class AutoRound(object):
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
 
-
-
         # Model related
         self.quantized = False
         if isinstance(model, str):
