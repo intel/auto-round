@@ -220,9 +220,7 @@ This setting provides the best accuracy in most scenarios but is 4–5× slower 
 from auto_round import AutoRound
 
 model_name_or_path = "facebook/opt-125m"
-ar = AutoRound(
-    model=model_name_or_path, scheme="W4A16", nsamples=512, iters=1000, low_gpu_mem_usage=True
-)
+ar = AutoRound(model=model_name_or_path, scheme="W4A16", nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_round")
@@ -374,6 +372,7 @@ quantizing the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
 ```python
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 model_name = "opensourcerelease/DeepSeek-R1-bf16"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -384,16 +383,23 @@ device_map = {}
 
 for n, m in block.named_modules():
     if isinstance(m, (torch.nn.Linear)):
-        if "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) < 63:
+        if "experts" in n and ("shared_experts" not in n) and int(n.split(".")[-2]) < 63:
             device = "cuda:1"
-        elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 63 and int(
-                n.split('.')[-2]) < 128:
+        elif (
+            "experts" in n
+            and ("shared_experts" not in n)
+            and int(n.split(".")[-2]) >= 63
+            and int(n.split(".")[-2]) < 128
+        ):
             device = "cuda:2"
-        elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 128 and int(
-                n.split('.')[-2]) < 192:
+        elif (
+            "experts" in n
+            and ("shared_experts" not in n)
+            and int(n.split(".")[-2]) >= 128
+            and int(n.split(".")[-2]) < 192
+        ):
             device = "cuda:3"
-        elif "experts" in n and ("shared_experts" not in n) and int(
-                n.split('.')[-2]) >= 192:
+        elif "experts" in n and ("shared_experts" not in n) and int(n.split(".")[-2]) >= 192:
             device = "cuda:4"
         else:
             device = "cuda:0"
@@ -403,9 +409,15 @@ for n, m in block.named_modules():
 
 from auto_round import AutoRound
 
-autoround = AutoRound(model=model, tokenizer=tokenizer, device_map=device_map, nsamples=512,
-                      batch_size=4, low_gpu_mem_usage=True, seqlen=2048,
-                      )
+autoround = AutoRound(
+    model=model,
+    tokenizer=tokenizer,
+    device_map=device_map,
+    nsamples=512,
+    batch_size=4,
+    low_gpu_mem_usage=True,
+    seqlen=2048,
+)
 autoround.quantize()
 autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 ```
