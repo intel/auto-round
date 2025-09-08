@@ -297,7 +297,6 @@ class AutoRound(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-        # Check and convert to dict
         self._parse_layer_config(layer_config)  # must place after model init
 
         self.to_quant_block_names = to_quant_block_names

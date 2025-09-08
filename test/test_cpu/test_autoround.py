@@ -672,6 +672,12 @@ class TestAutoRound(unittest.TestCase):
             layer_config = {"model.decoder.layers.2.self_attn": {"bit": 2}}  # should be bits
             ar = AutoRound("facebook/opt-125m", scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
 
+    def test_quant_lm_head(self):
+        model_name = "facebook/opt-125m"
+        ar = AutoRound(model_name, quant_lm_head=True)
+        ar.quantize()
+
+
 
 if __name__ == "__main__":
     unittest.main()
