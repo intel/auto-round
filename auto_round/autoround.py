@@ -177,7 +177,7 @@ class AutoRound(object):
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
-                - enable_alg_ext, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, low_cpu_mem_usage, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
@@ -226,15 +226,16 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
+        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         # Scale factor for RAM usage per parameter.
         self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         if device_map is None:
             device_map = 0
@@ -296,31 +297,9 @@ class AutoRound(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-        # Some other quantization configs
-        self.layer_config = {} if layer_config is None else layer_config
-        # Check and convert to dict
-        for key, item in self.layer_config.items():
-            if isinstance(item, str):
-                item = asdict(preset_name_to_scheme(item.upper()))
-                self.layer_config[key] = item
 
-            if isinstance(item, QuantizationScheme):
-                config = asdict(item)
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  ## Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
-                self.layer_config[key] = config
-            elif isinstance(item, dict):
-                item_keys = item.keys()
-                expected_keys = list(QuantizationScheme.__annotations__.keys())
-                if item_keys not in expected_keys:
-                    for item_key in item_keys:
-                        if item_key not in expected_keys:
-                            raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {expected_keys} are supported"
-                            )
+        # Check and convert to dict
+        self._parse_layer_config(layer_config) # must place after model init
 
         self.to_quant_block_names = to_quant_block_names
 
@@ -410,45 +389,9 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-        self.serialization_keys = [
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "seqlen",
-            "batch_size",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "nsamples",
-            "low_gpu_mem_usage",
-            "to_quant_block_names",
-            "enable_norm_bias_tuning",
-            "act_bits",
-            "act_group_size",
-            "act_sym",
-            "act_dynamic",
-            "act_data_type",
-            "super_bits",
-            "super_group_size",
-        ]
 
-    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> None:
-        """Parse and set the quantization scheme."""
-        if isinstance(scheme, QuantizationScheme):
-            scheme = asdict(scheme)
-        elif isinstance(scheme, dict):
-            scheme = scheme
-        elif isinstance(scheme, str):
-            scheme = scheme.upper()
-            self.scheme = scheme
-            scheme = asdict(preset_name_to_scheme(scheme))
 
+    def _get_scheme_keys(self)->tuple[str]:
         scheme_keys = (
             "bits",
             "group_size",
@@ -462,7 +405,72 @@ class AutoRound(object):
             "super_bits",
             "super_group_size",
         )
+        return  scheme_keys
+
+    def _parse_layer_config(self, layer_config:dict[str, Union[str, dict, QuantizationScheme]])->None:
+        """Parse and set the layer-wise quantization configuration."""
+        # Some other quantization configs
+        self.layer_config = {} if layer_config is None else layer_config
+        for key, item in self.layer_config.items():
+            if isinstance(item, str):
+                item = asdict(preset_name_to_scheme(item.upper()))
+                self.layer_config[key] = item
+
+            if isinstance(item, QuantizationScheme):
+                config = asdict(item)
+                tmp_keys = copy.deepcopy(list(config.keys()))
+                for tmp_key in tmp_keys:  ## Pop None value to be overridden
+                    if config[tmp_key] is None:
+                        config.pop(tmp_key)
+                self.layer_config[key] = config
+            elif isinstance(item, dict):
+                item_keys = item.keys()
+                expected_keys = list(QuantizationScheme.__annotations__.keys())
+                if item_keys not in expected_keys:
+                    for item_key in item_keys:
+                        if item_key not in expected_keys:
+                            raise ValueError(
+                                f"the key {item_key} in layer_config for layer {key} is invalid,"
+                                f" only {expected_keys} are supported"
+                            )
+
+        scheme_keys = self._get_scheme_keys()
+        if not self.quant_lm_head:
+            False
+        for n, _ in self.model.named_modules():
+            lm_head_layer_name = n
+
+        if (hasattr(self.model,"config") and self.model.config.tie_word_embeddings and
+                hasattr(self.model, "_tied_weights_keys")):
+            tied_keys = self.model._tied_weights_keys
+            for item in tied_keys:
+                if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
+                    self.quant_lm_head = False
+                    logger.warning(
+                        "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
+                        "supported currently"
+                    )
+                    break
+
+        lm_head_layer_config = self.layer_config[lm_head_layer_name] if lm_head_layer_name in self.layer_config else {}
+
         for key in scheme_keys:
+            if not key in lm_head_layer_config:
+                lm_head_layer_config[key] = getattr(self, key)
+
+    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> None:
+        """Parse and set the quantization scheme."""
+        if isinstance(scheme, QuantizationScheme):
+            scheme = asdict(scheme)
+        elif isinstance(scheme, dict):
+            scheme = scheme
+        elif isinstance(scheme, str):
+            scheme = scheme.upper()
+            self.scheme = scheme
+            scheme = asdict(preset_name_to_scheme(scheme))
+
+
+        for key in self._get_scheme_keys():
             if key in kwargs and kwargs[key] is not None:
                 setattr(self, key, kwargs[key])
             else:
@@ -3047,11 +3055,37 @@ class AutoRound(object):
             )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
-
+        serialization_keys = [
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "enable_quanted_input",
+            "enable_minmax_tuning",
+            "seqlen",
+            "batch_size",
+            "scale_dtype",
+            "lr",
+            "minmax_lr",
+            "gradient_accumulate_steps",
+            "iters",
+            "amp",
+            "nsamples",
+            "low_gpu_mem_usage",
+            "to_quant_block_names",
+            "enable_norm_bias_tuning",
+            "act_bits",
+            "act_group_size",
+            "act_sym",
+            "act_dynamic",
+            "act_data_type",
+            "super_bits",
+            "super_group_size",
+        ]
         if isinstance(self.dataset, str):
-            self.serialization_keys.append("dataset")
+            serialization_keys.append("dataset")
         serialization_dict = {}
-        for key in self.serialization_keys:
+        for key in serialization_keys:
             serialization_dict[key] = getattr(self, key)
         from .version import __version__
 
