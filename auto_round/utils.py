@@ -2712,4 +2712,3 @@ def copy_python_files_from_model_cache(model, save_path: str):
             if file.endswith(".py") and os.path.isfile(full_file_name):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
-
