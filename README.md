@@ -172,7 +172,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 # Available schemes: "W2A16", "W3A16", "W4A16", "NVFP4", "MXFP4" (no real kernels), "GGUF:Q4_K_M", etc.
 ar = AutoRound(model_name_or_path, scheme="W4A16")
 
-# Highest accuracy (4–5× slower). 
+# Highest accuracy (4–5× slower).
 # `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30% slower.
 # ar = AutoRound(model_name_or_path, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
