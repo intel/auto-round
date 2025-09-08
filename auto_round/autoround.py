@@ -297,9 +297,8 @@ class AutoRound(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-
         # Check and convert to dict
-        self._parse_layer_config(layer_config) # must place after model init
+        self._parse_layer_config(layer_config)  # must place after model init
 
         self.to_quant_block_names = to_quant_block_names
 
@@ -389,9 +388,7 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-
-
-    def _get_scheme_keys(self)->tuple[str]:
+    def _get_scheme_keys(self) -> tuple[str]:
         scheme_keys = (
             "bits",
             "group_size",
@@ -405,9 +402,9 @@ class AutoRound(object):
             "super_bits",
             "super_group_size",
         )
-        return  scheme_keys
+        return scheme_keys
 
-    def _parse_layer_config(self, layer_config:dict[str, Union[str, dict, QuantizationScheme]])->None:
+    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
         """Parse and set the layer-wise quantization configuration."""
         # Some other quantization configs
         self.layer_config = {} if layer_config is None else layer_config
@@ -440,8 +437,11 @@ class AutoRound(object):
         for n, _ in self.model.named_modules():
             lm_head_layer_name = n
 
-        if (hasattr(self.model,"config") and self.model.config.tie_word_embeddings and
-                hasattr(self.model, "_tied_weights_keys")):
+        if (
+            hasattr(self.model, "config")
+            and self.model.config.tie_word_embeddings
+            and hasattr(self.model, "_tied_weights_keys")
+        ):
             tied_keys = self.model._tied_weights_keys
             for item in tied_keys:
                 if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
@@ -455,7 +455,7 @@ class AutoRound(object):
         lm_head_layer_config = self.layer_config[lm_head_layer_name] if lm_head_layer_name in self.layer_config else {}
 
         for key in scheme_keys:
-            if not key in lm_head_layer_config:
+            if key not in lm_head_layer_config:
                 lm_head_layer_config[key] = getattr(self, key)
 
     def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> None:
@@ -468,7 +468,6 @@ class AutoRound(object):
             scheme = scheme.upper()
             self.scheme = scheme
             scheme = asdict(preset_name_to_scheme(scheme))
-
 
         for key in self._get_scheme_keys():
             if key in kwargs and kwargs[key] is not None:
