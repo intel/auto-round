@@ -19,7 +19,7 @@ AutoRound
 AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
 It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. 
 For more details, see our [paper](https://arxiv.org/pdf/2309.05516) for more details and explore quantized models available on several Hugging Face Spaces, e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
-and [fbaldassarri](https://huggingface.co/fbaldassarri).For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
+and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -114,14 +114,13 @@ pip install auto-round-lib
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
-### Command Line Usage
+### CLI Usage
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \
     --model Qwen/Qwen3-0.6B \
-    --bits 4 \
-    --group_size 128 \
+    --scheme "W4A16" \
     --format "auto_gptq,auto_awq,auto_round" \
     --output_dir ./tmp_autoround
 ```
@@ -134,8 +133,7 @@ We offer another two configurations, `auto-round-best` and `auto-round-light`, d
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 auto-round-best \
     --model Qwen/Qwen3-0.6B \
-    --bits 4 \
-    --group_size 128 \
+    --scheme "W4A16" \
     --low_gpu_mem_usage 
   ```
 
@@ -143,8 +141,7 @@ auto-round-best \
 ## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
 auto-round-light \
     --model Qwen/Qwen3-0.6B \
-    --bits 4 \
-    --group_size 128 \
+    --scheme "W4A16" 
 
   ```
 
@@ -158,7 +155,7 @@ auto-round-fast \
 
 </details>
 
-In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
+In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `enable_alg_ext` for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
 ### API Usage
@@ -166,7 +163,7 @@ configuration to suit your specific requirements and available resources.
 ```python
 from auto_round import AutoRound
 
-# Load a model (supports BF16/FP16/FP8/FP32)
+# Load a model (supports FP8/BF16/FP16/FP32)
 model_name_or_path = "Qwen/Qwen3-0.6B"
 
 # Available schemes: "W2A16", "W3A16", "W4A16", "W8A16", "NVFP4", "MXFP4" (no real kernels), "GGUF:Q4_K_M", etc.
@@ -174,14 +171,14 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 
 # Highest accuracy (4–5× slower).
 # `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30% slower.
-# ar = AutoRound(model_name_or_path, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True)
+# ar = AutoRound(model_name_or_path, nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 # Faster quantization (2–3× speedup) with slight accuracy drop at W4G128.
-# ar = AutoRound(model_name_or_path, tokenizer, nsamples=128, iters=50, lr=5e-3)
+# ar = AutoRound(model_name_or_path, nsamples=128, iters=50, lr=5e-3)
 
 # Save quantized model
 output_dir = "./tmp_autoround"
-# Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m"
+# Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m", etc.
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
