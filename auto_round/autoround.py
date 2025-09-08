@@ -809,9 +809,8 @@ class AutoRound(object):
             seen = set()
             return [x for x in lst if not (x in seen or seen.add(x))]
 
-
         formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
-        formats = remove_duplicates(formats) # need the keep origin order
+        formats = remove_duplicates(formats)  # need the keep origin order
 
         if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
             for i in range(len(formats)):
@@ -881,7 +880,6 @@ class AutoRound(object):
             else:
                 if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
                     logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
-
 
         formats = remove_duplicates(formats)
         for i in range(len(formats)):
