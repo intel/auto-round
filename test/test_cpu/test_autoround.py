@@ -678,6 +678,5 @@ class TestAutoRound(unittest.TestCase):
         ar.quantize()
 
 
-
 if __name__ == "__main__":
     unittest.main()
