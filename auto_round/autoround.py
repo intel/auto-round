@@ -32,7 +32,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -59,9 +59,11 @@ from auto_round.utils import (
     convert_fp8_layer_to_linear,
     convert_fp8_model_to_16b_model,
     detect_device,
+    estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
     get_block_names,
+    get_device_memory,
     get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
@@ -230,19 +232,20 @@ class AutoRound(object):
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
 
+        # Scale factor for RAM usage per parameter.
+        self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+
+
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
-        if device_map is not None and "," in str(device_map):
-            raise ValueError(
-                "API does not support explicit set multiple devices," " please set CUDA_VISIBLE_DEVICES=0,1 yourself"
-            )
         if device_map is None:
             device_map = 0
 
         # Set device, must place after model loading
         if isinstance(device_map, (str, torch.device, int)):
             self.device = detect_device(device_map)
+
         elif isinstance(device_map, dict) and device_map:
             tmp_devices = []
             for val in device_map.values():
@@ -259,8 +262,12 @@ class AutoRound(object):
 
             self.device = tmp_devices[0]
 
-        if isinstance(device_map, dict) and device_map:
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
             self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
         else:
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
@@ -544,6 +551,8 @@ class AutoRound(object):
             self.device_map = None
         if not device_map:
             return
+        if self.device_map == "auto" and device_map == "auto":
+            return
         if isinstance(device_map, str):
             device_map = device_map.replace(" ", "")
             infos = device_map.split(",")
@@ -584,6 +593,71 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
+    def _set_auto_device_map_in_block(self, block: torch.nn.Module, input_ids: list[torch.Tensor]) -> None:
+        """Automatically sets the device map for the block based on available GPUs and memory constraints."""
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+        elif torch.xpu.is_available():
+            logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
+            return
+        else:
+            raise RuntimeError("No CUDA or XPU devices found.")
+        if num_gpus <= 1:
+            self.device_map = None
+            return
+
+        if hasattr(self, "device_list") and self.device_list:
+            cuda_devices = [f"cuda:{i}" for i in self.device_list]
+            device_0 = cuda_devices[0]
+        else:
+            cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
+            device_0 = "cuda:0"
+
+        device_0_memory = get_device_memory(
+            self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
+        )
+        block_memory, input_ouput_memory = estimate_tuning_block_mem(block, input_ids)
+        if self.low_gpu_mem_usage:
+            input_ouput_memory = 0
+
+        mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
+        if self.iters == 0:
+            mem_per_param_scale = 1  # for rtn
+
+        if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
+            return  # fit in one GPU
+
+        device_map = {}
+        device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
+        device_memory[device_0] = device_0_memory - input_ouput_memory
+
+        device_idx = 0
+        # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
+        for n, m in block.named_modules():
+            if check_to_quantized(m):
+                layer_name = block.tmp_name + "." + n
+                layer_memory = m.weight.nbytes / 1024**3
+                if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
+                elif device_idx == 0:
+                    device_idx += 1  # Move to the next device once device 0 is full
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
+                else:
+                    # Calculate the target device index based on even distribution
+                    sorted_devices = sorted(cuda_devices, key=lambda d: device_memory[d], reverse=True)
+                    device_idx = sorted_devices[0]
+                    if layer_memory * mem_per_param_scale < device_memory[device_idx]:
+                        device_map[layer_name] = device_idx
+                        device_memory[device_idx] -= layer_memory * mem_per_param_scale
+                    else:
+                        logger.warning_once(
+                            f"Block {block.tmp_name} not fit in available GPU memory. "
+                            "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
+                        )
+        self._set_device_map_in_blocks(device_map)
+
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
@@ -620,7 +694,7 @@ class AutoRound(object):
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
 
-        if self.act_bits <= 8:
+        if self.act_bits <= 8 and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
@@ -772,19 +846,21 @@ class AutoRound(object):
                         "for the current quantization configuration, "
                         "please change to `fake` format for research purpose"
                     )
-
                 formats[index] = format
-            elif format == "llmcompressor":
+            elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-                    format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+                    format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
                     logger.error(
-                        "Currently, the llmcompressor format only supports MXFP/NVFP/FP8. "
+                        "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
+            else:
+                if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
+                    logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -816,8 +892,13 @@ class AutoRound(object):
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
-                if format == "llmcompressor":
-                    if is_nv_fp(self.act_data_type):
+                if "llm_compressor" in format:
+                    if is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type:
+                        logger.warning(
+                            f"AutoRound supports exporting to format '{format}', "
+                            "but loading quantized models in this format is not yet supported. "
+                            "It is currently recommended to export to the 'llm_compressor' format."
+                        )
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
@@ -828,10 +909,11 @@ class AutoRound(object):
                         and self.act_dynamic
                     ), (
                         f"Currently only support to export llmcompressor format for dynamic quantized"
-                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
-                        f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
+                        f" W{bits}Afp{act_bits} model, but got bits={self.bits}, data_type={self.data_type}"
+                        f" group_size={self.group_size}, sym={self.sym}"
+                        f", act_bits={self.act_bits}, act_data_type={self.act_data_type}"
                     )
-                elif format != "fake" and not is_nv_fp(format):
+                elif format != "fake" and (not is_nv_fp(format) or "static_gs" not in self.act_data_type):
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
                         " with fp8 or nv_fp4 dtype activation for activation quantization."
@@ -1340,7 +1422,7 @@ class AutoRound(object):
                         model_type=model_type,
                     )
                 else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
 
                 # if self.low_gpu_mem_usage:
                 #     clear_memory()
@@ -1489,6 +1571,10 @@ class AutoRound(object):
                 block = block.to(self.device)
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
+
+                if self.device_map == "auto":
+                    self._set_auto_device_map_in_block(block, input_ids)
+
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -1514,8 +1600,6 @@ class AutoRound(object):
                 if (
                     is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
                 ) or is_static_wfp8afp8(self):
-                    from auto_round.utils import set_amax_for_all_moe_layers
-
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -1579,7 +1663,7 @@ class AutoRound(object):
                     or "gptq" in formats[0]
                     or "auto_round" in formats[0]
                     or "gguf" in formats[0]
-                    or "llmcompressor" in formats[0]
+                    or "llm_compressor" in formats[0]
                 )
                 and self.inplace
             ):
@@ -2027,11 +2111,11 @@ class AutoRound(object):
                 continue
             try:
                 if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
+                    self.model(data_new, use_cache=False)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new)
+                    self.model(*data_new, use_cache=False)
                 else:
-                    self.model(**data_new)
+                    self.model(**data_new, use_cache=False)
             except NotImplementedError:
                 pass
             except RuntimeError as error:
@@ -2556,6 +2640,9 @@ class AutoRound(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
+        if self.device_map == "auto":
+            self._set_auto_device_map_in_block(block, input_ids)
+
         if self.device_map is not None:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
@@ -2733,8 +2820,6 @@ class AutoRound(object):
             unwrapper_block(block, best_params)
 
         if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
-            from auto_round.utils import set_amax_for_all_moe_layers
-
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
@@ -2813,16 +2898,21 @@ class AutoRound(object):
             self.sym
             and self.enable_alg_ext
             and self.super_group_size is None
-            and ((self.data_type.startswith("int") and self.act_bits >= 8) or self.data_type.startswith("mx"))
+            and (
+                (self.data_type.startswith("int") and self.act_bits >= 8)
+                or self.data_type.startswith("mx")
+                or self.data_type.startswith("nv")
+            )
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-                if self.bits > 2 and not self.data_type.startswith("mx"):
+                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2 and mxfp4; use with caution."
+                        "algorithm extension has only undergone limited validation on "
+                        "INT2,mxfp4 and nvfp4; use with caution."
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")
@@ -2885,8 +2975,11 @@ class AutoRound(object):
                             model_type=model_type,
                         )
                     else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
-        pbar.update(1)
+                        PACKING_LAYER_WITH_FORMAT[target_backend](
+                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
+                        )
+        if pbar is not None:
+            pbar.update(1)
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
@@ -2936,8 +3029,8 @@ class AutoRound(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
-        if format == "llmcompressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-            format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+        if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -2991,6 +3084,7 @@ class AutoRound(object):
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
+            device=self.device,
             **kwargs,
         )
         return compressed_model

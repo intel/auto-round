@@ -54,7 +54,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
-            "llmcompressor",
+            "llm_compressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -596,6 +596,10 @@ def detect_device(device: Union[str, int, torch.device] = None) -> str:
     dev_idx = None
     if is_valid_digit(device):
         dev_idx = int(device)
+        device = "auto"
+    if isinstance(device, str) and "," in device:  # device is "0,1,2"
+        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
+        dev_idx = device_list[0] if device_list else None
         device = "auto"
     if device is None or device == "auto":
         if torch.cuda.is_available():
@@ -1445,6 +1449,8 @@ def llm_load_model(
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
+    if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
+        logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
     if low_cpu_mem_tmp_dir is None:
         low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
@@ -2599,6 +2605,66 @@ def is_static_wfp8afp8(ar):
     return False
 
 
+def bytes_to_gigabytes(bytes) -> int:
+    """
+    Converts bytes to gigabytes.
+
+    Args:
+        bytes (int): The number of bytes.
+
+    Returns:
+        int: The equivalent number of gigabytes.
+    """
+    return bytes / 1024 / 1024 / 1024
+
+
+def get_device_memory(i: int = 0) -> int:
+    """
+    Gets the available memory on the specified device.
+
+    Args:
+        i (int, optional): Device index. Defaults to 0.
+
+    Returns:
+        int: Available memory in gigabytes.
+    """
+    if torch.cuda.is_available():
+        total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
+    elif torch.xpu.is_available():
+        raise RuntimeError("XPU does not support device_map='auto' currently.")
+    else:
+        raise RuntimeError("No supported device found (CUDA or XPU).")
+    return total_memory
+
+
+def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: list[torch.Tensor]) -> tuple[float, float]:
+    """
+    Calculates the memory consumption of a specific block in the model.
+
+    Args:
+        block (torch.nn.Module): The block of the model to analyze.
+        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - block_memory (float): The memory consumption (in GB) of the block's linear layers.
+            - input_output_memory (float): The memory consumption (in GB) for input and output
+                tensors of the block.
+    """
+    # Calculate all block parameters memory
+    total_param_mem = 0
+    for name, module in block.named_modules():
+        if check_to_quantized(module):
+            param_size = module.weight.nbytes
+            total_param_mem += param_size
+    block_memory = total_param_mem / 1024**3  # Convert to GB
+
+    # Assuming bfloat16 or float32, input and output
+    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    return block_memory, input_output_memory
+
+
 def get_max_vram(ratio: float = 0.9) -> dict:
     max_memory = {}
     if torch.cuda.is_available():  # NVIDIA CUDA
@@ -2617,3 +2683,36 @@ def get_max_vram(ratio: float = 0.9) -> dict:
     else:
         raise RuntimeError("No CUDA or XPU devices found.")
     return max_memory
+
+
+def _get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
+    """
+    Selects the packing device.
+    - "auto": choose best available (CUDA > XPU > CPU).
+    - str: parsed by torch.device (e.g., "cuda:2", "cpu").
+    - torch.device: returned as-is.
+    - None: treated as "auto".
+
+    Args:
+        device: Target device spec ("auto", "cuda:0", "xpu:0", "cpu", or torch.device).
+
+    Returns:
+        torch.device: The resolved device.
+    """
+    if device is None or (isinstance(device, str) and device.lower() == "auto"):
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return torch.device("xpu:0")
+        return torch.device("cpu")
+
+    if isinstance(device, torch.device):
+        return device
+
+    if isinstance(device, str):
+        try:
+            return torch.device(device)
+        except Exception as e:
+            raise ValueError(f"Invalid device string: {device}") from e
+
+    raise TypeError(f"Unsupported device type: {type(device)} ({device})")

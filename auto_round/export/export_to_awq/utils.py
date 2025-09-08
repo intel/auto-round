@@ -39,6 +39,8 @@ import torch
 import torch.nn as nn
 from torch.autograd import Function
 
+from auto_round.utils import _get_packing_device
+
 
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
     shifts = torch.arange(0, 32, bits, device=qzeros.device)
@@ -190,7 +192,8 @@ class WQLinear_GEMM(nn.Module):
             self.bias = None
 
     @classmethod
-    def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None):
+    def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None, device=None):
+        device = _get_packing_device(device)
         awq_linear = cls(
             w_bit,
             group_size,
@@ -211,11 +214,6 @@ class WQLinear_GEMM(nn.Module):
             awq_linear.bias = linear.bias.clone().half()
 
         pack_num = 32 // awq_linear.w_bit
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
         repeat_size = group_size if group_size != -1 else linear.in_features
         repeat_scales = scales.to(device).t().repeat_interleave(repeat_size, 1)
         if isinstance(zeros, torch.Tensor):

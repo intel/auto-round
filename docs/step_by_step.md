@@ -133,8 +133,7 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
 
-**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
-supported**.
+**LlmCompressor Format**: **only INT8 W8A8 dynamic quantization is supported**.
 
 ### Hardware Compatibility
 
@@ -649,4 +648,5 @@ If not explicitly specify '--task', the default value will be used (typically co
 
 * Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
+
 

@@ -80,8 +80,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
 
-        self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
-
         self.add_argument(
             "--device_map",
             "--device",
@@ -106,6 +104,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="minmax learning rate, if None, it will beset to be the same with lr",
         )
 
+        self.add_argument(
+            "--mem_per_param_scale",
+            default=13,
+            type=float,
+            help="Scale factor for memory per parameter, used to adjust memory usage estimation for tuning",
+        )
+
         self.add_argument("--seed", default=42, type=int, help="random seed")
 
         self.add_argument("--adam", action="store_true", help="whether to use adam optimizer instead of SignSGD")
@@ -126,24 +131,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         self.add_argument(
-            "--tasks",
-            "--task",
-            nargs="?",
-            const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-            "openbookqa,boolq,arc_easy,arc_challenge",
-            default=None,
-            help="lm-eval tasks",
-        )
-
-        self.add_argument(
             "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model"
         )
-
-        self.add_argument(
-            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning"
-        )
-
-        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
 
         self.add_argument("--disable_amp", action="store_true", help="disable amp")
 
@@ -221,10 +210,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
-        )
-
-        self.add_argument(
             "--disable_opt_rtn",
             action="store_true",
             help="whether to disable optimization of the RTN mode(iters=0) (default is False).",
@@ -283,6 +268,37 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         self.add_argument(
             "--image_save_dir", default="./tmp_image_save", type=str, help="path to save generated images"
+
+        ## ======================= eval =======================
+        self.add_argument(
+            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning"
+        )
+
+        self.add_argument(
+            "--tasks",
+            "--task",
+            nargs="?",
+            const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
+            "openbookqa,boolq,arc_easy,arc_challenge",
+            default=None,
+            help="lm-eval tasks",
+        )
+
+        self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
+
+        self.add_argument(
+            "--limit",
+            type=float,
+            default=None,
+            metavar="N|0<N<1",
+            help="Limit the number of examples per task. "
+            "If <1, limit is a percentage of the total number of examples.",
+        )
+
+        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
+
+        self.add_argument(
+            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
         )
 
 
@@ -321,6 +337,14 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
         self.add_argument(
             "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+        )
+        self.add_argument(
+            "--limit",
+            type=float,
+            default=None,
+            metavar="N|0<N<1",
+            help="Limit the number of examples per task. "
+            "If <1, limit is a percentage of the total number of examples.",
         )
 
         ## ======================= diffusion model =======================
@@ -458,7 +482,7 @@ def tune(args):
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     # Must set this before import torch
-    set_cuda_visible_devices(args.device_map)
+    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
@@ -550,7 +574,7 @@ def tune(args):
                 "auto_round" not in format
                 and "fake" not in format
                 and "awq" not in format
-                and "llmcompressor" not in format
+                and "llm_compressor" not in format
             ):
                 # TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
@@ -783,6 +807,7 @@ def tune(args):
                 tokenizer=tokenizer,
                 device=device_str,
                 tasks=args.tasks,
+                limit=args.limit,
                 batch_size=args.eval_bs,
                 eval_model_dtype=eval_model_dtype,
             )
@@ -801,6 +826,7 @@ def tune(args):
                 tokenizer,
                 tasks=tasks,
                 batch_size=args.eval_bs,
+                limit=args.limit,
                 device=device_str,
                 eval_model_dtype=eval_model_dtype,
                 add_bos_token=add_bos_token,
@@ -814,6 +840,7 @@ def tune(args):
                 device=device_str,
                 tasks=args.tasks,
                 batch_size=args.eval_bs,
+                limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
             )
         else:
@@ -826,7 +853,12 @@ def tune(args):
             if "llama" in args.model.lower():
                 model_args += ",add_bos_token=True"
             res = simple_evaluate(
-                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs
+                model="hf",
+                model_args=model_args,
+                tasks=tasks,
+                device=device_str,
+                batch_size=args.eval_bs,
+                limit=args.limit,
             )
             print(make_table(res))
             print("evaluation running time=%ds" % (time.time() - st))
@@ -888,7 +920,9 @@ def eval(args):
         )
         model.eval()
         st = time.time()
-        res = simple_evaluate_user_model(model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
+        res = simple_evaluate_user_model(
+            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit
+        )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
     else:
@@ -902,6 +936,7 @@ def eval(args):
             tasks=tasks,
             device=device_str,
             batch_size=batch_size,
+            limit=args.limit,
         )
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
@@ -915,6 +950,7 @@ def eval_task_by_task(
     tasks=None,
     tokenizer=None,
     batch_size=None,
+    limit=None,
     max_batch_size=64,
     trust_remote_code=True,
     eval_model_dtype=None,
@@ -987,7 +1023,7 @@ def eval_task_by_task(
         while retry_times:
             try:
                 res = lm_simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size
+                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit
                 )
                 break
             except Exception as e:
@@ -999,7 +1035,7 @@ def eval_task_by_task(
                             hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1
+                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1, limit=limit
                         )
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:

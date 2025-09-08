@@ -33,10 +33,12 @@ class TestLLMC(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             act_bits=act_bits,
+            seqlen=8,
+            nsamples=2,
             iters=0,
         )
         autoround.quantize()
-        autoround.save_quantized("./saved", format="llmcompressor", inplace=True)
+        autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
 
 
 if __name__ == "__main__":
