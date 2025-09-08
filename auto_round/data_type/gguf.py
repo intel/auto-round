@@ -594,7 +594,9 @@ def quant_tensor_gguf_sym_dq(
             if torch.sum(mean_replace_index) > 0:
                 ## use mean values to fill zero values
                 tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[-1] - zero_cnt)
-                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1]).reshape(tensor.shape)
+                tmp_quant_weights = (
+                    tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1]).reshape(tensor.shape)
+                )
                 quant_weights[mean_replace_index] = tmp_quant_weights[mean_replace_index]
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)

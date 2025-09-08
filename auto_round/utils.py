@@ -21,10 +21,10 @@ import logging
 import os
 import re
 import sys
-from pathlib import Path
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable, Tuple, Union
 
 import cpuinfo
