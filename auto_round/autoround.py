@@ -803,8 +803,16 @@ class AutoRound(object):
         Returns:
             list: A list of validated and updated formats.
         """
+
+        # Remove duplicates from formats list
+        def remove_duplicates(lst):
+            seen = set()
+            return [x for x in lst if not (x in seen or seen.add(x))]
+
+
         formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
-        formats = list(set(formats))
+        formats = remove_duplicates(formats) # need the keep origin order
+
         if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
             for i in range(len(formats)):
                 if formats[i] != "fake" and formats[i] != self.scheme.lower().startswith("gguf"):
@@ -873,10 +881,6 @@ class AutoRound(object):
                 if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
                     logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
 
-        # Remove duplicates from formats list
-        def remove_duplicates(lst):
-            seen = set()
-            return [x for x in lst if not (x in seen or seen.add(x))]
 
         formats = remove_duplicates(formats)
         for i in range(len(formats)):
