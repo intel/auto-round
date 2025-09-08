@@ -126,6 +126,7 @@ class AutoRoundMLLM(AutoRound):
 
 
     """
+
     bits: int | None
     group_size: int | None
     sym: bool | None
