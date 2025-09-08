@@ -3091,7 +3091,7 @@ class AutoRound(object):
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
-        compressed_model = save_quantized_as_format(  ##TODO refine the code
+        compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
             layer_config=self.layer_config,
