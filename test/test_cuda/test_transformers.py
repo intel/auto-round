@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import gc
+import os
 import tempfile
 import unittest
 
@@ -31,6 +31,7 @@ if is_torch_available():
     import torch
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 
 # @slow
 @require_torch_gpu
