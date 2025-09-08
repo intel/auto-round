@@ -19,7 +19,7 @@ AutoRound
 AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
 It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. 
 For more details, see our [paper](https://arxiv.org/pdf/2309.05516) for more details and explore quantized models available on several Hugging Face Spaces, e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
-and [fbaldassarri](https://huggingface.co/fbaldassarri).For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
+and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -174,10 +174,10 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 
 # Highest accuracy (4–5× slower).
 # `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30% slower.
-# ar = AutoRound(model_name_or_path, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True)
+# ar = AutoRound(model_name_or_path, nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 # Faster quantization (2–3× speedup) with slight accuracy drop at W4G128.
-# ar = AutoRound(model_name_or_path, tokenizer, nsamples=128, iters=50, lr=5e-3)
+# ar = AutoRound(model_name_or_path, nsamples=128, iters=50, lr=5e-3)
 
 # Save quantized model
 output_dir = "./tmp_autoround"
