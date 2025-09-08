@@ -30,8 +30,6 @@ from transformers.utils import is_torch_available
 if is_torch_available():
     import torch
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 # @slow
 @require_torch_gpu
 @require_accelerate

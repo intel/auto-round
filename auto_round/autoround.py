@@ -291,7 +291,6 @@ class AutoRound(object):
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
         check_and_mark_fp8_model(model)
-        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -374,7 +373,6 @@ class AutoRound(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
             )
-        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -1219,7 +1217,6 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    raise
                     logger.error(cuda_error_msg)
                     # Final fallback: warn and use CPU-only quantization
                     logger.warning(
@@ -1633,6 +1630,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             m.tmp_name = n
         self._check_compatibility()
+        formats = self.formats if hasattr(self, "formats") else None
+        self.model = _handle_moe_model(self.model, formats=formats)
         self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
