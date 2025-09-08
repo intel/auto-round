@@ -114,7 +114,7 @@ pip install auto-round-lib
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
-### Command Line Usage
+### CLI Usage
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
