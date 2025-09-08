@@ -585,17 +585,17 @@ def quant_tensor_gguf_sym_dq(
             replace_index = zero_cnt > group_size // 2
             if torch.sum(replace_index) > 0:
                 if bits == 6:
-                    quant_weights[replace_index, :] = tensor * tensor
+                    quant_weights[replace_index] = tensor[replace_index] * tensor[replace_index]
                 else:
                     sigma2 = 2 * torch.sum(tensor**2, dim=-1, keepdim=True) / QK_K
                     tmp_quant_weights = torch.sqrt(sigma2 + tensor * tensor)
-                    quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
+                    quant_weights[replace_index] = tmp_quant_weights[replace_index]
             mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
             if torch.sum(mean_replace_index) > 0:
                 ## use mean values to fill zero values
-                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
-                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
-                quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
+                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[-1] - zero_cnt)
+                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1]).reshape(tensor.shape)
+                quant_weights[mean_replace_index] = tmp_quant_weights[mean_replace_index]
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
     scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)

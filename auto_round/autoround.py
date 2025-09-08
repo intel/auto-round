@@ -1068,7 +1068,8 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    logger.info("out of VRAM, falling back to CPU")
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
@@ -1077,7 +1078,6 @@ class AutoRound(object):
                         },
                     )
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
 
             # Overwrite the module's weights with the quantized version
@@ -1219,6 +1219,8 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
+                    raise
+                    logger.error(cuda_error_msg)
                     # Final fallback: warn and use CPU-only quantization
                     logger.warning(
                         "Fallback to CPU. "
@@ -1236,7 +1238,6 @@ class AutoRound(object):
                     self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
                     self.device = orig_device
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
         finally:
             # Always remove hooks
@@ -1381,7 +1382,8 @@ class AutoRound(object):
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
                 try:
-                    logger.warning("Out of VRAM, falling back to CPU.")
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU.")
                     m.to("cpu")
                     m = WrapperLinear(
                         m,
@@ -1391,7 +1393,6 @@ class AutoRound(object):
                     )
                     m = m.unwrapper({})
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
 
         # Step 3: Optional immediate packing/export

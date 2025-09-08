@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
@@ -1211,6 +1212,8 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     )
 
     is_mistral_format = False
+    if isinstance(dir_model, str):
+        dir_model = Path(dir_model)
 
     hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):
