@@ -18,8 +18,8 @@ import re
 import sys
 import time
 import traceback
-from enum import Enum
 from dataclasses import asdict, fields
+from enum import Enum
 from typing import Any, Callable, Union
 
 import accelerate
