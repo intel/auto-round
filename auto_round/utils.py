@@ -2550,8 +2550,11 @@ def is_nv_fp(backend):
 
 
 def is_wfp8afp8(ar):
-    if ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8)) and (
-        "fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8)
+    if (
+        ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8))
+        and ("fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8))
+        and is_standard_fp(ar.act_data_type)
+        and is_standard_fp(ar.data_type)
     ):
         return True
     else:

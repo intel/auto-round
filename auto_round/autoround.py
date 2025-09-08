@@ -851,7 +851,8 @@ class AutoRound(object):
             elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
+                    check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
