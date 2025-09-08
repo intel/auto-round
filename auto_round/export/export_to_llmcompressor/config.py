@@ -136,4 +136,3 @@ def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_c
         quantization_status=QuantizationStatus.COMPRESSED,
         ignore=ignore,
     )
-
