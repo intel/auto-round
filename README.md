@@ -181,7 +181,7 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 
 # Save quantized model
 output_dir = "./tmp_autoround"
-# Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m"
+# Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m", etc.
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
