@@ -19,11 +19,12 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from auto_round.utils import LazyImport
 from auto_round.diffusion.diffusion_dataset import get_diffusion_dataloader
+from auto_round.utils import LazyImport
 
 metrics = LazyImport("torchmetrics.multimodal")
 reward = LazyImport("ImageReward")
+
 
 def compute_clip(prompts, images, device: str = "cuda"):
     clip_model = metrics.CLIPScore(model_name_or_path="openai/clip-vit-large-patch14").to(device)

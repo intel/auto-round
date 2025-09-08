@@ -28,8 +28,9 @@ class TestAutoRound(unittest.TestCase):
 
     @require_optimum
     def test_diffusion_tune(self):
-        import re
+
         from diffusers import AutoPipelineForText2Image
+
         from auto_round import AutoRoundDiffusion
 
         ## load the model
@@ -41,7 +42,7 @@ class TestAutoRound(unittest.TestCase):
         for n, m in model.named_modules():
             if m.__class__.__name__ != "Linear":
                 continue
-            match = re.search(r'blocks\.(\d+)', n)
+            match = re.search(r"blocks\.(\d+)", n)
             if match and int(match.group(1)) > 0:
                 layer_config[n] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
 
@@ -65,6 +66,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_block_name(self):
         from diffusers import AutoPipelineForText2Image
+
         from auto_round.utils import get_block_names
 
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
