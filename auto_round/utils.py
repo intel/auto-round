@@ -1230,7 +1230,7 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     return model_class
 
 
-def _gguf_args_check(args_or_ar, formats:list[str]=None, model_type=ModelType.TEXT):
+def _gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.TEXT):
     import argparse
 
     from auto_round.export.export_to_gguf.convert import download_convert_file
