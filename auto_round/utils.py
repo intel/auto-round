@@ -1233,18 +1233,12 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     return model_class
 
 
-def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
+def _gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.TEXT):
     import argparse
 
     from auto_round.export.export_to_gguf.convert import download_convert_file
     from auto_round.utils import logger
 
-    if format_str is None:
-        args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
-        format_str = args_or_ar.format
-    else:
-        format_str = format_str.replace("q*_", f"q{args_or_ar.bits}_")
-    formats = format_str.lower().replace(" ", "").split(",")
     formats = sorted(formats, key=lambda x: len(x))
     export_gguf = False
     for f in formats:
