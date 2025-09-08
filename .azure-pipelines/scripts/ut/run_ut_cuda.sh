@@ -47,7 +47,7 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     sed -i '/^lm-eval/d;/^vllm/d;/^lm-eval/d' requirements.txt
     uv pip install -r requirements.txt
-    uv pip install git+https://github.com/EleutherAI/lm-evaluation-harness.git@0.4.9.1
+    uv pip install git+https://github.com/EleutherAI/lm-evaluation-harness.git@v0.4.9.1
     uv pip install git+https://github.com/vllm-project/vllm.git
 
     uv pip list
