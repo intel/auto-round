@@ -4,9 +4,11 @@ import unittest
 
 import torch
 
-sys.path.insert(0, "../..")
-from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
+
+sys.path.insert(0, "../..")
+
+from auto_round import AutoRound
 
 
 class LLMDataLoader:
@@ -54,12 +56,12 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.act_data_type, "mx_fp_rceil")
         ar.quantize()
 
-    def test_vllm(self):
-        from auto_round import AutoRoundMLLM
-
-        ar = AutoRoundMLLM("Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16", nsamples=1, iters=1, seqlen=2)
-        self.assertEqual(ar.bits, 2)
-        self.assertEqual(ar.act_bits, 16)
+    def test_nvfp4(self):
+        ar = AutoRound(self.model_name, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
+        self.assertEqual(ar.bits, 4)
+        self.assertEqual(ar.act_bits, 4)
+        self.assertEqual(ar.data_type, "nv_fp")
+        self.assertEqual(ar.act_data_type, "nv_fp4_with_static_gs")
         ar.quantize()
 
     def test_scheme_in_layer_config(self):
@@ -92,3 +94,4 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -166,16 +166,21 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         for n, m in model.named_modules():
             if isinstance(m, WrapperWALayer):
                 orig_layer = m.orig_layer
-                if not getattr(orig_layer, "input_global_scale", None):
-                    assert hasattr(orig_layer, "act_max")
-                    from auto_round.data_type.nvfp import calculate_gparam
-
-                    input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
-                    setattr(orig_layer, "input_global_scale", input_global_scale)
-                    delattr(orig_layer, "act_max")
                 set_module(model, n, orig_layer)
 
-        # update input_global_scale
+    if is_nv_fp(act_data_type) and "static_gs" in act_data_type:
+        # generate static input_global_scale
+        for n, m in model.named_modules():
+            if isinstance(m, SUPPORTED_LAYER_TYPES):
+                layer = m
+                if layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
+                    assert hasattr(layer, "act_max")
+                    from auto_round.data_type.nvfp import calculate_gparam
+
+                    input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
+                    setattr(layer, "input_global_scale", input_global_scale)
+                    delattr(layer, "act_max")
+        # update fused input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
 
         modules = list(model.modules())
@@ -288,3 +293,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+

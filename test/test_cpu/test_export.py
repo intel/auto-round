@@ -25,7 +25,7 @@ class TestAutoRound(unittest.TestCase):
     def setUpClass(self):
         model_name = "facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -268,10 +268,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 4
-        data_type = "mx_fp"
-        group_size = 32
-        sym = True
+        scheme = "MXFP4"
         layer_config = {}
         fp_layers_str = "k_proj"
         from auto_round.utils import get_fp_layer_names
@@ -282,12 +279,9 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
-            data_type=data_type,
             layer_config=layer_config,
             dataset=self.llm_dataloader,
         )
@@ -322,19 +316,13 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 8
-        data_type = "mx_fp_rceil"
-        group_size = 32
-        sym = True
+        scheme = "MXFP8"
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
-            data_type=data_type,
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
@@ -362,21 +350,11 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 4
-        act_bits = 4
-        data_type = "nv_fp"
-        act_data_type = "nv_fp4_with_static_gs"
-        group_size = 16
-        sym = True
+        scheme = "NVFP4"
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            act_bits=act_bits,
-            data_type=data_type,
-            act_data_type=act_data_type,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
@@ -406,21 +384,11 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 4
-        act_bits = 4
-        data_type = "nv_fp"
-        act_data_type = "nv_fp4_with_static_gs"
-        group_size = 16
-        sym = True
+        scheme = "NVFP4"
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            act_bits=act_bits,
-            data_type=data_type,
-            act_data_type=act_data_type,
-            group_size=group_size,
-            sym=sym,
+            scheme="NVFP4",
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
@@ -441,3 +409,4 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -686,7 +686,11 @@ class AutoRound(object):
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
 
-        if self.act_bits <= 8 and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type):
+        if (
+            self.act_bits <= 8
+            and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
+            and not is_mx_fp(self.act_data_type)
+        ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
@@ -897,25 +901,22 @@ class AutoRound(object):
         # format check for fp8
         w_fp8 = self.data_type == "fp" and self.bits == 8
         act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
-        if (w_fp8 or act_fp8) and re.search("^auto_round|^llmcompressor", format) is None:
+        if (w_fp8 or act_fp8) and re.search("^auto_round|^llm_compressor", format) is None:
             error_msg = (
-                f"is only supported to export auto_round or llmcompressor format," f" but got {format}, please check."
+                f"is only supported to export auto_round or llm_compressor format," f" but got {format}, please check."
             )
             error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
             error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
             logger.error(error_msg)
             sys.exit(-1)
 
-        # Only support to export afp8/nv_fp
+        # Only support to export afp8/nv_fp/mx_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
                 if "llm_compressor" in format:
-                    if is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type:
-                        logger.warning(
-                            f"AutoRound supports exporting to format '{format}', "
-                            "but loading quantized models in this format is not yet supported. "
-                            "It is currently recommended to export to the 'llm_compressor' format."
-                        )
+                    if (is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type) or (
+                        is_mx_fp(self.act_data_type)
+                    ):
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
@@ -925,15 +926,23 @@ class AutoRound(object):
                         and self.act_bits == act_bits
                         and self.act_dynamic
                     ), (
-                        f"Currently only support to export llmcompressor format for sym dynamic quantized"
+                        f"Currently only support to export llm_compressor format for sym dynamic quantized"
                         f" W{self.bits}A{self.act_bits} model with group_size={group_size},"
                         f" but got bits={self.bits}, group_size={self.group_size}, sym={self.sym},"
                         f" act_bits={self.act_bits}"
                     )
-                elif format != "fake" and (not is_nv_fp(format) or "static_gs" not in self.act_data_type):
+                elif "auto_round" in format and (
+                    is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
+                ):
+                    logger.warning(
+                        f"AutoRound supports exporting to format '{format}', "
+                        "but loading quantized models in this format is not yet supported. "
+                        "It is currently recommended to export to the 'llm_compressor' format."
+                    )
+                elif format != "fake":
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
-                        " with fp8 or nv_fp4 dtype activation for activation quantization."
+                        " with fp8, mx_fp and nv_fp4 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
                     format = "fake"
@@ -3425,3 +3434,4 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
+
