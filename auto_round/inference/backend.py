@@ -19,7 +19,7 @@ from typing import Any, List, Optional
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
-from auto_round.autoround import AutoRoundFormat
+from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version, logger
 

@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 
 import threadpoolctl as tctl
 import torch
@@ -25,7 +26,6 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-from auto_round.autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_FORMATS,
@@ -42,6 +42,12 @@ from auto_round.utils import (
     logger,
     set_module,
 )
+
+
+class AutoRoundFormat(str, Enum):
+    # Weight: FP8, per-channel, may be extended to per-tensor in future
+    # Activation: FP8, per-tensor
+    TORCH_FP8_STATIC = "torch_fp8_static"
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):

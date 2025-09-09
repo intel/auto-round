@@ -25,7 +25,7 @@ from collections import UserDict
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, Tuple, Union
+from typing import Any, Callable, Tuple, Union
 
 import cpuinfo
 import torch

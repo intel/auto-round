@@ -31,6 +31,7 @@ from transformers import set_seed
 
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
@@ -95,12 +96,6 @@ from auto_round.utils import (
     unsupport_meta_device,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
-
-
-class AutoRoundFormat(str, Enum):
-    # Weight: FP8, per-channel, may be extended to per-tensor in future
-    # Activation: FP8, per-tensor
-    TORCH_FP8_STATIC = "torch_fp8_static"
 
 
 class AutoRound(object):
