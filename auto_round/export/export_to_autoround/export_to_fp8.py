@@ -29,6 +29,7 @@ from auto_round.utils import (
     _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
+    copy_python_files_from_model_cache,
     filter_quantization_config,
     get_module,
     logger,
@@ -270,3 +271,8 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
