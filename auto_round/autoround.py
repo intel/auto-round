@@ -240,8 +240,9 @@ class AutoRound(object):
         if not disable_deterministic_algorithms or enable_deterministic_algorithms:
             if not disable_deterministic_algorithms:
                 logger.warning(
-                    "deafult not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-                    " please use enable_deterministic_algorithms instead. ")
+                    "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
+                    " please use enable_deterministic_algorithms instead. "
+                )
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
