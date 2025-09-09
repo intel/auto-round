@@ -166,9 +166,12 @@ class AutoRoundMLLM(AutoRound):
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         if device_map is None:
             device_map = 0
-        if isinstance(model, str):
-            model, processor, tokenizer, image_processor = mllm_load_model(model, device=device_map)
+        self._set_device(device_map)
 
+        if isinstance(model, str):
+            model, processor, tokenizer, image_processor = mllm_load_model(model, device=self.device)
+
+        self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -212,7 +215,7 @@ class AutoRoundMLLM(AutoRound):
                     " switching to liuhaotian/llava_conv_58k"
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            elif not _only_text_test(model, tokenizer, device_map, self.template.model_type):
+            elif not _only_text_test(model, tokenizer, self.device, self.template.model_type):
                 logger.warning(
                     f"{model.config.model_type} does not support for {dataset},"
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
@@ -253,15 +256,16 @@ class AutoRoundMLLM(AutoRound):
             tokenizer=tokenizer,
             scheme=scheme,
             layer_config=layer_config,
-            batch_size=batch_size,
             dataset=dataset,
-            low_gpu_mem_usage=low_gpu_mem_usage,
             iters=iters,
             seqlen=seqlen,
             nsamples=nsamples,
-            seed=seed,
+            batch_size=batch_size,
             gradient_accumulate_steps=gradient_accumulate_steps,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
             enable_torch_compile=enable_torch_compile,
+            seed=seed,
             vlm=True,
             to_quant_block_names=to_quant_block_names,
             **kwargs,
