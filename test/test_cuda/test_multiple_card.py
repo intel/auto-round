@@ -307,16 +307,17 @@ class TestAutoRound(unittest.TestCase):
             model = None
             del model
             torch.cuda.empty_cache()
-    
+
     @multi_card
     def test_mllm_device_map(self):
         model_name = "/models/Qwen2-VL-2B-Instruct/"
         from auto_round import AutoRoundMLLM
+
         device_map = "0,1"
         ar = AutoRoundMLLM(model_name, device_map=device_map)
         self.assertEqual(ar.device, "cuda:0")
         self.assertEqual(ar.device_map, "auto")
-        self.assertEqual(ar.device_list, [0,1])
+        self.assertEqual(ar.device_list, [0, 1])
 
         device_map = 1
         ar = AutoRoundMLLM(ar.model, ar.tokenizer, ar.processor, device_map=device_map)
@@ -329,10 +330,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.device, "cuda")
         self.assertEqual(ar.device_map, "auto")
 
-        device_map = {
-            "model.language_model.layers": 0,
-            "model.visual.blocks": 1
-        }
+        device_map = {"model.language_model.layers": 0, "model.visual.blocks": 1}
         ar = AutoRoundMLLM(ar.model, ar.tokenizer, ar.processor, device_map=device_map)
         self.assertEqual(ar.model.model.language_model.layers.tuning_device, "cuda:0")
         self.assertEqual(ar.model.model.visual.blocks.tuning_device, "cuda:1")

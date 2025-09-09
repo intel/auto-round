@@ -391,7 +391,7 @@ class AutoRound(object):
             self.device = tmp_devices[0]
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
-        
+
     def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
         """Parse and set the layer-wise quantization configuration."""
         # Some other quantization configs
