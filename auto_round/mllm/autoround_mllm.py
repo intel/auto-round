@@ -148,8 +148,6 @@ class AutoRoundMLLM(AutoRound):
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        extra_data_dir: str = None,
-        template: Union[str, Template] = None,
         quant_nontext_module: bool = False,
         iters: int = 200,
         seqlen: int = 2048,
@@ -162,6 +160,9 @@ class AutoRoundMLLM(AutoRound):
         seed: int = 42,
         **kwargs,
     ):
+        extra_data_dir = kwargs.pop("extra_data_dir", None)
+        template = kwargs.pop("template", None)
+
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         if device_map is None:
             device_map = 0
