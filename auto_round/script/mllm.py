@@ -173,7 +173,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", action="store_true", help="whether to enable torch compile")
 
         self.add_argument(
-            "--disable_deterministic_algorithms", action="store_true", help="deprecated, disable torch deterministic algorithms."
+            "--disable_deterministic_algorithms",
+            action="store_true",
+            help="deprecated, disable torch deterministic algorithms.",
         )
 
         self.add_argument(
