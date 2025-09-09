@@ -115,9 +115,9 @@ def torch_fp8_static_checker(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
-    from auto_round.schemes import FPW8_STATIC
+    from auto_round.schemes import FP8_STATIC
 
-    return config == FPW8_STATIC
+    return config == FP8_STATIC
 
 
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
