@@ -58,6 +58,7 @@ from auto_round.utils import (
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
     convert_fp8_model_to_16b_model,
+    copy_python_files_from_model_cache,
     detect_device,
     estimate_tuning_block_mem,
     find_matching_blocks,
@@ -850,7 +851,8 @@ class AutoRound(object):
             elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
+                    check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
@@ -3036,6 +3038,10 @@ class AutoRound(object):
             processor = kwargs.get("processor", None)
             if processor is not None:
                 processor.save_pretrained(output_dir)
+            try:
+                copy_python_files_from_model_cache(self.model, output_dir)
+            except Exception as e:
+                logger.warning("Skipping source model Python file copy due to error: %s", e)
             return
         if self.act_bits <= 8 and format == "qdq":
             logger.warning(
