@@ -177,7 +177,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         self.add_argument(
-            "--enable_deterministic_algorithms", action="store_true", help="enbale torch deterministic algorithms."
+            "--enable_deterministic_algorithms", action="store_true", help="enable torch deterministic algorithms."
         )
 
         ## ======================= VLM =======================
@@ -441,8 +441,9 @@ def tune(args):
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
     if args.disable_deterministic_algorithms:
         logger.warning(
-            "deafult not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-            " please use enable_deterministic_algorithms instead. ")
+            "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
+            " please use enable_deterministic_algorithms instead. "
+        )
     enable_deterministic_algorithms = args.enable_deterministic_algorithms and not args.disable_deterministic_algorithms
     autoround = round(
         model,
