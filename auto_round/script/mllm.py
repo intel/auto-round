@@ -444,7 +444,6 @@ def tune(args):
             "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
             " please use enable_deterministic_algorithms instead. "
         )
-    enable_deterministic_algorithms = args.enable_deterministic_algorithms and not args.disable_deterministic_algorithms
     autoround = round(
         model,
         tokenizer,
