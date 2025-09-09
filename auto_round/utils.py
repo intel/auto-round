@@ -2565,8 +2565,11 @@ def _is_weight_fp8_activation_static_fp8(
 
 
 def is_wfp8afp8(ar):
-    if ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8)) and (
-        "fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8)
+    if (
+        ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8))
+        and ("fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8))
+        and is_standard_fp(ar.act_data_type)
+        and is_standard_fp(ar.data_type)
     ):
         return True
     else:
@@ -2692,3 +2695,35 @@ def _get_packing_device(device: str | torch.device | None = "auto") -> torch.dev
             raise ValueError(f"Invalid device string: {device}") from e
 
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
+
+
+# Adapted from https://github.com/vllm-project/llm-compressor/blob/
+# 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
+def copy_python_files_from_model_cache(model, save_path: str):
+    config = model.config
+    cache_path = None
+    if hasattr(config, "_name_or_path"):
+        import os
+        import shutil
+
+        from huggingface_hub import hf_hub_download
+        from transformers import TRANSFORMERS_CACHE
+        from transformers.utils import http_user_agent
+
+        cache_path = config._name_or_path
+        if not os.path.exists(cache_path):
+            user_agent = http_user_agent()
+            config_file_path = hf_hub_download(
+                repo_id=cache_path,
+                filename="config.json",
+                cache_dir=TRANSFORMERS_CACHE,
+                force_download=False,
+                user_agent=user_agent,
+            )
+            cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
+
+        for file in os.listdir(cache_path):
+            full_file_name = os.path.join(cache_path, file)
+            if file.endswith(".py") and os.path.isfile(full_file_name):
+                logger.debug(f"Transferring {full_file_name} to {save_path}")
+                shutil.copy(full_file_name, save_path)

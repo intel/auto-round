@@ -59,6 +59,7 @@ from auto_round.utils import (
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
     convert_fp8_model_to_16b_model,
+    copy_python_files_from_model_cache,
     detect_device,
     estimate_tuning_block_mem,
     find_matching_blocks,
@@ -253,24 +254,7 @@ class AutoRound(object):
             device_map = 0
 
         # Set device, must place after model loading
-        if isinstance(device_map, (str, torch.device, int)):
-            self.device = detect_device(device_map)
-
-        elif isinstance(device_map, dict) and device_map:
-            tmp_devices = []
-            for val in device_map.values():
-                if isinstance(val, (str, torch.device, int)):  # could optimize
-                    tmp_device = detect_device(self.device_map)
-                    tmp_device = tmp_device.split(":")[0]
-                    tmp_devices.append(tmp_device)
-            tmp_devices = list(set(tmp_devices))
-            if len(tmp_devices) > 1:
-                logger.warning(
-                    f"there are multiple device types in the device_map, "
-                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device "
-                )
-
-            self.device = tmp_devices[0]
+        self._set_device(device_map)
 
         if (isinstance(device_map, dict) and device_map) or device_map == "auto":
             self.device_map = device_map
@@ -391,6 +375,30 @@ class AutoRound(object):
             logger.info("optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
+    def _set_device(self, device_map):
+        if hasattr(self, "device") and self.device is not None:
+            return
+        if isinstance(device_map, (str, torch.device, int)):
+            self.device = detect_device(device_map)
+
+        elif isinstance(device_map, dict) and device_map:
+            tmp_devices = []
+            for val in device_map.values():
+                if isinstance(val, (str, torch.device, int)):  # could optimize
+                    tmp_device = detect_device(val)
+                    tmp_device = tmp_device.split(":")[0]
+                    tmp_devices.append(tmp_device)
+            tmp_devices = list(set(tmp_devices))
+            if len(tmp_devices) > 1:
+                logger.warning(
+                    f"there are multiple device types in the device_map, "
+                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device "
+                )
+
+            self.device = tmp_devices[0]
+        else:
+            raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
     def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
         """Parse and set the layer-wise quantization configuration."""
@@ -857,7 +865,8 @@ class AutoRound(object):
             elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
+                    check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
@@ -3043,6 +3052,10 @@ class AutoRound(object):
             processor = kwargs.get("processor", None)
             if processor is not None:
                 processor.save_pretrained(output_dir)
+            try:
+                copy_python_files_from_model_cache(self.model, output_dir)
+            except Exception as e:
+                logger.warning("Skipping source model Python file copy due to error: %s", e)
             return
         if self.act_bits <= 8 and format == "qdq":
             logger.warning(
