@@ -208,6 +208,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
         )
+        self.add_argument(
+            "--enable_deterministic_algorithms", action="store_true", help="enbale torch deterministic algorithms."
+        )
 
         self.add_argument(
             "--disable_opt_rtn",
@@ -543,6 +546,11 @@ def tune(args):
     scheme = args.scheme.upper()
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
+    if args.disable_deterministic_algorithms:
+        logger.warning(
+            "deafult not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
+            " please use enable_deterministic_algorithms instead. ")
+    enable_deterministic_algorithms = args.enable_deterministic_algorithms and not args.disable_deterministic_algorithms
     autoround = round(
         model=model,
         tokenizer=tokenizer,
@@ -580,7 +588,7 @@ def tune(args):
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
-        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
+        enable_deterministic_algorithms=enable_deterministic_algorithms,
         enable_alg_ext=args.enable_alg_ext,
         **mllm_kwargs,
     )

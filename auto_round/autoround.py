@@ -224,7 +224,8 @@ class AutoRound(object):
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
-        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
+        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
+        enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
@@ -235,8 +236,14 @@ class AutoRound(object):
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
 
-        if not disable_deterministic_algorithms:
+        # deprecated, default not to use torch.use_deterministic_algorithms
+        if not disable_deterministic_algorithms or enable_deterministic_algorithms:
+            if not disable_deterministic_algorithms:
+                logger.warning(
+                    "deafult not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
+                    " please use enable_deterministic_algorithms instead. ")
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
+                breakpoint()
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
 

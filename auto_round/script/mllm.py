@@ -176,6 +176,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
         )
 
+        self.add_argument(
+            "--enable_deterministic_algorithms", action="store_true", help="enbale torch deterministic algorithms."
+        )
+
         ## ======================= VLM =======================
         self.add_argument(
             "--quant_nontext_module",
@@ -435,7 +439,11 @@ def tune(args):
     scheme = args.scheme.upper()
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
-
+    if args.disable_deterministic_algorithms:
+        logger.warning(
+            "deafult not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
+            " please use enable_deterministic_algorithms instead. ")
+    enable_deterministic_algorithms = args.enable_deterministic_algorithms and not args.disable_deterministic_algorithms
     autoround = round(
         model,
         tokenizer,
@@ -473,7 +481,7 @@ def tune(args):
         model_kwargs=model_kwargs,
         data_type=args.data_type,
         disable_opt_rtn=args.disable_opt_rtn,
-        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
+        enable_deterministic_algorithms=enable_deterministic_algorithms,
     )
 
     model_name = args.model.rstrip("/")
