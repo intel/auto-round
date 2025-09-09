@@ -163,7 +163,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
                 orig_layer = m.orig_layer
                 set_module(model, n, orig_layer)
 
-    if is_nv_fp(act_data_type) and "static_gs" in act_data_type:
+    if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
         # generate static input_global_scale
         for n, m in model.named_modules():
             if isinstance(m, SUPPORTED_LAYER_TYPES):
@@ -285,3 +285,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+
