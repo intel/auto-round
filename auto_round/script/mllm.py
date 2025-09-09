@@ -173,7 +173,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", action="store_true", help="whether to enable torch compile")
 
         self.add_argument(
-            "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
+            "--disable_deterministic_algorithms", action="store_true", help="deprecated, disable torch deterministic algorithms."
         )
 
         self.add_argument(
@@ -443,7 +443,6 @@ def tune(args):
         logger.warning(
             "deafult not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
             " please use enable_deterministic_algorithms instead. ")
-    enable_deterministic_algorithms = args.enable_deterministic_algorithms and not args.disable_deterministic_algorithms
     autoround = round(
         model,
         tokenizer,
@@ -481,7 +480,7 @@ def tune(args):
         model_kwargs=model_kwargs,
         data_type=args.data_type,
         disable_opt_rtn=args.disable_opt_rtn,
-        enable_deterministic_algorithms=enable_deterministic_algorithms,
+        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
     )
 
     model_name = args.model.rstrip("/")
