@@ -2168,7 +2168,7 @@ class AutoRound(object):
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
-                f"An insufficient number of samples likely reduces the accuracy of the quantized model."
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
                 f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
@@ -2847,7 +2847,11 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
-        if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+        if (
+            is_nv_fp(self.act_data_type)
+            and hasattr(self, "formats")
+            and any("nv_fp" in format_ for format_ in self.formats)
+        ):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 

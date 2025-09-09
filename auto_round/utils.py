@@ -2538,14 +2538,17 @@ class BackendDataType(str, Enum):
 
 
 def is_standard_fp(backend):
+    backend = backend.lower()
     return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 def is_mx_fp(backend):
+    backend = backend.lower()
     return BackendDataType.MX_FP in backend
 
 
 def is_nv_fp(backend):
+    backend = backend.lower()
     return BackendDataType.NV_FP in backend
 
 
@@ -2712,3 +2715,4 @@ def copy_python_files_from_model_cache(model, save_path: str):
             if file.endswith(".py") and os.path.isfile(full_file_name):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
+
