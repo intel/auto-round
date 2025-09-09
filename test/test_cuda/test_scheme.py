@@ -46,7 +46,7 @@ class TestAutoRound(unittest.TestCase):
         ar.quantize()
 
     def test_fp8_static(self):
-        ar = AutoRound(self.model_name, scheme="FPW8_STATIC", nsamples=1, iters=1)
+        ar = AutoRound(self.model_name, scheme="FP8_STATIC", nsamples=1, iters=1)
         self.assertEqual(ar.bits, 8)
         self.assertEqual(ar.act_bits, 8)
         self.assertEqual(ar.data_type, "fp")
@@ -70,7 +70,7 @@ class TestAutoRound(unittest.TestCase):
         ar.quantize()
 
     def test_fp8_static_rtn(self):
-        ar = AutoRound(self.model_name, scheme="FPW8_STATIC", nsamples=1, iters=0)
+        ar = AutoRound(self.model_name, scheme="FP8_STATIC", nsamples=1, iters=0)
         self.assertEqual(ar.bits, 8)
         self.assertEqual(ar.act_bits, 8)
         self.assertEqual(ar.data_type, "fp")

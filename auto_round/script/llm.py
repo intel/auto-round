@@ -59,7 +59,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--scheme",
             default="W4A16",
             type=str,
-            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
             help="quantization scheme",
         )
 
