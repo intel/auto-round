@@ -59,7 +59,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--scheme",
             default="W4A16",
             type=str,
-            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FPW8_STATIC"],
+            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
             help="quantization scheme",
         )
 
@@ -102,6 +102,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=float,
             help="minmax learning rate, if None, it will beset to be the same with lr",
+        )
+
+        self.add_argument(
+            "--mem_per_param_scale",
+            default=13,
+            type=float,
+            help="Scale factor for memory per parameter, used to adjust memory usage estimation for tuning",
         )
 
         self.add_argument("--seed", default=42, type=int, help="random seed")
@@ -436,7 +443,7 @@ def tune(args):
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     # Must set this before import torch
-    set_cuda_visible_devices(args.device_map)
+    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
@@ -504,29 +511,12 @@ def tune(args):
                 "auto_round" not in format
                 and "fake" not in format
                 and "awq" not in format
-                and "llmcompressor" not in format
+                and "llm_compressor" not in format
             ):
                 # TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
-    lm_head_layer_name = "lm_head"
-    for n, _ in model.named_modules():
-        lm_head_layer_name = n
     if args.quant_lm_head:
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
-            tied_keys = model._tied_weights_keys
-            for item in tied_keys:
-                if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
-                    args.quant_lm_head = False
-                    logger.warning(
-                        "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
-                        "supported currently"
-                    )
-                    break
-
-    if args.quant_lm_head:
-        layer_config[lm_head_layer_name] = {"bits": args.bits, "act_bits": args.act_bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]

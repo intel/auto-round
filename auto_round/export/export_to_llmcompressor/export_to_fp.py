@@ -29,6 +29,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
     check_to_quantized,
+    copy_python_files_from_model_cache,
     filter_quantization_config,
     get_block_names,
     get_module,
@@ -48,11 +49,10 @@ __all__ = [
 ]
 
 
-def pack_layer(name, model, backend):
+def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
     layer = get_module(model, name)
-
     if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
@@ -61,6 +61,7 @@ def pack_layer(name, model, backend):
         layer = wp_layer.orig_layer
         set_module(model, name, layer)
 
+    orig_device = layer.weight.device
     data_type = layer.data_type
     act_bits = layer.act_bits
     act_data_type = layer.act_data_type
@@ -69,7 +70,6 @@ def pack_layer(name, model, backend):
         return
     group_size = layer.group_size
     sym = layer.sym
-    device = layer.weight.device
 
     if is_nv_fp(act_data_type) and act_bits <= 8:
         if not getattr(layer, "input_global_scale", None):
@@ -107,19 +107,16 @@ def pack_layer(name, model, backend):
         act_data_type=act_data_type,
     )
 
-    new_layer.device = device
+    new_layer.device = orig_device
     set_module(model, name, new_layer)
     qlayer = new_layer
     scale = layer.scale
     global_scale = getattr(layer, "weight_global_scale", None)
     input_global_scale = getattr(layer, "input_global_scale", None)
     # zero = layer.zp
-    # so far can only pack layer on CPU
-    qlayer.to("cpu")
-    layer, scale = layer.to("cpu"), scale.to("cpu")
-    qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale)
+    qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
     ## no zeros to handle, as mxfp not support asym quantization
-    qlayer.to(device)
+    qlayer.to(orig_device)
 
 
 def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
@@ -154,6 +151,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     layer_config = kwargs["layer_config"]
+    device = kwargs.get("device", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
@@ -189,7 +187,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend)
+                    pack_layer(name, model, backend, device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -211,6 +209,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     setattr(quantization_config, "format", "nvfp4-pack-quantized")
     setattr(quantization_config, "ignore", ignore)
     quantization_config = quantization_config.to_dict()
+    quantization_config["provider"] = "auto-round"
     if is_mx_fp(data_type):  # Manually replace some parameters, as compressed-tensor is not support MXFP scheme yet
         quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] = bits
         quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] = (
@@ -276,3 +275,8 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)

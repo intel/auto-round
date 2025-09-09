@@ -16,10 +16,10 @@ AutoRound
 
 ## 🚀 What is AutoRound?
 
-AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
-Hugging Face Spaces,
-e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
-and [fbaldassarri](https://huggingface.co/fbaldassarri).
+AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
+It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. 
+For more details, see our [paper](https://arxiv.org/pdf/2309.05516) for more details and explore quantized models available on several Hugging Face Spaces, e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
+and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -28,18 +28,20 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## 🆕 What's New
 
+[2025/09] AutoRound now includes experimental support for the mxfp4 and nvfp4 dtypes. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
+. We currently recommend exporting to the LLM-Compressor format.
+
 [2025/08] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
  for some accuracy results. 
 
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
   all bits other than 3 bits. Example
-  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-ar). **A more advanced algorithm** tailored for specific configurations may be available in
+  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound)
+  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound). **A more advanced algorithm** tailored for specific configurations may be available in
   v0.6.2.
 
 [2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
-  to [Intel/DeepSeek-R1-0528-int2-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-ar), [Intel/DeepSeek-R1-0528-int4-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-ar)
-  and [Intel/DeepSeek-R1-0528-int4-asym-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-asym-ar) for
+  to [OPEA/DeepSeek-R1-0528-int2-mixed-AutoRound](https://huggingface.co/OPEA/DeepSeek-R1-0528-int2-mixed-AutoRound) and [OPEA/DeepSeek-R1-0528-int4-AutoRound](https://huggingface.co/OPEA/DeepSeek-R1-0528-int4-AutoRound) for
   more details.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
@@ -82,7 +84,7 @@ Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
 
-🟨 Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
+✅ Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
 
 
 ## Installation
@@ -112,15 +114,13 @@ pip install auto-round-lib
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
-Please check out [User guide](./docs/step_by_step.md) for more details
-### Command Line Usage
+### CLI Usage
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \
     --model Qwen/Qwen3-0.6B \
-    --bits 4 \
-    --group_size 128 \
+    --scheme "W4A16" \
     --format "auto_gptq,auto_awq,auto_round" \
     --output_dir ./tmp_autoround
 ```
@@ -133,8 +133,7 @@ We offer another two configurations, `auto-round-best` and `auto-round-light`, d
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 auto-round-best \
     --model Qwen/Qwen3-0.6B \
-    --bits 4 \
-    --group_size 128 \
+    --scheme "W4A16" \
     --low_gpu_mem_usage 
   ```
 
@@ -142,8 +141,7 @@ auto-round-best \
 ## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
 auto-round-light \
     --model Qwen/Qwen3-0.6B \
-    --bits 4 \
-    --group_size 128 \
+    --scheme "W4A16" 
 
   ```
 
@@ -157,31 +155,31 @@ auto-round-fast \
 
 </details>
 
-In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
+In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `enable_alg_ext` for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
 ### API Usage
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "Qwen/Qwen3-0.6B"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+# Load a model (supports FP8/BF16/FP16/FP32)
+model_name_or_path = "Qwen/Qwen3-0.6B"
 
-bits, group_size, sym = 4, 128, True
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
+# Available schemes: "W2A16", "W3A16", "W4A16", "W8A16", "NVFP4", "MXFP4" (no real kernels), "GGUF:Q4_K_M", etc.
+ar = AutoRound(model_name_or_path, scheme="W4A16")
 
-## the best accuracy, 4-5X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
+# Highest accuracy (4–5× slower).
+# `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30% slower.
+# ar = AutoRound(model_name_or_path, nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
-## 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, bits=bits, group_size=group_size, sym=sym )
+# Faster quantization (2–3× speedup) with slight accuracy drop at W4G128.
+# ar = AutoRound(model_name_or_path, nsamples=128, iters=50, lr=5e-3)
 
+# Save quantized model
 output_dir = "./tmp_autoround"
-## format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format="auto_round")
+# Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m", etc.
+ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 <details>
@@ -253,22 +251,13 @@ is limited. For more information, please refer to the AutoRoundMLLM [readme](./a
 
 ```python
 from auto_round import AutoRoundMLLM
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 
-## load the model
-model_name = "Qwen/Qwen2-VL-2B-Instruct"
-model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-
-## quantize the model
-bits, group_size, sym = 4, 128, True
-autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size, sym=sym)
-autoround.quantize()
-
-# save the quantized model, set format='auto_gptq' or 'auto_awq' to use other formats
+# Load the model
+model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
+# Quantize the model
+ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir, format="auto_round", inplace=True)
+ar.quantize_and_save(output_dir)
 ```
 
 </details>
@@ -322,6 +311,7 @@ Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ,
 
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
+
 
 
 

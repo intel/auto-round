@@ -76,10 +76,10 @@ def check_compressed_tensors_supported():  # pragma: no cover
 
         return True
     except ImportError:
-        logger.warning(
+        logger.error(
             "Please install compressed-tensors via 'pip install compressed-tensors'" " to save as llm-compressor format"
         )
-        return False
+        exit(-1)
 
 
 if check_compressed_tensors_supported():

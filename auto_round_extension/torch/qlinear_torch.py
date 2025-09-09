@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import transformers
 
+from auto_round.utils import _get_packing_device
+
 logger = getLogger(__name__)
 
 
@@ -87,16 +89,12 @@ class QuantLinear(nn.Module):
         pass
 
     # @torch.compile() ## cpu side has bug
-    def pack_248_bits(self, linear, scales, zeros, g_idx=None):
+    def pack_248_bits(self, linear, scales, zeros, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
@@ -127,7 +125,6 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous()
-            zeros -= 1
             # zeros = zeros.numpy().astype(np.uint32)
             qzeros = torch.zeros(
                 (zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=self.device, dtype=torch.int32
@@ -143,7 +140,6 @@ class QuantLinear(nn.Module):
                 col += 1
             self.qzeros = qzeros.cpu()
         else:
-            zeros -= 1
             shape = scales_t.shape
             value = 0
             for j in range(0, (32 // self.bits)):
@@ -152,16 +148,12 @@ class QuantLinear(nn.Module):
             self.qzeros = qzeros.cpu()
 
     # @torch.compile()
-    def pack_3bits(self, linear, scales, zeros, g_idx=None):
+    def pack_3bits(self, linear, scales, zeros, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
@@ -232,7 +224,7 @@ class QuantLinear(nn.Module):
                 col += 1
                 qzeros[:, col] |= (zeros[:, i] >> 2) & 1
                 i += 1
-                # packed_zeros = (zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = (zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits + 1
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -241,7 +233,7 @@ class QuantLinear(nn.Module):
                 col += 1
                 qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
                 i += 1
-                # packed_zeros = (zeros[:, i: i + 10]).to(dtype=torch.int32)
+                packed_zeros = (zeros[:, i : i + 10]).to(dtype=torch.int32)
                 shifts = torch.arange(0, 10).to(device) * self.bits + 2
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -269,11 +261,11 @@ class QuantLinear(nn.Module):
             qzeros[:] = full_row.unsqueeze(0)
             self.qzeros = qzeros.cpu()
 
-    def pack(self, linear, scales, zeros, g_idx=None):
+    def pack(self, linear, scales, zeros, g_idx=None, device=None):
         if self.bits in [2, 4, 8]:
-            return self.pack_248_bits(linear, scales, zeros, g_idx)
+            return self.pack_248_bits(linear, scales, zeros, g_idx, device)
         elif self.bits in [3]:
-            return self.pack_3bits(linear, scales, zeros, g_idx)
+            return self.pack_3bits(linear, scales, zeros, g_idx, device)
         else:
             raise ValueError("Only 2,3,4,8 bits are supported.")
 
@@ -338,7 +330,6 @@ class QuantLinear(nn.Module):
             repeat_scales = self.scales.repeat_interleave(self.group_size, dim=0)
             repeat_zeros = zeros.repeat_interleave(self.group_size, dim=0)
             weights = repeat_scales * (weight - repeat_zeros)
-
         weights = weights.to(x_dtype)
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)

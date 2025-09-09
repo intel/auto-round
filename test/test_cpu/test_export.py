@@ -37,9 +37,9 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
+            model_name = "facebook/opt-125m"
             autoround = AutoRound(
-                self.model,
-                self.tokenizer,
+                model=model_name,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -48,9 +48,8 @@ class TestAutoRound(unittest.TestCase):
                 dataset=self.llm_dataloader,
             )
 
-            autoround.quantize()
             quantized_model_path = "./saved"
-            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
@@ -68,9 +67,9 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, True
+            model_name = "facebook/opt-125m"
             autoround = AutoRound(
-                self.model,
-                self.tokenizer,
+                model=model_name,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -78,9 +77,8 @@ class TestAutoRound(unittest.TestCase):
                 seqlen=2,
                 dataset=self.llm_dataloader,
             )
-            autoround.quantize()
             quantized_model_path = "./saved"
-            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
@@ -95,9 +93,9 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
+            model_name = "facebook/opt-125m"
             autoround = AutoRound(
-                self.model,
-                self.tokenizer,
+                model=model_name,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -105,10 +103,9 @@ class TestAutoRound(unittest.TestCase):
                 seqlen=2,
                 dataset=self.llm_dataloader,
             )
-            autoround.quantize()
             quantized_model_path = "./saved"
 
-            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:auto_awq")
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
             # quantization_config = AutoRoundConfig(
             #     backend="cpu"
@@ -218,6 +215,7 @@ class TestAutoRound(unittest.TestCase):
             iters=0,
             act_bits=8,
             nsamples=2,
+            seqlen=2,
             data_type="fp8",
             act_data_type="fp8",
             act_dynamic=False,
@@ -249,6 +247,7 @@ class TestAutoRound(unittest.TestCase):
             iters=1,
             act_bits=8,
             nsamples=2,
+            seqlen=2,
             data_type="fp8",
             act_data_type="fp8",
             act_dynamic=False,
@@ -295,7 +294,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(
-            output_dir=quantized_model_path, inplace=True, format="llmcompressor"
+            output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
@@ -339,7 +338,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -383,7 +382,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")

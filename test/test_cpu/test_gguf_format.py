@@ -36,8 +36,8 @@ class TestGGUF(unittest.TestCase):
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {self.model_name} "
-            f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
+            f"cd ../.. && {python_path} -m auto_round --model benzart/gemma-2b-it-fine-tuning-for-code-test "
+            f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
@@ -54,7 +54,15 @@ class TestGGUF(unittest.TestCase):
     def test_q4_0(self):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            data_type="int",
+            nsamples=1,
+            seqlen=8,
         )
         quantized_model_path = "./saved"
 
@@ -101,6 +109,7 @@ class TestGGUF(unittest.TestCase):
             # sym=sym,
             iters=1,
             nsamples=1,
+            seqlen=10,
             # data_type="int"
         )
         quantized_model_path = "./saved"
@@ -197,6 +206,7 @@ class TestGGUF(unittest.TestCase):
             sym=True,
             iters=0,
             nsamples=8,
+            seqlen=2,
             data_type="rtn_int_sym_dq",
             super_group_size=16,
             super_bits=6,

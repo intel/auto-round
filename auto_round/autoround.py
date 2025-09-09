@@ -18,7 +18,7 @@ import re
 import sys
 import time
 import traceback
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any, Callable, Union
 
 import accelerate
@@ -58,10 +58,13 @@ from auto_round.utils import (
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
     convert_fp8_model_to_16b_model,
+    copy_python_files_from_model_cache,
     detect_device,
+    estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
     get_block_names,
+    get_device_memory,
     get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
@@ -175,7 +178,7 @@ class AutoRound(object):
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
-                - enable_alg_ext, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, low_cpu_mem_usage, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
@@ -224,50 +227,37 @@ class AutoRound(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
+        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
+        # Scale factor for RAM usage per parameter.
+        self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
-
-        if device_map is not None and "," in str(device_map):
-            raise ValueError(
-                "API does not support explicit set multiple devices," " please set CUDA_VISIBLE_DEVICES=0,1 yourself"
-            )
-        if device_map is None:
-            device_map = 0
-
-        # Set device, must place after model loading
-        if isinstance(device_map, (str, torch.device, int)):
-            self.device = detect_device(device_map)
-        elif isinstance(device_map, dict) and device_map:
-            tmp_devices = []
-            for val in device_map.values():
-                if isinstance(val, (str, torch.device, int)):  # could optimize
-                    tmp_device = detect_device(self.device_map)
-                    tmp_device = tmp_device.split(":")[0]
-                    tmp_devices.append(tmp_device)
-            tmp_devices = list(set(tmp_devices))
-            if len(tmp_devices) > 1:
-                logger.warning(
-                    f"there are multiple device types in the device_map, "
-                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device "
-                )
-
-            self.device = tmp_devices[0]
-
-        if isinstance(device_map, dict) and device_map:
-            self.device_map = device_map
-        else:
-            self.device_map = None
-        self._set_device_map_in_blocks(self.device_map)
 
         if not disable_deterministic_algorithms:
             if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
+
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
+
+        if device_map is None:
+            device_map = 0
+
+        # Set device, must place after model loading
+        self._set_device(device_map)
+
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
+            self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
+        else:
+            self.device_map = None
+        self._set_device_map_in_blocks(self.device_map)
 
         # Model related
         self.quantized = False
@@ -286,36 +276,11 @@ class AutoRound(object):
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
         check_and_mark_fp8_model(model)
-        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-        # Some other quantization configs
-        self.layer_config = {} if layer_config is None else layer_config
-        # Check and convert to dict
-        for key, item in self.layer_config.items():
-            if isinstance(item, str):
-                item = asdict(preset_name_to_scheme(item.upper()))
-                self.layer_config[key] = item
-
-            if isinstance(item, QuantizationScheme):
-                config = asdict(item)
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  ## Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
-                self.layer_config[key] = config
-            elif isinstance(item, dict):
-                item_keys = item.keys()
-                expected_keys = list(QuantizationScheme.__annotations__.keys())
-                if item_keys not in expected_keys:
-                    for item_key in item_keys:
-                        if item_key not in expected_keys:
-                            raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {expected_keys} are supported"
-                            )
+        self._parse_layer_config(layer_config)  # must place after model init
 
         self.to_quant_block_names = to_quant_block_names
 
@@ -369,7 +334,6 @@ class AutoRound(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
             )
-        model = _handle_moe_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -405,33 +369,82 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-        self.serialization_keys = [
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "seqlen",
-            "batch_size",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "nsamples",
-            "low_gpu_mem_usage",
-            "to_quant_block_names",
-            "enable_norm_bias_tuning",
-            "act_bits",
-            "act_group_size",
-            "act_sym",
-            "act_dynamic",
-            "act_data_type",
-            "super_bits",
-            "super_group_size",
-        ]
+    def _set_device(self, device_map):
+        if hasattr(self, "device") and self.device is not None:
+            return
+        if isinstance(device_map, (str, torch.device, int)):
+            self.device = detect_device(device_map)
+
+        elif isinstance(device_map, dict) and device_map:
+            tmp_devices = []
+            for val in device_map.values():
+                if isinstance(val, (str, torch.device, int)):  # could optimize
+                    tmp_device = detect_device(val)
+                    tmp_device = tmp_device.split(":")[0]
+                    tmp_devices.append(tmp_device)
+            tmp_devices = list(set(tmp_devices))
+            if len(tmp_devices) > 1:
+                logger.warning(
+                    f"there are multiple device types in the device_map, "
+                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device "
+                )
+
+            self.device = tmp_devices[0]
+        else:
+            raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
+
+    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
+        """Parse and set the layer-wise quantization configuration."""
+        # Some other quantization configs
+        self.layer_config = {} if layer_config is None else layer_config
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        for key, item in self.layer_config.items():
+            if isinstance(item, str):
+                item = asdict(preset_name_to_scheme(item.upper()))
+                self.layer_config[key] = item
+
+            if isinstance(item, QuantizationScheme):
+                config = asdict(item)
+                tmp_keys = copy.deepcopy(list(config.keys()))
+                for tmp_key in tmp_keys:  ## Pop None value to be overridden
+                    if config[tmp_key] is None:
+                        config.pop(tmp_key)
+                self.layer_config[key] = config
+            elif isinstance(item, dict):
+                item_keys = item.keys()
+                if item_keys not in scheme_keys:
+                    for item_key in item_keys:
+                        if item_key not in scheme_keys:
+                            raise ValueError(
+                                f"the key {item_key} in layer_config for layer {key} is invalid,"
+                                f" only {scheme_keys} are supported"
+                            )
+
+        if not self.quant_lm_head or (isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf")):
+            return
+        for n, _ in self.model.named_modules():
+            lm_head_layer_name = n
+
+        if (
+            hasattr(self.model, "config")
+            and self.model.config.tie_word_embeddings
+            and hasattr(self.model, "_tied_weights_keys")
+        ):
+            tied_keys = self.model._tied_weights_keys
+            for item in tied_keys:
+                if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
+                    self.quant_lm_head = False
+                    logger.warning(
+                        "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
+                        "supported currently"
+                    )
+                    break
+
+        lm_head_layer_config = self.layer_config[lm_head_layer_name] if lm_head_layer_name in self.layer_config else {}
+
+        for key in scheme_keys:
+            if key not in lm_head_layer_config:
+                lm_head_layer_config[key] = getattr(self, key)
 
     def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> None:
         """Parse and set the quantization scheme."""
@@ -443,20 +456,7 @@ class AutoRound(object):
             scheme = scheme.upper()
             self.scheme = scheme
             scheme = asdict(preset_name_to_scheme(scheme))
-
-        scheme_keys = (
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "act_bits",
-            "act_group_size",
-            "act_sym",
-            "act_data_type",
-            "act_dynamic",
-            "super_bits",
-            "super_group_size",
-        )
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
         for key in scheme_keys:
             if key in kwargs and kwargs[key] is not None:
                 setattr(self, key, kwargs[key])
@@ -543,6 +543,8 @@ class AutoRound(object):
             self.device_map = None
         if not device_map:
             return
+        if self.device_map == "auto" and device_map == "auto":
+            return
         if isinstance(device_map, str):
             device_map = device_map.replace(" ", "")
             infos = device_map.split(",")
@@ -583,6 +585,71 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
+    def _set_auto_device_map_in_block(self, block: torch.nn.Module, input_ids: list[torch.Tensor]) -> None:
+        """Automatically sets the device map for the block based on available GPUs and memory constraints."""
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+        elif torch.xpu.is_available():
+            logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
+            return
+        else:
+            raise RuntimeError("No CUDA or XPU devices found.")
+        if num_gpus <= 1:
+            self.device_map = None
+            return
+
+        if hasattr(self, "device_list") and self.device_list:
+            cuda_devices = [f"cuda:{i}" for i in self.device_list]
+            device_0 = cuda_devices[0]
+        else:
+            cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
+            device_0 = "cuda:0"
+
+        device_0_memory = get_device_memory(
+            self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
+        )
+        block_memory, input_ouput_memory = estimate_tuning_block_mem(block, input_ids)
+        if self.low_gpu_mem_usage:
+            input_ouput_memory = 0
+
+        mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
+        if self.iters == 0:
+            mem_per_param_scale = 1  # for rtn
+
+        if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
+            return  # fit in one GPU
+
+        device_map = {}
+        device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
+        device_memory[device_0] = device_0_memory - input_ouput_memory
+
+        device_idx = 0
+        # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
+        for n, m in block.named_modules():
+            if check_to_quantized(m):
+                layer_name = block.tmp_name + "." + n
+                layer_memory = m.weight.nbytes / 1024**3
+                if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
+                elif device_idx == 0:
+                    device_idx += 1  # Move to the next device once device 0 is full
+                    device_map[layer_name] = cuda_devices[device_idx]
+                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
+                else:
+                    # Calculate the target device index based on even distribution
+                    sorted_devices = sorted(cuda_devices, key=lambda d: device_memory[d], reverse=True)
+                    device_idx = sorted_devices[0]
+                    if layer_memory * mem_per_param_scale < device_memory[device_idx]:
+                        device_map[layer_name] = device_idx
+                        device_memory[device_idx] -= layer_memory * mem_per_param_scale
+                    else:
+                        logger.warning_once(
+                            f"Block {block.tmp_name} not fit in available GPU memory. "
+                            "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
+                        )
+        self._set_device_map_in_blocks(device_map)
+
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
@@ -619,7 +686,7 @@ class AutoRound(object):
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
 
-        if self.act_bits <= 8:
+        if self.act_bits <= 8 and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
@@ -725,11 +792,27 @@ class AutoRound(object):
         Returns:
             list: A list of validated and updated formats.
         """
-        _gguf_args_check(self, format, model_type=ModelType.TEXT)
-        if self.vlm:
-            _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
+
+        # Remove duplicates from formats list
+        def remove_duplicates(lst):
+            seen = set()
+            return [x for x in lst if not (x in seen or seen.add(x))]
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
+        formats = remove_duplicates(formats)  # need the keep origin order
+
+        if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
+            for i in range(len(formats)):
+                if formats[i] != "fake" and formats[i] != self.scheme.lower().startswith("gguf"):
+                    logger.warning(
+                        f"reset format {formats[i]} to {self.scheme.lower()} "
+                        f"since scheme {self.scheme} can only be exported to format {self.scheme.lower()}"
+                    )
+                    formats[i] = self.scheme.lower()
+
+        _gguf_args_check(self, formats, model_type=ModelType.TEXT)
+        if self.vlm:
+            _gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
 
         for format_ in formats:
             if format_ not in SUPPORTED_FORMATS:
@@ -771,24 +854,22 @@ class AutoRound(object):
                         "for the current quantization configuration, "
                         "please change to `fake` format for research purpose"
                     )
-
                 formats[index] = format
-            elif format == "llmcompressor":
+            elif format == "llm_compressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-                    format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
+                    check_compressed_tensors_supported()
+                    format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 elif not is_wfp8afp8(self):
                     logger.error(
-                        "Currently, the llmcompressor format only supports MXFP/NVFP/FP8. "
+                        "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
-
-        # Remove duplicates from formats list
-        def remove_duplicates(lst):
-            seen = set()
-            return [x for x in lst if not (x in seen or seen.add(x))]
+            else:
+                if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
+                    logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
 
         formats = remove_duplicates(formats)
         for i in range(len(formats)):
@@ -812,11 +893,29 @@ class AutoRound(object):
         if format == "fake":
             return format
         format = format.replace("q*_", f"q{self.bits}_")
+
+        # format check for fp8
+        w_fp8 = self.data_type == "fp" and self.bits == 8
+        act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
+        if (w_fp8 or act_fp8) and re.search("^auto_round|^llmcompressor", format) is None:
+            error_msg = (
+                f"is only supported to export auto_round or llmcompressor format," f" but got {format}, please check."
+            )
+            error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
+            error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
+            logger.error(error_msg)
+            sys.exit(-1)
+
         # Only support to export afp8/nv_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
-                if format == "llmcompressor":
-                    if is_nv_fp(self.act_data_type):
+                if "llm_compressor" in format:
+                    if is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type:
+                        logger.warning(
+                            f"AutoRound supports exporting to format '{format}', "
+                            "but loading quantized models in this format is not yet supported. "
+                            "It is currently recommended to export to the 'llm_compressor' format."
+                        )
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
@@ -826,11 +925,12 @@ class AutoRound(object):
                         and self.act_bits == act_bits
                         and self.act_dynamic
                     ), (
-                        f"Currently only support to export llmcompressor format for dynamic quantized"
-                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
-                        f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
+                        f"Currently only support to export llmcompressor format for sym dynamic quantized"
+                        f" W{self.bits}A{self.act_bits} model with group_size={group_size},"
+                        f" but got bits={self.bits}, group_size={self.group_size}, sym={self.sym},"
+                        f" act_bits={self.act_bits}"
                     )
-                elif format != "fake" and not is_nv_fp(format):
+                elif format != "fake" and (not is_nv_fp(format) or "static_gs" not in self.act_data_type):
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
                         " with fp8 or nv_fp4 dtype activation for activation quantization."
@@ -988,7 +1088,8 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    logger.info("out of VRAM, falling back to CPU")
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
@@ -997,7 +1098,6 @@ class AutoRound(object):
                         },
                     )
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
 
             # Overwrite the module's weights with the quantized version
@@ -1139,6 +1239,7 @@ class AutoRound(object):
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
+                    logger.error(cuda_error_msg)
                     # Final fallback: warn and use CPU-only quantization
                     logger.warning(
                         "Fallback to CPU. "
@@ -1156,7 +1257,6 @@ class AutoRound(object):
                     self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
                     self.device = orig_device
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
         finally:
             # Always remove hooks
@@ -1301,7 +1401,8 @@ class AutoRound(object):
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
                 try:
-                    logger.warning("Out of VRAM, falling back to CPU.")
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU.")
                     m.to("cpu")
                     m = WrapperLinear(
                         m,
@@ -1311,7 +1412,6 @@ class AutoRound(object):
                     )
                     m = m.unwrapper({})
                 except Exception as e:
-                    logger.error(cuda_error_msg)
                     raise
 
         # Step 3: Optional immediate packing/export
@@ -1339,7 +1439,7 @@ class AutoRound(object):
                         model_type=model_type,
                     )
                 else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
 
                 # if self.low_gpu_mem_usage:
                 #     clear_memory()
@@ -1488,6 +1588,10 @@ class AutoRound(object):
                 block = block.to(self.device)
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
+
+                if self.device_map == "auto":
+                    self._set_auto_device_map_in_block(block, input_ids)
+
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -1548,6 +1652,10 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             m.tmp_name = n
         self._check_compatibility()
+        formats = self.formats if hasattr(self, "formats") else None
+        # It is best to modify the model structure in the quantize function and check the format,
+        # because it may cause the gguf format to not be exported normally.
+        self.model = _handle_moe_model(self.model, formats=formats)
         self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
@@ -1576,7 +1684,7 @@ class AutoRound(object):
                     or "gptq" in formats[0]
                     or "auto_round" in formats[0]
                     or "gguf" in formats[0]
-                    or "llmcompressor" in formats[0]
+                    or "llm_compressor" in formats[0]
                 )
                 and self.inplace
             ):
@@ -2551,6 +2659,9 @@ class AutoRound(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
+        if self.device_map == "auto":
+            self._set_auto_device_map_in_block(block, input_ids)
+
         if self.device_map is not None:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
@@ -2806,16 +2917,21 @@ class AutoRound(object):
             self.sym
             and self.enable_alg_ext
             and self.super_group_size is None
-            and ((self.data_type.startswith("int") and self.act_bits >= 8) or self.data_type.startswith("mx"))
+            and (
+                (self.data_type.startswith("int") and self.act_bits >= 8)
+                or self.data_type.startswith("mx")
+                or self.data_type.startswith("nv")
+            )
         ):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
                 AutoRound.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-                if self.bits > 2 and not self.data_type.startswith("mx"):
+                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
                     logger.warning(
-                        "algorithm extension has only undergone limited validation on INT2 and mxfp4; use with caution."
+                        "algorithm extension has only undergone limited validation on "
+                        "INT2,mxfp4 and nvfp4; use with caution."
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")
@@ -2881,7 +2997,9 @@ class AutoRound(object):
                             model_type=model_type,
                         )
                     else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
+                        PACKING_LAYER_WITH_FORMAT[target_backend](
+                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
+                        )
         pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -2927,14 +3045,18 @@ class AutoRound(object):
             processor = kwargs.get("processor", None)
             if processor is not None:
                 processor.save_pretrained(output_dir)
+            try:
+                copy_python_files_from_model_cache(self.model, output_dir)
+            except Exception as e:
+                logger.warning("Skipping source model Python file copy due to error: %s", e)
             return
         if self.act_bits <= 8 and format == "qdq":
             logger.warning(
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
-        if format == "llmcompressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-            format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+        if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -2953,11 +3075,37 @@ class AutoRound(object):
             )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
-
+        serialization_keys = [
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "enable_quanted_input",
+            "enable_minmax_tuning",
+            "seqlen",
+            "batch_size",
+            "scale_dtype",
+            "lr",
+            "minmax_lr",
+            "gradient_accumulate_steps",
+            "iters",
+            "amp",
+            "nsamples",
+            "low_gpu_mem_usage",
+            "to_quant_block_names",
+            "enable_norm_bias_tuning",
+            "act_bits",
+            "act_group_size",
+            "act_sym",
+            "act_dynamic",
+            "act_data_type",
+            "super_bits",
+            "super_group_size",
+        ]
         if isinstance(self.dataset, str):
-            self.serialization_keys.append("dataset")
+            serialization_keys.append("dataset")
         serialization_dict = {}
-        for key in self.serialization_keys:
+        for key in serialization_keys:
             serialization_dict[key] = getattr(self, key)
         from .version import __version__
 
@@ -2965,7 +3113,7 @@ class AutoRound(object):
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
-        compressed_model = save_quantized_as_format(  ##TODO refine the code
+        compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
             layer_config=self.layer_config,
@@ -2988,6 +3136,7 @@ class AutoRound(object):
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
+            device=self.device,
             **kwargs,
         )
         return compressed_model

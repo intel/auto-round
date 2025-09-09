@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, _is_fp8_model, clean_module_parameter, get_module, logger
+from auto_round.utils import LazyImport, _get_packing_device, _is_fp8_model, clean_module_parameter, get_module, logger
 
 gguf = LazyImport("gguf")
 
@@ -179,12 +179,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif torch.xpu.is_available():
-        device = "xpu"
-    else:
-        device = "cpu"
+    device = _get_packing_device()
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
     zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -209,12 +204,7 @@ def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=
 
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
     suffix = ".weight"
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif torch.xpu.is_available():
-        device = "xpu"
-    else:
-        device = "cpu"
+    device = _get_packing_device()
     if suffix in name:
         layer_name = name[: -len(suffix)]
         module = get_module(cls.model, layer_name)
@@ -600,6 +590,8 @@ def prepare_tensors(cls):
         # # save cpu memory, but slow
         if cls.low_cpu_mem_usage:
             for weight_name in clean_weight_list:
+                if cls.model_arch == gguf.MODEL_ARCH.GEMMA:
+                    continue
                 module = get_module(cls.model, ".".join(weight_name.split(".")[:-1]))
                 for key in ["scale", "zp", "d_scale", "wmin", "d_wmin", "imatrix"]:
                     if hasattr(module, key):
