@@ -19,6 +19,7 @@ import sys
 import time
 import traceback
 from dataclasses import asdict, fields
+from enum import Enum
 from typing import Any, Callable, Union
 
 import accelerate
@@ -30,6 +31,7 @@ from transformers import set_seed
 
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
@@ -857,8 +859,8 @@ class AutoRound(object):
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
-                elif is_wfp8afp8(self):  # staic wfp8afp8
-                    format = "auto_round:fp8"
+                elif is_static_wfp8afp8(self):  # staic wfp8afp8
+                    format = f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
                     format = "auto_round:fp8"
                 elif self.act_bits < 16:
@@ -956,10 +958,10 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == "auto_round:fp8"):
+                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"):
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
-                        " change format to auto_round"
+                        f" change format {format} to auto_round"
                     )
                     format = "auto_round"
             if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
