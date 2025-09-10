@@ -559,7 +559,14 @@ def dynamic_import_inference_linear(backend, config):
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
+    import torch
+
+    dtype = torch.get_default_dtype()
+    if dtype != torch.float32:
+        torch.set_default_dtype(torch.float32)
     import gptqmodel  # pylint: disable=E0401
+
+    torch.set_default_dtype(dtype)
 
     if "marlin" in backend:
         return auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer()
