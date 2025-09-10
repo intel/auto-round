@@ -34,6 +34,7 @@ from packaging import version
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
+from auto_round.schemes import QuantizationScheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -107,9 +108,17 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-@lru_cache(None)
-def warning_once(self, msg: str):
-    self.warning(msg)
+@lru_cache(maxsize=None)
+def warning_once(self, msg, *args, **kwargs):
+    """
+    Log a warning message only once per unique message/arguments combination.
+
+    Args:
+        msg: The warning message format string
+        *args: Variable positional arguments for message formatting
+        **kwargs: Variable keyword arguments for message formatting and logging options
+    """
+    self.warning(msg, *args, **kwargs)
 
 
 class AutoRoundFormatter(logging.Formatter):
@@ -517,7 +526,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
-    if isinstance(config, dict):
+    if isinstance(config, (dict, QuantizationScheme)):
         bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
     elif hasattr(config, "orig_layer"):
@@ -2550,6 +2559,12 @@ def is_mx_fp(backend):
 def is_nv_fp(backend):
     backend = backend.lower()
     return BackendDataType.NV_FP in backend
+
+
+def _is_weight_fp8_activation_static_fp8(
+    bit: int, group_size: int, sym: bool, data_type: str, act_dynamic: bool
+) -> bool:
+    return bit == 8 and group_size == -1 and sym and data_type == "fp" and not act_dynamic
 
 
 def is_wfp8afp8(ar):
