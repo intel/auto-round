@@ -101,6 +101,7 @@ MXFP4 = QuantizationScheme.from_dict(
         "data_type": "mx_fp",
         "act_bits": 4,
         "act_data_type": "mx_fp_rceil",
+        "act_group_size": 32,
     }
 )
 
@@ -111,6 +112,7 @@ MXFP8 = QuantizationScheme.from_dict(
         "data_type": "mx_fp",
         "act_bits": 8,
         "act_data_type": "mx_fp_rceil",
+        "act_group_size": 32,
     }
 )
 
@@ -121,6 +123,7 @@ NVFP4 = QuantizationScheme.from_dict(
         "data_type": "nv_fp",
         "act_bits": 4,
         "act_data_type": "nv_fp4_with_static_gs",
+        "act_group_size": 16,
     }
 )
 

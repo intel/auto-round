@@ -38,11 +38,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
   all bits other than 3 bits. Example
   models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound)
   and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound). **A more advanced algorithm** tailored for specific configurations may be available in
-  v0.6.2.
-
-[2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
-  to [OPEA/DeepSeek-R1-0528-int2-mixed-AutoRound](https://huggingface.co/OPEA/DeepSeek-R1-0528-int2-mixed-AutoRound) and [OPEA/DeepSeek-R1-0528-int4-AutoRound](https://huggingface.co/OPEA/DeepSeek-R1-0528-int4-AutoRound) for
-  more details.
+  v0.7.1.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
   vLLM versions later than v0.85.post1.
@@ -121,16 +117,16 @@ Please change to `auto-round-mllm` for visual-language models (VLMs) quantizatio
 auto-round \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" \
-    --format "auto_gptq,auto_awq,auto_round" \
+    --format "auto_round" \
     --output_dir ./tmp_autoround
 ```
 
-We offer another two configurations, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
+We offer another two recipes, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>
 
   ```bash
-## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+# Best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 auto-round-best \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" \
@@ -138,7 +134,7 @@ auto-round-best \
   ```
 
   ```bash
-## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
+# 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
 auto-round-light \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" 
@@ -147,7 +143,7 @@ auto-round-light \
 
   <!-- ```bash
 auto-round-fast \
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+# Fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
     --model Qwen/Qwen3-0.6B \
     --bits 4 \
     --group_size 128 \
@@ -176,10 +172,8 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 # Faster quantization (2–3× speedup) with slight accuracy drop at W4G128.
 # ar = AutoRound(model_name_or_path, nsamples=128, iters=50, lr=5e-3)
 
-# Save quantized model
-output_dir = "./tmp_autoround"
 # Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m", etc.
-ar.quantize_and_save(output_dir, format="auto_round")
+ar.quantize_and_save(output_dir="./tmp_autoround", format="auto_round")
 ```
 
 <details>
@@ -251,22 +245,13 @@ is limited. For more information, please refer to the AutoRoundMLLM [readme](./a
 
 ```python
 from auto_round import AutoRoundMLLM
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 
-## load the model
-model_name = "Qwen/Qwen2-VL-2B-Instruct"
-model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-
-## quantize the model
-bits, group_size, sym = 4, 128, True
-autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size, sym=sym)
-autoround.quantize()
-
-# save the quantized model, set format='auto_gptq' or 'auto_awq' to use other formats
+# Load the model
+model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
+# Quantize the model
+ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir, format="auto_round", inplace=True)
+ar.quantize_and_save(output_dir)
 ```
 
 </details>
