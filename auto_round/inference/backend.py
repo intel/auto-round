@@ -73,6 +73,7 @@ class BackendInfo:
     checkers: List[Any] = field(default_factory=list)
     alias: Optional[List[str]] = None
     requirements: Optional[List[str]] = None
+    # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
 
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
@@ -108,7 +109,7 @@ gptqmodel_marlin_feature_checker = functools.partial(
 )
 
 
-def torch_fp8_static_checker(
+def fp8_static_scheme_checker(
     in_feature: int,
     out_feature: int,
     config: QuantizationScheme,
@@ -192,14 +193,14 @@ BackendInfos["auto_round:torch"] = BackendInfo(
 # Weight: FP8, per-channel, may be extended to per-tensor in future
 # Activation: FP8, per-tensor
 
-BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
+BackendInfos["auto_round:fp8_static"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
     packing_format="",
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
     bits=[8],
     priority=0,
-    checkers=[torch_fp8_static_checker],
+    checkers=[fp8_static_scheme_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.6.0"],
 )

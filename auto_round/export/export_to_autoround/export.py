@@ -47,7 +47,7 @@ from auto_round.utils import (
 class AutoRoundFormat(str, Enum):
     # Weight: FP8, per-channel, may be extended to per-tensor in future
     # Activation: FP8, per-tensor
-    TORCH_FP8_STATIC = "torch_fp8_static"
+    TORCH_FP8_STATIC = "fp8_static"
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
