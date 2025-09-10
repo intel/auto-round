@@ -226,7 +226,8 @@ class AutoRound(object):
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
-        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
+        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
+        enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
@@ -236,11 +237,19 @@ class AutoRound(object):
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+        if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+        # deprecated, default not to use torch.use_deterministic_algorithms
+        if not disable_deterministic_algorithms or enable_deterministic_algorithms:
+            if not disable_deterministic_algorithms:
+                logger.warning(
+                    "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
+                    " please use enable_deterministic_algorithms instead. "
+                )
 
-        if not disable_deterministic_algorithms:
-            if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
-                os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
+        else:
+            torch.use_deterministic_algorithms(True, warn_only=True)
 
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
@@ -688,7 +697,11 @@ class AutoRound(object):
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
 
-        if self.act_bits <= 8 and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type):
+        if (
+            self.act_bits <= 8
+            and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
+            and not is_mx_fp(self.act_data_type)
+        ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
@@ -899,25 +912,22 @@ class AutoRound(object):
         # format check for fp8
         w_fp8 = self.data_type == "fp" and self.bits == 8
         act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
-        if (w_fp8 or act_fp8) and re.search("^auto_round|^llmcompressor", format) is None:
+        if (w_fp8 or act_fp8) and re.search("^auto_round|^llm_compressor", format) is None:
             error_msg = (
-                f"is only supported to export auto_round or llmcompressor format," f" but got {format}, please check."
+                f"is only supported to export auto_round or llm_compressor format," f" but got {format}, please check."
             )
             error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
             error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
             logger.error(error_msg)
             sys.exit(-1)
 
-        # Only support to export afp8/nv_fp
+        # Only support to export afp8/nv_fp/mx_fp
         if self.act_bits <= 8:
             if not is_standard_fp(self.act_data_type) or self.act_dynamic:
                 if "llm_compressor" in format:
-                    if is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type:
-                        logger.warning(
-                            f"AutoRound supports exporting to format '{format}', "
-                            "but loading quantized models in this format is not yet supported. "
-                            "It is currently recommended to export to the 'llm_compressor' format."
-                        )
+                    if (is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type) or (
+                        is_mx_fp(self.act_data_type)
+                    ):
                         return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
@@ -927,15 +937,23 @@ class AutoRound(object):
                         and self.act_bits == act_bits
                         and self.act_dynamic
                     ), (
-                        f"Currently only support to export llmcompressor format for sym dynamic quantized"
+                        f"Currently only support to export llm_compressor format for sym dynamic quantized"
                         f" W{self.bits}A{self.act_bits} model with group_size={group_size},"
                         f" but got bits={self.bits}, group_size={self.group_size}, sym={self.sym},"
                         f" act_bits={self.act_bits}"
                     )
-                elif format != "fake" and (not is_nv_fp(format) or "static_gs" not in self.act_data_type):
+                elif "auto_round" in format and (
+                    is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
+                ):
+                    logger.warning(
+                        f"AutoRound supports exporting to format '{format}', "
+                        "but loading quantized models in this format is not yet supported. "
+                        "It is currently recommended to export to the 'llm_compressor' format."
+                    )
+                elif format != "fake":
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
-                        " with fp8 or nv_fp4 dtype activation for activation quantization."
+                        " with fp8, mx_fp and nv_fp4 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
                     format = "fake"
@@ -2161,7 +2179,7 @@ class AutoRound(object):
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
-                f"An insufficient number of samples likely reduces the accuracy of the quantized model."
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
                 f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
@@ -2840,7 +2858,11 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
-        if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+        if (
+            is_nv_fp(self.act_data_type)
+            and hasattr(self, "formats")
+            and any("nv_fp" in format_ for format_ in self.formats)
+        ):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 

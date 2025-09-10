@@ -320,25 +320,40 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
+    def test_fp8input_mxfp4_llmcompressor_format(self):
+        model_name = "/models/Qwen3-0.6B-FP8"
+        scheme = "mxfp4"
+        ar = AutoRound(
+            model=model_name,
+            iters=2,
+            seqlen=2,
+            scheme=scheme,
+            dataset=self.llm_dataloader,
+        )
+        compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
+        tmp_layer = compressed_model.model.layers[3].self_attn.q_proj
+        assert (
+            hasattr(tmp_layer, "weight_scale")
+            and hasattr(tmp_layer, "weight_packed")
+            and tmp_layer.weight_scale.dtype is torch.uint8
+            and tmp_layer.weight_scale.shape[0] == 2048
+        ), "Illegal MXFP4 packing name or data_type or shape"
+        quantization_config = AutoConfig.from_pretrained(self.save_dir, trust_remote_code=True).quantization_config
+        assert (
+            quantization_config["format"] == "float-quantized"
+            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
+        ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     def test_nvfp4_llmcompressor_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-
-        bits = 4
-        act_bits = 4
-        data_type = "nv_fp"
-        act_data_type = "nv_fp4_with_static_gs"
-        group_size = 16
-        sym = True
+        scheme = "nvfp4"
         autoround = AutoRound(
             model,
             tokenizer,
-            bits=bits,
-            act_bits=act_bits,
-            data_type=data_type,
-            act_data_type=act_data_type,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
