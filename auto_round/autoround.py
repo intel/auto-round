@@ -1896,7 +1896,7 @@ class AutoRound(object):
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
-            q_layer_input = q_layer_inputs[layer_name] if q_layer_inputs is not None else None
+            q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             del layer_input
