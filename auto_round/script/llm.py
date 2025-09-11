@@ -341,7 +341,6 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument("--max_batch_size", default=None, type=int, help="max batch size for vllm")
         self.add_argument("--max_length", default=None, type=int, help="max generation length for vllm")
         self.add_argument("--max_model_len", default=None, type=int, help="maximum model sequence length for vllm")
-        self.add_argument("--seed", default=1234, type=int, help="random seed")
         self.add_argument(
             "--gpu_memory_utilization", default=0.9, type=float, help="target GPU memory utilization for vllm"
         )
