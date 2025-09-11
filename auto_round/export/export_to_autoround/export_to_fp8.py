@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
+from auto_round.export.utils import save
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     _get_packing_device,
@@ -35,7 +36,6 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-from auto_round.export.utils import save
 
 
 class FP8QLinear(torch.nn.Module):
@@ -110,8 +110,10 @@ def pack_layer(layer_name, model, data_type, device=None):
     info = torch.finfo(torch_dtype)
     if zp is not None:
         q_weight = (
-            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) +
-            zp.to(packing_device) if isinstance(zp, torch.Tensor) else zp)
+            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp.to(packing_device)
+            if isinstance(zp, torch.Tensor)
+            else zp
+        )
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
@@ -170,17 +172,20 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
     for layer_name in layer_config:
-        if (not layer_config[layer_name]["in_blocks"] and
-                layer_config[layer_name]["bits"] <= 8):  ##lm head ##TODO fix act and so on
+        if (
+            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
+        ):  ##lm head ##TODO fix act and so on
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        elif layer_config[layer_name]["in_blocks"] or (block_name_to_quantize is not None and
-                                                       check_start_with_block_name(layer_name, block_name_to_quantize)):
+        elif layer_config[layer_name]["in_blocks"] or (
+            block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
+        ):
             neq_keys = check_neq_config(
-                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS})
+                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
+            )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
             for key in neq_keys:

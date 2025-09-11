@@ -878,12 +878,13 @@ class AutoRound(object):
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
                 if format == "llm_compressor" and is_static_wfp8afp8(self):
-                    format = format.replace("llm_compressor", f"llm_compressor:torch_fp8_static")
+                    format = format.replace("llm_compressor", "llm_compressor:torch_fp8_static")
                     formats[index] = format
                     if self.act_group_size != 0:
                         logger.warning(
                             f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
-                            f" ,but got act_group_size={self.act_group_size}, reset = 0")
+                            f" ,but got act_group_size={self.act_group_size}, reset = 0"
+                        )
                         self.act_group_size = 0
                 elif not is_wfp8afp8(self):
                     logger.error(
@@ -966,7 +967,11 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}" or format == "llm_compressor:torch_fp8_static"):
+                if not (
+                    format == "auto_round"
+                    or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
+                    or format == "llm_compressor:torch_fp8_static"
+                ):
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         f" change format {format} to auto_round"
@@ -3090,7 +3095,7 @@ class AutoRound(object):
         if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
             format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
         if format == "llm_compressor" and is_static_wfp8afp8(self):
-            format = format.replace("llm_compressor", f"llm_compressor:torch_fp8_static")
+            format = format.replace("llm_compressor", "llm_compressor:torch_fp8_static")
 
         from auto_round.export import EXPORT_FORMAT
 

@@ -40,7 +40,6 @@ class TestLLMC(unittest.TestCase):
         autoround.quantize()
         autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
 
-
     def test_llmcompressor_fp8(self):
         ## quantize the model
         model_name = "facebook/opt-125m"
@@ -58,11 +57,12 @@ class TestLLMC(unittest.TestCase):
         # print(result)
 
         import json
+
         config = json.load(open("./saved/config.json"))
         self.assertIn("group_0", config["quantization_config"]["config_groups"])
         self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"], 8)
-        self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"], 'channel')
-        self.assertEqual(config["quantization_config"]["quant_method"], 'compressed-tensors')
+        self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"], "channel")
+        self.assertEqual(config["quantization_config"]["quant_method"], "compressed-tensors")
 
 
 if __name__ == "__main__":

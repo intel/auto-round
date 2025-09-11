@@ -27,6 +27,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
+from auto_round.export.utils import save
 from auto_round.utils import (
     SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
@@ -42,7 +43,6 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-from auto_round.export.utils import save
 
 
 class AutoRoundFormat(str, Enum):

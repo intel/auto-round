@@ -12,19 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import copy
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
-import threadpoolctl as tctl
 
+import threadpoolctl as tctl
 import torch
 import transformers
 from tqdm import tqdm
 
-from .config import check_compressed_tensors_supported
-
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
+from auto_round.export.utils import save
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     _get_packing_device,
@@ -36,9 +37,9 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
-from auto_round.export.utils import save
+
+from .config import check_compressed_tensors_supported
+
 
 def pack_layer(layer_name, model, data_type, device=None):
     """
@@ -112,6 +113,7 @@ def pack_layer(layer_name, model, data_type, device=None):
     my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
 
+
 def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
     """
     Saves a quantized model of FP8_STATIC scheme in the llm-compressor format.
@@ -164,25 +166,26 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
     # get llm-compressor format config
     check_compressed_tensors_supported()
     from compressed_tensors.quantization import (
+        QuantizationArgs,
         QuantizationConfig,
         QuantizationScheme,
         QuantizationStatus,
-        QuantizationArgs,
         QuantizationStrategy,
-        QuantizationType
-        )
+        QuantizationType,
+    )
 
-    group_size = kwargs['serialization_dict']['group_size']
-    if group_size== -1:
+    group_size = kwargs["serialization_dict"]["group_size"]
+    if group_size == -1:
         strategy = QuantizationStrategy.CHANNEL
     elif group_size == 0:
         strategy = QuantizationStrategy.TENSOR
     else:
-        strategy = QuantizationStrategy.GROUP 
-    if kwargs['serialization_dict']['act_group_size'] != 0:
+        strategy = QuantizationStrategy.GROUP
+    if kwargs["serialization_dict"]["act_group_size"] != 0:
         logger.error(
             f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
-            f" but got {kwargs['serialization_dict']['act_group_size']}, please check.")
+            f" but got {kwargs['serialization_dict']['act_group_size']}, please check."
+        )
         sys.exit(-1)
     scheme_args = dict(
         weights=QuantizationArgs(
@@ -224,7 +227,7 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
 
     if output_dir is None:
         return model
-    
+
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
@@ -241,5 +244,3 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-    
-    

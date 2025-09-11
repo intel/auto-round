@@ -69,9 +69,10 @@ def pack_layer(layer_name, model, backend, device=None):
         from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
         return pack_layer(layer_name, model, backend, device)
-    
+
     if is_static_wfp8afp8(backend):
         from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
+
         return pack_layer(layer_name, model, backend, device)
 
     ## passed as no other llm_compressor format is supported yet
@@ -84,7 +85,7 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
     backend = kwargs.get("backend", None)
     if is_nv_fp(backend) or is_mx_fp(backend):
         return save_quantized_as_fp(output_dir, **kwargs)
-    
+
     if is_static_wfp8afp8(backend):
         return save_quantized_as_static_fp(output_dir, **kwargs)
 

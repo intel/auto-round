@@ -31,6 +31,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.export.utils import save
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -42,7 +43,6 @@ from auto_round.utils import (
     logger,
     set_module,
 )
-from auto_round.export.utils import save
 
 
 def pack_layer(name, model, backend, device=None):

@@ -11,21 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import json
+import os
 
 import torch.nn as nn
 
-from auto_round.utils import logger,copy_python_files_from_model_cache
+from auto_round.utils import copy_python_files_from_model_cache, logger
 
 
 def save(
-        model: nn.Module,
-        save_dir: str,
-        max_shard_size: str = "5GB",
-        safe_serialization: bool = True,
-        dtype=None,
-        config_file="quantization_config.json"):
+    model: nn.Module,
+    save_dir: str,
+    max_shard_size: str = "5GB",
+    safe_serialization: bool = True,
+    dtype=None,
+    config_file="quantization_config.json",
+):
     """Save model state dict and configs.
 
     Args:

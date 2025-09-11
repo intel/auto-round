@@ -19,7 +19,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import threadpoolctl as tctl
-from auto_round.export.utils import save
 
 # MIT License
 #
@@ -48,6 +47,7 @@ import transformers
 from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
+from auto_round.export.utils import save
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
