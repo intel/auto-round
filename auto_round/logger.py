@@ -27,7 +27,7 @@ def warning_once(self, msg, *args):
         msg: The warning message format string
         *args: Variable positional arguments for message formatting
     """
-    logger.warning(msg, *args, stacklevel=1)
+    logger.warning(msg, *args, stacklevel=2)
 
 
 # Define a new logging level TRACE
@@ -59,10 +59,11 @@ class AutoRoundFormatter(logging.Formatter):
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
     cyan = "\x1b[36;1m"
+    blue = "\x1b[34;1m"
     _format = "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s"
 
     FORMATS = {
-        logging.DEBUG: grey + _format + reset,
+        logging.DEBUG: blue + _format + reset,
         logging.INFO: grey + _format + reset,
         logging.WARNING: yellow + _format + reset,
         logging.ERROR: bold_red + _format + reset,
