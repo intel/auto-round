@@ -26,7 +26,7 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Tuple, Union
-
+from auto_round.logger import logger
 import cpuinfo
 import torch
 import transformers
@@ -106,50 +106,6 @@ def infer_bits_by_data_type(data_type: str):
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
     return None
-
-
-@lru_cache(maxsize=None)
-def warning_once(self, msg, *args, **kwargs):
-    """
-    Log a warning message only once per unique message/arguments combination.
-
-    Args:
-        msg: The warning message format string
-        *args: Variable positional arguments for message formatting
-        **kwargs: Variable keyword arguments for message formatting and logging options
-    """
-    self.warning(msg, *args, **kwargs)
-
-
-class AutoRoundFormatter(logging.Formatter):
-    grey = "\x1b[38;20m"
-    yellow = "\x1b[33;1m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-    _format = "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s"
-
-    FORMATS = {
-        logging.DEBUG: grey + _format + reset,
-        logging.INFO: grey + _format + reset,
-        logging.WARNING: yellow + _format + reset,
-        logging.ERROR: bold_red + _format + reset,
-        logging.CRITICAL: bold_red + _format + reset,
-    }
-
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt, "%Y-%m-%d %H:%M:%S")
-        return formatter.format(record)
-
-
-logging.Logger.warning_once = warning_once
-logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
-logger.propagate = False
-fh = logging.StreamHandler()
-fh.setFormatter(AutoRoundFormatter())
-logger.addHandler(fh)
 
 
 class LazyImport(object):
