@@ -237,6 +237,9 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
     if processor is not None:
         processor.save_pretrained(output_dir)
 
+    if image_processor is not None:
+        image_processor.save_pretrained(output_dir)
+
     dtype = None
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 

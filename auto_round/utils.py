@@ -53,6 +53,7 @@ class SupportedFormats:
             "auto_round:auto_gptq",
             "auto_round:gptqmodel",
             "auto_round:auto_awq",
+            "auto_round:llm_compressor",
             "itrex",
             "itrex_xpu",
             "fake",
@@ -2581,7 +2582,7 @@ def is_wfp8afp8(ar):
 
 def is_static_wfp8afp8(ar_or_format):
     if isinstance(ar_or_format, str):
-        return "torch_fp8_static" in ar_or_format
+        return "fp8_static" in ar_or_format
     if ar_or_format.act_dynamic:
         return False
     if is_wfp8afp8(ar_or_format):
