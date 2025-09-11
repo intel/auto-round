@@ -103,7 +103,7 @@ def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwa
     
     backend = kwargs.get("backend", None)
     if is_nv_fp(backend) or is_mx_fp(backend):
-        return save_quantized_as_fp(output_dir, **kwargs)
+        return save_quantized_as_fp(output_dir, inplace=inplace, **kwargs)
 
     model = kwargs.get("model", None)
     safe_serialization = kwargs.get("safe_serialization", True)
