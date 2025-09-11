@@ -862,6 +862,14 @@ class AutoRound(object):
                     check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
+                if format == "llm_compressor" and is_static_wfp8afp8(self):
+                    format = format.replace("llm_compressor", f"llm_compressor:torch_fp8_static")
+                    formats[index] = format
+                    if self.act_group_size != 0:
+                        logger.warning(
+                            f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
+                            f" ,but got act_group_size={self.act_group_size}, reset = 0")
+                        self.act_group_size = 0
                 elif not is_wfp8afp8(self):
                     logger.error(
                         "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
@@ -897,9 +905,9 @@ class AutoRound(object):
         # format check for fp8
         w_fp8 = self.data_type == "fp" and self.bits == 8
         act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
-        if (w_fp8 or act_fp8) and re.search("^auto_round|^llmcompressor", format) is None:
+        if (w_fp8 or act_fp8) and re.search("^auto_round|^llm_compressor", format) is None:
             error_msg = (
-                f"is only supported to export auto_round or llmcompressor format," f" but got {format}, please check."
+                f"is only supported to export auto_round or llm_compressor format," f" but got {format}, please check."
             )
             error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
             error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
@@ -938,12 +946,13 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == "auto_round:fp8"):
+                # if not (format == "auto_round" or format == "auto_round:fp8"):
+                if re.search("^auto_round|^llm_compressor", format) is None:
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
                     )
-                    format = "auto_round"
+                    format = "auto_round:fp8"
             if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
                 logger.warning(
                     f"Please note that quantize activation with act_group_size={self.act_group_size}"
@@ -3057,6 +3066,8 @@ class AutoRound(object):
             )
         if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
             format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
+        if format == "llm_compressor" and is_static_wfp8afp8(self):
+            format = format.replace("llm_compressor", f"llm_compressor:torch_fp8_static")
 
         from auto_round.export import EXPORT_FORMAT
 

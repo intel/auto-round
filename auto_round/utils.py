@@ -2561,10 +2561,12 @@ def is_wfp8afp8(ar):
         return False
 
 
-def is_static_wfp8afp8(ar):
-    if ar.act_dynamic:
+def is_static_wfp8afp8(ar_or_format):
+    if isinstance(ar_or_format, str):
+        return "torch_fp8_static" in ar_or_format
+    if ar_or_format.act_dynamic:
         return False
-    if is_wfp8afp8(ar):
+    if is_wfp8afp8(ar_or_format):
         return True
     return False
 
