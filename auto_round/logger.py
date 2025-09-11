@@ -78,7 +78,7 @@ class AutoRoundFormatter(logging.Formatter):
 
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
-logger.setLevel(envs.AR_LOGGING_LEVEL)
+logger.setLevel(envs.AR_LOG_LEVEL)
 logger.propagate = False
 fh = logging.StreamHandler()
 fh.setFormatter(AutoRoundFormatter())

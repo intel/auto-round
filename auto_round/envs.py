@@ -17,11 +17,11 @@ import os
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
-    AR_LOGGING_LEVEL: str = "INFO"
+    AR_LOG_LEVEL: str = "INFO"
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
-    "AR_LOGGING_LEVEL": lambda: os.getenv("AR_LOGGING_LEVEL", "INFO").upper(),
+    "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
 }
 
 
