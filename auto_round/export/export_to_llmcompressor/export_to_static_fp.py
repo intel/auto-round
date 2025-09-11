@@ -165,14 +165,14 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
 
     # get llm-compressor format config
     check_compressed_tensors_supported()
-    from compressed_tensors.quantization import (
+    from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,
         QuantizationConfig,
         QuantizationScheme,
         QuantizationStatus,
         QuantizationStrategy,
         QuantizationType,
-    )  # pylint: disable=E0401
+    )
 
     group_size = kwargs["serialization_dict"]["group_size"]
     if group_size == -1:
