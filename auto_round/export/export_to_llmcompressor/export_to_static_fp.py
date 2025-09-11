@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
-from auto_round.export.utils import save
+from auto_round.export.utils import save_model
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     _get_packing_device,
@@ -172,7 +172,7 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
         QuantizationStatus,
         QuantizationStrategy,
         QuantizationType,
-    )
+    )  # pylint: disable=E0401
 
     group_size = kwargs["serialization_dict"]["group_size"]
     if group_size == -1:
@@ -238,6 +238,6 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
         processor.save_pretrained(output_dir)
 
     dtype = None
-    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model

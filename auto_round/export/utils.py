@@ -19,7 +19,7 @@ import torch.nn as nn
 from auto_round.utils import copy_python_files_from_model_cache, logger
 
 
-def save(
+def save_model(
     model: nn.Module,
     save_dir: str,
     max_shard_size: str = "5GB",

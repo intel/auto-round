@@ -31,7 +31,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
-from auto_round.export.utils import save
+from auto_round.export.utils import save_model
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -156,6 +156,6 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         compressed_model.config.quantization_config = quantization_config
     safe_serialization = kwargs.get("safe_serialization", True)
     dtype = torch.float16  ##force dtype to fp16
-    save(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model

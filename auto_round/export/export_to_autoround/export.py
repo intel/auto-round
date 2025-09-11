@@ -27,7 +27,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
-from auto_round.export.utils import save
+from auto_round.export.utils import save_model
 from auto_round.utils import (
     SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
@@ -369,6 +369,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:
         dtype = None
-    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model

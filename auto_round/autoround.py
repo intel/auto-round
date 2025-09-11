@@ -378,7 +378,7 @@ class AutoRound(object):
         if is_optimum_habana_available():
             logger.info("optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
     def _set_device(self, device_map):
         if hasattr(self, "device") and self.device is not None:
