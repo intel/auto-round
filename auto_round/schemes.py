@@ -13,8 +13,8 @@
 # limitations under the License.
 import copy
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, fields
+from typing import Generator, List, Optional
 
 __all__ = ["QuantizationScheme", "preset_name_to_scheme"]
 
@@ -32,10 +32,51 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
+    clip: Optional[bool] = False
 
     @classmethod
     def from_dict(cls, config: dict):
         return cls(**config)
+
+    @classmethod
+    def get_attributes(cls: "QuantizationScheme") -> List[str]:
+        return [field.name for field in fields(cls)]
+
+    def __getitem__(self, key: str):
+        if key not in self.get_attributes():
+            raise KeyError(f"{key} is not a valid attribute")
+        return getattr(self, key)
+
+    def __setitem__(self, key: str, value: None | int | str):
+        if key not in self.get_attributes():
+            raise KeyError(f"{key} is not a valid attribute")
+        setattr(self, key, value)
+
+    def items(self):
+        return ((field, getattr(self, field)) for field in self.get_attributes())
+
+    def keys(self):
+        return self.get_attributes()
+
+    def values(self):
+        return (getattr(self, field) for field in self.get_attributes())
+
+    def get(self, key: str, default=None):
+        if key not in self.get_attributes():
+            return default
+        res = getattr(self, key)
+        # In case the attribute is explicitly set to None, return default
+        if res is None:
+            return default
+        return getattr(self, key)
+
+    def __eq__(self, other: "QuantizationScheme") -> bool:
+        if not isinstance(other, QuantizationScheme):
+            return False
+        for field in self.get_attributes():
+            if getattr(self, field) != getattr(other, field):
+                return False
+        return True
 
 
 def preset_name_to_scheme(name: str) -> QuantizationScheme:
@@ -101,6 +142,7 @@ MXFP4 = QuantizationScheme.from_dict(
         "data_type": "mx_fp",
         "act_bits": 4,
         "act_data_type": "mx_fp_rceil",
+        "act_group_size": 32,
     }
 )
 
@@ -111,6 +153,7 @@ MXFP8 = QuantizationScheme.from_dict(
         "data_type": "mx_fp",
         "act_bits": 8,
         "act_data_type": "mx_fp_rceil",
+        "act_group_size": 32,
     }
 )
 
@@ -121,6 +164,7 @@ NVFP4 = QuantizationScheme.from_dict(
         "data_type": "nv_fp",
         "act_bits": 4,
         "act_data_type": "nv_fp4_with_static_gs",
+        "act_group_size": 16,
     }
 )
 
@@ -151,6 +195,7 @@ FP8_STATIC = QuantizationScheme.from_dict(
         "act_group_size": 0,
         "act_data_type": "fp",
         "act_dynamic": False,
+        "act_sym": True,
     }
 )
 

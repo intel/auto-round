@@ -19,6 +19,8 @@ from typing import Any, List, Optional
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
+from auto_round.export.export_to_autoround import AutoRoundFormat
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version, logger
 
 BackendInfos = {}
@@ -53,7 +55,7 @@ class BackendInfo:
             indicate higher priority. Defaults to 0.
         convertable_format: A list of strings specifying the formats that the backend
             can convert from. Defaults to an empty list.
-        feature_checks: A list of feature check functions (e.g., validation methods)
+        checkers: A list of check functions (e.g., validation methods)
             used to verify whether the backend supports certain features. Defaults to
             an empty list.
         alias: An optional list of strings representing alternative names for the
@@ -68,20 +70,22 @@ class BackendInfo:
     group_size: Optional[List[int]] = None
     priority: int = 0  ##higher is better
     convertable_format: List[str] = field(default_factory=list)
-    feature_checks: List[Any] = field(default_factory=list)
+    checkers: List[Any] = field(default_factory=list)
     alias: Optional[List[str]] = None
     requirements: Optional[List[str]] = None
+    # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
 
-def feature_multiply_checker(in_feature, out_feature, group_size, in_feature_multiplier, out_feature_multiplier=None):
+def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
     return in_feature % in_feature_multiplier == 0 and out_feature % out_feature_multiplier == 0
 
 
 def feature_multiply_checker_group_size(
-    in_feature, out_feature, group_size, in_feature_multiplier, out_feature_multiplier=None
+    in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
 ):
+    group_size = config["group_size"]
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
     return (
@@ -96,13 +100,26 @@ in_output_feature_multiply_checker_32 = functools.partial(
     feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
 
-exllamav2_feature_check = functools.partial(
+exllamav2_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=32
 )
 
-gptqmodel_marlin_feature_check = functools.partial(
+gptqmodel_marlin_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=1, out_feature_multiplier=64
 )
+
+
+def fp8_static_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+    from auto_round.schemes import FP8_STATIC
+
+    return config == FP8_STATIC
+
 
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
@@ -113,7 +130,7 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     dtype=["float16"],
     ##16, 384,768 accuracy issue
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
-    feature_checks=[exllamav2_feature_check],
+    checkers=[exllamav2_feature_checker],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
     requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
 )
@@ -126,7 +143,7 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     group_size=None,
     dtype=["float16"],
     priority=0,
-    feature_checks=[exllamav2_feature_check],
+    checkers=[exllamav2_feature_checker],
     alias=["auto_gptq:tritonv2"],
     requirements=["torch<2.6.0", "auto-gptq>=0.7.1", "triton>=2.0"],
 )
@@ -138,7 +155,7 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     bits=[2, 3, 4, 8],
     group_size=None,
     priority=1,
-    feature_checks=[exllamav2_feature_check],
+    checkers=[exllamav2_feature_checker],
     alias=["auto_gptq:cuda"],
     dtype=["float16"],
     convertable_format=["int32_zp"],
@@ -155,7 +172,7 @@ BackendInfos["auto_round:tritonv2"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 4, 8],
     priority=2,
-    feature_checks=[feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["auto_round", "tritonv2", "triton"],
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
 )
@@ -167,9 +184,25 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[exllamav2_feature_check],
+    checkers=[exllamav2_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>=0.5.1"],
+)
+
+# FP8 static quant
+# Weight: FP8, per-channel, may be extended to per-tensor in future
+# Activation: FP8, per-tensor
+
+BackendInfos["auto_round:fp8_static"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[8],
+    priority=0,
+    checkers=[fp8_static_scheme_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.6.0"],
 )
 
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
@@ -180,7 +213,7 @@ BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 4, 8],
     priority=2,
-    feature_checks=[feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["tritonv2", "tritonv2_zp", "triton"],
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
 )
@@ -192,7 +225,7 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
-    feature_checks=[exllamav2_feature_check],
+    checkers=[exllamav2_feature_checker],
     alias=["torch", "torch_zp"],
     requirements=["auto-round>=0.5.1"],
 )
@@ -205,7 +238,7 @@ BackendInfos["gptqmodel:marlin"] = BackendInfo(
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
     priority=6,
-    feature_checks=[gptqmodel_marlin_feature_check],
+    checkers=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -218,7 +251,7 @@ BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
     priority=6,
-    feature_checks=[gptqmodel_marlin_feature_check],
+    checkers=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -231,7 +264,7 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     group_size=[-1, 32, 64, 128],  ##16 seems has accuracy issue
     dtype=["float16", "bfloat16"],
     priority=5,
-    feature_checks=[exllamav2_feature_check],
+    checkers=[exllamav2_feature_checker],
     alias=["exllamav2"],
     requirements=["gptqmodel>=2.0"],
 )
@@ -255,7 +288,7 @@ BackendInfos["qbits"] = BackendInfo(
     bits=[2, 4, 8],
     group_size=None,
     priority=1,
-    feature_checks=[],
+    checkers=[],
     alias=["itrex", "qbits"],
     dtype=["float16", "bfloat16"],
     convertable_format=["int32"],
@@ -270,7 +303,7 @@ BackendInfos["qbits_zp"] = BackendInfo(
     group_size=None,
     dtype=["float16", "bfloat16"],
     priority=1,
-    feature_checks=[],
+    checkers=[],
     alias=["itrex", "qbits"],
     convertable_format=["int32_zp"],
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
@@ -284,7 +317,7 @@ BackendInfos["auto_round:qbits_awq"] = BackendInfo(
     group_size=None,
     dtype=["float16", "bfloat16"],
     priority=1,
-    feature_checks=[],
+    checkers=[],
     alias=["itrex", "qbits"],
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
@@ -296,7 +329,7 @@ BackendInfos["ipex_gptq"] = BackendInfo(
     bits=[4],
     group_size=None,
     priority=5,
-    feature_checks=[],
+    checkers=[],
     dtype=["float16", "bfloat16"],
     convertable_format=["int32_zp"],
     alias=["ipex"],
@@ -311,7 +344,7 @@ BackendInfos["ipex_awq"] = BackendInfo(
     group_size=None,
     priority=1,
     dtype=["float16", "bfloat16"],
-    feature_checks=[],
+    checkers=[],
     alias=["ipex"],
     convertable_format=["awq"],
     requirements=["intel-extension-for-pytorch>=2.6"],
@@ -340,9 +373,7 @@ BackendInfos["hpu_zp"] = BackendInfo(
 )
 
 
-def check_compatible(
-    backend_name, device, bits, group_size, sym, packing_format, in_features, out_features, check_requirements=True
-):
+def check_compatible(backend_name, device, config, packing_format, in_features, out_features, check_requirements=True):
     """Checks if the given configuration is compatible with the specified backend.
 
     Args:
@@ -372,7 +403,7 @@ def check_compatible(
     - If the packing format does not match, it must be convertible.
     """
     backend = BackendInfos[backend_name]
-
+    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
     # Check if device is supported by the backend
     if device not in backend.device:
         return False
@@ -395,8 +426,8 @@ def check_compatible(
     else:
         return False
 
-    for check in backend.feature_checks:
-        if not check(in_features, out_features, group_size):
+    for check in backend.checkers:
+        if not check(in_features, out_features, config):
             return False
 
     if check_requirements and backend.requirements is not None:
@@ -413,7 +444,7 @@ def check_compatible(
     return True
 
 
-def dynamic_import_inference_linear(backend, bits, group_size, sym):
+def dynamic_import_inference_linear(backend, config):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
@@ -438,6 +469,13 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         ImportError:
             If required modules are missing for a backend (e.g., Intel Extension, GPTQ, auto_awq).
     """
+    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
+
+    if AutoRoundFormat.TORCH_FP8_STATIC.value in backend:
+        from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear
+
+        return WeightFP8ActFP8StaticQuantLinear
+
     if "qbits" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401
@@ -521,7 +559,14 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
+    import torch
+
+    dtype = torch.get_default_dtype()
+    if dtype != torch.float32:
+        torch.set_default_dtype(torch.float32)
     import gptqmodel  # pylint: disable=E0401
+
+    torch.set_default_dtype(dtype)
 
     if "marlin" in backend:
         return auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer()
@@ -662,7 +707,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
     )
 
 
-def get_all_compatible_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
+def get_all_compatible_backend(device, backend, orig_backend, config, in_features, out_features):
     # Get packing format from the original backend
     packing_format = BackendInfos[orig_backend].packing_format
 
@@ -670,16 +715,14 @@ def get_all_compatible_backend(device, backend, orig_backend, bits, group_size, 
     compatible_backends = [
         key
         for key in BackendInfos.keys()
-        if check_compatible(
-            key, device, bits, group_size, sym, packing_format, in_features, out_features, check_requirements=False
-        )
+        if check_compatible(key, device, config, packing_format, in_features, out_features, check_requirements=False)
     ]
 
     # Return the first compatible backend or an empty list if none found
     return compatible_backends
 
 
-def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
+def get_layer_backend(device, backend, orig_backend, config, in_features, out_features):
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
     This function first checks if the specified backend supports the layer with the provided configuration.
@@ -715,6 +758,7 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
     """
     # Check if the provided backend is in BackendInfos
     backend = find_backend(backend)
+
     if backend not in BackendInfos.keys():
         raise ValueError(f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection.")
 
@@ -723,13 +767,13 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
     # Find and store other compatible backends
     supported_backends = []
     for key in BackendInfos.keys():
-        if check_compatible(key, device, bits, group_size, sym, packing_format, in_features, out_features):
+        if check_compatible(key, device, config, packing_format, in_features, out_features):
             supported_backends.append(key)
 
     # Raise an error if no compatible backends are found
     if len(supported_backends) == 0:
         supported_backends_need_package = get_all_compatible_backend(
-            device, backend, orig_backend, bits, group_size, sym, in_features, out_features
+            device, backend, orig_backend, config, in_features, out_features
         )
 
         if len(supported_backends_need_package) > 0:
@@ -825,6 +869,7 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
     # Instructional messages
     install_instructions = []
+
     for cmd in pip_cmds:
         if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
             install_instructions.append(

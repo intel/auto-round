@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 import unittest
@@ -9,6 +10,17 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+
+
+def _get_folder_size(path: str) -> float:
+    """Return folder size in GB."""
+    total_size = 0
+    for dirpath, _, filenames in os.walk(path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                total_size += os.path.getsize(fp)
+    return total_size / (1024**3)  # convert to GB
 
 
 class LLMDataLoader:
@@ -25,7 +37,7 @@ class TestAutoRound(unittest.TestCase):
     def setUpClass(self):
         model_name = "facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -229,6 +241,33 @@ class TestAutoRound(unittest.TestCase):
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+        if static_kv_dtype is None:
+            with torch.no_grad():
+                import transformers
+
+                model = transformers.AutoModelForCausalLM.from_pretrained(
+                    quantized_model_path,
+                    torch_dtype="auto",
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True,
+                )
+                model.eval()
+                assert (
+                    model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__
+                    == "WeightFP8ActFP8StaticQuantLinear"
+                ), f"Expected WeightFP8ActFP8StaticQuantLinear, got {model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__}"
+                tokenizer = transformers.AutoTokenizer.from_pretrained(quantized_model_path)
+                prompt = "AI is "
+                encode = tokenizer.encode(prompt, return_tensors="pt")
+                with torch.no_grad():
+                    output_tokens = model.generate(
+                        encode,
+                        max_length=10,
+                    )
+                    output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+                    print(f"Prompt: {prompt}")
+                    print(f"Output: {output}")
+                    assert output is not None, "Output should not be None"
 
         if static_kv_dtype == "fp8":
             self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
@@ -268,10 +307,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 4
-        data_type = "mx_fp"
-        group_size = 32
-        sym = True
+        scheme = "MXFP4"
         layer_config = {}
         fp_layers_str = "k_proj"
         from auto_round.utils import get_fp_layer_names
@@ -282,12 +318,58 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
-            data_type=data_type,
+            layer_config=layer_config,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize()
+        compressed_model = autoround.save_quantized(
+            output_dir=quantized_model_path, inplace=True, format="llm_compressor"
+        )
+        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
+        assert (
+            hasattr(tmp_layer, "weight_scale")
+            and hasattr(tmp_layer, "weight_packed")
+            and tmp_layer.weight_scale.dtype is torch.uint8
+            and tmp_layer.weight_scale.shape[0] == 768
+        ), "Illegal MXFP4 packing name or data_type or shape"
+        assert not hasattr(skip_layer, "weight_scale") and not hasattr(  ## check skipped layers
+            skip_layer, "weight_packed"
+        ), "Illegal MXFP4 quantization for fp_layers"
+        quantization_config = AutoConfig.from_pretrained(
+            quantized_model_path, trust_remote_code=True
+        ).quantization_config
+        assert (
+            quantization_config["format"] == "float-quantized"
+            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
+        ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
+
+        shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_rtn_mxfp4_llmcompressor_format(self):
+        model_name = "facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        from transformers import AutoConfig
+
+        scheme = "MXFP4"
+        layer_config = {}
+        fp_layers_str = "k_proj"
+        from auto_round.utils import get_fp_layer_names
+
+        not_quantize_layer_names = get_fp_layer_names(model, fp_layers_str)
+        for name in not_quantize_layer_names:
+            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float"}
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            scheme=scheme,
+            iters=0,
+            seqlen=2,
             layer_config=layer_config,
             dataset=self.llm_dataloader,
         )
@@ -322,19 +404,13 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 8
-        data_type = "mx_fp_rceil"
-        group_size = 32
-        sym = True
+        scheme = "MXFP8"
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
-            data_type=data_type,
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
@@ -355,6 +431,11 @@ class TestAutoRound(unittest.TestCase):
             and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 8
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
+        folder_size_gb = _get_folder_size(quantized_model_path)
+        # Original opt-125m is < 0.5GB -> quantized mxfp8 model should be smaller but not empty
+        assert (
+            0.15 < folder_size_gb < 0.2
+        ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.2 GB)"
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_nvfp4_llmcompressor_format(self):
@@ -362,21 +443,11 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 4
-        act_bits = 4
-        data_type = "nv_fp"
-        act_data_type = "nv_fp4_with_static_gs"
-        group_size = 16
-        sym = True
+        scheme = "NVFP4"
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            act_bits=act_bits,
-            data_type=data_type,
-            act_data_type=act_data_type,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
@@ -399,6 +470,11 @@ class TestAutoRound(unittest.TestCase):
             quantization_config["format"] == "nvfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
+        folder_size_gb = _get_folder_size(quantized_model_path)
+        # Original opt-125m is < 0.5GB -> quantized nvfp4 model should be smaller but not empty
+        assert (
+            0.1 < folder_size_gb < 0.15
+        ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.15 GB)"
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_nvfp4_autoround_format(self):
@@ -406,21 +482,11 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
-        bits = 4
-        act_bits = 4
-        data_type = "nv_fp"
-        act_data_type = "nv_fp4_with_static_gs"
-        group_size = 16
-        sym = True
+        scheme = "NVFP4"
         autoround = AutoRound(
             model,
             self.tokenizer,
-            bits=bits,
-            act_bits=act_bits,
-            data_type=data_type,
-            act_data_type=act_data_type,
-            group_size=group_size,
-            sym=sym,
+            scheme="NVFP4",
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
