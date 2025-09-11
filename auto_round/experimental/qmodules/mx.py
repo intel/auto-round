@@ -26,7 +26,15 @@ SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
 
 
 def _mx_qdq(tensor: torch.Tensor):
-    pass
+    # FIXME: (Yi) handle difference roudning method
+    from auto_round.data_type.mxfp import quant_mx
+
+    qdq_tesnor, _, _ = quant_mx(
+        tensor=tensor,
+        bits=4,
+        group_size=32,
+    )
+    return qdq_tesnor
 
 
 E8M0_EXPONENT_BIAS = 127
@@ -34,7 +42,6 @@ E8M0_EXPONENT_BIAS = 127
 
 # https://github.com/pytorch/ao/blob/994a4ba6c869854fcaa6ca7e118fcbd75e6c28cc/torchao/prototype/mx_formats/mx_tensor.py#L337
 def get_fp_scale(scale_e8m0):
-
     scale_e8m0 = scale_e8m0.view(torch.uint8)
     s_offset = scale_e8m0.to(torch.int16) - E8M0_EXPONENT_BIAS
     # TODO(later): it would be nice if there was a way to do the 2^x operation
@@ -65,7 +72,7 @@ class MXQuantLinear(QModuleBase):
         self.in_features = in_features
         self.out_features = out_features
         self.group_size = 32
-        init_weight = torch.zeros((out_features, in_features), dtype=dtype) if weight is None else weight
+        init_weight = torch.zeros((out_features, in_features), dtype=torch.float8_e4m3fn) if weight is None else weight
         self.weight = torch.nn.Parameter(init_weight, requires_grad=False)
         assert (
             dtype in SUPPORTED_HIGHER_DTYPE
@@ -85,7 +92,7 @@ class MXQuantLinear(QModuleBase):
             if weight_scale is None
             else weight_scale
         )
-        self.register_buffer("weight_scale", init_weight_scale.to(dtype))
+        self.register_buffer("weight_scale", init_weight_scale)
 
         self.pre_dequantized = False
 
@@ -113,6 +120,7 @@ class MXQuantLinear(QModuleBase):
                 in_features=original_layer.in_features,
                 out_features=original_layer.out_features,
                 bias=original_layer.bias,
+                dtype=original_layer.weight.dtype,
             )
             return qdq_linear
 
@@ -124,18 +132,18 @@ class MXQuantLinear(QModuleBase):
         tensor_scale_float = self._get_float_scale(tensor_scale).to(self.dtype)
         tensor_packed = tensor_packed.to(self.dtype)
         original_shape = tensor_packed.shape
-        tensor_packed = tensor_packed.view(-1, self.group_size)
-        tensor_scale_float = tensor_scale_float.view(-1, 1)
-        tensor_dequant = tensor_packed * tensor_scale_float
-        tensor_dequant = tensor_dequant.view(original_shape)
+        tensor_packed = tensor_packed.reshape(-1, self.group_size)
+        tensor_scale_float = tensor_scale_float.reshape(-1, 1)
+        tensor_float = tensor_packed.to(self.dtype)
+        tensor_dequant = tensor_float * tensor_scale_float
+        tensor_dequant = tensor_dequant.reshape(original_shape)
         return tensor_dequant
 
     def dequant_weight_online(self):
         if self.pre_dequantized:
             return self.weight
-        scale_float = self._get_float_scale(self.weight_scale)
-        qdq_weight = self.weight.to(self.dtype) * scale_float
-        return qdq_weight
+        dq_weight = self._dequant_mxfp_tensor(self.weight, self.weight_scale)
+        return dq_weight
 
     def pre_dequantize(self):
         if self.pre_dequantized:
@@ -151,7 +159,6 @@ class MXQuantLinear(QModuleBase):
 
     @torch.no_grad()
     def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
-
         qdq_input = self.qdq_input(bf16_input)
         qdq_weight = self.dequant_weight_online()
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
