@@ -21,7 +21,8 @@ import torch
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import check_to_quantized, detect_device, get_module, logger, set_module
+from auto_round.logger import logger
+from auto_round.utils import check_to_quantized, detect_device, get_module, set_module
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear

@@ -33,6 +33,7 @@ from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
+from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
@@ -86,7 +87,6 @@ from auto_round.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
     llm_load_model,
-    logger,
     mv_module_from_gpu,
     reset_params,
     set_amax_for_all_moe_layers,

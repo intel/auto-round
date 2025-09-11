@@ -25,6 +25,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -35,7 +36,6 @@ from auto_round.utils import (
     get_module,
     is_mx_fp,
     is_nv_fp,
-    logger,
     set_amax_for_all_moe_layers,
     set_module,
 )

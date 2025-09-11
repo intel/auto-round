@@ -19,6 +19,7 @@ import torch
 from tqdm import tqdm
 
 from auto_round.autoround import AutoRound
+from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.mllm.mllm_dataset import get_mllm_dataloader
 from auto_round.mllm.template import Template, get_template
@@ -35,7 +36,6 @@ from auto_round.utils import (
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
-    logger,
     mllm_load_model,
     to_device,
     to_dtype,

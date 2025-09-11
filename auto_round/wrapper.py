@@ -17,6 +17,7 @@ import transformers
 from torch.functional import F
 
 from auto_round.data_type import get_quant_func
+from auto_round.logger import logger
 
 from .utils import (
     SUPPORTED_LAYER_TYPES,
@@ -25,7 +26,6 @@ from .utils import (
     get_scale_shape,
     is_mx_fp,
     is_nv_fp,
-    logger,
     set_module,
 )
 
