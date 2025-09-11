@@ -21,6 +21,12 @@ def run_eval():
     elif "--lmms" in sys.argv:
         sys.argv.remove("--lmms")
         run_lmms()
+    elif "--vllm" in sys.argv:
+        sys.argv.remove("--vllm")
+        from auto_round.script.llm import eval_with_vllm, setup_eval_parser
+
+        args = setup_eval_parser()
+        eval_with_vllm(args)
     else:
         from auto_round.script.llm import setup_eval_parser
 
