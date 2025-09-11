@@ -228,9 +228,6 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
     if output_dir is None:
         return model
 
-    if output_dir is None:
-        model.tokenizer = tokenizer
-        return model
     if os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
