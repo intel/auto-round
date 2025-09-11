@@ -26,7 +26,7 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Tuple, Union
-from auto_round.logger import logger
+
 import cpuinfo
 import torch
 import transformers
@@ -34,6 +34,7 @@ from packaging import version
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
+from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
