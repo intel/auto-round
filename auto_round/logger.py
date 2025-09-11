@@ -63,7 +63,7 @@ class AutoRoundFormatter(logging.Formatter):
         logging.WARNING: yellow + _format + reset,
         logging.ERROR: bold_red + _format + reset,
         logging.CRITICAL: bold_red + _format + reset,
-        TRACE_LEVEL: bold_red + _format + reset,
+        TRACE_LEVEL: cyan + _format + reset,
     }
 
     def format(self, record):
