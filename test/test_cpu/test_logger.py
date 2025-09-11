@@ -1,17 +1,19 @@
 import logging
 import os
 from io import StringIO
-from auto_round.logger import logger, AutoRoundFormatter, TRACE_LEVEL
+
+from auto_round.logger import TRACE_LEVEL, AutoRoundFormatter, logger
+
 
 def test_logger(monkeypatch):
     # Mock the AR_LOG_LEVEL environment variable
     monkeypatch.setenv("AR_LOG_LEVEL", "TRACE")
-    
+
     # Create a StringIO to capture log output
     log_output = StringIO()
     stream_handler = logging.StreamHandler(log_output)
     stream_handler.setFormatter(AutoRoundFormatter())
-    
+
     # Add the handler to the logger
     logger.addHandler(stream_handler)
     logger.setLevel(logging.getLevelName(os.getenv("AR_LOG_LEVEL", "INFO")))
