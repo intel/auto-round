@@ -80,9 +80,9 @@ def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwa
     """
     Save a quantized model in the LLM-Compressor format.
 
-    This function saves a quantized model, including its configuration, state dictionary, 
-    tokenizer, and processor, in the specified output directory. It supports inplace 
-    modification of the model or creating a deepcopy for saving. Currently, only NVFP 
+    This function saves a quantized model, including its configuration, state dictionary,
+    tokenizer, and processor, in the specified output directory. It supports inplace
+    modification of the model or creating a deepcopy for saving. Currently, only NVFP
     and MXFP backends are supported for specific quantization formats.
 
     Args:
@@ -94,13 +94,13 @@ def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwa
             - backend (str): The backend framework used for quantization.
             - tokenizer: The tokenizer associated with the model.
             - processor: The processor associated with the model.
-            - safe_serialization (bool): Whether to use safe serialization when saving 
+            - safe_serialization (bool): Whether to use safe serialization when saving
                                          the model. Default is True.
 
     Returns:
         torch.nn.Module: The quantized model that was saved.
     """
-    
+
     backend = kwargs.get("backend", None)
     if is_nv_fp(backend) or is_mx_fp(backend):
         return save_quantized_as_fp(output_dir, inplace=inplace, **kwargs)
