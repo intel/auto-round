@@ -21,9 +21,7 @@ if TYPE_CHECKING:
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
-    
-    "AR_LOGGING_LEVEL":
-    lambda: os.getenv("AR_LOGGING_LEVEL", "INFO").upper(),
+    "AR_LOGGING_LEVEL": lambda: os.getenv("AR_LOGGING_LEVEL", "INFO").upper(),
 }
 
 

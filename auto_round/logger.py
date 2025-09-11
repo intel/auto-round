@@ -14,7 +14,8 @@
 
 import logging
 from functools import lru_cache
-import  auto_round.envs as envs
+
+import auto_round.envs as envs
 
 
 @lru_cache(maxsize=None)
@@ -28,21 +29,24 @@ def warning_once(self, msg, *args):
     """
     logger.warning(msg, *args, stacklevel=1)
 
+
 # Define a new logging level TRACE
 TRACE_LEVEL = 5
 logging.addLevelName(TRACE_LEVEL, "TRACE")
 
+
 def trace(self, message, *args):
     """
     Log a message with the TRACE level.
-    
+
     Args:
         message: The message format string
         *args: Variable positional arguments for message formatting
-    
+
     """
     if self.isEnabledFor(TRACE_LEVEL):
         self._log(TRACE_LEVEL, message, args, stacklevel=2)
+
 
 # Add the trace method to the Logger class
 logging.Logger.trace = trace
