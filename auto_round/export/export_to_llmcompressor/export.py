@@ -24,8 +24,8 @@ from auto_round.utils import (
     get_module,
     is_mx_fp,
     is_nv_fp,
-    is_static_wfp8afp8,
     is_standard_fp,
+    is_static_wfp8afp8,
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer
