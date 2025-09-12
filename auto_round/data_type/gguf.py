@@ -15,7 +15,8 @@
 import torch
 
 from auto_round.data_type.register import register_dtype
-from auto_round.data_type.utils import logger, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 
 

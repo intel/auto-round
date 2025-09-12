@@ -16,7 +16,8 @@ import torch
 
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
 from auto_round.data_type.register import register_dtype
-from auto_round.data_type.utils import logger, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.logger import logger
 
 
 # taken from

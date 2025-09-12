@@ -847,5 +847,8 @@ def get_dataloader(
         res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
+    if len(dataset_final) > nsamples:
+        dataset_final = select_dataset(dataset_final, range(nsamples))
+
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
