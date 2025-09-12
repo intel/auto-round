@@ -17,6 +17,7 @@ import os
 import torch
 
 from auto_round.export.export_to_llmcompressor.config import quantization_config
+from auto_round.logger import logger
 from auto_round.utils import (
     copy_python_files_from_model_cache,
     detect_device,
@@ -24,7 +25,6 @@ from auto_round.utils import (
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
-    logger,
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer
