@@ -28,6 +28,7 @@ from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.export.utils import save_model
+from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
@@ -40,7 +41,6 @@ from auto_round.utils import (
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
-    logger,
     set_module,
 )
 

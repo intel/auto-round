@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.export.utils import save_model
+from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     _get_packing_device,
@@ -36,7 +37,6 @@ from auto_round.utils import (
     get_module,
     is_mx_fp,
     is_nv_fp,
-    logger,
     set_amax_for_all_moe_layers,
     set_module,
 )

@@ -16,13 +16,13 @@ import argparse
 import os
 import sys
 
+from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_fp_layer_names,
     is_debug_mode,
-    logger,
     set_cuda_visible_devices,
 )
 
