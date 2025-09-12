@@ -886,6 +886,11 @@ class AutoRound(object):
                             f" ,but got act_group_size={self.act_group_size}, reset = 0"
                         )
                         self.act_group_size = 0
+                    if self.group_size > 0:
+                        logger.warning(
+                            f"please not that group_size={self.group_size}"
+                            " may not be support for llm_compressor format, and cannot be loaded in LLMC"
+                        )
                 elif not is_wfp8afp8(self):
                     logger.error(
                         "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "

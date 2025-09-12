@@ -1494,6 +1494,8 @@ def llm_load_model(
                     )
                     torch.cuda.get_device_capability = orig_func
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+                else:
+                    raise
 
             except OSError as e:
                 logger.warning(
