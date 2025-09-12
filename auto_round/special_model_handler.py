@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from auto_round.utils import logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -111,8 +111,10 @@ def _handle_special_model(model):
     return model
 
 
-def _handle_moe_model(model):
-    if model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
+def _handle_moe_model(model, formats=None):
+    if formats is not None and any(["gguf" in format_ for format_ in formats]):
+        return model
+    if hasattr(model.config, "model_type") and model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
         from tqdm import tqdm
 
         from auto_round.utils import clear_memory
@@ -129,7 +131,7 @@ def _handle_moe_model(model):
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
 
-        print("warning, Llama4 experts are converted, the quantized model can not run on transformers.")
+        logger.warning("Llama4 experts are converted, the quantized model can not run on transformers.")
     return model
 
 
@@ -192,7 +194,7 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
     for key in mllms_with_limited_bs:
         if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
             accumulate_steps = batch_size * gradient_accumulate_steps
-            print(
+            logger.warning(
                 "To avoid the tensor concat mismatch problem, modified parameters to "
                 f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}"
             )

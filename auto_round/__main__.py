@@ -54,11 +54,8 @@ def run():
 
 
 def run_mllm():
-    from auto_round.script.llm import setup_parser, tune
-
-    args = setup_parser()
-    args.mllm = True
-    tune(args)
+    sys.argv.append("--mllm")
+    run()
 
 
 def run_best():

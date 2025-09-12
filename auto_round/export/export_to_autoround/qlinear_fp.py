@@ -38,7 +38,7 @@ import transformers
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import is_mx_fp, is_nv_fp
+from auto_round.utils import _get_packing_device, is_mx_fp, is_nv_fp
 
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
@@ -95,18 +95,6 @@ class QuantLinear(nn.Module):
             weight_name,
             torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
         )
-        if not self.sym:
-            ## TODO Currently only sym quant is supported for mxfp dtype. Is weight_zero_point param necessary？
-            self.register_buffer(
-                "weight_zero_point",
-                torch.zeros(
-                    (
-                        math.ceil(infeatures / self.group_size),
-                        outfeatures // 32 * self.bits,
-                    ),
-                    dtype=torch.int32,
-                ),
-            )
         self.register_buffer(
             "weight_scale",
             torch.zeros(
@@ -140,28 +128,27 @@ class QuantLinear(nn.Module):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
-        if linear.bias is not None:
-            self.bias = linear.bias.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
+    def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None, device=None):
+        device = _get_packing_device(device)
+        if getattr(linear, "bias", None) is not None:
+            self.bias = linear.bias.detach().to(torch.float16)
 
-        W = linear.weight.data.to(device).clone()  # TODO check is nesscessory
+        W = linear.weight.data.detach().to(device)
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
             W = W.t()
 
-        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
+        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
+        scales = scales.to(device)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
+            global_scale = global_scale.to(device)
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
                 scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
             )
-            scaled_tensor = cast_to_fp4(torch.clamp(scaled_tensor, -6.0, 6.0))
+            scaled_tensor.clamp_(-6.0, 6.0)
+            scaled_tensor = cast_to_fp4(scaled_tensor)
         else:
             scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
         scaled_tensor = revert_tensor_by_pad(scaled_tensor, orig_shape=orig_shape, pad_len=pad_len)
@@ -176,7 +163,7 @@ class QuantLinear(nn.Module):
             self.weight = scaled_tensor.to(compress_dtype)
         else:
             compress_dtype = torch.uint8
-            self.weight_packed = self.pack_fp4_to_uint8(scaled_tensor)
+            self.weight_packed = pack_fp4_to_uint8(scaled_tensor)
 
         if global_scale is not None:
             self.weight_global_scale = global_scale.to(torch.float32).to(device)
@@ -185,46 +172,61 @@ class QuantLinear(nn.Module):
             self.input_global_scale = input_global_scale.to(torch.float32).to(device)
         return
 
-    def pack_fp4_to_uint8(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Packs a tensor with values in the fp4 range into uint8.
-        As there are 16 valid fp4 values, two fp4 values can be
-        packed into one uint8. Each fp4 value is mapped to its
-        particular index (e.g. 0.5 is mapped to index 1, 6.0 is mapped
-        to index 7) which is then represented using 4 bits. Consecutive
-        pairs of 4 bits are then packed into an uint8.
 
-        :param x: tensor to pack
-        returns: a packed tensor in uint8
-        """
+def pack_fp4_to_uint8(scaled_tensor: torch.Tensor):
+    if scaled_tensor.device.type == "cuda":
+        return pack_fp4_to_uint8_cuda(scaled_tensor)
+    else:
+        return pack_fp4_to_uint8_cpu(scaled_tensor)
 
-        m, n = x.shape
-        device = x.device
 
-        # Create lookup table for FP4 values to indices
-        # Map the absolute values to 0-7 indices
-        kE2M1 = torch.tensor(FLOAT_TO_E2M1, device=device, dtype=x.dtype)
+# The torch.compile with dynamic=True is incompatible with multiple threads
+# https://github.com/pytorch/pytorch/issues/126024
+@torch.compiler.disable()
+def pack_fp4_to_uint8_cpu(x: torch.Tensor) -> torch.Tensor:
+    return _pack_fp4_to_uint8(x)
 
-        # Find closest valid FP4 value index for each element
-        abs_x = torch.abs(x)
-        abs_indices = torch.zeros_like(abs_x, dtype=torch.long)
-        for i, val in enumerate(kE2M1):  # TODO any optimize?
-            abs_indices = torch.where(torch.isclose(abs_x, val), i, abs_indices)
 
-        # Apply sign bit (bit 3) to get final 4-bit representation
-        indices = abs_indices + (torch.signbit(x) << 3).to(torch.long)
+# Adapted from https://github.com/neuralmagic/compressed-tensors/pull/400
+@torch.compile(fullgraph=True, dynamic=True)
+def pack_fp4_to_uint8_cuda(x: torch.Tensor) -> torch.Tensor:
+    """
+    Packs a tensor with values in the fp4 range into uint8.
 
-        # Reshape to prepare for packing pairs of values
-        indices = indices.reshape(-1)
+    :param x: tensor to pack
+    returns: a packed tensor in uint8
+    """
+    return _pack_fp4_to_uint8(x)
 
-        # Handle odd length by padding if necessary
-        if indices.numel() % 2 != 0:
-            indices = torch.cat([indices, torch.zeros(1, dtype=torch.long, device=device)])
 
-        # Reshape to pair consecutive elements
-        indices = indices.reshape(-1, 2)
+def _pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
 
-        # Pack pairs of 4-bit values into 8-bit values
-        packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
+    m, n = x.shape
+    device = x.device
 
-        return packed.reshape(m, n // 2)
+    # Create lookup table for FP4 values to indices
+    # Map the absolute values to 0-7 indices
+    kE2M1 = torch.tensor(FLOAT_TO_E2M1, device=device, dtype=x.dtype)
+
+    # Find closest valid FP4 value index for each element
+    abs_x = torch.abs(x)
+    abs_diff_x = torch.abs(abs_x.unsqueeze(-1) - kE2M1)  # [m, n, 8]
+    abs_indices = torch.argmin(abs_diff_x, dim=-1)  # [m, n]
+
+    # Apply sign bit (bit 3) to get final 4-bit representation
+    indices = abs_indices + (torch.signbit(x).to(torch.long) << 3)
+
+    # Reshape to prepare for packing pairs of values
+    indices = indices.reshape(-1)
+
+    # Handle odd length by padding if necessary
+    if indices.numel() % 2 != 0:
+        indices = torch.cat([indices, torch.zeros(1, dtype=torch.long, device=device)])
+
+    # Reshape to pair consecutive elements
+    indices = indices.reshape(-1, 2)
+
+    # Pack pairs of 4-bit values into 8-bit values
+    packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
+
+    return packed.reshape(m, n // 2)

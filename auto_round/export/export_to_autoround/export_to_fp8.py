@@ -22,17 +22,19 @@ import torch
 import transformers
 from tqdm import tqdm
 
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
+    copy_python_files_from_model_cache,
     filter_quantization_config,
     get_module,
     logger,
     set_module,
 )
-
-from .utils import check_neq_config
 
 
 class FP8WOQLinear(torch.nn.Module):
@@ -67,7 +69,7 @@ class FP8WOQLinear(torch.nn.Module):
             self.register_buffer("input_scale", input_scale.to(dtype))
 
 
-def pack_layer(layer_name, model, data_type, packing_device=None):
+def pack_layer(layer_name, model, data_type, device=None):
     """
      Packs a model layer for quantization based on its type and configuration.
 
@@ -84,12 +86,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
     Returns:
         None: The function modifies the model in place.
     """
-    if packing_device is None:
-        packing_device = "cpu"
-        if torch.cuda.is_available():
-            packing_device = "cuda"
-        elif torch.xpu.is_available():
-            packing_device = "xpu"
+    packing_device = _get_packing_device(device)
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -100,23 +97,25 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
     if not check_to_quantized(layer):
         return
 
-    device = layer.weight.device
-    scale = layer.scale
+    orig_device = layer.weight.device
+    scale = layer.scale.view(-1)
     zp = layer.zp
     weight = layer.weight
-    act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
+    weight, orig_shape, pad_len = reshape_pad_tensor_by_group_size(weight, layer.group_size)
+    act_scale = layer.act_scale.view(-1) if hasattr(layer, "act_scale") else None
     torch_dtype = torch.float8_e4m3fn
     if "fp8_e5m2" in data_type:
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
         q_weight = (
-            weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp.to(packing_device)
             if isinstance(zp, torch.Tensor)
             else zp
         )
     else:
-        q_weight = weight.to(packing_device) / scale.to(packing_device)
+        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
+    q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
     q_weight = torch.clamp(q_weight, info.min, info.max)
     q_weight = q_weight.to(torch_dtype)
     if isinstance(layer, torch.nn.Linear):
@@ -140,7 +139,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         dtype=model.dtype,
     )
 
-    my_linear.to(device)
+    my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
 
 
@@ -149,7 +148,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
@@ -162,6 +160,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    device = kwargs.get("device", None)
     image_processor = kwargs.get("image_processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
@@ -184,12 +183,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
-                layer_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                act_bits=quantization_config["act_bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
+                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
             )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
@@ -202,18 +196,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    packing_device = "cpu"
-    if torch.cuda.is_available():
-        packing_device = "cuda"
-    elif torch.xpu.is_available():
-        packing_device = "xpu"
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
 
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, kwargs.get("data_type", "fp8"), packing_device)
+                    pack_layer(name, model, kwargs.get("data_type", "fp8"), device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -282,3 +271,8 @@ def save(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)

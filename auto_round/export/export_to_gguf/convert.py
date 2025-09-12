@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, clean_module_parameter, get_module, logger
+from auto_round.utils import LazyImport, _get_packing_device, _is_fp8_model, clean_module_parameter, get_module, logger
 
 gguf = LazyImport("gguf")
 
@@ -144,6 +144,13 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
                     break
         yield name, tensor
 
+    def is_extra_tensor(tensor_name):
+        if _is_fp8_model(cls.model) and "scale" in tensor_name.split(".")[-1]:
+            return False
+        if tensor_name not in cls.model.tensor_name_list:
+            return True
+        return False
+
     extra_tensor = {}
     if hasattr(cls.model, "name_or_path"):
         from safetensors import safe_open
@@ -159,12 +166,12 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
             with open(os.path.join(dir_path, INDEX_FILE)) as f:
                 tensor_index = json.load(f)
             for tensor_name in tensor_index["weight_map"]:
-                if tensor_name not in cls.model.tensor_name_list:
+                if is_extra_tensor(tensor_name):
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
         else:
             f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
             for tensor_name in f.keys():
-                if tensor_name not in cls.model.tensor_name_list:
+                if is_extra_tensor(tensor_name):
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
 
     for name, tensor in extra_tensor.items():
@@ -172,12 +179,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif torch.xpu.is_available():
-        device = "xpu"
-    else:
-        device = "cpu"
+    device = _get_packing_device()
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
     zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -202,12 +204,7 @@ def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=
 
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
     suffix = ".weight"
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif torch.xpu.is_available():
-        device = "xpu"
-    else:
-        device = "cpu"
+    device = _get_packing_device()
     if suffix in name:
         layer_name = name[: -len(suffix)]
         module = get_module(cls.model, layer_name)
@@ -217,6 +214,8 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
                 for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
                     if hasattr(module, attr) and getattr(module, attr) is not None:
                         attr_tensor = getattr(module, attr)
+                        if not isinstance(attr_tensor, torch.Tensor):
+                            continue
                         ori_shape = attr_tensor.shape
                         attr_tensor = cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
                         attr_tensor = attr_tensor.reshape(ori_shape)
@@ -591,6 +590,8 @@ def prepare_tensors(cls):
         # # save cpu memory, but slow
         if cls.low_cpu_mem_usage:
             for weight_name in clean_weight_list:
+                if cls.model_arch == gguf.MODEL_ARCH.GEMMA:
+                    continue
                 module = get_module(cls.model, ".".join(weight_name.split(".")[:-1]))
                 for key in ["scale", "zp", "d_scale", "wmin", "d_wmin", "imatrix"]:
                     if hasattr(module, key):

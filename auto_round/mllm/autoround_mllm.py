@@ -18,15 +18,17 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
+from auto_round.autoround import AutoRound
+from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.mllm.mllm_dataset import get_mllm_dataloader
+from auto_round.mllm.template import Template, get_template
+from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SUPPORT_ONLY_TEXT_MODELS,
     _handle_special_model,
 )
-
-from ..autoround import AutoRound
-from ..low_cpu_mem.utils import get_layers_before_block
-from ..utils import (
+from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     detect_device,
@@ -38,8 +40,6 @@ from ..utils import (
     to_device,
     to_dtype,
 )
-from .mllm_dataset import get_mllm_dataloader
-from .template import Template, get_template
 
 
 def _only_text_test(model, tokenizer, device, model_type):
@@ -127,58 +127,56 @@ class AutoRoundMLLM(AutoRound):
 
     """
 
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
+
     def __init__(
         self,
-        model: torch.nn.Module,
-        tokenizer,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
         processor=None,
         image_processor=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = True,
-        layer_config: dict = None,
-        batch_size: int = 8,
-        amp: bool = True,
-        device: str = None,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
-        extra_data_dir: str = None,
-        template: Union[str, Template] = None,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         quant_nontext_module: bool = False,
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: bool = False,
         iters: int = 200,
-        seqlen: int = None,
+        seqlen: int = 2048,
         nsamples: int = 128,
-        sampler: str = "rand",
-        seed: int = 42,
-        nblocks: int = 1,
+        batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        act_bits: int = 32,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_dynamic: bool = True,
-        to_quant_block_names: Union[str, list] = None,
-        enable_norm_bias_tuning: bool = False,
-        truncation: bool = None,
+        low_gpu_mem_usage: bool = False,
+        device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
-        model_kwargs: dict = None,
+        seed: int = 42,
         **kwargs,
     ):
+        extra_data_dir = kwargs.pop("extra_data_dir", None)
+        template = kwargs.pop("template", None)
+
+        to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
+        if device_map is None:
+            device_map = 0
+        self._set_device(device_map)
+
+        if isinstance(model, str):
+            model, processor, tokenizer, image_processor = mllm_load_model(model, device=self.device)
+
+        self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
-        self.to_quant_block_names = to_quant_block_names
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.processor = processor
@@ -217,7 +215,7 @@ class AutoRoundMLLM(AutoRound):
                     " switching to liuhaotian/llava_conv_58k"
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            elif not _only_text_test(model, tokenizer, device, self.template.model_type):
+            elif not _only_text_test(model, tokenizer, self.device, self.template.model_type):
                 logger.warning(
                     f"{model.config.model_type} does not support for {dataset},"
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
@@ -246,7 +244,7 @@ class AutoRoundMLLM(AutoRound):
             gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
-        truncation = True if truncation is None else truncation
+        truncation = True
         self.truncation = truncation
 
         if nsamples % batch_size != 0:
@@ -256,40 +254,20 @@ class AutoRoundMLLM(AutoRound):
         super(AutoRoundMLLM, self).__init__(
             model=model,
             tokenizer=tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            scheme=scheme,
             layer_config=layer_config,
-            batch_size=batch_size,
-            amp=amp,
-            device=device,
-            lr_scheduler=lr_scheduler,
             dataset=dataset,
-            enable_quanted_input=enable_quanted_input,
-            enable_minmax_tuning=enable_minmax_tuning,
-            lr=lr,
-            minmax_lr=minmax_lr,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            low_cpu_mem_usage=low_cpu_mem_usage,
             iters=iters,
             seqlen=seqlen,
             nsamples=nsamples,
-            sampler=sampler,
-            seed=seed,
-            nblocks=nblocks,
+            batch_size=batch_size,
             gradient_accumulate_steps=gradient_accumulate_steps,
-            not_use_best_mse=not_use_best_mse,
-            dynamic_max_gap=dynamic_max_gap,
-            data_type=data_type,
-            scale_dtype=scale_dtype,
-            act_bits=act_bits,
-            act_group_size=act_group_size,
-            act_sym=act_sym,
-            act_dynamic=act_dynamic,
-            to_quant_block_names=self.to_quant_block_names,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
             enable_torch_compile=enable_torch_compile,
+            seed=seed,
             vlm=True,
+            to_quant_block_names=to_quant_block_names,
             **kwargs,
         )
 

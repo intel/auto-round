@@ -24,7 +24,8 @@ import sys
 from collections import UserDict
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Tuple, Union
+from pathlib import Path
+from typing import Any, Callable, Tuple, Union
 
 import cpuinfo
 import torch
@@ -33,9 +34,13 @@ from packaging import version
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
-from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
+from auto_round.schemes import QuantizationScheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
+
+deepspeed_exists = False
+if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
+    deepspeed_exists = True
 
 
 class SupportedFormats:
@@ -51,7 +56,7 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
-            "llmcompressor",
+            "llm_compressor",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -67,19 +72,29 @@ class SupportedFormats:
         return self._support_list[key]
 
 
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 SUPPORTED_FORMATS = SupportedFormats()
-
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 ##changed to str as it relies triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
-
 # INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
 
-SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
+if deepspeed_exists:
+    from deepspeed.module_inject import LinearAllreduce, LinearLayer
+
+    SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
 
 def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
     if data_type is None:
         return 16
     for supported_dtype in SUPPORTED_DTYPES:
@@ -90,12 +105,20 @@ def infer_bits_by_data_type(data_type: str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
-    return 16
+    return None
 
 
-@lru_cache(None)
-def warning_once(self, msg: str):
-    self.warning(msg)
+@lru_cache(maxsize=None)
+def warning_once(self, msg, *args, **kwargs):
+    """
+    Log a warning message only once per unique message/arguments combination.
+
+    Args:
+        msg: The warning message format string
+        *args: Variable positional arguments for message formatting
+        **kwargs: Variable keyword arguments for message formatting and logging options
+    """
+    self.warning(msg, *args, **kwargs)
 
 
 class AutoRoundFormatter(logging.Formatter):
@@ -165,6 +188,8 @@ auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
 
+@torch._dynamo.disable()
+@lru_cache(None)
 def is_optimum_habana_available():
     from transformers.utils.import_utils import is_optimum_available
 
@@ -404,6 +429,7 @@ def get_block_names(model, quant_vision=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
+    from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
     def _get_llm_block_names(model):
         block_names = []
@@ -419,7 +445,11 @@ def get_block_names(model, quant_vision=False):
         return block_names
 
     def _get_vlm_block_names(model, quant_vision=False):
-        if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "model_type")
+            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
+        ):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
@@ -496,7 +526,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
-    if isinstance(config, dict):
+    if isinstance(config, (dict, QuantizationScheme)):
         bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
     elif hasattr(config, "orig_layer"):
@@ -531,7 +561,7 @@ def detect_device_count():
             return 0
 
 
-def detect_device(device=None):
+def detect_device(device: Union[str, int, torch.device] = None) -> str:
     """Detects the appropriate computation device.
 
     This function determines the device to use for computations. It can take
@@ -557,6 +587,10 @@ def detect_device(device=None):
     dev_idx = None
     if is_valid_digit(device):
         dev_idx = int(device)
+        device = "auto"
+    if isinstance(device, str) and "," in device:  # device is "0,1,2"
+        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
+        dev_idx = device_list[0] if device_list else None
         device = "auto"
     if device is None or device == "auto":
         if torch.cuda.is_available():
@@ -913,6 +947,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         torch.xpu.empty_cache()
 
 
+@torch._dynamo.disable()
 def clear_memory(tensor=None):
     if is_hpu_supported():
         # hpu does not have empty_cache
@@ -933,6 +968,7 @@ TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE = torch_version_at_least("2.5.99")
 TORCH_VERSION_AT_LEAST_2_6 = torch_version_at_least("2.6.0")
 TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
+
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
@@ -961,7 +997,10 @@ def compile_func_on_cuda_or_cpu(func):
     return torch.compile(func)
 
 
-def compile_func(fun, device):
+def compile_func(
+    fun: Union[torch.nn.Module, Callable], device: Union[torch.nn.Module, Callable]
+) -> Union[torch.nn.Module, Callable]:
+    """Compile function on the specified device."""
     if "hpu" in str(device):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
@@ -1109,15 +1148,13 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     return True, ""
 
 
-def get_device_and_parallelism(device):
-    from auto_round.utils import detect_device
-
+def get_device_and_parallelism(device: Union[str, torch.device, int]) -> Tuple[str, bool]:
     if isinstance(device, str):
         devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
-        devices = str(device)
+        devices = [str(device)]
     else:
-        devices = device
+        devices = [device]
     if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
@@ -1172,6 +1209,8 @@ def get_layer_features(layer):
         return layer.weight.shape[0], layer.weight.shape[1]
     elif isinstance(layer, torch.nn.Embedding):
         return layer.num_embeddings, layer.embedding_dim
+    elif deepspeed_exists and isinstance(layer, (LinearLayer, LinearAllreduce)):
+        return layer.weight.shape[1], layer.weight.shape[0]  # (input_dim, output_dim)
     return None, None  # Unsupported layer type
 
 
@@ -1182,6 +1221,8 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     )
 
     is_mistral_format = False
+    if isinstance(dir_model, str):
+        dir_model = Path(dir_model)
 
     hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):
@@ -1201,18 +1242,12 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     return model_class
 
 
-def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
+def _gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.TEXT):
     import argparse
 
     from auto_round.export.export_to_gguf.convert import download_convert_file
     from auto_round.utils import logger
 
-    if format_str is None:
-        args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
-        format_str = args_or_ar.format
-    else:
-        format_str = format_str.replace("q*_", f"q{args_or_ar.bits}_")
-    formats = format_str.lower().replace(" ", "").split(",")
     formats = sorted(formats, key=lambda x: len(x))
     export_gguf = False
     for f in formats:
@@ -1318,11 +1353,13 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
 def _to_model_dtype(model, model_dtype):
     if model_dtype is not None:
         try:
-            if model_dtype == "float16" or model_dtype == "fp16":
+            if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
                 model = model.to(torch.float16)
-            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
+            elif (
+                model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
+            ) and model.dtype != torch.bfloat16:
                 model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32":
+            elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
                 model = model.to(torch.float32)
         except:
             logger.error("please use more device to fit the device or just use one device")
@@ -1341,6 +1378,40 @@ def set_fake_cuda_device_capability(func=None):
     orig_func = torch.cuda.get_device_capability
     torch.cuda.get_device_capability = fake_cuda
     return orig_func
+
+
+def _is_fp8_model(model: torch.nn.Module) -> bool:
+    if not hasattr(model, "is_fp8"):
+        return False
+    else:
+        return model.is_fp8
+
+
+def _is_fp8_linear(module: torch.nn.Module) -> bool:
+    if hasattr(module, "is_fp8_linear"):
+        return module.is_fp8_linear
+    if not (isinstance(module, torch.nn.Linear) or module.__class__.__name__ == "FP8Linear"):
+        return False
+    if module.weight is None:
+        return False
+    if str(module.weight.dtype).startswith("torch.float8"):
+        return True
+    else:
+        return False
+
+
+def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
+    if _is_fp8_model(model):
+        return True
+    for n, m in model.named_modules():
+        if _is_fp8_linear(m):
+            m.is_fp8_linear = True
+            if not hasattr(model, "is_fp8"):
+                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+                model.is_fp8 = True
+    if hasattr(model, "is_fp8"):
+        return True
+    return False
 
 
 def llm_load_model(
@@ -1365,6 +1436,8 @@ def llm_load_model(
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
+    if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
+        logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
     if low_cpu_mem_tmp_dir is None:
         low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
@@ -1403,7 +1476,6 @@ def llm_load_model(
             )
         else:
             try:
-
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
@@ -1420,7 +1492,6 @@ def llm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             except OSError as e:
@@ -1435,6 +1506,7 @@ def llm_load_model(
                 )
 
     model = model.eval()
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer, low_cpu_mem_usage
@@ -1449,7 +1521,6 @@ def mllm_load_model(
     model_dtype=None,
     **kwargs,
 ):
-
     import transformers
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
@@ -1516,12 +1587,24 @@ def mllm_load_model(
                 cls = getattr(transformers, architectures)
             else:
                 cls = AutoModelForCausalLM
-            model = cls.from_pretrained(
-                pretrained_model_name_or_path,
-                trust_remote_code=trust_remote_code,
-                torch_dtype=torch_dtype,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            try:
+                model = cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    torch_dtype=torch_dtype,
+                    device_map="auto" if use_auto_mapping else None,
+                )
+            except ValueError as e:
+                if "FP8 quantized" in str(e):
+                    orig_func = set_fake_cuda_device_capability()
+                    model = cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        trust_remote_code=trust_remote_code,
+                        torch_dtype=torch_dtype,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
+                    torch.cuda.get_device_capability = orig_func
+                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
@@ -1547,6 +1630,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
+    check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -1622,6 +1706,8 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
+    from auto_round.special_model_handler import SPECIAL_SHARED_CACHE_KEYS
+
     shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
@@ -2121,8 +2207,13 @@ def get_reciprocal(tensor):
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
 
-def check_need_act_calibration(is_act_dynamic, act_data_type=None):
-    if not is_act_dynamic:
+def check_need_act_calibration(
+    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: int = 16
+) -> bool:
+    if act_bits > 8:
+        return False
+    # None is dynamic
+    if is_act_dynamic is not None and not is_act_dynamic:
         return True
     if act_data_type is not None and "static" in act_data_type:
         return True
@@ -2155,7 +2246,6 @@ def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_fi
 def pad_block_fp8_weight_naive(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
 ) -> Tuple[torch.Tensor, int, int]:
-
     assert len(block_size) == 2
 
     block_size_m, block_size_n = block_size
@@ -2208,12 +2298,18 @@ def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, b
 def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     """ """
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias:
+    if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
     keys = get_quant_keys() + ["tmp_name"]
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
-    dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale_inv, layer.block_size)
+
+    if layer.__class__.__name__ == "CompressedLinear":
+        dq_weight = layer.compressor.decompress_module(layer)
+    else:
+        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 
@@ -2414,48 +2510,223 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         model = get_module(model, moe_name)
     # Handle input quantizers of experts that are not calibrated
     for name, sub_module in model.named_modules():
-        if is_moe(sub_module) and hasattr(sub_module, "experts"):
-            expert_linear_names = get_expert_linear_names(sub_module)
-            for linear_name in expert_linear_names:
-                if isinstance(sub_module.experts, collections.abc.Iterable):
-                    # For other MoE models (like Mixtral) with iterable experts
-                    try:
-                        set_amax_for_uncalibrated_experts(
-                            [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
-                        )
-                    except AttributeError as e:
-                        # Provide more helpful debugging information
-                        expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
-                        raise AttributeError(
-                            f"Failed to access attribute '{linear_name}' on experts. "
-                            f"MoE module type: {type(sub_module).__name__}, "
-                            f"Expert types: {expert_types}, "
-                            f"Expected linear names: {expert_linear_names}. "
-                            f"This suggests the get_expert_linear_names function may need "
-                            f"to be updated for this model architecture. "
-                            f"Original error: {e}"
-                        ) from e
-                else:
-                    # Unsupported MoE model structure
-                    raise NotImplementedError(
-                        f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
-                        f"Please file an issue or add support for this model architecture."
+        if not (is_moe(sub_module) and hasattr(sub_module, "experts")):
+            continue
+        expert_linear_names = get_expert_linear_names(sub_module)
+        for linear_name in expert_linear_names:
+            if isinstance(sub_module.experts, collections.abc.Iterable):
+                # For other MoE models (like Mixtral) with iterable experts
+                try:
+                    set_amax_for_uncalibrated_experts(
+                        [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
                     )
+                except AttributeError as e:
+                    # Provide more helpful debugging information
+                    expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                    raise AttributeError(
+                        f"Failed to access attribute '{linear_name}' on experts. "
+                        f"MoE module type: {type(sub_module).__name__}, "
+                        f"Expert types: {expert_types}, "
+                        f"Expected linear names: {expert_linear_names}. "
+                        f"This suggests the get_expert_linear_names function may need "
+                        f"to be updated for this model architecture. "
+                        f"Original error: {e}"
+                    ) from e
+            else:
+                # Unsupported MoE model structure
+                raise NotImplementedError(
+                    f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
+                    f"Please file an issue or add support for this model architecture."
+                )
 
 
 class BackendDataType(str, Enum):
-    STANDARD_FP8 = "fp8"
+    STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
 
 
 def is_standard_fp(backend):
-    return BackendDataType.STANDARD_FP8 in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
+    backend = backend.lower()
+    return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 def is_mx_fp(backend):
+    backend = backend.lower()
     return BackendDataType.MX_FP in backend
 
 
 def is_nv_fp(backend):
+    backend = backend.lower()
     return BackendDataType.NV_FP in backend
+
+
+def _is_weight_fp8_activation_static_fp8(
+    bit: int, group_size: int, sym: bool, data_type: str, act_dynamic: bool
+) -> bool:
+    return bit == 8 and group_size == -1 and sym and data_type == "fp" and not act_dynamic
+
+
+def is_wfp8afp8(ar):
+    if (
+        ("fp8" in ar.act_data_type or ("fp" in ar.act_data_type and ar.act_bits == 8))
+        and ("fp8" in ar.data_type or ("fp" in ar.data_type and ar.bits == 8))
+        and is_standard_fp(ar.act_data_type)
+        and is_standard_fp(ar.data_type)
+    ):
+        return True
+    else:
+        return False
+
+
+def is_static_wfp8afp8(ar):
+    if ar.act_dynamic:
+        return False
+    if is_wfp8afp8(ar):
+        return True
+    return False
+
+
+def bytes_to_gigabytes(bytes) -> int:
+    """
+    Converts bytes to gigabytes.
+
+    Args:
+        bytes (int): The number of bytes.
+
+    Returns:
+        int: The equivalent number of gigabytes.
+    """
+    return bytes / 1024 / 1024 / 1024
+
+
+def get_device_memory(i: int = 0) -> int:
+    """
+    Gets the available memory on the specified device.
+
+    Args:
+        i (int, optional): Device index. Defaults to 0.
+
+    Returns:
+        int: Available memory in gigabytes.
+    """
+    if torch.cuda.is_available():
+        total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
+    elif torch.xpu.is_available():
+        raise RuntimeError("XPU does not support device_map='auto' currently.")
+    else:
+        raise RuntimeError("No supported device found (CUDA or XPU).")
+    return total_memory
+
+
+def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: list[torch.Tensor]) -> tuple[float, float]:
+    """
+    Calculates the memory consumption of a specific block in the model.
+
+    Args:
+        block (torch.nn.Module): The block of the model to analyze.
+        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - block_memory (float): The memory consumption (in GB) of the block's linear layers.
+            - input_output_memory (float): The memory consumption (in GB) for input and output
+                tensors of the block.
+    """
+    # Calculate all block parameters memory
+    total_param_mem = 0
+    for name, module in block.named_modules():
+        if check_to_quantized(module):
+            param_size = module.weight.nbytes
+            total_param_mem += param_size
+    block_memory = total_param_mem / 1024**3  # Convert to GB
+
+    # Assuming bfloat16 or float32, input and output
+    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    return block_memory, input_output_memory
+
+
+def get_max_vram(ratio: float = 0.9) -> dict:
+    max_memory = {}
+    if torch.cuda.is_available():  # NVIDIA CUDA
+        num_devices = torch.cuda.device_count()
+        for i in range(num_devices):
+            total_mem = torch.cuda.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+    elif torch.xpu.is_available():  # TODO need verification
+        num_devices = torch.xpu.device_count()
+        for i in range(num_devices):
+            total_mem = torch.xpu.get_device_properties(i).total_memory
+            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_memory[i] = f"{max_mem_gb}GiB"
+
+    else:
+        raise RuntimeError("No CUDA or XPU devices found.")
+    return max_memory
+
+
+def _get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
+    """
+    Selects the packing device.
+    - "auto": choose best available (CUDA > XPU > CPU).
+    - str: parsed by torch.device (e.g., "cuda:2", "cpu").
+    - torch.device: returned as-is.
+    - None: treated as "auto".
+
+    Args:
+        device: Target device spec ("auto", "cuda:0", "xpu:0", "cpu", or torch.device).
+
+    Returns:
+        torch.device: The resolved device.
+    """
+    if device is None or (isinstance(device, str) and device.lower() == "auto"):
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return torch.device("xpu:0")
+        return torch.device("cpu")
+
+    if isinstance(device, torch.device):
+        return device
+
+    if isinstance(device, str):
+        try:
+            return torch.device(device)
+        except Exception as e:
+            raise ValueError(f"Invalid device string: {device}") from e
+
+    raise TypeError(f"Unsupported device type: {type(device)} ({device})")
+
+
+# Adapted from https://github.com/vllm-project/llm-compressor/blob/
+# 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
+def copy_python_files_from_model_cache(model, save_path: str):
+    config = model.config
+    cache_path = None
+    if hasattr(config, "_name_or_path"):
+        import os
+        import shutil
+
+        from huggingface_hub import hf_hub_download
+        from transformers import TRANSFORMERS_CACHE
+        from transformers.utils import http_user_agent
+
+        cache_path = config._name_or_path
+        if not os.path.exists(cache_path):
+            user_agent = http_user_agent()
+            config_file_path = hf_hub_download(
+                repo_id=cache_path,
+                filename="config.json",
+                cache_dir=TRANSFORMERS_CACHE,
+                force_download=False,
+                user_agent=user_agent,
+            )
+            cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
+
+        for file in os.listdir(cache_path):
+            full_file_name = os.path.join(cache_path, file)
+            if file.endswith(".py") and os.path.isfile(full_file_name):
+                logger.debug(f"Transferring {full_file_name} to {save_path}")
+                shutil.copy(full_file_name, save_path)
