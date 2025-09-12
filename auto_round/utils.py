@@ -54,6 +54,7 @@ class SupportedFormats:
             "auto_round:auto_gptq",
             "auto_round:gptqmodel",
             "auto_round:auto_awq",
+            "auto_round:llm_compressor",
             "itrex",
             "itrex_xpu",
             "fake",
@@ -1450,6 +1451,8 @@ def llm_load_model(
                     )
                     torch.cuda.get_device_capability = orig_func
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+                else:
+                    raise
 
             except OSError as e:
                 logger.warning(
@@ -2536,10 +2539,12 @@ def is_wfp8afp8(ar):
         return False
 
 
-def is_static_wfp8afp8(ar):
-    if ar.act_dynamic:
+def is_static_wfp8afp8(ar_or_format):
+    if isinstance(ar_or_format, str):
+        return "fp8_static" in ar_or_format
+    if ar_or_format.act_dynamic:
         return False
-    if is_wfp8afp8(ar):
+    if is_wfp8afp8(ar_or_format):
         return True
     return False
 

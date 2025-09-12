@@ -26,11 +26,13 @@ from auto_round.utils import (
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
+    is_static_wfp8afp8,
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer
 
 from .export_to_fp import save_quantized_as_fp
+from .export_to_static_fp import save_quantized_as_static_fp
 
 
 @torch.no_grad()
@@ -70,6 +72,11 @@ def pack_layer(layer_name, model, backend, device=None):
 
         return pack_layer(layer_name, model, backend, device)
 
+    if is_static_wfp8afp8(backend):
+        from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
+
+        return pack_layer(layer_name, model, backend, device)
+
     ## passed as no other llm_compressor format is supported yet
     logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
     return
@@ -104,6 +111,9 @@ def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwa
     backend = kwargs.get("backend", None)
     if is_nv_fp(backend) or is_mx_fp(backend):
         return save_quantized_as_fp(output_dir, inplace=inplace, **kwargs)
+
+    if is_static_wfp8afp8(backend):
+        return save_quantized_as_static_fp(output_dir, **kwargs)
 
     model = kwargs.get("model", None)
     safe_serialization = kwargs.get("safe_serialization", True)
