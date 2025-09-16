@@ -2688,11 +2688,24 @@ def copy_python_files_from_model_cache(model, save_path: str):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
 
+
 def is_mllm_model(model_or_path):
     MM_KEYS = [
-        "multi_modal_projector", "vision_tower", "multimodal_projector", "thinker", "visual", "audio", "talker",
-        "token2wav", "vision_model", "audio_tower", "vision_encoder", "vision_language_adapter", "patch_merger",
-        "pre_mm_projector_norm", "vision", 
+        "multi_modal_projector",
+        "vision_tower",
+        "multimodal_projector",
+        "thinker",
+        "visual",
+        "audio",
+        "talker",
+        "token2wav",
+        "vision_model",
+        "audio_tower",
+        "vision_encoder",
+        "vision_language_adapter",
+        "patch_merger",
+        "pre_mm_projector_norm",
+        "vision",
     ]
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
@@ -2709,10 +2722,10 @@ def is_mllm_model(model_or_path):
         for key in config.keys():
             if any([k in key for k in MM_KEYS]):
                 return True
-    
+
     if isinstance(model_or_path, torch.nn.Module):
         for name, module in model_or_path.named_modules():
             if any([k in name for k in MM_KEYS]):
                 return True
-    
+
     return False
