@@ -63,6 +63,9 @@ def _get_moe_converter(config):
                     self[i].gate_proj.weight.data = gate_proj.t().contiguous()
                     self[i].up_proj.weight.data = up_proj.t().contiguous()
                     self[i].down_proj.weight.data = down.t().contiguous()
+                    self[i].gate_proj.weight.data = gate_proj.t()
+                    self[i].up_proj.weight.data = up_proj.t()
+                    self[i].down_proj.weight.data = down.t()
 
         class SequentialLlama4TextMoe(torch.nn.Module):
             def __init__(self, config, original):
@@ -111,11 +114,66 @@ def _handle_special_model(model):
     return model
 
 
+import os
+from functools import wraps
+
+import torch
+
+
+def with_thread_limits(div_omp: int = 4, div_torch: int = 8):
+    """
+    Decorator to temporarily set OMP_NUM_THREADS and PyTorch threads,
+    and restore them after the function call.
+
+    Args:
+        div_omp: divide CPU cores by this for OMP_NUM_THREADS
+        div_torch: divide CPU cores by this for torch.set_num_threads
+    """
+
+    def decorator(func):
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # if not (current_platform.is_hpu()
+            #         and envs.VLLM_HPU_CONVERT_TO_FP8UZ):
+            #     return func(*args, **kwargs)
+
+            # Save original settings
+            old_omp = os.environ.get("OMP_NUM_THREADS", None)
+            old_torch = torch.get_num_threads()
+            num_cores = os.cpu_count() or 1
+
+            # Set new limits
+            os.environ["OMP_NUM_THREADS"] = str(max(1, num_cores // div_omp))
+            torch.set_num_threads(max(1, num_cores // div_torch))
+            logger.warning_once(
+                "Setting OMP_NUM_THREADS to %s and torch.set_num_threads to %s",
+                os.environ["OMP_NUM_THREADS"],
+                torch.get_num_threads(),
+            )
+            try:
+                # Call the actual function
+                return func(*args, **kwargs)
+            finally:
+                # Restore original settings
+                if old_omp is None:
+                    os.environ.pop("OMP_NUM_THREADS", None)
+                else:
+                    os.environ["OMP_NUM_THREADS"] = old_omp
+                torch.set_num_threads(old_torch)
+
+        return wrapper
+
+    return decorator
+
+
+@with_thread_limits(2, 2)
 def _handle_moe_model(model, formats=None):
     if formats is not None and any(["gguf" in format_ for format_ in formats]):
         return model
     if hasattr(model.config, "model_type") and model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
         from tqdm import tqdm
+        from transformers.modeling_utils import no_init_weights
 
         from auto_round.utils import clear_memory
 
@@ -123,10 +181,12 @@ def _handle_moe_model(model, formats=None):
         model = model.to("cpu")
         clear_memory()
 
-        for name, module in tqdm(model.named_modules(), desc="Converting model"):
+        for name, module in model.named_modules():
             cls_name = module.__class__.__name__
             if cls_name == orig_cls_name:
-                new_module = new_moe_class(config=convert_config, original=module)
+                logger.trace(f"Converting {name} from {cls_name} to {new_moe_class.__name__}")
+                with no_init_weights():
+                    new_module = new_moe_class(config=convert_config, original=module)
                 parent, child = name.rsplit(".", maxsplit=1)
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
