@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 
 import torch
 
 from auto_round.export.export_to_llmcompressor.config import quantization_config
+from auto_round.logger import logger
 from auto_round.utils import (
     copy_python_files_from_model_cache,
     detect_device,
@@ -24,7 +26,6 @@ from auto_round.utils import (
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
-    logger,
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer
@@ -75,10 +76,34 @@ def pack_layer(layer_name, model, backend, device=None):
 
 
 @torch.no_grad()
-def save_quantized_as_llmcompressor(output_dir, **kwargs):
+def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwargs) -> torch.nn.Module:
+    """
+    Save a quantized model in the LLM-Compressor format.
+
+    This function saves a quantized model, including its configuration, state dictionary,
+    tokenizer, and processor, in the specified output directory. It supports inplace
+    modification of the model or creating a deepcopy for saving. Currently, only NVFP
+    and MXFP backends are supported for specific quantization formats.
+
+    Args:
+        output_dir (str): The directory where the quantized model will be saved.
+        inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
+                                Default is True.
+        **kwargs: Additional arguments, including:
+            - model (torch.nn.Module): The model to be quantized and saved.
+            - backend (str): The backend framework used for quantization.
+            - tokenizer: The tokenizer associated with the model.
+            - processor: The processor associated with the model.
+            - safe_serialization (bool): Whether to use safe serialization when saving
+                                         the model. Default is True.
+
+    Returns:
+        torch.nn.Module: The quantized model that was saved.
+    """
+
     backend = kwargs.get("backend", None)
     if is_nv_fp(backend) or is_mx_fp(backend):
-        return save_quantized_as_fp(output_dir, **kwargs)
+        return save_quantized_as_fp(output_dir, inplace=inplace, **kwargs)
 
     model = kwargs.get("model", None)
     safe_serialization = kwargs.get("safe_serialization", True)
@@ -86,6 +111,8 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
     processor = kwargs.get("processor", None)
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    if not inplace:
+        model = copy.deepcopy(model.to("cpu"))
 
     # save tokenizer, processor
     if output_dir is not None and tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
@@ -125,3 +152,5 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
         copy_python_files_from_model_cache(model, output_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+    return model

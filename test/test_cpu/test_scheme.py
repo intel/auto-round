@@ -60,6 +60,13 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRoundMLLM("Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16", nsamples=1, iters=1, seqlen=2)
         self.assertEqual(ar.bits, 2)
         self.assertEqual(ar.act_bits, 16)
+
+    def test_nvfp4(self):
+        ar = AutoRound(self.model_name, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
+        self.assertEqual(ar.bits, 4)
+        self.assertEqual(ar.act_bits, 4)
+        self.assertEqual(ar.data_type, "nv_fp")
+        self.assertEqual(ar.act_data_type, "nv_fp4_with_static_gs")
         ar.quantize()
 
     def test_scheme_in_layer_config(self):

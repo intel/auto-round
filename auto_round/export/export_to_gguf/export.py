@@ -21,6 +21,8 @@ from pathlib import Path
 import requests
 import torch
 
+from auto_round.logger import logger
+
 # from auto_round.export.export_to_gguf.convert_hf_to_gguf import ModelBase, ModelType, get_model_architecture
 from auto_round.utils import (
     LazyImport,
@@ -30,7 +32,6 @@ from auto_round.utils import (
     get_block_names,
     get_gguf_architecture,
     get_module,
-    logger,
 )
 
 convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")

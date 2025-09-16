@@ -34,6 +34,8 @@ from packaging import version
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
+from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -105,42 +107,6 @@ def infer_bits_by_data_type(data_type: str):
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
     return None
-
-
-@lru_cache(None)
-def warning_once(self, msg: str):
-    self.warning(msg)
-
-
-class AutoRoundFormatter(logging.Formatter):
-    grey = "\x1b[38;20m"
-    yellow = "\x1b[33;1m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-    _format = "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s"
-
-    FORMATS = {
-        logging.DEBUG: grey + _format + reset,
-        logging.INFO: grey + _format + reset,
-        logging.WARNING: yellow + _format + reset,
-        logging.ERROR: bold_red + _format + reset,
-        logging.CRITICAL: bold_red + _format + reset,
-    }
-
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt, "%Y-%m-%d %H:%M:%S")
-        return formatter.format(record)
-
-
-logging.Logger.warning_once = warning_once
-logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
-logger.propagate = False
-fh = logging.StreamHandler()
-fh.setFormatter(AutoRoundFormatter())
-logger.addHandler(fh)
 
 
 class LazyImport(object):
@@ -517,7 +483,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
-    if isinstance(config, dict):
+    if isinstance(config, (dict, QuantizationScheme)):
         bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
     elif hasattr(config, "orig_layer"):
@@ -2538,15 +2504,24 @@ class BackendDataType(str, Enum):
 
 
 def is_standard_fp(backend):
+    backend = backend.lower()
     return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 def is_mx_fp(backend):
+    backend = backend.lower()
     return BackendDataType.MX_FP in backend
 
 
 def is_nv_fp(backend):
+    backend = backend.lower()
     return BackendDataType.NV_FP in backend
+
+
+def _is_weight_fp8_activation_static_fp8(
+    bit: int, group_size: int, sym: bool, data_type: str, act_dynamic: bool
+) -> bool:
+    return bit == 8 and group_size == -1 and sym and data_type == "fp" and not act_dynamic
 
 
 def is_wfp8afp8(ar):

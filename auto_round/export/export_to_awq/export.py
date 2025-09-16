@@ -31,6 +31,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -39,7 +40,6 @@ from auto_round.utils import (
     filter_quantization_config,
     get_block_names,
     get_module,
-    logger,
     set_module,
 )
 
