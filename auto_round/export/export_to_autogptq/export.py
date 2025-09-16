@@ -45,7 +45,7 @@ import torch
 import torch.nn as nn
 import transformers
 from tqdm import tqdm
-
+from typing import Any, Dict
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -57,6 +57,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     set_module,
+    to_standard_regex,
 )
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
@@ -65,6 +66,30 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
     "gpt_neox.layers",
     "model.layers",
 ]
+
+def convert_to_autogptq_dynamic(
+    dynamic_config: Dict[str, Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Convert AutoRound-style dynamic_config into AutoGPTQ-style QuantizerConfig.dynamic.
+
+    Rules:
+    - bits < 16 -> quantize -> positive match `+:regex`
+    - bits == 16 -> skip quantize -> negative match `-:regex`
+    """
+    converted = {}
+    for name, cfg in dynamic_config.items():
+        bits = cfg.get("bits")
+        regex = to_standard_regex(name)
+
+        if bits is None:
+            continue  # ignore invalid entries
+        elif bits < 16:
+            converted[f"r'+:{regex}'"] = {"bits": bits, **{k: v for k, v in cfg.items() if k != "bits"}}
+        else:
+            # skip quantization
+            converted[f"r'-:{regex}'"] = {}
+    return converted
 
 
 def pack_layer(name, model, backend, device=None):
@@ -155,7 +180,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         logger.error("auto-gptq format may not support loading this quantized model")
         quantization_config["block_name_to_quantize"] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
-
+    dynamic_config = quantization_config.pop("dynamic_config")
+    quantization_config['dynamic'] = convert_to_autogptq_dynamic(dynamic_config)
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
     for n, m in model.named_modules():
@@ -265,3 +291,4 @@ def save(
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+
