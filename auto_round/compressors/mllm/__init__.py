@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,19 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.quantizers.base import *
-from auto_round.quantizers.mode import *
-from auto_round.quantizers.model_type import *
-from auto_round.quantizers.data_type import *
-
-
-def create_quantizers():
-    # example
-    quantizers = {
-        QuantizerType.DATA_TYPE: GGUFQuantizer,
-        QuantizerType.MODEL_TYPE: LLMQuantizer,
-        QuantizerType.MODE: TuneQuantizer,
-    }
-
-    dynamic_quantizer = type("AutoRoundQuantizer", tuple(quantizers.values()), {})
-    return dynamic_quantizer
+from .dataset import get_mllm_dataloader
+from .template import Template, get_template, TEMPLATES
+from .compressor import MLLMCompressor
+from .eval import mllm_eval, lmms_eval

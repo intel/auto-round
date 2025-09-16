@@ -13,9 +13,13 @@
 # limitations under the License.
 
 import logging
-from functools import lru_cache
+import warnings
+from functools import lru_cache, wraps
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, TypeVar
 
 import auto_round.envs as envs
+
+T = TypeVar("T", bound="Callable")  # used by `deprecated`
 
 
 @lru_cache(maxsize=None)
@@ -84,3 +88,33 @@ logger.propagate = False
 fh = logging.StreamHandler()
 fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
+
+
+def deprecated(
+    future_name: Optional[str] = None, message: Optional[str] = None
+) -> Callable[[T], T]:
+    """
+    Decorator to mark functions as deprecated
+
+    :param new_function: Function called in place of deprecated function
+    :param message: Deprecation message, replaces default deprecation message
+    """
+
+    def decorator(func: T) -> T:
+        nonlocal message
+
+        if message is None:
+            message = (
+                f"{func.__name__} is deprecated and will be removed in a future release"
+            )
+            if future_name is not None:
+                message += f". Please use {future_name} instead."
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            logger.warning_once(message)
+            return func(*args, **kwargs)
+
+        return wrapped
+
+    return decorator

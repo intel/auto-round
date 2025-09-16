@@ -18,11 +18,11 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
-from auto_round.autoround import AutoRound
+from auto_round.compressors.base import BaseCompressor
 from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.mllm.mllm_dataset import get_mllm_dataloader
-from auto_round.mllm.template import Template, get_template
+from auto_round.compressors.mllm.dataset import get_mllm_dataloader
+from auto_round.compressors.mllm.template import Template, get_template
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
@@ -76,7 +76,7 @@ def _only_text_test(model, tokenizer, device, model_type):
         return False
 
 
-class AutoRoundMLLM(AutoRound):
+class MLLMCompressor(BaseCompressor):
     """Class for automatic rounding-based quantization with MLLMs.
 
     Args:
@@ -205,8 +205,8 @@ class AutoRoundMLLM(AutoRound):
 
         model = _handle_special_model(model)
 
-        from ..calib_dataset import CALIB_DATASETS
-        from .mllm_dataset import MLLM_DATASET
+        from auto_round.calib_dataset import CALIB_DATASETS
+        from .dataset import MLLM_DATASET
 
         if iters > 0 and isinstance(dataset, str) and dataset in CALIB_DATASETS.keys():
             if quant_nontext_module:
@@ -251,7 +251,8 @@ class AutoRoundMLLM(AutoRound):
             nsamples = (nsamples // batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
 
-        super(AutoRoundMLLM, self).__init__(
+        kwargs["mllm"] = True
+        super(MLLMCompressor, self).__init__(
             model=model,
             tokenizer=tokenizer,
             scheme=scheme,
@@ -266,7 +267,6 @@ class AutoRoundMLLM(AutoRound):
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
-            vlm=True,
             to_quant_block_names=to_quant_block_names,
             **kwargs,
         )

@@ -16,7 +16,7 @@ import os
 
 import requests
 
-from ..utils import LazyImport
+from auto_round.utils import LazyImport
 
 PIL = LazyImport("PIL")
 from PIL import Image  # pylint: disable=E0401
