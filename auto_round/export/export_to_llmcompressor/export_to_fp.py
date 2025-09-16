@@ -25,6 +25,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -32,7 +33,6 @@ from auto_round.utils import (
     check_to_quantized,
     copy_python_files_from_model_cache,
     filter_quantization_config,
-    generate_ignore_regex_list,
     get_block_names,
     get_module,
     is_mx_fp,
@@ -199,7 +199,8 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             for _ in executor.map(wrapper, names):
                 pass
 
-    # ignore = generate_ignore_regex_list() ## check
+    ignore = ["lm_head"]
+    # ignore = generate_ignore_regex_list()
 
     # get llm-compressor format config
     check_compressed_tensors_supported()
@@ -281,3 +282,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+

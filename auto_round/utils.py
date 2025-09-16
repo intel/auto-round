@@ -2756,3 +2756,11 @@ def matches_any_regex(layer_name: str, regex_list: List[str], prefix="re:") -> b
         if re.fullmatch(pat, layer_name):
             return True
     return False
+
+
+def json_serialize(obj: Any):
+    """Convert non-JSON-serializable objects into JSON-friendly formats."""
+    if isinstance(obj, torch.dtype):
+        return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+

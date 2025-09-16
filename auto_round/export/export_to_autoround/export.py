@@ -334,9 +334,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
                     extra_config[layer_name][key] = layer_config[layer_name][key]
 
     dynamic_config = quantization_config.pop("dynamic_config")
-    if name in dynamic_config.keys():
-        regex_name = to_standard_regex(name)
-        extra_config[regex_name] = dynamic_config[name]
+    if dynamic_config is not None:
+        for name in dynamic_config.keys():
+            regex_name = to_standard_regex(name)
+            extra_config[regex_name] = {**{k: dynamic_config[name][k] for k in REQUIRED_CONFIG_KEYS}}
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
@@ -428,3 +429,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+

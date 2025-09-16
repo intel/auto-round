@@ -48,6 +48,12 @@ import transformers
 from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
+
+GPTQ_REQUIRED_CONFIG_KEYS = (
+    "bits",
+    "group_size",
+    "sym",
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -57,6 +63,7 @@ from auto_round.utils import (
     get_autogptq_packing_qlinear,
     get_block_names,
     get_module,
+    json_serialize,
     set_module,
     to_standard_regex,
 )
@@ -85,7 +92,9 @@ def convert_to_autogptq_dynamic(dynamic_config: Dict[str, Dict[str, Any]]) -> Di
         if bits is None:
             continue  # ignore invalid entries
         elif bits < 16:
-            converted[f"r'+:{regex}'"] = {"bits": bits, **{k: v for k, v in cfg.items() if k != "bits"}}
+            converted[f"r'+:{regex}'"] = {"bits": bits}
+            for key in GPTQ_REQUIRED_CONFIG_KEYS:  # only save keys gptq
+                converted[f"r'+:{regex}'"][key] = dynamic_config[name][key]
         else:
             # skip quantization
             converted[f"r'-:{regex}'"] = {}
@@ -285,9 +294,10 @@ def save(
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
+            json.dump(model.config.quantization_config, f, indent=2, default=json_serialize)
 
     try:
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+
