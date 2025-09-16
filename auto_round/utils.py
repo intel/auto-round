@@ -2763,4 +2763,3 @@ def json_serialize(obj: Any):
     if isinstance(obj, torch.dtype):
         return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
