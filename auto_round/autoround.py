@@ -1945,7 +1945,7 @@ class AutoRound(object):
                     matched_names.append(layer_name)
             if len(matched_names) > 0:
                 val = layer_config[name]
-                dynamic_config[name] = val # keep regex config
+                dynamic_config[name] = val  # keep regex config
                 layer_config.pop(name)
                 for match_name in matched_names:
                     layer_config[match_name] = val
@@ -3452,4 +3452,3 @@ class AutoRoundAdam(AutoRound):
             lr_schedule.step()
         if is_optimum_habana_available():
             htcore.mark_step()
-

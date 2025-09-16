@@ -32,13 +32,13 @@ from auto_round.utils import (
     check_to_quantized,
     copy_python_files_from_model_cache,
     filter_quantization_config,
+    generate_ignore_regex_list,
     get_block_names,
     get_module,
     is_mx_fp,
     is_nv_fp,
     set_amax_for_all_moe_layers,
     set_module,
-    generate_ignore_regex_list,
 )
 from auto_round.wrapper import WrapperWALayer
 
@@ -281,4 +281,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
-

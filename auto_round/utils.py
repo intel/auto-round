@@ -25,7 +25,7 @@ from collections import UserDict
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Tuple, Union, List
+from typing import Any, Callable, List, Tuple, Union
 
 import cpuinfo
 import torch
@@ -2688,16 +2688,17 @@ def copy_python_files_from_model_cache(model, save_path: str):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
 
+
 def to_standard_regex(pattern: str) -> str:
     """
     Convert a user-specified string into a standardized regex for layer matching.
-    
+
     Rules:
     - If the pattern already contains regex tokens ('.*', '^', '$', etc.),
       keep them as-is.
     - Otherwise, wrap the pattern with `.*` on both sides to allow substring matching.
     - Always ensure the returned regex is valid (compilable by re).
-    
+
     Examples:
     >>> to_standard_regex("model.embed_tokens")
     '.*model\\.embed_tokens.*'
@@ -2722,7 +2723,7 @@ def to_standard_regex(pattern: str) -> str:
         i = 0
         while i < len(pattern):
             if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i+1] == "*":
+                if i + 1 < len(pattern) and pattern[i + 1] == "*":
                     tmp.append(".*")  # keep regex token
                     i += 2
                     continue
@@ -2751,7 +2752,7 @@ def matches_any_regex(layer_name: str, regex_list: List[str], prefix="re:") -> b
     """
     for pattern in regex_list:
         # Remove 're:' prefix for matching
-        pat = pattern[len(prefix):] if pattern.startswith(prefix) else pattern
+        pat = pattern.removeprefix(prefix)
         if re.fullmatch(pat, layer_name):
             return True
     return False

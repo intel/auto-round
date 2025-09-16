@@ -17,6 +17,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict
 
 import threadpoolctl as tctl
 
@@ -45,7 +46,7 @@ import torch
 import torch.nn as nn
 import transformers
 from tqdm import tqdm
-from typing import Any, Dict
+
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -67,9 +68,8 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
     "model.layers",
 ]
 
-def convert_to_autogptq_dynamic(
-    dynamic_config: Dict[str, Dict[str, Any]]
-) -> Dict[str, Dict[str, Any]]:
+
+def convert_to_autogptq_dynamic(dynamic_config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """
     Convert AutoRound-style dynamic_config into AutoGPTQ-style QuantizerConfig.dynamic.
 
@@ -181,7 +181,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         quantization_config["block_name_to_quantize"] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
     dynamic_config = quantization_config.pop("dynamic_config")
-    quantization_config['dynamic'] = convert_to_autogptq_dynamic(dynamic_config)
+    quantization_config["dynamic"] = convert_to_autogptq_dynamic(dynamic_config)
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
     for n, m in model.named_modules():
@@ -291,4 +291,3 @@ def save(
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
-

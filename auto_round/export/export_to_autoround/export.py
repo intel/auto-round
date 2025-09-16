@@ -428,4 +428,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
-
