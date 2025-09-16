@@ -17,7 +17,6 @@ import copy
 import gc
 import importlib
 import json
-import logging
 import os
 import re
 import sys
@@ -66,7 +65,7 @@ class SupportedFormats:
         return True if key in self._support_list else False
 
     def __str__(self):
-        ##return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+        # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
         return "(%s)" % ", ".join(self._support_list)
 
     def __getitem__(self, key):
@@ -77,7 +76,7 @@ SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
-##changed to str as it relies triton or others lib to load this
+# Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
 # INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
 
