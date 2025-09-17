@@ -158,7 +158,6 @@ class MLLMCompressor(BaseCompressor):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        fp_layers: str = None,
         **kwargs,
     ):
         extra_data_dir = kwargs.pop("extra_data_dir", None)
@@ -269,7 +268,6 @@ class MLLMCompressor(BaseCompressor):
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
-            fp_layers=fp_layers,
             to_quant_block_names=to_quant_block_names,
             **kwargs,
         )

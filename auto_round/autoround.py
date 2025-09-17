@@ -17,7 +17,7 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.compressors import AdamCompressor, BaseCompressor, LLMCompressor, MLLMCompressor
+from auto_round.compressors import AdamCompressor, BaseCompressor, ExtraConfig, LLMCompressor, MLLMCompressor
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_mllm_model
@@ -76,14 +76,10 @@ class AutoRound:
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        fp_layers: str = None,
         # for adam
-        adam: bool = False,
+        enable_adam: bool = False,
         # for MLLM
-        mllm=False,
-        processor=None,
-        image_processor=None,
-        quant_nontext_module: bool = False,
+        extra_config: Union[ExtraConfig, list[ExtraConfig]] = None,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -146,23 +142,22 @@ class AutoRound:
             ... }
         """
         model_cls = []
-        if mllm or is_mllm_model(model):
+
+        if isinstance(extra_config, ExtraConfig):
+            extra_config = [extra_config]
+        if any([config.config_type == "mllm" for config in extra_config]) or is_mllm_model(model):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
-            mllm_kwargs = {
-                "mllm": mllm,
-                "processor": processor,
-                "image_processor": image_processor,
-                "quant_nontext_module": quant_nontext_module,
-            }
-            kwargs.update(mllm_kwargs)
         else:
             model_cls.append(LLMCompressor)
-        if adam:
+
+        if enable_adam:
             model_cls.append(AdamCompressor)
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
         kwargs = _clean_kwargs(kwargs, model_cls)
-        return dynamic_compressor(
+        for config in extra_config:
+            kwargs.update(config.to_dict())
+        ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,
             scheme=scheme,
@@ -177,24 +172,169 @@ class AutoRound:
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
-            fp_layers=fp_layers,
+            **kwargs,
+        )
+        return ar
+
+
+@deprecated("AutoRound")
+class AutoRoundLLM(AutoRound):
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
+
+    def __init__(
+        self,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        batch_size: int = 8,
+        gradient_accumulate_steps: int = 1,
+        low_gpu_mem_usage: bool = False,
+        device_map: Union[str, torch.device, int, dict] = 0,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
+        fp_layers: str = None,
+        **kwargs,
+    ):
+        super().__init__(
+            model=model,
+            tokenizer=tokenizer,
+            scheme=scheme,
+            layer_config=layer_config,
+            dataset=dataset,
+            iters=iters,
+            seqlen=seqlen,
+            nsamples=nsamples,
+            batch_size=batch_size,
+            gradient_accumulate_steps=gradient_accumulate_steps,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
             **kwargs,
         )
 
 
 @deprecated("AutoRound")
 class AutoRoundAdam(AutoRound):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
 
-
-@deprecated("AutoRound")
-class AutoRoundLLM(AutoRound):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
+    def __init__(
+        self,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        batch_size: int = 8,
+        gradient_accumulate_steps: int = 1,
+        low_gpu_mem_usage: bool = False,
+        device_map: Union[str, int, torch.device, dict] = 0,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
+        optimizer="AdamW",
+        **kwargs,
+    ):
+        super().__init__(
+            model=model,
+            tokenizer=tokenizer,
+            scheme=scheme,
+            layer_config=layer_config,
+            batch_size=batch_size,
+            dataset=dataset,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            iters=iters,
+            seqlen=seqlen,
+            nsamples=nsamples,
+            seed=seed,
+            gradient_accumulate_steps=gradient_accumulate_steps,
+            enable_torch_compile=enable_torch_compile,
+            device_map=device_map,
+            optimizer=optimizer,
+            enable_adam=True,
+            **kwargs,
+        )
 
 
 @deprecated("AutoRound")
 class AutoRoundMLLM(AutoRound):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
+
+    def __init__(
+        self,
+        model: Union[torch.nn.Module, str],
+        tokenizer=None,
+        processor=None,
+        image_processor=None,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        quant_nontext_module: bool = False,
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        batch_size: int = 8,
+        gradient_accumulate_steps: int = 1,
+        low_gpu_mem_usage: bool = False,
+        device_map: Union[str, torch.device, int, dict] = 0,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
+        **kwargs,
+    ):
+        super().__init__(
+            model=model,
+            tokenizer=tokenizer,
+            processor=processor,
+            image_processor=image_processor,
+            scheme=scheme,
+            layer_config=layer_config,
+            dataset=dataset,
+            quant_nontext_module=quant_nontext_module,
+            iters=iters,
+            seqlen=seqlen,
+            nsamples=nsamples,
+            batch_size=batch_size,
+            gradient_accumulate_steps=gradient_accumulate_steps,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            mllm=True**kwargs,
+        )

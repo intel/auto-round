@@ -477,12 +477,6 @@ def tune(args):
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
 
-    mllm_kwargs = {
-        "extra_data_dir": args.extra_data_dir,
-        "quant_nontext_module": args.quant_nontext_module,
-        "template": args.template,
-    }
-
     if args.quant_lm_head:
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
@@ -506,6 +500,14 @@ def tune(args):
             "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
             " please use enable_deterministic_algorithms instead. "
         )
+
+    from auto_round.compressors import MLLMExtraConfig
+
+    mllm_kwargs = MLLMExtraConfig(
+        quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
+    )
+    extra_config = [mllm_kwargs]
+
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         scheme=scheme,
@@ -543,9 +545,9 @@ def tune(args):
         disable_opt_rtn=args.disable_opt_rtn,
         enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         enable_alg_ext=args.enable_alg_ext,
-        adam=args.adam,
-        mllm=args.mllm,
-        **mllm_kwargs,
+        fp_layers=args.fp_layers,
+        enable_adam=args.adam,
+        extra_config=extra_config,
     )
 
     model_name = args.model.rstrip("/")

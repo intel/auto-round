@@ -141,7 +141,6 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        fp_layers: str = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -232,6 +231,7 @@ class BaseCompressor(object):
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         # Scale factor for RAM usage per parameter.
         self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+        fp_layers = kwargs.pop("fp_layers", None)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -292,6 +292,8 @@ class BaseCompressor(object):
         not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
         if len(not_quantize_layer_names) > 0:
             logger.info(f"{not_quantize_layer_names} will not be quantized.")
+        if layer_config is None:
+            layer_config = {}
         for name in not_quantize_layer_names:
             layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
         self._parse_layer_config(layer_config)  # must place after model init
@@ -3403,7 +3405,6 @@ class AdamCompressor(BaseCompressor):
         device_map: Union[str, int, torch.device, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        fp_layers: str = None,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -3422,7 +3423,6 @@ class AdamCompressor(BaseCompressor):
             gradient_accumulate_steps=gradient_accumulate_steps,
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
-            fp_layers=fp_layers,
             **kwargs,
         )
 

@@ -14,3 +14,4 @@
 
 from .base import *
 from .mllm.compressor import MLLMCompressor
+from .config import ExtraConfig, MLLMExtraConfig
