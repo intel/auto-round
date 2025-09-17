@@ -38,6 +38,7 @@ class AutoRound:
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        fp_layers: str = None,
 
         # for adam
         adam: bool = False,
@@ -79,6 +80,7 @@ class AutoRound:
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
+            fp_layers=fp_layers,
             **kwargs,
         )
         

@@ -68,6 +68,7 @@ from auto_round.utils import (
     flatten_list,
     get_block_names,
     get_device_memory,
+    get_fp_layer_names,
     get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
@@ -140,6 +141,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        fp_layers: str = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -287,6 +289,9 @@ class BaseCompressor(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
+        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
+        for name in not_quantize_layer_names:
+            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
         self._parse_layer_config(layer_config)  # must place after model init
 
         self.to_quant_block_names = to_quant_block_names
@@ -878,6 +883,13 @@ class BaseCompressor(object):
                         "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
                         "Please change format to fake or auto_round etc."
                     )
+            elif "auto_awq" in format:
+                from auto_round.utils import check_awq_gemm_compatibility
+                awq_supported, info = check_awq_gemm_compatibility(
+                    self.model, self.bits, self.group_size, self.sym, self.layer_config
+                )
+            if not awq_supported:
+                logger.warning(f"The AutoAWQ format may not be supported due to {info}")
             else:
                 if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
                     logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
@@ -3388,6 +3400,7 @@ class AdamCompressor(BaseCompressor):
         device_map: Union[str, int, torch.device, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        fp_layers: str = None,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -3406,6 +3419,7 @@ class AdamCompressor(BaseCompressor):
             gradient_accumulate_steps=gradient_accumulate_steps,
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
+            fp_layers=fp_layers,
             **kwargs,
         )
 
