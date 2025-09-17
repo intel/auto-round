@@ -19,10 +19,10 @@ import torch
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
-from auto_round.logger import logger
-from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.compressors.mllm.dataset import get_mllm_dataloader
 from auto_round.compressors.mllm.template import Template, get_template
+from auto_round.logger import logger
+from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
@@ -207,6 +207,7 @@ class MLLMCompressor(BaseCompressor):
         model = _handle_special_model(model)
 
         from auto_round.calib_dataset import CALIB_DATASETS
+
         from .dataset import MLLM_DATASET
 
         if iters > 0 and isinstance(dataset, str) and dataset in CALIB_DATASETS.keys():

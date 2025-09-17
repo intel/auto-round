@@ -685,9 +685,11 @@ class TestAutoRound(unittest.TestCase):
 
         # test old api
         from auto_round import AutoRoundMLLM
+
         ar = AutoRoundMLLM(model_name, adam=True)
         self.assertEqual(ar.optimizer, torch.optim.AdamW)
         self.assertTrue(ar.mllm)
+
 
 if __name__ == "__main__":
     unittest.main()

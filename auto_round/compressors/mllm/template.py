@@ -19,6 +19,7 @@ from enum import Enum, unique
 from typing import Dict, List, Optional
 
 from auto_round.logger import logger
+
 from .processor import PROCESSORS, BasicProcessor
 
 TEMPLATES: Dict[str, "Template"] = {}

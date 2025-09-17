@@ -90,9 +90,7 @@ fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
 
 
-def deprecated(
-    future_name: Optional[str] = None, message: Optional[str] = None
-) -> Callable[[T], T]:
+def deprecated(future_name: Optional[str] = None, message: Optional[str] = None) -> Callable[[T], T]:
     """
     Decorator to mark functions as deprecated
 
@@ -104,9 +102,7 @@ def deprecated(
         nonlocal message
 
         if message is None:
-            message = (
-                f"{func.__name__} is deprecated and will be removed in a future release"
-            )
+            message = f"{func.__name__} is deprecated and will be removed in a future release"
             if future_name is not None:
                 message += f". Please use {future_name} instead."
 

@@ -17,9 +17,10 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.utils import is_mllm_model
+from auto_round.compressors import AdamCompressor, LLMCompressor, MLLMCompressor
 from auto_round.schemes import QuantizationScheme
-from auto_round.compressors import LLMCompressor, MLLMCompressor, AdamCompressor
+from auto_round.utils import is_mllm_model
+
 
 class AutoRound:
     def __new__(
@@ -42,7 +43,6 @@ class AutoRound:
 
         # for adam
         adam: bool = False,
-
         # for MLLM
         mllm=False,
         processor=None,
@@ -57,7 +57,7 @@ class AutoRound:
                 "mllm": mllm,
                 "processor": processor,
                 "image_processor": image_processor,
-                "quant_nontext_module": quant_nontext_module
+                "quant_nontext_module": quant_nontext_module,
             }
             kwargs.update(mllm_kwargs)
         else:
@@ -83,9 +83,10 @@ class AutoRound:
             fp_layers=fp_layers,
             **kwargs,
         )
-        
+
 
 from auto_round.logger import deprecated
+
 
 @deprecated("AutoRound")
 class AutoRoundAdam(AutoRound):
