@@ -290,6 +290,8 @@ class BaseCompressor(object):
         self.shared_cache_keys = get_shared_keys(self.model)
 
         not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
+        if len(not_quantize_layer_names) > 0:
+            logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for name in not_quantize_layer_names:
             layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
         self._parse_layer_config(layer_config)  # must place after model init
@@ -885,6 +887,7 @@ class BaseCompressor(object):
                     )
             elif "auto_awq" in format:
                 from auto_round.utils import check_awq_gemm_compatibility
+
                 awq_supported, info = check_awq_gemm_compatibility(
                     self.model, self.bits, self.group_size, self.sym, self.layer_config
                 )
@@ -2076,7 +2079,7 @@ class BaseCompressor(object):
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = AutoRound._sampling_inputs(
+            tmp_input_ids, tmp_input_others = self._sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
@@ -2806,7 +2809,7 @@ class BaseCompressor(object):
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-                current_input_ids, current_input_others = AutoRound._sampling_inputs(
+                current_input_ids, current_input_others = self._sampling_inputs(
                     input_ids,
                     input_others,
                     indices,
@@ -2958,7 +2961,7 @@ class BaseCompressor(object):
             try:
                 from auto_round.alg_ext import quantize_block_ext
 
-                AutoRound.quantize_block_ext = quantize_block_ext
+                BaseCompressor.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
                 if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
                     logger.warning(
