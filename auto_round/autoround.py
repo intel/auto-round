@@ -40,7 +40,6 @@ class AutoRound:
         enable_torch_compile: bool = False,
         seed: int = 42,
         fp_layers: str = None,
-
         # for adam
         adam: bool = False,
         # for MLLM
