@@ -17,7 +17,7 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.compressors import AdamCompressor, LLMCompressor, MLLMCompressor
+from auto_round.compressors import AdamCompressor, BaseCompressor, LLMCompressor, MLLMCompressor
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_mllm_model
 
@@ -40,7 +40,6 @@ class AutoRound:
         enable_torch_compile: bool = False,
         seed: int = 42,
         fp_layers: str = None,
-
         # for adam
         adam: bool = False,
         # for MLLM
@@ -49,7 +48,7 @@ class AutoRound:
         image_processor=None,
         quant_nontext_module: bool = False,
         **kwargs,
-    ):
+    ) -> BaseCompressor:
         model_cls = []
         if mllm or is_mllm_model(model):
             model_cls.append(MLLMCompressor)

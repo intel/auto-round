@@ -18,6 +18,7 @@ import os
 import re
 import sys
 
+from auto_round.compressors import BaseCompressor
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
@@ -476,7 +477,6 @@ def tune(args):
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
 
-    round = AutoRound
     mllm_kwargs = {
         "extra_data_dir": args.extra_data_dir,
         "quant_nontext_module": args.quant_nontext_module,
@@ -506,7 +506,7 @@ def tune(args):
             "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
             " please use enable_deterministic_algorithms instead. "
         )
-    autoround = round(
+    autoround: BaseCompressor = AutoRound(
         model=model_name,
         scheme=scheme,
         bits=args.bits,
