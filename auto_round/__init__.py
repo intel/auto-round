@@ -14,7 +14,7 @@
 from auto_round.autoround import AutoRound
 
 # support for old api
-from auto_round.autoround import AutoRoundMLLM, AutoRoundAdam
+from auto_round.autoround import AutoRoundMLLM, AutoRoundAdam, AutoRoundLLM
 from auto_round.utils import LazyImport
 
 

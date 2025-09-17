@@ -891,8 +891,8 @@ class BaseCompressor(object):
                 awq_supported, info = check_awq_gemm_compatibility(
                     self.model, self.bits, self.group_size, self.sym, self.layer_config
                 )
-            if not awq_supported:
-                logger.warning(f"The AutoAWQ format may not be supported due to {info}")
+                if not awq_supported:
+                    logger.warning(f"The AutoAWQ format may not be supported due to {info}")
             else:
                 if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
                     logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")

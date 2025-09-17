@@ -18,8 +18,16 @@ from typing import Any, Callable, Union
 import torch
 
 from auto_round.compressors import AdamCompressor, BaseCompressor, LLMCompressor, MLLMCompressor
+from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_mllm_model
+
+
+def _clean_kwargs(kwargs: dict, model_cls: list[BaseCompressor]) -> dict:
+    if MLLMCompressor not in model_cls:
+        for key in ["extra_data_dir", "template"]:
+            kwargs.pop(key)
+    return kwargs
 
 
 class AutoRound:
@@ -39,6 +47,18 @@ class AutoRound:
         nsamples (int): Number of calibration samples.
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
+
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
 
     def __new__(
         cls,
@@ -127,6 +147,7 @@ class AutoRound:
         """
         model_cls = []
         if mllm or is_mllm_model(model):
+            logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
             mllm_kwargs = {
                 "mllm": mllm,
@@ -140,6 +161,7 @@ class AutoRound:
         if adam:
             model_cls.append(AdamCompressor)
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
+        kwargs = _clean_kwargs(kwargs, model_cls)
         return dynamic_compressor(
             model=model,
             tokenizer=tokenizer,
@@ -160,11 +182,14 @@ class AutoRound:
         )
 
 
-from auto_round.logger import deprecated
+@deprecated("AutoRound")
+class AutoRoundAdam(AutoRound):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
 
 
 @deprecated("AutoRound")
-class AutoRoundAdam(AutoRound):
+class AutoRoundLLM(AutoRound):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
