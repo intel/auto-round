@@ -48,8 +48,8 @@ from auto_round.utils import (
 class AutoRoundFormat(str, Enum):
     # Weight: FP8, per-channel, may be extended to per-tensor in future
     # Activation: FP8, per-tensor
-    TORCH_FP8_STATIC = "fp8_static"
-    TORCH_FP8 = "fp8"
+    FP8_STATIC = "fp8_static"
+    FP8 = "fp8"
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
@@ -162,8 +162,8 @@ def pack_layer(layer_name, model, backend, device=None):
         return pack_layer(layer_name, model, backend, device)
 
     if (
-        backend == f"auto_round:{AutoRoundFormat.TORCH_FP8.value}"
-        or backend == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
+        backend == f"auto_round:{AutoRoundFormat.FP8.value}"
+        or backend == f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
     ):
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
@@ -296,7 +296,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if (
         (kwargs.get("sym") is None or kwargs.get("sym"))
         and ("gptq" not in backend and "awq" not in backend)
-        and (AutoRoundFormat.TORCH_FP8_STATIC.value not in backend)
+        and (AutoRoundFormat.FP8_STATIC.value not in backend)
     ):
         backend = backend.replace("auto_round", "auto_round:auto_gptq")
 

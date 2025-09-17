@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
+from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
 from auto_round.export.utils import save_model
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -38,10 +39,8 @@ from auto_round.utils import (
     set_module,
 )
 
-from .config import check_compressed_tensors_supported
 
-
-def pack_layer(layer_name, model, data_type, device=None):
+def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str = None) -> None:
     """
     Packs a model layer for quantization based on its type and configuration.
 
@@ -114,7 +113,7 @@ def pack_layer(layer_name, model, data_type, device=None):
     set_module(model, layer_name, my_linear)
 
 
-def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
+def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs) -> torch.nn.Module:
     """
     Saves a quantized model of FP8_STATIC scheme in the llm-compressor format.
 
@@ -163,7 +162,7 @@ def save_quantized_as_static_fp(output_dir, inplace=True, **kwargs):
             for _ in executor.map(wrapper, names):
                 pass
 
-    # get llm-compressor format config
+    # Get llm-compressor format config
     check_compressed_tensors_supported()
     from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,

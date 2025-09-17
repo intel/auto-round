@@ -2539,7 +2539,7 @@ def is_wfp8afp8(ar):
         return False
 
 
-def is_static_wfp8afp8(ar_or_format):
+def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
         return "fp8_static" in ar_or_format
     if ar_or_format.act_dynamic:

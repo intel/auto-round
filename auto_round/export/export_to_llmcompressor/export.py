@@ -17,6 +17,8 @@ import os
 import torch
 
 from auto_round.export.export_to_llmcompressor.config import quantization_config
+from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
+from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
 from auto_round.logger import logger
 from auto_round.utils import (
     copy_python_files_from_model_cache,
@@ -29,9 +31,6 @@ from auto_round.utils import (
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer
-
-from .export_to_fp import save_quantized_as_fp
-from .export_to_static_fp import save_quantized_as_static_fp
 
 
 @torch.no_grad()
