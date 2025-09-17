@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .dataset import get_mllm_dataloader
-from .template import Template, get_template, TEMPLATES
-from .compressor import MLLMCompressor
-from .eval import mllm_eval, lmms_eval
+from auto_round.compressors.mllm.dataset import get_mllm_dataloader
+from auto_round.compressors.mllm.template import Template, get_template, TEMPLATES
+from auto_round.compressors.mllm.compressor import MLLMCompressor
+from auto_round.compressors.mllm.eval import mllm_eval, lmms_eval

@@ -123,8 +123,6 @@ class MLLMCompressor(BaseCompressor):
                             block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
         **kwargs: Additional keyword arguments.
-
-
     """
 
     bits: int | None

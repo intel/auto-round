@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import *
-from .mllm.compressor import MLLMCompressor
-from .config import ExtraConfig, MLLMExtraConfig
+from auto_round.compressors.base import *
+from auto_round.compressors.mllm.compressor import MLLMCompressor
+from auto_round.compressors.config import ExtraConfig, MLLMExtraConfig
