@@ -2108,7 +2108,7 @@ class BaseCompressor(object):
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
-        from .calib_dataset import get_dataloader
+        from auto_round.calib_dataset import get_dataloader
 
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
@@ -3142,7 +3142,7 @@ class BaseCompressor(object):
         serialization_dict = {}
         for key in serialization_keys:
             serialization_dict[key] = getattr(self, key)
-        from .version import __version__
+        from auto_round.version import __version__
 
         serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in serialization_dict.keys():

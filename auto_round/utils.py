@@ -1043,6 +1043,8 @@ def get_fp_layer_names(model, fp_layers):
         list: A list of layer names that match the specified FP layers or are
         subcomponents of those layers.
     """
+    if not fp_layers:
+        return []
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():

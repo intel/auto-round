@@ -247,7 +247,7 @@ def get_mllm_dataloader(
         return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
     else:
         # try to load text calibration dataset
-        from ..calib_dataset import get_dataloader
+        from auto_round.calib_dataset import get_dataloader
 
         dataloader = get_dataloader(tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:

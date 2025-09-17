@@ -438,7 +438,7 @@ class MLLMCompressor(BaseCompressor):
     def _check_quant_nontext(self, layer_config, quant_nontext_module):
         if not layer_config:
             return quant_nontext_module
-        from auto_round.mllm.utils import VISUAL_KEYS
+        from auto_round.compressors.mllm.utils import VISUAL_KEYS
 
         for layer_name in layer_config.keys():
             for vlm_key in VISUAL_KEYS:
