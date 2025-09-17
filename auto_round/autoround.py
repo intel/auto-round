@@ -26,8 +26,7 @@ from auto_round.utils import is_mllm_model
 def _clean_kwargs(kwargs: dict, model_cls: list[BaseCompressor]) -> dict:
     if MLLMCompressor not in model_cls:
         for key in ["extra_data_dir", "template"]:
-            if key in kwargs:
-                kwargs.pop(key)
+            kwargs.pop(key, None)
     return kwargs
 
 

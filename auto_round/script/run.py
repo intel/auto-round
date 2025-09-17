@@ -573,8 +573,8 @@ def tune(args):
             suffix = f"g{autoround.group_size}"
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
 
-    model, folders = autoround.quantize_and_save(export_dir, format=args.format)
-    tokenizer = autoround.tokenizer
+    model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
+    tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
