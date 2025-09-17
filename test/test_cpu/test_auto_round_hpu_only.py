@@ -10,7 +10,7 @@ def run_opt_125m_on_hpu():
 
     from auto_round import AutoRound
 
-    model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    model_name = "facebook/opt-125m"
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
@@ -55,7 +55,7 @@ def test_w4a8(data_type):
 
     from auto_round import AutoRound
 
-    model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    model_name = "facebook/opt-125m"
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype="auto",
