@@ -17,7 +17,14 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.compressors import AdamCompressor, BaseCompressor, ExtraConfig, LLMCompressor, MLLMCompressor
+from auto_round.compressors import (
+    AdamCompressor,
+    BaseCompressor,
+    ExtraConfig,
+    LLMCompressor,
+    MLLMCompressor,
+    MLLMExtraConfig,
+)
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_mllm_model
@@ -79,7 +86,7 @@ class AutoRound:
         # for adam
         enable_adam: bool = False,
         # for MLLM
-        extra_config: Union[ExtraConfig, list[ExtraConfig]] = None,
+        extra_config: Union[MLLMExtraConfig, list[MLLMExtraConfig]] = None,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -143,6 +150,8 @@ class AutoRound:
         """
         model_cls = []
 
+        if extra_config is None:
+            extra_config = []
         if isinstance(extra_config, ExtraConfig):
             extra_config = [extra_config]
         if any([config.config_type == "mllm" for config in extra_config]) or is_mllm_model(model):
@@ -178,7 +187,7 @@ class AutoRound:
 
 
 @deprecated("AutoRound")
-class AutoRoundLLM(AutoRound):
+class AutoRoundLLM(LLMCompressor):
     """Class for LLM quantization
 
     Args:
@@ -289,7 +298,7 @@ class AutoRoundLLM(AutoRound):
 
 
 @deprecated("AutoRound")
-class AutoRoundAdam(AutoRound):
+class AutoRoundAdam(AdamCompressor):
     """Class for quantization with optimizers like adamw of a PyTorch model.
 
     Args:
@@ -386,13 +395,12 @@ class AutoRoundAdam(AutoRound):
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
             optimizer=optimizer,
-            enable_adam=True,
             **kwargs,
         )
 
 
 @deprecated("AutoRound")
-class AutoRoundMLLM(AutoRound):
+class AutoRoundMLLM(MLLMCompressor):
     """Class for automatic rounding-based quantization with MLLMs.
 
     Args:
@@ -492,5 +500,5 @@ class AutoRoundMLLM(AutoRound):
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
-            mllm=True**kwargs,
+            **kwargs,
         )
