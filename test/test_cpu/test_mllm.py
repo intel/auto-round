@@ -30,7 +30,7 @@ class FakeDataLoader:
 class TestAutoRoundMLLM(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
         self.dataset = FakeDataLoader()
 
     @classmethod
@@ -142,7 +142,9 @@ class TestAutoRoundMLLM(unittest.TestCase):
             self.model_name, trust_remote_code=True, device_map="auto"
         )
         self.assertFalse(is_pure_text_model(model))
-        model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            "/tf_dataset/auto_round/models/facebook/opt-125m", trust_remote_code=True
+        )
         self.assertTrue(is_pure_text_model(model))
 
     def test_str_input(self):
@@ -212,7 +214,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
     def test_qwen2_5(self):
         from auto_round.utils import mllm_load_model
 
-        model_name = "Qwen/Qwen2.5-VL-3B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-VL-3B-Instruct"
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
         autoround = AutoRoundMLLM(
             model,

@@ -21,7 +21,7 @@ class LLMDataLoader:
 class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "facebook/opt-125m"
+        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
 
@@ -31,7 +31,14 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_gguf(self):
-        ar = AutoRound("Qwen/Qwen3-0.6B", scheme="W2A16", nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
+        ar = AutoRound(
+            "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B",
+            scheme="W2A16",
+            nsamples=1,
+            iters=1,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
         ar.quantize_and_save(self.save_folder, format="gguf:q4_k_m")
         self.assertEqual(ar.bits, 4)
         shutil.rmtree(self.save_folder, ignore_errors=True)
@@ -57,7 +64,9 @@ class TestAutoRound(unittest.TestCase):
     def test_vllm(self):
         from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM("Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar = AutoRoundMLLM(
+            "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16", nsamples=1, iters=1, seqlen=2
+        )
         self.assertEqual(ar.bits, 2)
         self.assertEqual(ar.act_bits, 16)
 

@@ -14,7 +14,7 @@ from auto_round import AutoRound
 class TestLLMC(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "stas/tiny-random-llama-2"
+        self.model_name = "/tf_dataset/auto_round/models/stas/tiny-random-llama-2"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
 
@@ -42,7 +42,7 @@ class TestLLMC(unittest.TestCase):
 
     def test_llmcompressor_fp8(self):
         ## quantize the model
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         autoround = AutoRound(
             model_name,
             scheme="FP8_STATIC",
@@ -66,7 +66,7 @@ class TestLLMC(unittest.TestCase):
 
     def test_autoround_llmcompressor_fp8(self):
         ## quantize the model
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         autoround = AutoRound(
             model_name,
             scheme="FP8_STATIC",

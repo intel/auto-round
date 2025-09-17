@@ -23,7 +23,7 @@ class LLMDataLoader:
 class TestGGUF(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+        self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
@@ -36,7 +36,7 @@ class TestGGUF(unittest.TestCase):
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model benzart/gemma-2b-it-fine-tuning-for-code-test "
+            f"cd ../.. && {python_path} -m auto_round --model /tf_dataset/auto_round/models/benzart/gemma-2b-it-fine-tuning-for-code-test "
             f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
@@ -196,7 +196,7 @@ class TestGGUF(unittest.TestCase):
     #     shutil.rmtree("./saved", ignore_errors=True)
 
     def test_gguf_baseline(self):
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -243,7 +243,7 @@ class TestGGUF(unittest.TestCase):
         # shutil.rmtree("./saved", ignore_errors=True)
 
     def test_q4_k_m(self):
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
@@ -290,7 +290,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_all_format(self):
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
         python_path = sys.executable
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
         for gguf_format in ["gguf:q4_k_m"]:
@@ -311,7 +311,7 @@ class TestGGUF(unittest.TestCase):
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
     def test_vlm_gguf(self):
-        model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
         from auto_round.mllm.autoround_mllm import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
 
