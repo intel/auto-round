@@ -25,6 +25,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -198,12 +199,8 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             for _ in executor.map(wrapper, names):
                 pass
 
-    # TODO fix the ignore re match issue, compile with fp8 & int8 config
     ignore = ["lm_head"]
-    for layer_name in layer_config:
-        if layer_config[layer_name]["bits"] > 8:  ## find ignore layers
-            ignore.append(layer_name)
-        ignore = list(set(ignore))
+    # ignore = generate_ignore_regex_list()
 
     # get llm-compressor format config
     check_compressed_tensors_supported()

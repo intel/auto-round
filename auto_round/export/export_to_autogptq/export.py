@@ -17,6 +17,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict
 
 import threadpoolctl as tctl
 
@@ -47,6 +48,12 @@ import transformers
 from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
+
+GPTQ_REQUIRED_CONFIG_KEYS = (
+    "bits",
+    "group_size",
+    "sym",
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -56,7 +63,9 @@ from auto_round.utils import (
     get_autogptq_packing_qlinear,
     get_block_names,
     get_module,
+    json_serialize,
     set_module,
+    to_standard_regex,
 )
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
@@ -65,6 +74,31 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
     "gpt_neox.layers",
     "model.layers",
 ]
+
+
+def convert_to_autogptq_dynamic(dynamic_config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Convert AutoRound-style dynamic_config into AutoGPTQ-style QuantizerConfig.dynamic.
+
+    Rules:
+    - bits < 16 -> quantize -> positive match `+:regex`
+    - bits == 16 -> skip quantize -> negative match `-:regex`
+    """
+    converted = {}
+    for name, cfg in dynamic_config.items():
+        bits = cfg.get("bits")
+        regex = to_standard_regex(name)
+
+        if bits is None:
+            continue  # ignore invalid entries
+        elif bits < 16:
+            converted[f"r'+:{regex}'"] = {"bits": bits}
+            for key in GPTQ_REQUIRED_CONFIG_KEYS:  # only save keys gptq
+                converted[f"r'+:{regex}'"][key] = dynamic_config[name][key]
+        else:
+            # skip quantization
+            converted[f"r'-:{regex}'"] = {}
+    return converted
 
 
 def pack_layer(name, model, backend, device=None):
@@ -155,7 +189,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         logger.error("auto-gptq format may not support loading this quantized model")
         quantization_config["block_name_to_quantize"] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
-
+    dynamic_config = quantization_config.pop("dynamic_config")
+    quantization_config["dynamic"] = convert_to_autogptq_dynamic(dynamic_config)
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
     for n, m in model.named_modules():
@@ -259,7 +294,7 @@ def save(
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
+            json.dump(model.config.quantization_config, f, indent=2, default=json_serialize)
 
     try:
         copy_python_files_from_model_cache(model, save_dir)
