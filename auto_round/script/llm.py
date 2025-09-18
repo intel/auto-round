@@ -42,8 +42,6 @@ from auto_round.utils import (
     set_cuda_visible_devices,
 )
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -977,13 +975,12 @@ def eval_task_by_task(
 
 def eval_with_vllm(args):
     import time
-
-    st = time.time()
-
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
+    st = time.time()
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     device_str, _ = get_device_and_parallelism(args.device)
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if (batch_size := args.eval_bs) is None:
