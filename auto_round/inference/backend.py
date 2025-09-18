@@ -124,6 +124,19 @@ def fp8_static_scheme_checker(
     return config == FP8_STATIC
 
 
+SCHEME_CHECK_ATTRS = ["bits", "group_size", "sym", "data_type", "act_bits", "act_group_size", "act_sym"]
+
+
+def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationScheme):
+    for attr in SCHEME_CHECK_ATTRS:
+        if getattr(config1, attr) != getattr(config2, attr):
+            logger.debug(
+                f"Scheme check failed on attribute {attr}: {getattr(config1, attr)} != {getattr(config2, attr)}"
+            )
+            return False
+    return True
+
+
 def mxfp8_scheme_checker(
     in_feature: int,
     out_feature: int,
@@ -131,7 +144,7 @@ def mxfp8_scheme_checker(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
-    return config == ar_schemes.MXFP8
+    return _scheme_checker_common(config, ar_schemes.MXFP8)
 
 
 def mxfp4_scheme_checker(
@@ -141,8 +154,7 @@ def mxfp4_scheme_checker(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
-    return True
-    return config == ar_schemes.MXFP8
+    return _scheme_checker_common(config, ar_schemes.MXFP4)
 
 
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
