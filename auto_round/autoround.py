@@ -30,13 +30,6 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_mllm_model
 
 
-def _clean_kwargs(kwargs: dict, model_cls: list[BaseCompressor]) -> dict:
-    if MLLMCompressor not in model_cls:
-        for key in ["extra_data_dir", "template"]:
-            kwargs.pop(key, None)
-    return kwargs
-
-
 class AutoRound:
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
 
@@ -163,7 +156,6 @@ class AutoRound:
         if enable_adam:
             model_cls.append(AdamCompressor)
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
-        kwargs = _clean_kwargs(kwargs, model_cls)
         for config in extra_config:
             kwargs.update(config.to_dict())
         ar = dynamic_compressor(
@@ -184,6 +176,55 @@ class AutoRound:
             **kwargs,
         )
         return ar
+
+    @classmethod
+    @torch.no_grad()
+    def _sampling_inputs(
+        cls,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        indices: list[int],
+        seqlen: int,
+        batch_dim: int = 0,
+        share_cache_keys: tuple = (),
+    ):
+        """Samples inputs based on the given indices and sequence length.
+
+        Args:
+        input_ids: The list of input tensor containing  input_ids.
+        input_others: A dictionary containing other input data.
+        indices: The indices to sample from the input.
+        seqlen: The sequence length.
+
+        Returns:
+        current_input_ids: The sampled input IDs.
+        current_input_others: The sampled other input data.
+        """
+        current_input_ids = [input_ids[i] for i in indices]
+
+        current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+
+        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
+        for key in input_others.keys():
+            if "positional_inputs" in key:
+                continue
+            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
+                input_others[key], (str, bool, type(None))
+            ):
+                current_input_others[key] = None
+                if input_others[key] is not None:
+                    current_input_others[key] = [input_others[key][i] for i in indices]
+                    if len(indices) == 1:
+                        current_input_others[key] = current_input_others[key][0]
+                    else:
+                        try:
+                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                        except TypeError as err:
+                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = input_others[key]
+
+        return current_input_ids, current_input_others
 
 
 @deprecated("AutoRound")

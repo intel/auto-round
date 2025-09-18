@@ -501,12 +501,30 @@ def tune(args):
             " please use enable_deterministic_algorithms instead. "
         )
 
-    from auto_round.compressors import MLLMExtraConfig
+    from auto_round.compressors import ExtraConfig, MLLMExtraConfig
+
+    ar_kwargs = ExtraConfig(
+        amp=not args.disable_amp,
+        lr=args.lr,
+        minmax_lr=args.minmax_lr,
+        fp_layers=args.fp_layers,
+        enable_quanted_input=not args.disable_quanted_input,
+        nblocks=args.nblocks,
+        scale_dtype=args.scale_dtype,
+        enable_minmax_tuning=not args.disable_minmax_tuning,
+        low_cpu_mem_usage=args.low_cpu_mem_mode,
+        enable_norm_bias_tuning=args.enable_norm_bias_tuning,
+        not_use_best_mse=args.not_use_best_mse,
+        to_quant_block_names=args.to_quant_block_names,
+        disable_opt_rtn=args.disable_opt_rtn,
+        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
+        enable_alg_ext=args.enable_alg_ext,
+    )
 
     mllm_kwargs = MLLMExtraConfig(
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
     )
-    extra_config = [mllm_kwargs]
+    extra_config = [ar_kwargs, mllm_kwargs]
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -514,38 +532,23 @@ def tune(args):
         bits=args.bits,
         group_size=args.group_size,
         sym=sym,
-        batch_size=args.batch_size,
-        dataset=args.dataset,
-        seqlen=args.seqlen,
-        nblocks=args.nblocks,
-        iters=args.iters,
-        lr=args.lr,
-        minmax_lr=args.minmax_lr,
-        enable_quanted_input=not args.disable_quanted_input,
-        amp=not args.disable_amp,
-        nsamples=args.nsamples,
-        seed=args.seed,
-        low_gpu_mem_usage=args.low_gpu_mem_usage,
-        scale_dtype=args.scale_dtype,
-        gradient_accumulate_steps=args.gradient_accumulate_steps,
-        enable_minmax_tuning=not args.disable_minmax_tuning,
+        data_type=args.data_type,
         act_bits=args.act_bits,
         act_group_size=args.act_group_size,
-        low_cpu_mem_usage=args.low_cpu_mem_mode,
-        data_type=args.data_type,
-        enable_norm_bias_tuning=args.enable_norm_bias_tuning,
-        not_use_best_mse=args.not_use_best_mse,
-        to_quant_block_names=args.to_quant_block_names,
-        enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
-        device_map=args.device_map,
-        super_group_size=args.super_group_size,
         super_bits=args.super_bits,
-        disable_opt_rtn=args.disable_opt_rtn,
-        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
-        enable_alg_ext=args.enable_alg_ext,
-        fp_layers=args.fp_layers,
+        super_group_size=args.super_group_size,
+        dataset=args.dataset,
+        iters=args.iters,
+        seqlen=args.seqlen,
+        nsamples=args.nsamples,
+        batch_size=args.batch_size,
+        gradient_accumulate_steps=args.gradient_accumulate_steps,
+        low_gpu_mem_usage=args.low_gpu_mem_usage,
+        device_map=args.device_map,
+        enable_torch_compile=enable_torch_compile,
+        seed=args.seed,
         enable_adam=args.adam,
         extra_config=extra_config,
     )
