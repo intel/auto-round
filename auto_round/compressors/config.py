@@ -44,7 +44,6 @@ class ExtraConfig:
         nblocks: int = 1,
         quant_lm_head: bool = False,
         to_quant_block_names: Union[str, list, None] = None,
-        low_cpu_mem_usage: bool = False,
         scale_dtype: str = "fp16",
         # scheme
         bits: int = None,
@@ -84,7 +83,6 @@ class ExtraConfig:
             nblocks (int): Number of blocks (default is 1).
             quant_lm_head (bool): Whether to quant lm_head.
             to_quant_block_names (str|list):  Names of quantitative blocks, please use commas to separate them.
-            low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
             scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
             bits (int, optional): Weight quantization bits. Defaults to 4.
             group_size (int, optional): Weight quantization group size. Defaults to 128.
@@ -120,7 +118,6 @@ class ExtraConfig:
             nblocks=nblocks,
             quant_lm_head=quant_lm_head,
             to_quant_block_names=to_quant_block_names,
-            low_cpu_mem_usage=low_cpu_mem_usage,
             scale_dtype=scale_dtype,
         )
         self.scheme_config = SchemeExtraConfig(
@@ -238,7 +235,6 @@ class TuningExtraConfig(BaseExtraConfig):
     quant_lm_head: bool = False
     to_quant_block_names: Union[str, list, None] = None
     scale_dtype: str = "fp16"
-    low_cpu_mem_usage: bool = False
 
 
 @dataclass

@@ -521,7 +521,6 @@ def tune(args):
         to_quant_block_names=args.to_quant_block_names,
         disable_opt_rtn=args.disable_opt_rtn,
         enable_alg_ext=args.enable_alg_ext,
-        low_cpu_mem_usage=args.low_cpu_mem_mode,
         scale_dtype=args.scale_dtype,
     )
     scheme_config = SchemeExtraConfig(
