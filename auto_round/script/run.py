@@ -504,16 +504,11 @@ def tune(args):
     from auto_round.compressors import (
         ExtraConfig,
         MLLMExtraConfig,
-        ModelExtraConfig,
         SchemeExtraConfig,
         TuningExtraConfig,
     )
 
     extra_config = ExtraConfig()
-    model_config = ModelExtraConfig(
-        low_cpu_mem_usage=args.low_cpu_mem_mode,
-        scale_dtype=args.scale_dtype,
-    )
     tuning_config = TuningExtraConfig(
         amp=not args.disable_amp,
         lr=args.lr,
@@ -522,9 +517,12 @@ def tune(args):
         nblocks=args.nblocks,
         enable_minmax_tuning=not args.disable_minmax_tuning,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
+        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         to_quant_block_names=args.to_quant_block_names,
         disable_opt_rtn=args.disable_opt_rtn,
         enable_alg_ext=args.enable_alg_ext,
+        low_cpu_mem_usage=args.low_cpu_mem_mode,
+        scale_dtype=args.scale_dtype,
     )
     scheme_config = SchemeExtraConfig(
         bits=args.bits,
@@ -541,7 +539,6 @@ def tune(args):
     mllm_config = MLLMExtraConfig(
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
     )
-    extra_config.model_config = model_config
     extra_config.tuning_config = tuning_config
     extra_config.scheme_config = scheme_config
     extra_config.mllm_config = mllm_config
@@ -559,9 +556,8 @@ def tune(args):
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,
-        # enable_deterministic_algorithms=args.enable_deterministic_algorithms,
-        # fp_layers=args.fp_layers,
-        # not_use_best_mse=args.not_use_best_mse,
+        fp_layers=args.fp_layers,
+        not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
     )

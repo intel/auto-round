@@ -29,11 +29,6 @@ class ExtraConfig:
 
     def __init__(
         self,
-        # model
-        low_cpu_mem_usage: bool = False,
-        mllm: bool = False,
-        scale_dtype: str = "fp16",
-        static_kv_dtype: Union[str, torch.dtype] = None,
         # tuning
         amp: bool = True,
         disable_opt_rtn: bool = True,
@@ -41,6 +36,7 @@ class ExtraConfig:
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
         enable_quanted_input: bool = True,
+        enable_deterministic_algorithms: bool = False,
         lr: float = None,
         lr_scheduler: Callable = None,
         minmax_lr: float = None,
@@ -48,6 +44,8 @@ class ExtraConfig:
         nblocks: int = 1,
         quant_lm_head: bool = False,
         to_quant_block_names: Union[str, list, None] = None,
+        low_cpu_mem_usage: bool = False,
+        scale_dtype: str = "fp16",
         # scheme
         bits: int = None,
         group_size: int = None,
@@ -60,6 +58,7 @@ class ExtraConfig:
         act_dynamic: bool = None,
         super_bits: int = None,
         super_group_size: int = None,
+        static_kv_dtype: Union[str, torch.dtype] = None,
         # mllm
         processor: Callable = None,
         image_processor: Callable = None,
@@ -70,30 +69,42 @@ class ExtraConfig:
         """Initialize
 
         Args:
-            amp (bool, optional): Use AMP for tuning. Defaults to True.
-            disable_deterministic_algorithms (bool): deprecated, default not use deterministic_algorithms.
+            amp (bool): Whether to use automatic mixed precision (default is True).
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
-            enable_deterministic_algorithms (bool, optional): whether to use deterministic_algorithms.
             enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
             enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning.
             enable_quanted_input (bool): Whether to use quantized input data (default is True).
-            fp_layers (str): list of Layer names to maintain original data type.
-            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
+            enable_deterministic_algorithms (bool): Whether to use deterministic_algorithms.
+            lr (float): The learning rate (default is 0.005).
             lr_scheduler: The learning rate scheduler to be used.
-            low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
             minmax_lr (float): The learning rate for min-max tuning (default is None).
-            mllm (bool, optional): Whether to use multi-model mode.
-            mem_per_param_scale (int): Scale factor for memory per parameter, used to adjust memory usage estimation for tuning.
+            mem_per_param_scale (int): Scale factor for memory per parameter,
+                used to adjust memory usage estimation for tuning.
             nblocks (int): Number of blocks (default is 1).
             quant_lm_head (bool): Whether to quant lm_head.
-            scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-            static_kv_dtype (str): The data type of kv-cache to be used.
             to_quant_block_names (str|list):  Names of quantitative blocks, please use commas to separate them.
+            low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
+            scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
+            bits (int, optional): Weight quantization bits. Defaults to 4.
+            group_size (int, optional): Weight quantization group size. Defaults to 128.
+            sym (bool, optional): Symmetric weight quantization. Defaults to True.
+            data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
+            act_bits (int, optional): Activation quantization bits. Defaults to 16.
+            act_group_size (int, optional): Activation group size. Defaults to None.
+            act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
+            act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
+            act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
+            super_bits (int): number of scale and mins quant bits for double quant.
+            super_group_size (int): the number of super group size when use double quant.
+            static_kv_dtype (str): The data type of kv-cache to be used.
+            processor: Any multi-modal model will require an object to encode or
+                decode the data that groups several modalities (among text, vision and audio).
+            image_processor: Image processor for special model like llava.
+            quant_nontext_module: Whether to quantize nontext module.
+            extra_data_dir: The path of extra data such as images, audio and videos.
+            template: The path or name of template used to specify process for different MLLMs.
         """
-        self.model_config = ModelExtraConfig(
-            mllm=mllm, low_cpu_mem_usage=low_cpu_mem_usage, scale_dtype=scale_dtype, static_kv_dtype=static_kv_dtype
-        )
         self.tuning_config = TuningExtraConfig(
             amp=amp,
             disable_opt_rtn=disable_opt_rtn,
@@ -101,6 +112,7 @@ class ExtraConfig:
             enable_minmax_tuning=enable_minmax_tuning,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_quanted_input=enable_quanted_input,
+            enable_deterministic_algorithms=enable_deterministic_algorithms,
             lr=lr,
             lr_scheduler=lr_scheduler,
             minmax_lr=minmax_lr,
@@ -108,6 +120,8 @@ class ExtraConfig:
             nblocks=nblocks,
             quant_lm_head=quant_lm_head,
             to_quant_block_names=to_quant_block_names,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            scale_dtype=scale_dtype,
         )
         self.scheme_config = SchemeExtraConfig(
             bits=bits,
@@ -121,6 +135,7 @@ class ExtraConfig:
             act_dynamic=act_dynamic,
             super_bits=super_bits,
             super_group_size=super_group_size,
+            static_kv_dtype=static_kv_dtype,
         )
         self.mllm_config = MLLMExtraConfig(
             processor=processor,
@@ -129,17 +144,6 @@ class ExtraConfig:
             extra_data_dir=extra_data_dir,
             template=template,
         )
-
-    @property
-    def model_config(self):
-        return self._model_config
-
-    @model_config.setter
-    def model_config(self, config: ModelExtraConfig):
-        assert isinstance(
-            config, ModelExtraConfig
-        ), f"model_config should be ModelExtraConfig, but got {config.__class__.__name__}"
-        self._model_config = config
 
     @property
     def tuning_config(self):
@@ -169,15 +173,19 @@ class ExtraConfig:
 
     @mllm_config.setter
     def mllm_config(self, config: MLLMExtraConfig):
-        assert isinstance(
-            config, MLLMExtraConfig
-        ), f"mllm_config should be MLLMExtraConfig, but got {config.__class__.__name__}"
-        self._mllm_config = config
+        if config is None:
+            self._mllm_config = None
+        else:
+            assert isinstance(
+                config, MLLMExtraConfig
+            ), f"mllm_config should be MLLMExtraConfig, but got {config.__class__.__name__}"
+            self._mllm_config = config
 
     def to_dict(self):
         output_dict = {}
         for config in self.__dict__.values():
-            output_dict.update(config.to_dict())
+            if config:
+                output_dict.update(config.to_dict())
         return output_dict
 
 
@@ -185,7 +193,7 @@ class ExtraConfig:
 class BaseExtraConfig:
 
     @classmethod
-    def get_attributes(cls: "ModelExtraConfig") -> list[str]:
+    def get_attributes(cls: "BaseExtraConfig") -> list[str]:
         return [field.name for field in fields(cls)]
 
     def __getitem__(self, key: str):
@@ -204,13 +212,13 @@ class BaseExtraConfig:
     def to_dict(self):
         return self.__dict__
 
-
-@dataclass
-class ModelExtraConfig(BaseExtraConfig):
-    low_cpu_mem_usage: bool = False
-    mllm: bool = False
-    scale_dtype: str = "fp16"
-    static_kv_dtype: Union[str, torch.dtype] = None
+    def is_default(self):
+        for field in fields(self):
+            default_value = field.default
+            current_value = getattr(self, field.name)
+            if current_value != default_value:
+                return False
+        return True
 
 
 @dataclass
@@ -221,6 +229,7 @@ class TuningExtraConfig(BaseExtraConfig):
     enable_minmax_tuning: bool = True
     enable_norm_bias_tuning: bool = False
     enable_quanted_input: bool = True
+    enable_deterministic_algorithms: bool = False
     lr: float = None
     lr_scheduler: Callable = None
     minmax_lr: float = None
@@ -228,6 +237,8 @@ class TuningExtraConfig(BaseExtraConfig):
     nblocks: int = 1
     quant_lm_head: bool = False
     to_quant_block_names: Union[str, list, None] = None
+    scale_dtype: str = "fp16"
+    low_cpu_mem_usage: bool = False
 
 
 @dataclass
@@ -243,6 +254,7 @@ class SchemeExtraConfig(BaseExtraConfig):
     act_dynamic: bool = None
     super_bits: int = None
     super_group_size: int = None
+    static_kv_dtype: Union[str, torch.dtype] = None
 
 
 @dataclass

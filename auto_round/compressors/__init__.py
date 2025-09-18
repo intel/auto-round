@@ -17,7 +17,6 @@ from auto_round.compressors.mllm.compressor import MLLMCompressor
 from auto_round.compressors.config import (
     ExtraConfig,
     MLLMExtraConfig,
-    ModelExtraConfig,
     SchemeExtraConfig,
     TuningExtraConfig,
 )
