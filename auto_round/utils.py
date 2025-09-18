@@ -2730,3 +2730,48 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
                 return True
 
     return False
+
+
+def get_avg_bits(module, with_lm_head=False):
+    """
+    Calculates the average number of bits per weight element for supported layers in a given module.
+
+    Iterates through all named modules in the module, accumulating the total number of weight elements
+    and the corresponding bit usage, including additional scale bits for specific data types.
+
+    Args:
+        module: A neural network module containing layers to be analyzed.
+
+    Returns:
+        float: The average number of bits per weight element across all supported layers.
+
+    Note:
+        - Only layers of types specified in SUPPORTED_LAYER_TYPES are considered.
+        - For certain data types ("fp4_v2", "nv_fp4", "mx_fp4", "mx_fp8"), scale bits are added.
+        - For "fp4_v2" and "nv_fp4", an additional 32 global scale bits are included.
+    """
+    all_numel = 0
+    all_bits = 0
+
+    lm_head_name = get_lm_head_name(module)
+    if lm_head_name is None:
+        with_lm_head = False
+    for n, m in module.named_modules():
+        if n == lm_head_name and not with_lm_head:
+            continue
+        if isinstance(m, SUPPORTED_LAYER_TYPES):
+            m_numel = m.weight.numel()
+            all_numel += m_numel
+            w_bits = m.bits * m_numel
+            all_bits += w_bits
+            if m.data_type in ("fp4_v2", "nv_fp", "mx_fp", "nv_fp4", "mx_fp4", "mx_fp8"):
+                scale_bits = 8 * (m_numel // m.group_size)
+                if m.data_type in ("fp4_v2", "nv_fp"):
+                    scale_bits += 32  # global scale bits
+                all_bits += scale_bits
+            else: # woq
+                scale_bits = 16 * (m_numel // m.group_size)
+                all_bits += scale_bits
+
+    avg_bits = all_bits / all_numel if all_numel > 0 else 0
+    return round(avg_bits, 6)
