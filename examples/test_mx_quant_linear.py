@@ -1,5 +1,6 @@
 import torch
 
+from auto_round import schemes as ar_schemes
 from auto_round.experimental.qmodules.mx import MXQuantLinear
 
 
@@ -16,7 +17,7 @@ def test_mxquantlinear_from_original_and_forward():
     original_layer.bias.data = torch.randn((out_features,), dtype=torch.float32)
 
     # Create an MXQuantLinear layer from the original layer
-    mx_layer = MXQuantLinear.from_original(None, original_layer)
+    mx_layer = MXQuantLinear.from_original(config=ar_schemes.MXFP8, original_layer=original_layer)
 
     # Ensure the weights and bias are correctly transferred
     assert mx_layer.in_features == original_layer.in_features

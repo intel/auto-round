@@ -13,27 +13,28 @@
 # limitations under the License.
 
 
+from functools import partial
 from typing import Optional, Union
 
 import torch
 
+from auto_round.data_type.mxfp import QUANT_FUNC_WITH_DTYPE
 from auto_round.experimental.qmodules.base import QModuleBase
-from auto_round.utils import logger
+from auto_round.logger import logger
+from auto_round.schemes import MXFP8 as MXFP8Scheme
+from auto_round.schemes import QuantizationScheme
 
 __all__ = ["MXQuantLinear"]
 
 SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
 
 
-def _mx_qdq(tensor: torch.Tensor):
-    # FIXME: (Yi) handle difference roudning method
-    from auto_round.data_type.mxfp import quant_mx
-
-    qdq_tesnor, _, _ = quant_mx(
-        tensor=tensor,
-        bits=4,
-        group_size=32,
-    )
+def _mx_qdq(tensor: torch.Tensor, config: QuantizationScheme):
+    assert (
+        config.act_data_type in QUANT_FUNC_WITH_DTYPE
+    ), f"Expected act_data_type to be one of {list(QUANT_FUNC_WITH_DTYPE.keys())}, but got {config.act_data_type}."
+    qdq_func = QUANT_FUNC_WITH_DTYPE[config.act_data_type]
+    qdq_tesnor, _, _ = qdq_func(tensor=tensor, bits=config.act_bits, group_size=config.act_group_size)
     return qdq_tesnor
 
 
@@ -63,6 +64,7 @@ class MXQuantLinear(QModuleBase):
         self,
         in_features,
         out_features,
+        config: QuantizationScheme,
         weight: Optional[torch.Tensor] = None,
         weight_scale: Optional[torch.Tensor] = None,
         bias: Union[torch.Tensor, bool, None] = None,
@@ -93,7 +95,7 @@ class MXQuantLinear(QModuleBase):
             else weight_scale
         )
         self.register_buffer("weight_scale", init_weight_scale)
-
+        self.config = config
         self.pre_dequantized = False
 
     @classmethod
@@ -109,7 +111,7 @@ class MXQuantLinear(QModuleBase):
         pass
 
     @classmethod
-    def from_original(cls, config, original_layer):
+    def from_original(cls, config: Optional[QuantizationScheme], original_layer: torch.nn.Linear):
         """
         Create an `MXQuantLinear` layer from an original linear layer.
         """
@@ -119,6 +121,7 @@ class MXQuantLinear(QModuleBase):
             qdq_linear = cls(
                 in_features=original_layer.in_features,
                 out_features=original_layer.out_features,
+                config=config,
                 bias=original_layer.bias,
                 dtype=original_layer.weight.dtype,
             )
@@ -128,21 +131,30 @@ class MXQuantLinear(QModuleBase):
     def _get_float_scale(cls, scale_e8m0: torch.Tensor) -> torch.Tensor:
         return get_fp_scale(scale_e8m0)
 
-    def _dequant_mxfp_tensor(self, tensor_packed: torch.Tensor, tensor_scale: torch.Tensor):
-        tensor_scale_float = self._get_float_scale(tensor_scale).to(self.dtype)
-        tensor_packed = tensor_packed.to(self.dtype)
-        original_shape = tensor_packed.shape
-        tensor_packed = tensor_packed.reshape(-1, self.group_size)
-        tensor_scale_float = tensor_scale_float.reshape(-1, 1)
-        tensor_float = tensor_packed.to(self.dtype)
-        tensor_dequant = tensor_float * tensor_scale_float
-        tensor_dequant = tensor_dequant.reshape(original_shape)
-        return tensor_dequant
+    def unpack_data(self, packed_data: torch.Tensor):
+        if self.config.bits == 8:
+            return packed_data
+        else:
+            # TODO unpack the data
+            raise NotImplementedError("Only 8 bits data is supported for now.")
+
+    def dequant_mx_tensor(
+        self, packed_data: torch.Tensor, scale: torch.Tensor, target_dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        scale_float = self._get_float_scale(scale).to(target_dtype)
+        unpacked_data = self.unpack_data(packed_data)
+        original_shape = unpacked_data.shape
+        unpacked_data = unpacked_data.reshape(-1, self.group_size)
+        scale_float = scale_float.reshape(-1, 1)
+        data_float = unpacked_data.to(target_dtype)
+        data_dequant = data_float * scale_float
+        data_dequant = data_dequant.reshape(original_shape)
+        return data_dequant
 
     def dequant_weight_online(self):
         if self.pre_dequantized:
             return self.weight
-        dq_weight = self._dequant_mxfp_tensor(self.weight, self.weight_scale)
+        dq_weight = self.dequant_mx_tensor(self.weight, self.weight_scale)
         return dq_weight
 
     def pre_dequantize(self):
@@ -155,11 +167,11 @@ class MXQuantLinear(QModuleBase):
         self.pre_dequantized = True
 
     def qdq_input(self, activation: torch.Tensor):
-        return _mx_qdq(activation)
+        return _mx_qdq(activation, self.config)
 
     @torch.no_grad()
-    def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
-        qdq_input = self.qdq_input(bf16_input)
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        qdq_input = self.qdq_input(input)
         qdq_weight = self.dequant_weight_online()
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
         return out
