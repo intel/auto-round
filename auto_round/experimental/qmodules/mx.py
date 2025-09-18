@@ -13,52 +13,44 @@
 # limitations under the License.
 
 
-from functools import partial
 from typing import Optional, Union
 
 import torch
 
+from auto_round.data_type.fp4_utils import unpack_fp4_from_uint8
 from auto_round.data_type.mxfp import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.logger import logger
-from auto_round.schemes import MXFP8 as MXFP8Scheme
 from auto_round.schemes import QuantizationScheme
 
 __all__ = ["MXQuantLinear"]
 
 SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
+E8M0_EXPONENT_BIAS = 127
 
 
 def _mx_qdq(tensor: torch.Tensor, config: QuantizationScheme):
-    assert (
-        config.act_data_type in QUANT_FUNC_WITH_DTYPE
-    ), f"Expected act_data_type to be one of {list(QUANT_FUNC_WITH_DTYPE.keys())}, but got {config.act_data_type}."
-    qdq_func = QUANT_FUNC_WITH_DTYPE[config.act_data_type]
-    qdq_tesnor, _, _ = qdq_func(tensor=tensor, bits=config.act_bits, group_size=config.act_group_size)
+    qdq_func, _ = get_quant_func(dtype=config.act_data_type, bits=config.act_bits, sym=True)
+    qdq_tesnor, shared_exp, _ = qdq_func(tensor=tensor, bits=config.act_bits, group_size=config.act_group_size)
     return qdq_tesnor
-
-
-E8M0_EXPONENT_BIAS = 127
 
 
 # https://github.com/pytorch/ao/blob/994a4ba6c869854fcaa6ca7e118fcbd75e6c28cc/torchao/prototype/mx_formats/mx_tensor.py#L337
 def get_fp_scale(scale_e8m0):
     scale_e8m0 = scale_e8m0.view(torch.uint8)
     s_offset = scale_e8m0.to(torch.int16) - E8M0_EXPONENT_BIAS
-    # TODO(later): it would be nice if there was a way to do the 2^x operation
-    # in PyTorch without creating a tensor of twos
     two = torch.full(s_offset.size(), 2.0, device=scale_e8m0.device)
-    # pow(two, s_offset) can be out of range of floating point formats.
     # TODO(later): handle this for float16 if we decide to support float16
-    # scales.
     s_fp = torch.pow(two, s_offset)
 
     return s_fp
 
 
 class MXQuantLinear(QModuleBase):
-    hp_dtype = torch.bfloat16
-    fp8_dtype = torch.float8_e4m3fn
+    """
+    Quantized linear layer using MXFP8/MXFP4 quantization scheme.
+    """
 
     def __init__(
         self,
@@ -74,7 +66,13 @@ class MXQuantLinear(QModuleBase):
         self.in_features = in_features
         self.out_features = out_features
         self.group_size = 32
-        init_weight = torch.zeros((out_features, in_features), dtype=torch.float8_e4m3fn) if weight is None else weight
+        if config.act_bits == 4:
+            weight_dtype = torch.uint8
+            weight_in_features = in_features // 2
+        else:
+            weight_dtype = torch.float8_e4m3fn
+            weight_in_features = in_features
+        init_weight = torch.zeros((out_features, weight_in_features), dtype=weight_dtype) if weight is None else weight
         self.weight = torch.nn.Parameter(init_weight, requires_grad=False)
         assert (
             dtype in SUPPORTED_HIGHER_DTYPE
@@ -86,8 +84,6 @@ class MXQuantLinear(QModuleBase):
             self.bias = torch.nn.Parameter(bias, requires_grad=False)
         else:
             self.register_parameter("bias", None)
-        # weight: [out_features, in_features]
-        # weight_scale: [out_features, in_features//32]
         # FIXME: Yi handle the padding case
         init_weight_scale = (
             torch.empty((out_features, in_features // self.group_size), dtype=torch.uint8)
@@ -115,7 +111,7 @@ class MXQuantLinear(QModuleBase):
         """
         Create an `MXQuantLinear` layer from an original linear layer.
         """
-        logger.warning_once("MXFP8 quantization is still in experimental stage, the inference speed might be slow.")
+        logger.warning_once("MXFP quantization is still in experimental stage, the inference speed might be slow.")
         device = original_layer.weight.device
         with torch.device(device):
             qdq_linear = cls(
@@ -132,11 +128,16 @@ class MXQuantLinear(QModuleBase):
         return get_fp_scale(scale_e8m0)
 
     def unpack_data(self, packed_data: torch.Tensor):
+        # For MXFP8
         if self.config.bits == 8:
-            return packed_data
+            return packed_data.to(self.dtype)
+        elif self.config.bits == 4:
+            # For MXFP4
+            m, half_n = packed_data.shape
+            unpacked_data = unpack_fp4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
+            return unpacked_data
         else:
-            # TODO unpack the data
-            raise NotImplementedError("Only 8 bits data is supported for now.")
+            raise NotImplementedError("Only 4 and 8 bits are supported for MXFP.")
 
     def dequant_mx_tensor(
         self, packed_data: torch.Tensor, scale: torch.Tensor, target_dtype: torch.dtype = torch.float32
@@ -169,7 +170,7 @@ class MXQuantLinear(QModuleBase):
     def qdq_input(self, activation: torch.Tensor):
         return _mx_qdq(activation, self.config)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         qdq_input = self.qdq_input(input)
         qdq_weight = self.dequant_weight_online()
