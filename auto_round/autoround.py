@@ -23,7 +23,6 @@ from auto_round.compressors import (
     ExtraConfig,
     LLMCompressor,
     MLLMCompressor,
-    MLLMExtraConfig,
 )
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
@@ -79,7 +78,7 @@ class AutoRound:
         # for adam
         enable_adam: bool = False,
         # for MLLM
-        extra_config: Union[MLLMExtraConfig, list[MLLMExtraConfig]] = None,
+        extra_config: ExtraConfig = None,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -143,11 +142,7 @@ class AutoRound:
         """
         model_cls = []
 
-        if extra_config is None:
-            extra_config = []
-        if isinstance(extra_config, ExtraConfig):
-            extra_config = [extra_config]
-        if any([config.config_type == "mllm" for config in extra_config]) or is_mllm_model(model):
+        if (extra_config and extra_config.model_config.mllm) is True or is_mllm_model(model):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
         else:
@@ -156,8 +151,8 @@ class AutoRound:
         if enable_adam:
             model_cls.append(AdamCompressor)
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
-        for config in extra_config:
-            kwargs.update(config.to_dict())
+        if extra_config:
+            kwargs.update(extra_config.to_dict())
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,

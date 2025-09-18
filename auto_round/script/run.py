@@ -501,34 +501,32 @@ def tune(args):
             " please use enable_deterministic_algorithms instead. "
         )
 
-    from auto_round.compressors import ExtraConfig, MLLMExtraConfig
+    from auto_round.compressors import (
+        ExtraConfig,
+        MLLMExtraConfig,
+        ModelExtraConfig,
+        SchemeExtraConfig,
+        TuningExtraConfig,
+    )
 
-    ar_kwargs = ExtraConfig(
+    extra_config = ExtraConfig()
+    model_config = ModelExtraConfig(
+        low_cpu_mem_usage=args.low_cpu_mem_mode,
+        scale_dtype=args.scale_dtype,
+    )
+    tuning_config = TuningExtraConfig(
         amp=not args.disable_amp,
         lr=args.lr,
         minmax_lr=args.minmax_lr,
-        fp_layers=args.fp_layers,
         enable_quanted_input=not args.disable_quanted_input,
         nblocks=args.nblocks,
-        scale_dtype=args.scale_dtype,
         enable_minmax_tuning=not args.disable_minmax_tuning,
-        low_cpu_mem_usage=args.low_cpu_mem_mode,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
-        not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names,
         disable_opt_rtn=args.disable_opt_rtn,
-        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         enable_alg_ext=args.enable_alg_ext,
     )
-
-    mllm_kwargs = MLLMExtraConfig(
-        quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
-    )
-    extra_config = [ar_kwargs, mllm_kwargs]
-
-    autoround: BaseCompressor = AutoRound(
-        model=model_name,
-        scheme=scheme,
+    scheme_config = SchemeExtraConfig(
         bits=args.bits,
         group_size=args.group_size,
         sym=sym,
@@ -539,6 +537,18 @@ def tune(args):
         act_dynamic=act_dynamic,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
+    )
+    mllm_config = MLLMExtraConfig(
+        quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
+    )
+    extra_config.model_config = model_config
+    extra_config.tuning_config = tuning_config
+    extra_config.scheme_config = scheme_config
+    extra_config.mllm_config = mllm_config
+
+    autoround: BaseCompressor = AutoRound(
+        model=model_name,
+        scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,
         seqlen=args.seqlen,
@@ -549,6 +559,9 @@ def tune(args):
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,
+        # enable_deterministic_algorithms=args.enable_deterministic_algorithms,
+        # fp_layers=args.fp_layers,
+        # not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
     )

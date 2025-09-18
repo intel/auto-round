@@ -14,4 +14,10 @@
 
 from auto_round.compressors.base import *
 from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.config import ExtraConfig, MLLMExtraConfig
+from auto_round.compressors.config import (
+    ExtraConfig,
+    MLLMExtraConfig,
+    ModelExtraConfig,
+    SchemeExtraConfig,
+    TuningExtraConfig,
+)
