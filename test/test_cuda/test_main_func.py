@@ -121,7 +121,7 @@ class TestMainFunc(unittest.TestCase):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        autoround = AutoRoundAdam(model, tokenizer, bits=4, group_size=128)
+        autoround = AutoRoundAdam(model, tokenizer, bits=4, group_size=128, iters=2, nsamples=2)
         autoround.quantize()
 
         ##test auto_round format

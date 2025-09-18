@@ -48,6 +48,8 @@ class AutoRoundFormat(str, Enum):
     # Weight: FP8, per-channel, may be extended to per-tensor in future
     # Activation: FP8, per-tensor
     FP8_STATIC = "fp8_static"
+    MXFP8 = "mxfp8"
+    MXFP4 = "mxfp4"
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
