@@ -91,10 +91,11 @@ class QuantLinear(nn.Module):
 
         weight_name = "weight" if self.bits == 8 and self.is_mx else "weight_packed"
         weight_infeatures = infeatures if self.bits == 8 else infeatures // 2
+        weight_dtype = torch.float8_e4m3fn if self.bits == 8 else torch.uint8
         ## TODO check the dtype of weight_packed and weight_scale
         self.register_buffer(
             weight_name,
-            torch.zeros((outfeatures, weight_infeatures), dtype=torch.int32),
+            torch.zeros((outfeatures, weight_infeatures), weight_dtype),
         )
         self.register_buffer(
             "weight_scale",
