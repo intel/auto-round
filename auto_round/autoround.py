@@ -146,7 +146,8 @@ class AutoRound:
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
         else:
-            extra_config.mllm_config = None
+            if extra_config:
+                extra_config.mllm_config = None
             model_cls.append(LLMCompressor)
 
         if enable_adam:

@@ -2690,7 +2690,7 @@ def copy_python_files_from_model_cache(model, save_path: str):
                 shutil.copy(full_file_name, save_path)
 
 
-def is_mllm_model(model_or_path):
+def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
     MM_KEYS = [
         "multi_modal_projector",
         "vision_tower",

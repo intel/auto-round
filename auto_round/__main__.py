@@ -15,11 +15,11 @@ import sys
 
 
 def run_eval():
-    from auto_round.script.run import setup_eval_parser
+    from auto_round.main import setup_eval_parser
 
     args = setup_eval_parser()
     if args.eval_task_by_task:
-        from auto_round.script.run import eval_task_by_task
+        from auto_round.main import eval_task_by_task
 
         eval_task_by_task(
             model=args.model,
@@ -30,7 +30,7 @@ def run_eval():
             eval_model_dtype=args.eval_model_dtype,
         )
     else:
-        from auto_round.script.run import eval
+        from auto_round.main import eval
 
         eval(args)
 
@@ -40,7 +40,7 @@ def run():
         sys.argv.remove("--eval")
         run_eval()
     else:
-        from auto_round.script.run import setup_parser, tune
+        from auto_round.main import setup_parser, tune
 
         args = setup_parser()
         tune(args)
@@ -52,21 +52,21 @@ def run_mllm():
 
 
 def run_best():
-    from auto_round.script.run import setup_best_parser, tune
+    from auto_round.main import setup_best_parser, tune
 
     args = setup_best_parser()
     tune(args)
 
 
 def run_light():
-    from auto_round.script.run import setup_light_parser, tune
+    from auto_round.main import setup_light_parser, tune
 
     args = setup_light_parser()
     tune(args)
 
 
 def run_fast():
-    from auto_round.script.run import setup_fast_parser, tune
+    from auto_round.main import setup_fast_parser, tune
 
     args = setup_fast_parser()
     tune(args)
