@@ -56,32 +56,29 @@ def test_e2e_quant_and_infer(scheme):
         autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
 
         # Perform inference with the quantized model
-        with torch.no_grad():
-            model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path,
-                torch_dtype="auto",
-                # low_cpu_mem_usage=True,
-                trust_remote_code=True,
-            )
-            model.eval()
-            assert has_module(
-                model, QMODULE_MAPPING[scheme]
-            ), f"Expected {QMODULE_MAPPING[scheme].__name__} in the model."
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            torch_dtype="auto",
+            # low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
+        model.eval()
+        assert has_module(model, QMODULE_MAPPING[scheme]), f"Expected {QMODULE_MAPPING[scheme].__name__} in the model."
 
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-            prompt = "Ai is "
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        prompt = "Ai is "
 
-            # Tokenize the input prompt
-            encode = tokenizer.encode(prompt, return_tensors="pt")
+        # Tokenize the input prompt
+        encode = tokenizer.encode(prompt, return_tensors="pt")
 
-            # Generate output tokens
-            output_tokens = model.generate(
-                encode,
-                max_length=30,
-            )
-            output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+        # Generate output tokens
+        output_tokens = model.generate(
+            encode,
+            max_length=30,
+        )
+        output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
 
-            # Print and validate the output
-            print(f"Prompt: {prompt}")
-            print(f"Output: {output}")
-            assert output is not None, "Output should not be None"
+        # Print and validate the output
+        print(f"Prompt: {prompt}")
+        print(f"Output: {output}")
+        assert output is not None, "Output should not be None"
