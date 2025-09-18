@@ -131,6 +131,16 @@ def mxfp8_scheme_checker(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
+    return config == ar_schemes.MXFP8
+
+
+def mxfp4_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
     return True
     return config == ar_schemes.MXFP8
 
@@ -230,8 +240,7 @@ BackendInfos["auto_round:mxfp8"] = BackendInfo(
     priority=0,
     checkers=[mxfp8_scheme_checker],
     alias=["auto_round:llm_compressor"],
-    # FIXME: update to auto-round>0.7.0
-    requirements=["auto-round>=0.7.0"],
+    requirements=["auto-round>0.7.0"],
 )
 
 # MXFP4
@@ -243,10 +252,9 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
     priority=0,
-    checkers=[mxfp8_scheme_checker],
+    checkers=[mxfp4_scheme_checker],
     alias=["auto_round:llm_compressor"],
-    # FIXME: update to auto-round>0.7.0
-    requirements=["auto-round>=0.7.0"],
+    requirements=["auto-round>0.7.0"],
 )
 
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
