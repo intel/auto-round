@@ -975,6 +975,7 @@ def eval_task_by_task(
 
 def eval_with_vllm(args):
     import time
+
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
     from lm_eval.utils import make_table  # pylint: disable=E0401
