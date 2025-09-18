@@ -232,10 +232,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         ## ======================= eval =======================
         self.add_argument(
-            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning"
-        )
-
-        self.add_argument(
             "--tasks",
             "--task",
             nargs="?",
