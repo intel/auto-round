@@ -18,7 +18,6 @@ from typing import Optional, Union
 import torch
 
 from auto_round.data_type.fp4_utils import unpack_fp4_from_uint8
-from auto_round.data_type.mxfp import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.logger import logger
@@ -32,8 +31,8 @@ E8M0_EXPONENT_BIAS = 127
 
 def _mx_qdq(tensor: torch.Tensor, config: QuantizationScheme):
     qdq_func, _ = get_quant_func(dtype=config.act_data_type, bits=config.act_bits, sym=True)
-    qdq_tesnor, shared_exp, _ = qdq_func(tensor=tensor, bits=config.act_bits, group_size=config.act_group_size)
-    return qdq_tesnor
+    qdq_tensor, shared_exp, _ = qdq_func(tensor=tensor, bits=config.act_bits, group_size=config.act_group_size)
+    return qdq_tensor
 
 
 # https://github.com/pytorch/ao/blob/994a4ba6c869854fcaa6ca7e118fcbd75e6c28cc/torchao/prototype/mx_formats/mx_tensor.py#L337
@@ -132,7 +131,7 @@ class MXQuantLinearBase(QModuleBase):
         if self.pre_dequantized:
             return
         dequant_weight = self.dequant_weight_online()
-        del self.weight
+        delattr(self, self.weight_name)
         del self.weight_scale
         self.weight = torch.nn.Parameter(dequant_weight, requires_grad=False)
         self.pre_dequantized = True
