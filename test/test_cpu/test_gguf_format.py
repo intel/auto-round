@@ -243,7 +243,7 @@ class TestGGUF(unittest.TestCase):
         # shutil.rmtree("./saved", ignore_errors=True)
 
     def test_q4_k_m(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
