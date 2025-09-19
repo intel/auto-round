@@ -860,7 +860,7 @@ class AutoRound(object):
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
                 elif is_static_wfp8afp8(self):  # staic wfp8afp8
-                    format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
+                    format = f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
                     format = "auto_round:fp8"
                 elif self.act_bits < 16:
@@ -958,7 +958,7 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"):
+                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"):
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         f" change format {format} to auto_round"
