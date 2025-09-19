@@ -95,7 +95,7 @@ class QuantLinear(nn.Module):
         ## TODO check the dtype of weight_packed and weight_scale
         self.register_buffer(
             weight_name,
-            torch.zeros((outfeatures, weight_infeatures), weight_dtype),
+            torch.zeros((outfeatures, weight_infeatures), dtype=weight_dtype),
         )
         self.register_buffer(
             "weight_scale",
