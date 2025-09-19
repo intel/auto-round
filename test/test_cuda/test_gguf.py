@@ -183,7 +183,7 @@ class TestAutoRound(unittest.TestCase):
     @require_gguf
     def test_vlm_gguf(self):
         model_name = "/models/Qwen2.5-VL-7B-Instruct"
-        from auto_round.mllm.autoround_mllm import AutoRoundMLLM
+        from auto_round import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
 
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
@@ -205,7 +205,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
         model_name = "/models/gemma-3-12b-it"
-        from auto_round.mllm.autoround_mllm import AutoRoundMLLM
+        from auto_round import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
 
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
@@ -230,7 +230,7 @@ class TestAutoRound(unittest.TestCase):
     @require_gguf
     def test_llama_4(self):
         model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct/"
-        from auto_round.mllm.autoround_mllm import AutoRoundMLLM
+        from auto_round import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
 
         model, processor, tokenizer, image_processor = mllm_load_model(model_name, use_auto_mapping=False)

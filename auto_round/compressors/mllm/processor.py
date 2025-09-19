@@ -262,7 +262,7 @@ class CogVLM2Processor(BasicProcessor):
         return fetch_image(image_path_or_url).convert("RGB")
 
 
-from ..utils import LazyImport
+from auto_round.utils import LazyImport
 
 llava_train = LazyImport("llava.train.train")
 
