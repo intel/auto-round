@@ -143,6 +143,7 @@ MXFP4 = QuantizationScheme.from_dict(
         "act_bits": 4,
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
+        "act_sym": True,
     }
 )
 
@@ -154,6 +155,7 @@ MXFP8 = QuantizationScheme.from_dict(
         "act_bits": 8,
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
+        "act_sym": True,
     }
 )
 

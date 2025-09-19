@@ -30,6 +30,7 @@ from auto_round.inference.backend import (
     get_layer_backend,
     process_requirement,
 )
+from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -42,8 +43,6 @@ from auto_round.utils import (
     is_hpu_supported,
     set_module,
 )
-
-logger = getLogger(__name__)
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
@@ -378,6 +377,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
                 layer_backend = _get_layer_backend(
                     target_device, target_backend, orig_backend, config, in_features, out_features
                 )
+                logger.trace(f"Got backend {layer_backend} for {layer_name}.")
                 backend_cache[key] = layer_backend
 
         if not layer_backend:
@@ -452,7 +452,11 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
         )
-    elif AutoRoundFormat.FP8_STATIC.value in layer_backend:
+    elif (
+        AutoRoundFormat.FP8_STATIC.value in layer_backend
+        or AutoRoundFormat.MXFP8.value in layer_backend
+        or AutoRoundFormat.MXFP4.value in layer_backend
+    ):
         return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
     try:
@@ -598,6 +602,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     layer_configs = get_layer_config(model, quantization_config)
     if packing_format.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
         packing_format = packing_format[len("auto_round:") :]
+
     orig_backend = find_backend(packing_format)
 
     if backend.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):

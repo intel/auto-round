@@ -19,9 +19,12 @@ from typing import Any, List, Optional
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
+from auto_round import schemes as ar_schemes
+from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import AutoRoundFormat
+from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import get_library_version, logger
+from auto_round.utils import get_library_version
 
 BackendInfos = {}
 
@@ -121,6 +124,38 @@ def fp8_static_scheme_checker(
     return config == FP8_STATIC
 
 
+def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationScheme):
+    SCHEME_CHECK_ATTRS = ["bits", "group_size", "sym", "data_type", "act_bits", "act_group_size", "act_sym"]
+
+    for attr in SCHEME_CHECK_ATTRS:
+        if getattr(config1, attr) != getattr(config2, attr):
+            logger.debug(
+                f"Scheme check failed on attribute {attr}: {getattr(config1, attr)} != {getattr(config2, attr)}"
+            )
+            return False
+    return True
+
+
+def mxfp8_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+    return _scheme_checker_common(config, ar_schemes.MXFP8)
+
+
+def mxfp4_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+    return _scheme_checker_common(config, ar_schemes.MXFP4)
+
+
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
@@ -203,6 +238,34 @@ BackendInfos["auto_round:fp8_static"] = BackendInfo(
     checkers=[fp8_static_scheme_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.6.0"],
+)
+
+# MXFP8
+
+BackendInfos["auto_round:mxfp8"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[8],
+    priority=0,
+    checkers=[mxfp8_scheme_checker],
+    alias=["torch"],
+    requirements=["auto-round>0.7.0"],
+)
+
+# MXFP4
+
+BackendInfos["auto_round:mxfp4"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[4],
+    priority=0,
+    checkers=[mxfp4_scheme_checker],
+    alias=["auto_round:llm_compressor"],
+    requirements=["auto-round>0.7.0"],
 )
 
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
@@ -472,9 +535,11 @@ def dynamic_import_inference_linear(backend, config):
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
 
     if AutoRoundFormat.FP8_STATIC.value in backend:
-        from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear
-
-        return WeightFP8ActFP8StaticQuantLinear
+        return ar_qmodules.WeightFP8ActFP8StaticQuantLinear
+    if AutoRoundFormat.MXFP8.value in backend:
+        return ar_qmodules.MXFP8QuantLinear
+    if AutoRoundFormat.MXFP4.value in backend:
+        return ar_qmodules.MXFP4QuantLinear
 
     if "qbits" in backend:
         try:
@@ -680,6 +745,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
     Returns:
         str or None: Matching backend key if found and compatible; otherwise, None.
     """
+    logger.trace(f"Finding backend for target: {target_backend}, original: {orig_backend}")
     matched_keys = [
         key
         for key, info in BackendInfos.items()
@@ -758,7 +824,7 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
     """
     # Check if the provided backend is in BackendInfos
     backend = find_backend(backend)
-
+    logger.trace(f"Found backend: {backend} for device: {device}, orig_backend: {orig_backend}")
     if backend not in BackendInfos.keys():
         raise ValueError(f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection.")
 
@@ -768,6 +834,7 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
     supported_backends = []
     for key in BackendInfos.keys():
         if check_compatible(key, device, config, packing_format, in_features, out_features):
+            logger.trace(f"Backend {key} is compatible")
             supported_backends.append(key)
 
     # Raise an error if no compatible backends are found
