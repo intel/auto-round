@@ -31,7 +31,7 @@ def has_module(model: torch.nn.Module, target_module_type: torch.nn.Module) -> b
 def test_e2e_quant_and_infer(scheme):
     # Use a temporary directory for saving the quantized model
     with tempfile.TemporaryDirectory() as temp_dir:
-        model_name = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
+        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
         # Load the tokenizer and model
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
