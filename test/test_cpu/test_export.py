@@ -35,7 +35,7 @@ class LLMDataLoader:
 class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_dir = "./saved"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -49,7 +49,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
-            model_name = "facebook/opt-125m"
+            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
@@ -79,7 +79,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, True
-            model_name = "facebook/opt-125m"
+            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
@@ -105,7 +105,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
-            model_name = "facebook/opt-125m"
+            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
@@ -217,7 +217,7 @@ class TestAutoRound(unittest.TestCase):
 
         from safetensors import safe_open
 
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -303,7 +303,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mxfp4_llmcompressor_format(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
@@ -352,7 +352,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_rtn_mxfp4_llmcompressor_format(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
@@ -400,7 +400,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_mxfp8_llmcompressor_format(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
@@ -439,7 +439,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_nvfp4_llmcompressor_format(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 
@@ -478,7 +478,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_nvfp4_autoround_format(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
 

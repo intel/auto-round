@@ -27,7 +27,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(self):
-        self.model_name = "facebook/opt-125m"
+        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
 

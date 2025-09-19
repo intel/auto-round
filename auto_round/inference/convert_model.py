@@ -452,7 +452,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
         )
-    elif AutoRoundFormat.TORCH_FP8_STATIC.value in layer_backend:
+    elif AutoRoundFormat.FP8_STATIC.value in layer_backend:
         return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
     try:

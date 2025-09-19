@@ -337,7 +337,7 @@ def quant_tensor_gguf_asym_dq(
         if bits == 2:
             quant_weights = torch.abs(tensor)
         elif bits == 4 or bits == 5:
-            sigma2 = torch.sum(tensor**2, dim=-1, keepdim=True) / 32  ##Note 32 is different from QK_K
+            sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / 32  ##Note 32 is different from QK_K
             av_x = torch.sqrt(sigma2)
             quant_weights = torch.abs(tensor) + av_x
         params = search_kwargs[bits]
@@ -384,7 +384,9 @@ def quant_tensor_gguf_asym_dq(
                 if bits == 2:
                     tmp_quant_weights = torch.abs(tensor)
                 elif bits == 4 or bits == 5:
-                    sigma2 = torch.sum(tensor**2, dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
+                    sigma2 = (
+                        torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / 32
+                    )  ## Note 32 is different from QK_K
                     av_x = torch.sqrt(sigma2)
                     tmp_quant_weights = torch.abs(tensor) + av_x
                 quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
@@ -395,7 +397,7 @@ def quant_tensor_gguf_asym_dq(
                 tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
                 quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
 
-        # sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
         #     av_x = torch.sqrt(sigma2)
         #     quant_weights = torch.abs(av_x + tensor * tensor)
@@ -470,7 +472,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
 
-    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff**2, dim=1, keepdim=True)
+    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * torch.pow(diff, 2), dim=1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
@@ -484,7 +486,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=-1, keepdim=True)
         sum_xl = torch.sum(mul_weights_quant_data * data, dim=-1, keepdim=True)
 
-        D = sum_w * sum_l2 - sum_l**2
+        D = sum_w * sum_l2 - torch.pow(sum_l, 2)
         this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
         this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
         this_min[this_min > 0] = 0
@@ -494,7 +496,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         quant_data = torch.clamp(torch.round(reverse_this_scale * (data - this_min)), minq, maxq)
         diff = this_scale * quant_data + this_min - data
         # diff = this_scale * quant_data_new + this_min - data
-        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff**2, dim=-1, keepdim=True)
+        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * torch.pow(diff, 2), dim=-1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]
@@ -566,7 +568,7 @@ def quant_tensor_gguf_sym_dq(
         imatrix = imatrix.to(tensor.device)
 
         # if bits == 3:
-        #     # sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        #     # sigma2 = 2 * torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         #     # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
         #     # quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
         #     # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
@@ -588,7 +590,7 @@ def quant_tensor_gguf_sym_dq(
                 if bits == 6:
                     quant_weights[replace_index] = tensor[replace_index] * tensor[replace_index]
                 else:
-                    sigma2 = 2 * torch.sum(tensor**2, dim=-1, keepdim=True) / QK_K
+                    sigma2 = 2 * torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
                     tmp_quant_weights = torch.sqrt(sigma2 + tensor * tensor)
                     quant_weights[replace_index] = tmp_quant_weights[replace_index]
             mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
