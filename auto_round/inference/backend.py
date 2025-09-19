@@ -250,7 +250,7 @@ BackendInfos["auto_round:mxfp8"] = BackendInfo(
     bits=[8],
     priority=0,
     checkers=[mxfp8_scheme_checker],
-    alias=["auto_round:llm_compressor"],
+    alias=["torch"],
     requirements=["auto-round>0.7.0"],
 )
 
