@@ -66,6 +66,7 @@ from auto_round.utils import (
     estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
+    get_avg_bits,
     get_block_names,
     get_device_memory,
     get_fp_layer_names,
@@ -95,7 +96,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    get_avg_bits,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -1695,7 +1695,9 @@ class BaseCompressor(object):
         average_bits_w_lm_head = get_avg_bits(self.model, with_lm_head=True)
         if average_bits_w_lm_head != average_bits:
             logger.info(f"The target average bits of blocks in the model (without lm_head): {average_bits:.3f} bits")
-            logger.info(f"The target average bits of the entire model (with lm_head): {average_bits_w_lm_head:.3f} bits")
+            logger.info(
+                f"The target average bits of the entire model (with lm_head): {average_bits_w_lm_head:.3f} bits"
+            )
         else:
             logger.info(f"The target average bits of the entire model: {average_bits:.3f} bits")
         if not hasattr(self, "formats"):

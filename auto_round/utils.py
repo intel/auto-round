@@ -2769,7 +2769,7 @@ def get_avg_bits(module, with_lm_head=False):
                 if m.data_type in ("fp4_v2", "nv_fp"):
                     scale_bits += 32  # global scale bits
                 all_bits += scale_bits
-            else: # woq
+            else:  # woq
                 scale_bits = 16 * (m_numel // m.group_size)
                 all_bits += scale_bits
 
