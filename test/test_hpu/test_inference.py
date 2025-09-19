@@ -18,7 +18,7 @@ class LLMDataLoader:
             yield torch.ones([1, 10], dtype=torch.long)
 
 
-def is_hpu_supported():
+def is_hpex_available():
     try:
         import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
     except ImportError as e:
@@ -40,7 +40,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_autogptq_format_hpu_inference(self):
-        if not is_hpu_supported():
+        if not is_hpex_available():
             return
         try:
             import auto_gptq
@@ -73,7 +73,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_format_hpu_inference(self):
-        if not is_hpu_supported():
+        if not is_hpex_available():
             return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
