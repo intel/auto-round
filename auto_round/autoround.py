@@ -142,7 +142,7 @@ class AutoRound:
         """
         model_cls = []
 
-        if (extra_config and extra_config.model_config.mllm) is True or is_mllm_model(model):
+        if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
         else:
