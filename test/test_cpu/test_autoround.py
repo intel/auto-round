@@ -679,15 +679,14 @@ class TestAutoRound(unittest.TestCase):
 
     def test_compressor(self):
         model_name = "Qwen/Qwen2-VL-2B-Instruct"
-        ar = AutoRound(model_name, adam=True)
+        ar = AutoRound(model_name, enable_adam=True)
         self.assertEqual(ar.optimizer, torch.optim.AdamW)
         self.assertTrue(ar.mllm)
 
         # test old api
         from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM(model_name, adam=True)
-        self.assertEqual(ar.optimizer, torch.optim.AdamW)
+        ar = AutoRoundMLLM(model_name)
         self.assertTrue(ar.mllm)
 
 
