@@ -34,9 +34,36 @@ import torch
 kE2M1ToFloat = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32)
 
 
+def unpack_fp4_from_uint8(
+    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+) -> torch.Tensor:
+    """
+    Unpacks uint8 values into FP4. Each uint8 contains two FP4 values
+    (low nibble first). The 4-bit indices are mapped to FP4 values using kE2M1ToFloat.
+    """
+    if a.device.type == "cuda":
+        return _unpack_fp4_from_uint8_cuda(a, m, n, dtype)
+    else:
+        return _unpack_fp4_from_uint8_cpu(a, m, n, dtype)
+
+
+@torch.compiler.disable()
+def _unpack_fp4_from_uint8_cpu(
+    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+) -> torch.Tensor:
+    return _unpack_fp4_from_uint8(a, m, n, dtype)
+
+
+@torch.compile(fullgraph=True, dynamic=True)
+def _unpack_fp4_from_uint8_cuda(
+    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+) -> torch.Tensor:
+    return _unpack_fp4_from_uint8(a, m, n, dtype)
+
+
 # reference: : https://github.com/vllm-project/vllm/pull/16362
 # @torch.compile(fullgraph=True, dynamic=True)
-def unpack_fp4_from_uint8(
+def _unpack_fp4_from_uint8(
     a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
 ) -> torch.Tensor:
     """
