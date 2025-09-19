@@ -97,7 +97,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         assert target_blocks == blocks
 
     def test_dataset_check(self):
-        from auto_round.mllm.mllm_dataset import MLLM_DATASET
+        from auto_round.compressors.mllm.dataset import MLLM_DATASET
 
         class Myclass:
             model_type = None
