@@ -355,9 +355,6 @@ def setup_eval_parser():
 
 
 def tune(args):
-    if args.disable_eval:
-        logging.warning("`disable_eval` is deprecated and is now set by default.")
-
     if args.eval_bs is None:
         args.eval_bs = "auto"
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
