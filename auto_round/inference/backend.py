@@ -124,10 +124,9 @@ def fp8_static_scheme_checker(
     return config == FP8_STATIC
 
 
-SCHEME_CHECK_ATTRS = ["bits", "group_size", "sym", "data_type", "act_bits", "act_group_size", "act_sym"]
-
-
 def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationScheme):
+    SCHEME_CHECK_ATTRS = ["bits", "group_size", "sym", "data_type", "act_bits", "act_group_size", "act_sym"]
+
     for attr in SCHEME_CHECK_ATTRS:
         if getattr(config1, attr) != getattr(config2, attr):
             logger.debug(
@@ -840,7 +839,6 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
 
     # Raise an error if no compatible backends are found
     if len(supported_backends) == 0:
-        logger.warning("No compatible backend found, trying to install the requirement for better backend.")
         supported_backends_need_package = get_all_compatible_backend(
             device, backend, orig_backend, config, in_features, out_features
         )
