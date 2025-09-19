@@ -17,7 +17,6 @@ import copy
 import gc
 import importlib
 import json
-import logging
 import os
 import re
 import sys
@@ -67,7 +66,7 @@ class SupportedFormats:
         return True if key in self._support_list else False
 
     def __str__(self):
-        ##return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+        # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
         return "(%s)" % ", ".join(self._support_list)
 
     def __getitem__(self, key):
@@ -78,7 +77,7 @@ SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
-##changed to str as it relies triton or others lib to load this
+# Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
 # INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
 
@@ -1044,6 +1043,8 @@ def get_fp_layer_names(model, fp_layers):
         list: A list of layer names that match the specified FP layers or are
         subcomponents of those layers.
     """
+    if not fp_layers:
+        return []
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
@@ -2692,3 +2693,45 @@ def copy_python_files_from_model_cache(model, save_path: str):
             if file.endswith(".py") and os.path.isfile(full_file_name):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
+
+
+def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
+    MM_KEYS = [
+        "multi_modal_projector",
+        "vision_tower",
+        "multimodal_projector",
+        "thinker",
+        "visual",
+        "audio",
+        "talker",
+        "token2wav",
+        "vision_model",
+        "audio_tower",
+        "vision_encoder",
+        "vision_language_adapter",
+        "patch_merger",
+        "pre_mm_projector_norm",
+        "vision",
+    ]
+
+    model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    if not os.path.isdir(model_path):
+        model_path = download_hf_model(model_path)
+
+    if isinstance(model_path, str):
+        if os.path.exists(os.path.join(model_path, "preprocessor_config.json")):
+            return True
+        if os.path.exists(os.path.join(model_path, "processor_config.json")):
+            return True
+        with open(os.path.join(model_path, "config.json")) as f:
+            config = json.load(f)
+        for key in config.keys():
+            if any([k in key for k in MM_KEYS]):
+                return True
+
+    if isinstance(model_or_path, torch.nn.Module):
+        for name, module in model_or_path.named_modules():
+            if any([k in name for k in MM_KEYS]):
+                return True
+
+    return False

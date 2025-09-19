@@ -53,7 +53,8 @@ from functools import partial
 
 import numpy as np
 
-from auto_round.utils import LazyImport, logger
+from auto_round.logger import logger
+from auto_round.utils import LazyImport
 
 vlmeval = LazyImport("vlmeval")
 

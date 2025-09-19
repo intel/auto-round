@@ -14,4 +14,4 @@
 """Intel® auto-round: An open-source Python library
 supporting popular model weight only compression based on signround."""
 
-__version__ = "0.7.0"
+__version__ = "0.8.0.dev"

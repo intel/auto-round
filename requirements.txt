@@ -8,7 +8,6 @@ packaging
 pillow
 numba
 tbb
-triton ## for fp8 model
 torch
 transformers>=4.38
 threadpoolctl
