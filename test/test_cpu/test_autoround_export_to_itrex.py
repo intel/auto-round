@@ -35,14 +35,14 @@ class TestAutoroundExport(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.gptj = transformers.AutoModelForCausalLM.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM",
+            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
             torchscript=True,
         )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM", trust_remote_code=True
+            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM", trust_remote_code=True
         )
         self.gptj_no_jit = transformers.AutoModelForCausalLM.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM",
+            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
         )
         self.llm_dataloader = LLMDataLoader()
         self.lm_input = torch.ones([1, 10], dtype=torch.long)
@@ -84,7 +84,7 @@ class TestAutoroundExport(unittest.TestCase):
     def test_config(self):
         from auto_round.export.export_to_itrex import QuantConfig
 
-        config = QuantConfig.from_pretrained("TheBloke/Llama-2-7B-Chat-GPTQ")
+        config = QuantConfig.from_pretrained("/tf_dataset/auto_round/models/TheBloke/Llama-2-7B-Chat-GPTQ")
         config.save_pretrained("quantization_config_dir")
         loaded_config = QuantConfig.from_pretrained("quantization_config_dir")
         self.assertEqual(config.group_size, loaded_config.group_size)

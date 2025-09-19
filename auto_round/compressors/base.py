@@ -865,9 +865,9 @@ class BaseCompressor(object):
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
                 elif is_static_wfp8afp8(self):  # staic wfp8afp8
-                    format = f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
+                    format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
-                    format = "auto_round:fp8"
+                    format = f"auto_round:{AutoRoundFormat.FP8.value}"
                 elif self.act_bits < 16:
                     raise ValueError(
                         "AutoRound format does not support exporting "
@@ -882,6 +882,20 @@ class BaseCompressor(object):
                     check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
+                if is_static_wfp8afp8(self):
+                    format = f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}"
+                    formats[index] = format
+                    if self.act_group_size != 0:
+                        logger.warning(
+                            f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
+                            f" ,but got act_group_size={self.act_group_size}, reset = 0"
+                        )
+                        self.act_group_size = 0
+                    if self.group_size > 0:
+                        logger.warning(
+                            f"please note that group_size={self.group_size}"
+                            " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
+                        )
                 elif not is_wfp8afp8(self):
                     logger.error(
                         "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
@@ -971,13 +985,25 @@ class BaseCompressor(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"):
+                if format not in [
+                    "auto_round",
+                    f"auto_round:{AutoRoundFormat.FP8_STATIC.value}",
+                    f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}",
+                    "auto_round:llm_compressor",
+                ]:
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         f" change format {format} to auto_round"
                     )
-                    format = "auto_round"
-            if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
+                    if is_static_wfp8afp8(self):
+                        format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
+                    else:
+                        format = f"auto_round:{AutoRoundFormat.FP8.value}"
+            if (
+                self.act_group_size != 0
+                and not self.act_dynamic
+                and format == f"auto_round:{AutoRoundFormat.FP8.value}"
+            ):
                 logger.warning(
                     f"Please note that quantize activation with act_group_size={self.act_group_size}"
                     " may result in failure to export or import normally."
@@ -1198,7 +1224,7 @@ class BaseCompressor(object):
             def get_imatrix_hook(module, input, output):
                 input = input[0] if isinstance(input, (tuple, list)) else input
                 flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(flattened**2, dim=0).to(torch.float32)
+                squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
@@ -3094,6 +3120,8 @@ class BaseCompressor(object):
             )
         if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
             format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
+        if format == "llm_compressor" and is_static_wfp8afp8(self):
+            format = format.replace("llm_compressor", "llm_compressor:{AutoRoundFormat.FP8_STATIC.value}")
 
         from auto_round.export import EXPORT_FORMAT
 

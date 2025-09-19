@@ -37,7 +37,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_default_acc(self):
-        model_name = "hf-internal-testing/tiny-random-GPTJForCausalLM"
+        model_name = "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -76,7 +76,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertTrue(isclose(float(out0[0][0][0][0]), -0.021002087742090225, rel_tol=5e-04))
 
     def test_3bits_asym_autoround(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
 
         bits, sym = 3, False
         autoround = AutoRound(model_name, bits=bits, sym=sym, iters=0)
