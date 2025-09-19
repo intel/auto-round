@@ -85,7 +85,7 @@ class TestAutoRound(unittest.TestCase):
             "model.decoder.layers.4.self_attn.k_proj": QuantizationScheme.from_dict({"group_size": 64}),
         }
         ar = AutoRound(
-            "facebook/opt-125m",
+            "/tf_dataset/auto_round/models/facebook/opt-125m",
             scheme="W3A16",
             nsamples=1,
             iters=1,

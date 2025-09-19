@@ -1211,7 +1211,7 @@ class AutoRound(object):
             def get_imatrix_hook(module, input, output):
                 input = input[0] if isinstance(input, (tuple, list)) else input
                 flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(flattened**2, dim=0).to(torch.float32)
+                squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared

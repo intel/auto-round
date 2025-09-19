@@ -79,7 +79,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, True
-            model_name = "facebook/opt-125m"
+            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
