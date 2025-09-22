@@ -17,7 +17,8 @@ from typing import Optional, Union
 
 import torch
 
-from auto_round.data_type.utils import get_quant_func
+from auto_round.data_type.nvfp import get_reciprocal, ref_nvfp4_quant
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
@@ -26,10 +27,6 @@ from auto_round.schemes import QuantizationScheme
 __all__ = ["NVFP4QuantLinear"]
 
 SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
-E8M0_EXPONENT_BIAS = 127
-
-from auto_round.data_type.nvfp import FLOAT8_E4M3_MAX, FLOAT8_E4M3_MIN, get_reciprocal, ref_nvfp4_quant
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
 
 # Adapted from auto_round.data_type.nvfp.py
