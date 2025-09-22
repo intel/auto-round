@@ -39,7 +39,6 @@ def _nv_fp4_with_static_gs(tensor, global_scale, bits=4, group_size=16):
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
-    # global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(tensor.device)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v=0)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
@@ -148,8 +147,7 @@ class NVFP4QuantLinear(QModuleBase):
         original_shape = unpacked_data.shape
         unpacked_data = unpacked_data.reshape(-1, self.group_size)
         scale_float = scale_float.reshape(-1, 1)
-        data_float = unpacked_data.to(target_dtype)
-        data_dequant = data_float * scale_float
+        data_dequant = unpacked_data * scale_float
         data_dequant = data_dequant.reshape(original_shape)
         return data_dequant
 
