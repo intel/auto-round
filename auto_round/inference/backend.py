@@ -163,7 +163,6 @@ def nvfp4_scheme_checker(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
-
     return _scheme_checker_common(config, ar_schemes.NVFP4)
 
 
@@ -283,16 +282,13 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
 
 BackendInfos["auto_round:nvfp4"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
-    packing_format="auto_round:llm_compressor",
+    packing_format="",
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
     priority=0,
-    checkers=[
-        # nvfp4_scheme_checker
-    ],
-    alias=["torch"],
-    # alias=["auto_round:llm_compressor"],
+    checkers=[nvfp4_scheme_checker],
+    alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
 
