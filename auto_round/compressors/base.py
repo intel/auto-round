@@ -882,7 +882,7 @@ class BaseCompressor(object):
                     check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
-                if is_static_wfp8afp8(self):
+                elif is_static_wfp8afp8(self):
                     format = f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}"
                     formats[index] = format
                     if self.act_group_size != 0:
