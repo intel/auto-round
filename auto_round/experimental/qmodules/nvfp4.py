@@ -29,10 +29,10 @@ __all__ = ["NVFP4QuantLinear"]
 SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
 
 
-# Adapted from auto_round.data_type.nvfp.py
-def _nv_fp4_with_static_gs(tensor, global_scale, bits=4, group_size=16):
-    if tensor is None or tensor.numel() == 0:
-        return tensor, None, None
+# Adapted from auto_round/data_type/nvfp.py
+def _nv_fp4_with_static_gs(
+    tensor: torch.Tensor, global_scale: torch.Tensor, bits: int = 4, group_size: int = 16
+) -> tuple[torch.Tensor, torch.Tensor, None]:
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -42,7 +42,7 @@ def _nv_fp4_with_static_gs(tensor, global_scale, bits=4, group_size=16):
     return qdq_res.to(orig_dtype), scale, None
 
 
-def _nvfp4_qdq(tensor: torch.Tensor, config: QuantizationScheme, global_scale: torch.Tensor):
+def _nvfp4_qdq(tensor: torch.Tensor, config: QuantizationScheme, global_scale: torch.Tensor) -> torch.Tensor:
     qdq_tensor, scales, _ = _nv_fp4_with_static_gs(
         tensor=tensor, global_scale=global_scale, bits=config.act_bits, group_size=config.act_group_size
     )
