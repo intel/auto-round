@@ -207,7 +207,7 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
 # Activation: FP8, per-tensor
 BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
-    packing_format=LLM_COMPRESSOR_FORMAT,
+    packing_format=["auto_round:fp8_static"],
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
     bits=[8],
@@ -500,11 +500,11 @@ def dynamic_import_inference_linear(backend, config):
     """
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
 
-    if AutoRoundFormat.FP8_STATIC.value in backend:
+    if "torch_fp8_static" in backend:
         return ar_qmodules.WeightFP8ActFP8StaticQuantLinear
-    if AutoRoundFormat.MXFP8.value in backend:
+    if "torch_mxfp8" in backend:
         return ar_qmodules.MXFP8QuantLinear
-    if AutoRoundFormat.MXFP4.value in backend:
+    if "torch_mxfp4" in backend:
         return ar_qmodules.MXFP4QuantLinear
 
     if "qbits" in backend:
