@@ -17,9 +17,9 @@ from typing import Optional, Union
 
 import torch
 
-from auto_round.data_type.fp4_utils import unpack_fp4_from_uint8
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
+from auto_round.export.export_to_autoround.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 

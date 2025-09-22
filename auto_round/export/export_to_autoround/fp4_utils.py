@@ -62,7 +62,6 @@ def _unpack_fp4_from_uint8_cuda(
 
 
 # reference: : https://github.com/vllm-project/vllm/pull/16362
-# @torch.compile(fullgraph=True, dynamic=True)
 def _unpack_fp4_from_uint8(
     a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
 ) -> torch.Tensor:
