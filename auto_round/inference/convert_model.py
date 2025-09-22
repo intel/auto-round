@@ -530,7 +530,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu"):
     if packing_format == "auto":
         packing_format = "auto_round:auto_gptq"
     layer_configs = get_layer_config(model, quantization_config)
-    if packing_format == "auto_round:awq": # handle tricky setting
+    if packing_format == "auto_round:awq":  # handle tricky setting
         packing_format = "auto_round:auto_awq"
     if packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
