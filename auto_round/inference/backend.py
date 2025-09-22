@@ -156,6 +156,17 @@ def mxfp4_scheme_checker(
     return _scheme_checker_common(config, ar_schemes.MXFP4)
 
 
+def nvfp4_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+
+    return _scheme_checker_common(config, ar_schemes.NVFP4)
+
+
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
@@ -250,7 +261,7 @@ BackendInfos["auto_round:mxfp8"] = BackendInfo(
     bits=[8],
     priority=0,
     checkers=[mxfp8_scheme_checker],
-    alias=["torch"],
+    alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
 
@@ -264,7 +275,7 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
     bits=[4],
     priority=0,
     checkers=[mxfp4_scheme_checker],
-    alias=["auto_round:llm_compressor"],
+    alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
 
@@ -277,8 +288,8 @@ BackendInfos["auto_round:nvfp4"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
     priority=0,
-    checkers=[],
-    alias=["torch"],
+    checkers=[nvfp4_scheme_checker],
+    alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
 
