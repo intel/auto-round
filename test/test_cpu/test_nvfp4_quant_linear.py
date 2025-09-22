@@ -27,13 +27,14 @@ def fixed_seed():
     # (Optional) cleanup or reset after test
 
 
-@pytest.mark.parametrize("scheme", AutoRoundFormat.NVFP4.value)
+@pytest.mark.parametrize("scheme", [AutoRoundFormat.NVFP4.value])
 @torch.inference_mode()
 def test_nvfp4_quantlinear_from_original_and_forward(scheme):
     """
     Test NVFP4 quantization schemes by creating quantized layers
     from an original torch.nn.Linear layer and validating their forward pass.
     """
+
     # Set random seed for reproducibility
     torch.manual_seed(42)
 
