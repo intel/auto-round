@@ -324,7 +324,8 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, backend, target_d
         if not layer_backend:
             if backend != "auto":
                 raise ValueError(
-                    f"Backend {backend} is not compatible with layer {layer_name} with config {config}, please set the backend='auto' and retry"
+                    f"Backend {backend} is not compatible with layer {layer_name} with config {config},"
+                    f" please set the backend='auto' and retry"
                 )
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
@@ -529,6 +530,10 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu"):
     if packing_format == "auto":
         packing_format = "auto_round:auto_gptq"
     layer_configs = get_layer_config(model, quantization_config)
+    if packing_format == "auto_round:awq": # handle tricky setting
+        packing_format = "auto_round:auto_awq"
+    if packing_format == "auto_round:gptq":
+        packing_format = "auto_round:auto_gptq"
 
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
     if backend == "auto":
