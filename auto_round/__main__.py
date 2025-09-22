@@ -545,7 +545,7 @@ def tune(args):
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
 
-    if (autoround.act_bits <= 8 and formats[-1]=="fake") or eval_gguf_model:
+    if (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
