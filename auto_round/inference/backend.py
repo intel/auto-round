@@ -22,6 +22,7 @@ import auto_round_extension.cuda.gptqmodel_marlin
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import AutoRoundFormat
+from auto_round.inference.auto_quantizer import AutoHfQuantizer
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
@@ -56,8 +57,6 @@ class BackendInfo:
             quantization. Defaults to None.
         priority: An integer representing the backend's priority, where higher values
             indicate higher priority. Defaults to 0.
-        convertable_format: A list of strings specifying the formats that the backend
-            can convert from. Defaults to an empty list.
         checkers: A list of check functions (e.g., validation methods)
             used to verify whether the backend supports certain features. Defaults to
             an empty list.
@@ -65,17 +64,16 @@ class BackendInfo:
             backend. Defaults to None.
     """
 
-    device: List[str]
-    sym: List[bool]
-    packing_format: str
-    bits: List[int]
-    dtype: List[str] = None
-    group_size: Optional[List[int]] = None
+    device: list[str]  # TODO change to tuple
+    sym: list[bool]
+    packing_format: list[str]
+    bits: list[int]
+    dtype: list[str] = None
+    group_size: Optional[list[int]] = None
     priority: int = 0  ##higher is better
-    convertable_format: List[str] = field(default_factory=list)
-    checkers: List[Any] = field(default_factory=list)
-    alias: Optional[List[str]] = None
-    requirements: Optional[List[str]] = None
+    checkers: list[Any] = field(default_factory=list)
+    alias: Optional[list[str]] = None
+    requirements: Optional[list[str]] = None
     # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
 
@@ -86,15 +84,15 @@ def feature_multiply_checker(in_feature, out_feature, config, in_feature_multipl
 
 
 def feature_multiply_checker_group_size(
-    in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
+        in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
 ):
     group_size = config["group_size"]
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
     return (
-        in_feature % in_feature_multiplier == 0
-        and out_feature % out_feature_multiplier == 0
-        and in_feature % group_size == 0
+            in_feature % in_feature_multiplier == 0
+            and out_feature % out_feature_multiplier == 0
+            and in_feature % group_size == 0
     )
 
 
@@ -113,11 +111,11 @@ gptqmodel_marlin_feature_checker = functools.partial(
 
 
 def fp8_static_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
+        in_feature: int,
+        out_feature: int,
+        config: QuantizationScheme,
+        in_feature_multiplier: Optional[int] = None,
+        out_feature_multiplier: Optional[int] = None,
 ):
     from auto_round.schemes import FP8_STATIC
 
@@ -137,33 +135,38 @@ def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationSch
 
 
 def mxfp8_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
+        in_feature: int,
+        out_feature: int,
+        config: QuantizationScheme,
+        in_feature_multiplier: Optional[int] = None,
+        out_feature_multiplier: Optional[int] = None,
 ):
     return _scheme_checker_common(config, ar_schemes.MXFP8)
 
 
 def mxfp4_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
+        in_feature: int,
+        out_feature: int,
+        config: QuantizationScheme,
+        in_feature_multiplier: Optional[int] = None,
+        out_feature_multiplier: Optional[int] = None,
 ):
     return _scheme_checker_common(config, ar_schemes.MXFP4)
 
 
+GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
+GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
+AWQ_FORMAT = ["auto_round:auto_awq"]
+LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
+
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
-    packing_format="int32_zp",
+    packing_format=GPTQ_FORMAT,
     bits=[4],
     priority=5,
     dtype=["float16"],
-    ##16, 384,768 accuracy issue
+    # 16, 384,768 accuracy issue
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
     checkers=[exllamav2_feature_checker],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
@@ -173,7 +176,7 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
 BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
-    packing_format="int32_zp",
+    packing_format=GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
     dtype=["float16"],
@@ -186,24 +189,64 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
 BackendInfos["auto_gptq:cuda"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
-    packing_format="int32_zp",
+    packing_format=GPTQ_FORMAT,
     bits=[2, 3, 4, 8],
     group_size=None,
     priority=1,
     checkers=[exllamav2_feature_checker],
-    alias=["auto_gptq:cuda"],
     dtype=["float16"],
-    convertable_format=["int32_zp"],
+    alias=["auto_gptq:cuda"],
     requirements=[
         "torch<2.6.0",
         "auto-gptq>=0.7.1",
     ],
 )
 
+# FP8 static quant
+# Weight: FP8, per-channel, may be extended to per-tensor in future
+# Activation: FP8, per-tensor
+BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[8],
+    priority=0,
+    checkers=[fp8_static_scheme_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.6.0"],
+)
+
+# MXFP8
+BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[8],
+    priority=0,
+    checkers=[mxfp8_scheme_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.7.0"],
+)
+
+# MXFP4
+BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[4],
+    priority=0,
+    checkers=[mxfp4_scheme_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.7.0"],
+)
+
 BackendInfos["auto_round:tritonv2"] = BackendInfo(
     device=["cuda", "xpu"],
     sym=[True, False],
-    packing_format="int32",
+    packing_format=GPTQ_FORMAT_NO_ZP,
     dtype=["float16", "bfloat16"],
     bits=[2, 4, 8],
     priority=2,
@@ -215,7 +258,7 @@ BackendInfos["auto_round:tritonv2"] = BackendInfo(
 BackendInfos["auto_round:torch"] = BackendInfo(
     device=["cuda", "xpu", "cpu"],
     sym=[True, False],
-    packing_format="int32",
+    packing_format=GPTQ_FORMAT_NO_ZP,
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
@@ -224,57 +267,12 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     requirements=["auto-round>=0.5.1"],
 )
 
-# FP8 static quant
-# Weight: FP8, per-channel, may be extended to per-tensor in future
-# Activation: FP8, per-tensor
-
-BackendInfos["auto_round:fp8_static"] = BackendInfo(
-    device=["xpu", "cuda", "cpu"],
-    packing_format="",
-    sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
-    bits=[8],
-    priority=0,
-    checkers=[fp8_static_scheme_checker],
-    alias=["auto_round", "torch"],
-    requirements=["auto-round>0.6.0"],
-)
-
-# MXFP8
-
-BackendInfos["auto_round:mxfp8"] = BackendInfo(
-    device=["xpu", "cuda", "cpu"],
-    packing_format="",
-    sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
-    bits=[8],
-    priority=0,
-    checkers=[mxfp8_scheme_checker],
-    alias=["torch"],
-    requirements=["auto-round>0.7.0"],
-)
-
-# MXFP4
-
-BackendInfos["auto_round:mxfp4"] = BackendInfo(
-    device=["xpu", "cuda", "cpu"],
-    packing_format="",
-    sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
-    bits=[4],
-    priority=0,
-    checkers=[mxfp4_scheme_checker],
-    alias=["auto_round:llm_compressor"],
-    requirements=["auto-round>0.7.0"],
-)
-
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     device=["cuda", "xpu"],
-    sym=[True],  ## asym has accuracys
-    # issue
-    packing_format="int32_zp",
+    sym=[True],
+    packing_format=GPTQ_FORMAT,
     dtype=["float16", "bfloat16"],
-    bits=[2, 4, 8],
+    bits=[2, 4, 8],  # TODO add 3bits
     priority=2,
     checkers=[feature_multiply_checker_32],
     alias=["tritonv2", "tritonv2_zp", "triton"],
@@ -284,7 +282,7 @@ BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
 BackendInfos["auto_round:torch_zp"] = BackendInfo(
     device=["cuda", "xpu", "cpu"],
     sym=[True],
-    packing_format="int32_zp",
+    packing_format=GPTQ_FORMAT,
     dtype=["float16", "bfloat16"],
     bits=[2, 3, 4, 8],
     priority=0,
@@ -296,7 +294,7 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
 BackendInfos["gptqmodel:marlin"] = BackendInfo(
     device=["cuda"],
     sym=[True],
-    packing_format="int32",
+    packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[4, 8],
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
@@ -309,7 +307,7 @@ BackendInfos["gptqmodel:marlin"] = BackendInfo(
 BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
     device=["cuda"],
     sym=[True],
-    packing_format="int32_zp",
+    packing_format=GPTQ_FORMAT,
     bits=[4, 8],
     group_size=[-1, 32, 64, 128],
     dtype=["float16", "bfloat16"],
@@ -322,7 +320,7 @@ BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
 BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
-    packing_format="int32",
+    packing_format=GPTQ_FORMAT,
     bits=[4],
     group_size=[-1, 32, 64, 128],  ##16 seems has accuracy issue
     dtype=["float16", "bfloat16"],
@@ -334,8 +332,8 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
 
 BackendInfos["auto_awq:gemm"] = BackendInfo(
     device=["cuda"],
-    sym=[True, False],  ##actually is gemm
-    packing_format="awq",
+    sym=[True, False],  # Actually it is GEMM
+    packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=None,
     priority=5,
@@ -347,35 +345,20 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
 BackendInfos["qbits"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
-    packing_format="qbits",
+    packing_format=AWQ_FORMAT + GPTQ_FORMAT_NO_ZP,
     bits=[2, 4, 8],
     group_size=None,
     priority=1,
     checkers=[],
     alias=["itrex", "qbits"],
     dtype=["float16", "bfloat16"],
-    convertable_format=["int32"],
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
 BackendInfos["qbits_zp"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
-    packing_format="qbits_zp",
-    bits=[2, 4, 8],
-    group_size=None,
-    dtype=["float16", "bfloat16"],
-    priority=1,
-    checkers=[],
-    alias=["itrex", "qbits"],
-    convertable_format=["int32_zp"],
-    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
-)
-
-BackendInfos["auto_round:qbits_awq"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],  ## for awq, not robust
-    packing_format="awq",
+    packing_format=AWQ_FORMAT + GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
     dtype=["float16", "bfloat16"],
@@ -388,51 +371,34 @@ BackendInfos["auto_round:qbits_awq"] = BackendInfo(
 BackendInfos["ipex_gptq"] = BackendInfo(
     device=["cpu", "xpu"],
     sym=[True, False],
-    packing_format="ipex_gptq",
+    packing_format=GPTQ_FORMAT + AWQ_FORMAT,
     bits=[4],
     group_size=None,
     priority=5,
     checkers=[],
     dtype=["float16", "bfloat16"],
-    convertable_format=["int32_zp"],
     alias=["ipex"],
     requirements=["intel-extension-for-pytorch>=2.5"],
-)
-
-BackendInfos["ipex_awq"] = BackendInfo(
-    device=["cpu", "xpu"],
-    sym=[True, False],
-    packing_format="ipex_awq",
-    bits=[4],
-    group_size=None,
-    priority=1,
-    dtype=["float16", "bfloat16"],
-    checkers=[],
-    alias=["ipex"],
-    convertable_format=["awq"],
-    requirements=["intel-extension-for-pytorch>=2.6"],
 )
 
 BackendInfos["hpu"] = BackendInfo(
     device=["hpu"],
     sym=[True, False],
-    packing_format="hpu",
+    packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[4],
     dtype=["bfloat16"],
     alias=["hpu"],
     priority=0,
-    convertable_format=["int32"],
 )
 
 BackendInfos["hpu_zp"] = BackendInfo(
     device=["hpu"],
     sym=[True, False],
-    packing_format="hpu_zp",
+    packing_format=GPTQ_FORMAT,
     bits=[4],
     dtype=["bfloat16"],
     alias=["hpu"],
     priority=0,
-    convertable_format=["int32_zp"],
 )
 
 
@@ -746,6 +712,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
         str or None: Matching backend key if found and compatible; otherwise, None.
     """
     logger.trace(f"Finding backend for target: {target_backend}, original: {orig_backend}")
+
     matched_keys = [
         key
         for key, info in BackendInfos.items()
@@ -763,8 +730,8 @@ def find_backend(target_backend: str, orig_backend: str = None):
     for key in matched_keys:
         target_info = BackendInfos[key]
         if (
-            target_info.packing_format == orig_info.packing_format
-            or orig_info.packing_format in target_info.convertable_format
+                target_info.packing_format == orig_info.packing_format
+                or orig_info.packing_format in target_info.convertable_format
         ):
             return key
 
