@@ -49,6 +49,8 @@ class AutoRoundFormat(str, Enum):
     # Weight: FP8, per-channel, may be extended to per-tensor in future
     # Activation: FP8, per-tensor
     FP8_STATIC = "fp8_static"
+    MXFP8 = "mxfp8"
+    MXFP4 = "mxfp4"
     FP8 = "fp8"
 
 

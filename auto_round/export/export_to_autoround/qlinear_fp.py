@@ -90,15 +90,17 @@ class QuantLinear(nn.Module):
         self.act_bits = kwargs.get("act_bits", None)
 
         weight_name = "weight" if self.bits == 8 and self.is_mx else "weight_packed"
+        weight_infeatures = infeatures if self.bits == 8 else infeatures // 2
+        weight_dtype = torch.float8_e4m3fn if self.bits == 8 else torch.uint8
         ## TODO check the dtype of weight_packed and weight_scale
         self.register_buffer(
             weight_name,
-            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
+            torch.zeros((outfeatures, weight_infeatures), dtype=weight_dtype),
         )
         self.register_buffer(
             "weight_scale",
             torch.zeros(
-                (math.ceil(infeatures / self.group_size), outfeatures),
+                (outfeatures, math.ceil(infeatures / self.group_size)),
                 dtype=torch.float16,  ## TODO update to correct scale dtype for different bits
             ),
         )
@@ -156,11 +158,13 @@ class QuantLinear(nn.Module):
             final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
         else:
             final_scale = scales.to(torch.float8_e4m3fn)
+
         self.weight_scale = final_scale
         # self.weight =  get_compressed_weight(scaled_tensor, self.bits, self.data_type) ## TODO
         if self.bits == 8:
             compress_dtype = torch.float8_e4m3fn
             self.weight = scaled_tensor.to(compress_dtype)
+
         else:
             compress_dtype = torch.uint8
             self.weight_packed = pack_fp4_to_uint8(scaled_tensor)
