@@ -148,8 +148,7 @@ class NVFP4QuantLinear(QModuleBase):
         original_shape = unpacked_data.shape
         unpacked_data = unpacked_data.reshape(-1, self.group_size)
         scale_float = scale_float.reshape(-1, 1)
-        data_float = unpacked_data.to(target_dtype)
-        data_dequant = data_float * scale_float
+        data_dequant = unpacked_data * scale_float
         data_dequant = data_dequant.reshape(original_shape)
         return data_dequant
 

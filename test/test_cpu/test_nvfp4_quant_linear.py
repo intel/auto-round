@@ -8,7 +8,6 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
 from auto_round.schemes import PRESET_SCHEMES
 
-mx_schemes = [AutoRoundFormat.NVFP4.value]
 QMODULE_MAPPING = {
     AutoRoundFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
@@ -84,7 +83,7 @@ def test_nvfp4_quantlinear_from_original_and_forward(scheme):
         input_global_scale=input_global_scale,
     )
 
-    # Create an MXQuantLinear layer from the original layer
+    # Create an NVFP4QuantLinear layer from the original layer
     QuantLinearClass = QMODULE_MAPPING[scheme]
     nvfp4_layer = QuantLinearClass.from_original(
         config=config,
