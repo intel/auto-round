@@ -261,7 +261,7 @@ BackendInfos["auto_round:mxfp8"] = BackendInfo(
     bits=[8],
     priority=0,
     checkers=[mxfp8_scheme_checker],
-    alias=["auto_round", "torch"],
+    alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
 
@@ -275,7 +275,7 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
     bits=[4],
     priority=0,
     checkers=[mxfp4_scheme_checker],
-    alias=["auto_round", "torch"],
+    alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
 
@@ -289,7 +289,7 @@ BackendInfos["auto_round:nvfp4"] = BackendInfo(
     bits=[4],
     priority=0,
     checkers=[nvfp4_scheme_checker],
-    alias=["auto_round", "torch"],
+    alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
 
