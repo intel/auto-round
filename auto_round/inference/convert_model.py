@@ -456,6 +456,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         AutoRoundFormat.FP8_STATIC.value in layer_backend
         or AutoRoundFormat.MXFP8.value in layer_backend
         or AutoRoundFormat.MXFP4.value in layer_backend
+        or AutoRoundFormat.NVFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
     # Default quantized layer creation

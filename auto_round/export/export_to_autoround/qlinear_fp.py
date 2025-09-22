@@ -145,6 +145,7 @@ class QuantLinear(nn.Module):
         scales = scales.to(device)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
+            global_scale = global_scale.reshape([1])
             global_scale = global_scale.to(device)
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
                 scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
@@ -173,7 +174,7 @@ class QuantLinear(nn.Module):
             self.weight_global_scale = global_scale.to(torch.float32).to(device)
 
         if input_global_scale is not None:
-            self.input_global_scale = input_global_scale.to(torch.float32).to(device)
+            self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
         return
 
 

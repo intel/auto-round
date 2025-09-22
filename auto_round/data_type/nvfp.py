@@ -69,7 +69,7 @@ def calculate_gparam(tensor, group_size=16, device="cpu"):
 
 
 def ref_nvfp4_quant(x, global_scale, block_size=16, v=0, scale_coeff=1.0):
-    assert global_scale.dtype == torch.float32
+    assert global_scale.dtype in [torch.float32, torch.float16, torch.bfloat16]
     assert x.ndim == 2
     m, n = x.shape
     if isinstance(scale_coeff, torch.Tensor):

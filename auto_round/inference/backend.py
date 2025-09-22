@@ -268,6 +268,20 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
     requirements=["auto-round>0.7.0"],
 )
 
+# NVFP4
+
+BackendInfos["auto_round:nvfp4"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format="",
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    bits=[4],
+    priority=0,
+    checkers=[],
+    alias=["torch"],
+    requirements=["auto-round>0.7.0"],
+)
+
 BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     device=["cuda", "xpu"],
     sym=[True],  ## asym has accuracys
@@ -540,6 +554,8 @@ def dynamic_import_inference_linear(backend, config):
         return ar_qmodules.MXFP8QuantLinear
     if AutoRoundFormat.MXFP4.value in backend:
         return ar_qmodules.MXFP4QuantLinear
+    if AutoRoundFormat.NVFP4.value in backend:
+        return ar_qmodules.NVFP4QuantLinear
 
     if "qbits" in backend:
         try:
