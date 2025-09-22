@@ -70,7 +70,7 @@ class BackendInfo:
     group_size: Optional[list[int]] = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
-    alias: Optional[list[str]] = None,
+    alias: Optional[list[str]] = (None,)
     requirements: Optional[list[str]] = None
     # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
@@ -400,8 +400,15 @@ BackendInfos["hpu_zp"] = BackendInfo(
 )
 
 
-def check_compatible(backend_name: str, device: str, config: dict, packing_format: str, in_features: int,
-                     out_features: int, check_requirements=True):
+def check_compatible(
+    backend_name: str,
+    device: str,
+    config: dict,
+    packing_format: str,
+    in_features: int,
+    out_features: int,
+    check_requirements=True,
+):
     """Checks if the given configuration is compatible with the specified backend.
 
     Args:
@@ -710,9 +717,7 @@ def find_backend(backend: str, orig_backend: str = None):
     logger.trace(f"Finding backend for target: {backend}, original: {orig_backend}")
 
     matched_keys = [
-        key
-        for key, info in BackendInfos.items()
-        if key == backend or (info.alias and backend in info.alias)
+        key for key, info in BackendInfos.items() if key == backend or (info.alias and backend in info.alias)
     ]
 
     if not matched_keys:
@@ -731,12 +736,12 @@ def find_backend(backend: str, orig_backend: str = None):
         ):
             return key
 
-    raise ValueError(
-        f"{backend} is not compatible with {orig_backend}. " f"Please set `backend` to `auto` and retry."
-    )
+    raise ValueError(f"{backend} is not compatible with {orig_backend}. " f"Please set `backend` to `auto` and retry.")
 
 
-def get_all_compatible_backend(device:str, packing_format:str, config:dict, in_features:int, out_features:int)->list[str]:
+def get_all_compatible_backend(
+    device: str, packing_format: str, config: dict, in_features: int, out_features: int
+) -> list[str]:
     # Find compatible backends
     compatible_backends = [
         key
@@ -748,8 +753,9 @@ def get_all_compatible_backend(device:str, packing_format:str, config:dict, in_f
     return compatible_backends
 
 
-def get_layer_backend(device: str, backend: str, packing_format: str, config: dict, in_features: int,
-                      out_features: int)->str:
+def get_layer_backend(
+    device: str, backend: str, packing_format: str, config: dict, in_features: int, out_features: int
+) -> str:
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
     This function first checks if the specified backend supports the layer with the provided configuration.
