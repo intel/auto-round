@@ -283,13 +283,16 @@ BackendInfos["auto_round:mxfp4"] = BackendInfo(
 
 BackendInfos["auto_round:nvfp4"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
-    packing_format="",
+    packing_format="auto_round:llm_compressor",
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
     priority=0,
-    checkers=[nvfp4_scheme_checker],
-    alias=["auto_round:llm_compressor"],
+    checkers=[
+        # nvfp4_scheme_checker
+    ],
+    alias=["torch"],
+    # alias=["auto_round:llm_compressor"],
     requirements=["auto-round>0.7.0"],
 )
 
