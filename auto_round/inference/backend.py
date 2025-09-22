@@ -696,23 +696,23 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def find_backend(target_backend: str, orig_backend: str = None):
+def find_backend(backend: str, orig_backend: str = None):
     """
     Finds the matching backend key based on the target backend name or its aliases.
 
     Args:
-        target_backend (str): Name or alias of the target backend.
+        backend (str): Name or alias of the target backend.
         orig_backend (str, optional): Original backend name to check compatibility. Defaults to None.
 
     Returns:
         str or None: Matching backend key if found and compatible; otherwise, None.
     """
-    logger.trace(f"Finding backend for target: {target_backend}, original: {orig_backend}")
+    logger.trace(f"Finding backend for target: {backend}, original: {orig_backend}")
 
     matched_keys = [
         key
         for key, info in BackendInfos.items()
-        if key == target_backend or (info.alias and target_backend in info.alias)
+        if key == backend or (info.alias and backend in info.alias)
     ]
 
     if not matched_keys:
@@ -732,7 +732,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
             return key
 
     raise ValueError(
-        f"{target_backend} is not compatible with {orig_backend}. " f"Please set `backend` to `auto` and retry."
+        f"{backend} is not compatible with {orig_backend}. " f"Please set `backend` to `auto` and retry."
     )
 
 

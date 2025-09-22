@@ -283,14 +283,14 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
     return next(obj.parameters()).device
 
 
-def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, target_device, packing_format):
+def _replace_by_quant_layers(module: nn.Module, layer_configs, backend, target_device, packing_format):
     """
     Replaces linear layers in the given module with quantized layers.
 
     Args:
         module (nn.Module): The module containing layers to be quantized.
         layer_configs (dict): Configuration for each layer's quantization.
-        target_backend (str): Backend for quantization (device and format).
+        backend (str): Backend for quantization (device and format).
         target_device (str): Device for execution ('cuda', 'cpu', 'hpu').
         orig_backend (str): Original backend of the model.
 
@@ -317,7 +317,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         else:
             # Determine backend
             layer_backend = get_layer_backend(
-                target_device, target_backend, packing_format, config, in_features, out_features
+                target_device, backend, packing_format, config, in_features, out_features
             )
             logger.trace(f"Got backend {layer_backend} for {layer_name}.")
             backend_cache[key] = layer_backend
@@ -325,6 +325,10 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
                 used_backends.append(layer_backend)
 
         if not layer_backend:
+            if backend != "auto":
+                raise ValueError(
+                    f"Backend {backend} is not compatible with layer {layer_name} with config {config}, please set the backend='auto' and retry"
+                )
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
         logger.debug(f"{layer_name}: {layer_backend} backend is used")  # TODO delete
