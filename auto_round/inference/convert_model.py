@@ -13,7 +13,6 @@
 # limitations under the License.
 import os
 import re
-from logging import getLogger
 from typing import Union
 
 import torch
@@ -25,7 +24,6 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
-    find_backend,
     get_highest_priority_backend,
     get_layer_backend,
     process_requirement,
@@ -38,7 +36,6 @@ from auto_round.utils import (
     check_to_quantized,
     find_matching_blocks,
     get_block_names,
-    get_layer_names_in_block,
     get_module,
     is_hpu_supported,
     set_module,
@@ -125,10 +122,10 @@ def get_keys_to_not_convert(model):
 
 
 def _get_modules_to_not_convert(
-    model,
-    skip_modules=None,
-    keep_in_fp32_modules=None,
-    add_default_skips: bool = False,
+        model,
+        skip_modules=None,
+        keep_in_fp32_modules=None,
+        add_default_skips: bool = False,
 ):
     if skip_modules is None or add_default_skips:
         modules_to_not_convert = get_keys_to_not_convert(model)
@@ -173,40 +170,6 @@ def get_available_devices():
     devices.append("cpu")  # Always available
 
     return devices
-
-
-def parse_target_device_and_backend(target_backend: str):
-    """
-    Parse the target device and backend from the given target_backend string.
-
-    Args:
-        target_backend (str): A string specifying the target backend, which may include a device prefix.
-
-    Returns:
-        tuple: (target_device, backend), where:
-            - target_device (str): The identified device (e.g., "cpu", "cuda", "auto").
-            - backend (str): The backend string after removing the device prefix.
-    """
-
-    def remove_device_prefix(backend: str, prefix: str) -> str:
-        """Removes the given device prefix from the backend string, if present."""
-        return backend[len(prefix) :].lstrip(":") if backend.startswith(prefix) else backend
-
-    # Handle "auto" case explicitly
-    if target_backend == "auto":
-        return "auto", ""
-    if target_backend.startswith("auto:"):
-        return "auto", target_backend[5:].lstrip(":")
-
-    # Define supported devices
-
-    # Identify the target device and adjust the backend string accordingly
-    for device in supported_devices:
-        if target_backend.startswith(device):
-            return device, remove_device_prefix(target_backend, device)
-
-    # Default case: If no known device is found, assume "auto"
-    return "auto", target_backend
 
 
 def get_layer_config(model, quantization_config):
@@ -320,7 +283,7 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
     return next(obj.parameters()).device
 
 
-def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, target_device, orig_backend):
+def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, target_device, packing_format):
     """
     Replaces linear layers in the given module with quantized layers.
 
@@ -336,23 +299,6 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
     """
 
     used_backends = []
-    must_use_target_backend = False
-    if target_backend:
-        must_use_target_backend = True
-        layer_backend = target_backend
-        layer_backend_must = find_backend(layer_backend, orig_backend)
-        used_backends.append(layer_backend_must)
-        if layer_backend_must is None:
-            raise ValueError(f"{target_backend} is not compatible, please change backend to `auto` and retry")
-        devices = BackendInfos[layer_backend_must].device
-        if target_device not in devices:
-            raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
-        ##check requirements
-        requirements = BackendInfos[layer_backend_must].requirements
-        process_requirement(requirements, target_device)
-
-    target_backend = target_backend or orig_backend  # Default to original backend if not specified
-
     backend_cache = {}
 
     for layer_name, config in layer_configs.items():
@@ -364,21 +310,19 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if in_features is None:
             continue  # Skip unsupported layer types
 
-        if must_use_target_backend:
-            layer_backend = layer_backend_must
+
+        key = f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
+        if key in backend_cache:
+            layer_backend = backend_cache[key]
         else:
-            key = f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
-            if key in backend_cache:
-                layer_backend = backend_cache[key]
-                if layer_backend not in used_backends:
-                    used_backends.append(layer_backend)
-            else:
-                # Determine backend
-                layer_backend = _get_layer_backend(
-                    target_device, target_backend, orig_backend, config, in_features, out_features
-                )
-                logger.trace(f"Got backend {layer_backend} for {layer_name}.")
-                backend_cache[key] = layer_backend
+            # Determine backend
+            layer_backend = get_layer_backend(
+                target_device, target_backend, packing_format, config, in_features, out_features
+            )
+            logger.trace(f"Got backend {layer_backend} for {layer_name}.")
+            backend_cache[key] = layer_backend
+            if layer_backend not in used_backends:
+                used_backends.append(layer_backend)
 
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
@@ -399,21 +343,6 @@ def _get_layer_features(layer):
     elif isinstance(layer, Conv1D):  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
     return None, None  # Unsupported layer type
-
-
-def _get_layer_backend(target_device, target_backend, orig_backend, config, in_features, out_features):
-    """Determines the best backend for a given layer."""
-
-    backend = get_layer_backend(
-        target_device,
-        target_backend,
-        orig_backend,
-        config,
-        in_features,
-        out_features,
-    )
-
-    return backend
 
 
 def _import_exllamav2_kernels():
@@ -453,9 +382,9 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
         )
     elif (
-        AutoRoundFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundFormat.MXFP8.value in layer_backend
-        or AutoRoundFormat.MXFP4.value in layer_backend
+            AutoRoundFormat.FP8_STATIC.value in layer_backend
+            or AutoRoundFormat.MXFP8.value in layer_backend
+            or AutoRoundFormat.MXFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
@@ -547,7 +476,7 @@ def post_init(model, used_backends):
             logger.warning("force model to bfloat16")
 
 
-def convert_hf_model(model: nn.Module, target_device="cpu"):
+def convert_hf_model(model: nn.Module, target_device: str = "cpu"):
     """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
 
     This method extracts the quantization configuration from the model and adjusts its layers
@@ -557,6 +486,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     Args:
         model (nn.Module):
             The model to be converted into an AutoRound model.
+        target_device (str, optional): the device to run the model, should be one of "cuda", "cpu", "hpu", "xpu".
 
     Returns:
         nn.Module:
@@ -572,7 +502,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     if hasattr(quantization_config, "desc_act") and quantization_config.desc_act:
         # Check static_group
         if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
-            not hasattr(quantization_config, "static_groups")
+                not hasattr(quantization_config, "static_groups")
         ):
             raise NotImplementedError(
                 "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound"
@@ -582,40 +512,30 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = quantization_config.backend
     else:
         backend = "auto"
-    # target_backend could be None
-    _, backend = parse_target_device_and_backend(backend)
 
-    if (
-        hasattr(quantization_config, "packing_format") and "auto-round" in quantization_config.quant_method
-    ):  # pragma: no cover
+    # Set packing format
+    if (hasattr(quantization_config, "packing_format") and
+            "auto-round" in quantization_config.quant_method): # pragma: no cover
         packing_format = quantization_config.packing_format
     elif "gptq" in quantization_config.quant_method:  # pragma: no cover
-        packing_format = "auto_gptq"
+        packing_format = "auto_round:auto_gptq"
     elif "awq" in quantization_config.quant_method:
-        packing_format = "auto_awq"
+        packing_format = "auto_round:auto_awq"
     else:  # pragma: no cover
-        packing_format = "auto_gptq"
-        logger.warning("quantization backend must be specified. Set it to 'auto_gptq' by default.")
+        packing_format = "auto_round:auto_gptq"
+        logger.warning("quantization backend must be specified. Set it to 'auto_round:auto_gptq' by default.")
     if packing_format == "auto":
-        packing_format = "auto_gptq"
-
+        packing_format = "auto_round:auto_gptq"
     layer_configs = get_layer_config(model, quantization_config)
-    if packing_format.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
-        packing_format = packing_format[len("auto_round:") :]
 
-    orig_backend = find_backend(packing_format)
-
-    if backend.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
-        backend = backend[len("auto_round:") :]
-
-    used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
-    if backend == "auto" or backend == "":
-        best_backend = get_highest_priority_backend(
+    used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+    if backend == "auto":
+        best_backend = get_highest_priority_backend( # TODO pass activation scheme
             quantization_config.bits,
             quantization_config.sym,
             quantization_config.group_size,
             target_device,
-            BackendInfos[orig_backend].packing_format,
+            packing_format,
         )
         if best_backend is not None and best_backend not in used_backends:
             requirements = BackendInfos[best_backend].requirements

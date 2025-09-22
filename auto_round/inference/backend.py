@@ -14,15 +14,13 @@
 
 import functools
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import AutoRoundFormat
-from auto_round.inference.auto_quantizer import AutoHfQuantizer
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
@@ -72,7 +70,7 @@ class BackendInfo:
     group_size: Optional[list[int]] = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
-    alias: Optional[list[str]] = None
+    alias: Optional[list[str]] = None,
     requirements: Optional[list[str]] = None
     # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
@@ -402,16 +400,14 @@ BackendInfos["hpu_zp"] = BackendInfo(
 )
 
 
-def check_compatible(backend_name, device, config, packing_format, in_features, out_features, check_requirements=True):
+def check_compatible(backend_name: str, device: str, config: dict, packing_format: str, in_features: int,
+                     out_features: int, check_requirements=True):
     """Checks if the given configuration is compatible with the specified backend.
 
     Args:
         backend_name (str): The name of the backend to check compatibility for.
         device (str): The device on which the backend operates (e.g., 'cuda', 'cpu').
-        bits (int): The bit-width of the quantization (e.g., 2, 4, 8).
-        group_size (Optional[int]): The size of the quantization group. Can be None if
-            not required by the backend.
-        sym (bool): Whether symmetric quantization is required (True for symmetric).
+        config(dict): scheme
         packing_format (str): The packing format used by the backend (e.g., 'triton').
         in_features (int): The number of input features for the model layer.
         out_features (int): The number of output features for the model layer.
@@ -450,7 +446,7 @@ def check_compatible(backend_name, device, config, packing_format, in_features, 
         return False
 
     # Check if the format is convertible when packing formats differ
-    if packing_format == backend.packing_format or packing_format in backend.convertable_format:
+    if packing_format in backend.packing_format:
         pass
     else:
         return False
@@ -740,10 +736,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
     )
 
 
-def get_all_compatible_backend(device, backend, orig_backend, config, in_features, out_features):
-    # Get packing format from the original backend
-    packing_format = BackendInfos[orig_backend].packing_format
-
+def get_all_compatible_backend(device:str, packing_format:str, config:dict, in_features:int, out_features:int)->list[str]:
     # Find compatible backends
     compatible_backends = [
         key
@@ -755,7 +748,8 @@ def get_all_compatible_backend(device, backend, orig_backend, config, in_feature
     return compatible_backends
 
 
-def get_layer_backend(device, backend, orig_backend, config, in_features, out_features):
+def get_layer_backend(device: str, backend: str, packing_format: str, config: dict, in_features: int,
+                      out_features: int)->str:
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
     This function first checks if the specified backend supports the layer with the provided configuration.
@@ -766,15 +760,10 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
         device (str):
             The device on which the layer will run, e.g., 'cpu', 'cuda'.
         backend (str):
-            The target backend to be used for this layer.
-        orig_backend (str):
+            The target backend to be used for this layer."auto","triton","gptqmodel", etc,
+        packing_format (str):
             The original backend from which packing format information is retrieved.
-        bits (int):
-            The number of bits used for quantization.
-        group_size (int):
-            The group size for quantization.
-        sym (bool):
-            Whether symmetric quantization is enabled.
+        config (dict): Layer config.
         in_features (int):
             The number of input features for the layer.
         out_features (int):
@@ -789,17 +778,18 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
             If the specified backend is not supported.
             If no compatible backend is found for the given layer configuration.
     """
-    # Check if the provided backend is in BackendInfos
-    backend = find_backend(backend)
-    logger.trace(f"Found backend: {backend} for device: {device}, orig_backend: {orig_backend}")
-    if backend not in BackendInfos.keys():
-        raise ValueError(f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection.")
 
-    packing_format = BackendInfos[orig_backend].packing_format
+    backends = []
+    if backend == "auto":
+        backends = BackendInfos.keys()
+    else:
+        for key in BackendInfos.keys():
+            if backend == key or (BackendInfos[key].alias and backend in BackendInfos[key].alias):
+                backends.append(key)
 
     # Find and store other compatible backends
     supported_backends = []
-    for key in BackendInfos.keys():
+    for key in backends:
         if check_compatible(key, device, config, packing_format, in_features, out_features):
             logger.trace(f"Backend {key} is compatible")
             supported_backends.append(key)
@@ -807,7 +797,7 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
     # Raise an error if no compatible backends are found
     if len(supported_backends) == 0:
         supported_backends_need_package = get_all_compatible_backend(
-            device, backend, orig_backend, config, in_features, out_features
+            device, packing_format, config, in_features, out_features
         )
 
         if len(supported_backends_need_package) > 0:
@@ -819,7 +809,7 @@ def get_layer_backend(device, backend, orig_backend, config, in_features, out_fe
             backend_info = BackendInfos[supported_backends_need_package[0]]
             process_requirement(backend_info.requirements, target_device=device)
 
-        return None
+        return ""
 
     # Sort the compatible backends by priority and return the one with the highest priority
     supported_backends = sorted(
@@ -850,7 +840,7 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
             continue
 
         # Check if the format is convertible when packing formats differ
-        if packing_format == backend.packing_format or packing_format in backend.convertable_format:
+        if packing_format in backend.packing_format:
             pass
         else:
             continue
