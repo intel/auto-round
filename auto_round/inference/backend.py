@@ -82,15 +82,15 @@ def feature_multiply_checker(in_feature, out_feature, config, in_feature_multipl
 
 
 def feature_multiply_checker_group_size(
-        in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
+    in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
 ):
     group_size = config["group_size"]
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
     return (
-            in_feature % in_feature_multiplier == 0
-            and out_feature % out_feature_multiplier == 0
-            and in_feature % group_size == 0
+        in_feature % in_feature_multiplier == 0
+        and out_feature % out_feature_multiplier == 0
+        and in_feature % group_size == 0
     )
 
 
@@ -109,11 +109,11 @@ gptqmodel_marlin_feature_checker = functools.partial(
 
 
 def fp8_static_scheme_checker(
-        in_feature: int,
-        out_feature: int,
-        config: QuantizationScheme,
-        in_feature_multiplier: Optional[int] = None,
-        out_feature_multiplier: Optional[int] = None,
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
 ):
     from auto_round.schemes import FP8_STATIC
 
@@ -133,21 +133,21 @@ def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationSch
 
 
 def mxfp8_scheme_checker(
-        in_feature: int,
-        out_feature: int,
-        config: QuantizationScheme,
-        in_feature_multiplier: Optional[int] = None,
-        out_feature_multiplier: Optional[int] = None,
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
 ):
     return _scheme_checker_common(config, ar_schemes.MXFP8)
 
 
 def mxfp4_scheme_checker(
-        in_feature: int,
-        out_feature: int,
-        config: QuantizationScheme,
-        in_feature_multiplier: Optional[int] = None,
-        out_feature_multiplier: Optional[int] = None,
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
 ):
     return _scheme_checker_common(config, ar_schemes.MXFP4)
 
@@ -726,8 +726,8 @@ def find_backend(target_backend: str, orig_backend: str = None):
     for key in matched_keys:
         target_info = BackendInfos[key]
         if (
-                target_info.packing_format == orig_info.packing_format
-                or orig_info.packing_format in target_info.convertable_format
+            target_info.packing_format == orig_info.packing_format
+            or orig_info.packing_format in target_info.convertable_format
         ):
             return key
 
