@@ -224,9 +224,9 @@ def float8_e4m3fn_hpu_ste(x: torch.Tensor):
 
 @lru_cache(None)
 def get_gaudi_fp8_ste_func():
-    from auto_round.utils import is_hpu_supported
+    from auto_round.utils import is_hpex_available
 
-    if is_hpu_supported():
+    if is_hpex_available():
         fn = float8_e4m3fn_hpu_ste
         logger.warning_once("Using HPU STE for FP8")
     else:

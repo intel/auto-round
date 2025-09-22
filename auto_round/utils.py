@@ -116,7 +116,7 @@ class LazyImport(object):
         """Init LazyImport object.
 
         Args:
-           module_name (string): The name of module imported later
+            module_name (string): The name of module imported later
         """
         self.module_name = module_name
         self.module = None
@@ -144,13 +144,31 @@ class LazyImport(object):
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
+################ Check available sys.module to decide behavior #################
+def is_package_available(package_name: str) -> bool:
+    """Check if the package exists in the environment without importing.
+
+    Args:
+        package_name (str): package name
+    """
+    from importlib.util import find_spec
+
+    package_spec = find_spec(package_name)
+    return package_spec is not None
+
+
+## check hpex
+if is_package_available("habana_frameworks"):
+    _hpex_available = True
+    import habana_frameworks.torch.hpex  # pylint: disable=E0401
+else:
+    _hpex_available = False
+
 
 @torch._dynamo.disable()
 @lru_cache(None)
-def is_optimum_habana_available():
-    from transformers.utils.import_utils import is_optimum_available
-
-    return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
+def is_hpex_available():
+    return _hpex_available
 
 
 def get_module(module, key):
@@ -553,7 +571,7 @@ def detect_device(device: Union[str, int, torch.device] = None) -> str:
         if torch.cuda.is_available():
             device = torch.device("cuda")
             # logger.info("Using GPU device")
-        elif is_optimum_habana_available():  # pragma: no cover
+        elif is_hpex_available():  # pragma: no cover
             device = torch.device("hpu")
             # logger.info("Using HPU device")
         elif torch.xpu.is_available():  # pragma: no cover
@@ -780,15 +798,6 @@ def is_autoround_exllamav2_available():
     return res
 
 
-@lru_cache(None)
-def is_hpu_supported():  # pragma: no cover
-    try:
-        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-    except ImportError as e:
-        return False
-    return True
-
-
 def get_library_version(library_name):
     from packaging.version import Version
 
@@ -906,7 +915,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
 
 @torch._dynamo.disable()
 def clear_memory(tensor=None):
-    if is_hpu_supported():
+    if is_hpex_available():
         # hpu does not have empty_cache
         return
     else:
