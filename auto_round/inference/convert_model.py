@@ -13,10 +13,11 @@
 # limitations under the License.
 import os
 import re
-from typing import Union
+from typing import Union, Any
 
 import torch
 import torch.nn as nn
+from pyparsing import Optional
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
@@ -122,10 +123,10 @@ def get_keys_to_not_convert(model):
 
 
 def _get_modules_to_not_convert(
-    model,
-    skip_modules=None,
-    keep_in_fp32_modules=None,
-    add_default_skips: bool = False,
+        model,
+        skip_modules=None,
+        keep_in_fp32_modules=None,
+        add_default_skips: bool = False,
 ):
     if skip_modules is None or add_default_skips:
         modules_to_not_convert = get_keys_to_not_convert(model)
@@ -195,7 +196,6 @@ def get_layer_config(model, quantization_config):
             - "group_size" (int): Group size for quantization.
             - "data_type" (str): Data type used for quantization.
             - "sym" (bool): Whether symmetric quantization is applied.
-            - "clip" (bool): Whether weight clipping is enabled.
     """
     bits = quantization_config.bits
     group_size = quantization_config.group_size
@@ -277,25 +277,36 @@ def get_layer_config(model, quantization_config):
     return layer_configs
 
 
-def get_device(obj: Union[torch.Tensor, nn.Module]):
+def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
     if isinstance(obj, torch.Tensor):
         return obj.device
     return next(obj.parameters()).device
 
 
-def _replace_by_quant_layers(module: nn.Module, layer_configs, backend, target_device, packing_format):
-    """
-    Replaces linear layers in the given module with quantized layers.
+def _replace_by_quant_layers(
+        module: nn.Module,
+        layer_configs: dict,
+        backend: str,
+        target_device: str,
+        packing_format: str,
+) -> list:
+    """Replaces linear layers in a module with quantized layers according to configs.
+
+    This function iterates over each layer in `layer_configs`, checks if it requires
+    quantization, determines the appropriate backend, creates a quantized layer, and
+    replaces the original layer in the module.
 
     Args:
         module (nn.Module): The module containing layers to be quantized.
         layer_configs (dict): Configuration for each layer's quantization.
-        backend (str): Backend for quantization (device and format).
-        target_device (str): Device for execution ('cuda', 'cpu', 'hpu').
-        orig_backend (str): Original backend of the model.
+        backend (str): Default backend for quantization.
+        target_device (str): Target device for execution ('cuda', 'cpu', 'hpu', etc.).
+        packing_format (str): Packing format for the quantized layers.
 
     Returns:
-        dict: Flags indicating which backends were used.
+        list: List of backends actually used for the layers.
+    Raises:
+        ValueError: If no compatible backend is found for a layer and `backend` is not "auto".
     """
 
     used_backends = []
@@ -309,8 +320,8 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, backend, target_d
         in_features, out_features = _get_layer_features(layer)
         if in_features is None:
             continue  # Skip unsupported layer types
-
-        key = f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
+        scheme_key = "_".join(f"{k}={v}" for k, v in config.items())
+        key = f"{scheme_key}_{in_features}_{out_features}"
         if key in backend_cache:
             layer_backend = backend_cache[key]
         else:
@@ -384,69 +395,90 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
         )
     elif (
-        AutoRoundFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundFormat.MXFP8.value in layer_backend
-        or AutoRoundFormat.MXFP4.value in layer_backend
+            AutoRoundFormat.FP8_STATIC.value in layer_backend
+            or AutoRoundFormat.MXFP8.value in layer_backend
+            or AutoRoundFormat.MXFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
+
     # Default quantized layer creation
-    try:
-        return QuantLinear(
-            config["bits"],
-            config["group_size"],
-            in_features,
-            out_features,
-            bias,
-            weight_dtype=layer.weight.dtype,
-            clip=config["clip"],
-        )
-    except:  # Handle cases where `clip` is not a valid argument
-        return QuantLinear(
-            config["bits"], config["group_size"], in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        )
+    return QuantLinear(
+        config["bits"],
+        config["group_size"],
+        in_features,
+        out_features,
+        bias,
+        weight_dtype=layer.weight.dtype,
+    )
 
 
-def infer_target_device(device_map=None):
+def infer_target_device(device_map: Optional[Union[dict[Any, Any], int, str]] = None) -> str:
+    """Infers the target device from a device_map.
+
+    Args:
+        device_map (Optional[Union[Dict[Any, Any], int, str]]):
+            - If None, defaults to "cpu".
+            - If dict, checks values to infer the device type.
+            - If int or str, assumes it represents a device.
+
+    Returns:
+        str: The inferred target device, e.g., "cpu" or "cuda".
+    """
     if device_map is None:
-        target_device = "cpu"
-    elif isinstance(device_map, dict):
-        devices = set(device_map.values())
-        target_device = "cpu"
-        for device in devices:
-            if device != "cpu" and device != "disk":
+        return "cpu"
+
+    if isinstance(device_map, dict):
+        for device in set(device_map.values()):
+            if device not in ("cpu", "disk"):
                 if isinstance(device, int):
-                    target_device = get_available_devices()[0]
-                else:
-                    target_device = str(device).split(":")[0]
-    else:
-        target_device = get_available_devices()[0]
-    return target_device
+                    return get_available_devices()[0]
+                return str(device).split(":")[0]
+        return "cpu"
+
+    return get_available_devices()[0]
 
 
-def post_init(model, used_backends):
+def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
+    """Performs post-initialization for different quantization backends.
+
+    This function handles backend-specific post-init steps, including AutoGPTQ,
+    GPTQModel, IPEX/ITREx layers, and ExLLaMAv2 kernels. It also ensures the
+    model's data type is compatible with all used backends.
+
+    Args:
+        model (torch.nn.Module): The model to initialize.
+        used_backends (List[str]): List of backend names used for quantization.
+
+    """
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ipex_itrex_init = False
     used_gptq_exllamav2 = False
-    for used_backend in used_backends:
-        if used_backend.startswith("auto_gptq"):
+
+    # Determine which backends require post-init
+    for backend in used_backends:
+        if backend.startswith("auto_gptq"):
             need_autogptq_init = True
-            if used_backend == "auto_gptq:exllamav2":
+            if backend == "auto_gptq:exllamav2":
                 used_gptq_exllamav2 = True
-        elif used_backend.startswith("gptqmodel"):
+        elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
-        elif used_backend.startswith("ipex"):
+        elif backend.startswith(("ipex", "qbit")):
             need_ipex_itrex_init = True
-        elif used_backend.startswith("qbit"):
-            need_ipex_itrex_init = True
+
+    # AutoGPTQ post-init
     if need_autogptq_init:
         from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
 
         model = gptq_post_init(model, use_act_order=False)
+
+    # GPTQModel post-init
     if need_gptqmodel_init:
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
 
         model = gptq_post_init(model, use_act_order=False)
+
+    # IPEX/ITREx post-init
     if need_ipex_itrex_init:
         message = "repacking to CPU/XPU format"
         layers = []  ## ipex post_init  will add one more layer
@@ -457,68 +489,64 @@ def post_init(model, used_backends):
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):
             layer.post_init()
 
+    # ExLLaMAv2 kernels
     if used_gptq_exllamav2:
         _import_exllamav2_kernels()
 
-    ## convert datatype
-    data_types = []
-    for used_backend in used_backends:
-        backend = BackendInfos[used_backend]
-        data_types.append(backend.dtype)
-    common = set(data_types[0])
-    for l in data_types[1:]:
-        common &= set(l)
-    common = list(common)
-    if len(common) > 0 and str(model.dtype).split(".")[-1] not in common:
-        if common[0] == "float16":
-            model = model.to(torch.float16)
-            logger.warning("force model to float16")
-        elif common[0] == "bfloat16":
-            model = model.to(torch.bfloat16)
-            logger.warning("force model to bfloat16")
+    # Determine common data type across backends
+    data_types = [set(BackendInfos[b].dtype) for b in used_backends]
+    common_dtypes = set.intersection(*data_types) if data_types else set()
+
+    # Force model dtype if needed
+    model_dtype_name = str(model.dtype).split(".")[-1]
+    if common_dtypes and model_dtype_name not in common_dtypes:
+        target_dtype = None
+        if "float16" in common_dtypes:
+            target_dtype = torch.float16
+        elif "bfloat16" in common_dtypes:
+            target_dtype = torch.bfloat16
+
+        if target_dtype:
+            model.to(target_dtype)
+            logger.warning(f"Forced model to {target_dtype}")
 
 
-def convert_hf_model(model: nn.Module, target_device: str = "cpu"):
-    """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
+def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.Module, list]:
+    """Converts a HuggingFace model into an AutoRound model by replacing layers with quantized layers.
 
-    This method extracts the quantization configuration from the model and adjusts its layers
-    according to the specified quantization parameters. It supports different backends and
-    ensures that the model's data type is compatible with the selected hardware.
+    This function extracts the quantization configuration from the model and updates its layers
+    according to the specified quantization parameters. It supports different backends,
+    sets appropriate packing formats, and ensures compatibility with the target device.
 
     Args:
-        model (nn.Module):
-            The model to be converted into an AutoRound model.
-        target_device (str, optional): the device to run the model, should be one of "cuda", "cpu", "hpu", "xpu".
+        model (nn.Module): The HuggingFace model to be converted.
+        target_device (str, optional): Device to run the model on.
+            One of {"cuda", "cpu", "hpu", "xpu"}. Defaults to "cpu".
 
     Returns:
-        nn.Module:
-            The converted AutoRound model with quantized layers.
+        Tuple[nn.Module, list]:
+            The converted AutoRound model and a list of used backends.
 
     Raises:
-        ValueError:
-            If the quantization backend is not specified in the configuration.
+        NotImplementedError: If the GPTQ model uses an unsupported `g_idx`.
+        ValueError: If quantization backend is not properly specified.
     """
-
     quantization_config = model.config.quantization_config
 
-    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act:
-        # Check static_group
-        if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
-            not hasattr(quantization_config, "static_groups")
-        ):
+    # Check desc_act + static_groups
+    if getattr(quantization_config, "desc_act", False):
+        if not getattr(quantization_config, "static_groups", False):
             raise NotImplementedError(
-                "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound"
+                "This GPTQ model may contain a non-dummy g_idx, "
+                "which is not yet supported by AutoRound."
             )
 
-    if hasattr(quantization_config, "backend"):
-        backend = quantization_config.backend
-    else:
-        backend = "auto"
+    # Determine backend
+    backend = getattr(quantization_config, "backend", "auto")
 
-    # Set packing format
-    if (
-        hasattr(quantization_config, "packing_format") and "auto-round" in quantization_config.quant_method
-    ):  # pragma: no cover
+    # Determine packing format
+    if (hasattr(quantization_config, "packing_format") and
+            "auto-round" in quantization_config.quant_method):  # pragma: no cover
         packing_format = quantization_config.packing_format
     elif "gptq" in quantization_config.quant_method:  # pragma: no cover
         packing_format = "auto_round:auto_gptq"
@@ -526,25 +554,32 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu"):
         packing_format = "auto_round:auto_awq"
     else:  # pragma: no cover
         packing_format = "auto_round:auto_gptq"
-        logger.warning("quantization backend must be specified. Set it to 'auto_round:auto_gptq' by default.")
+        logger.warning(
+            "Quantization backend must be specified. "
+            "Defaulting to 'auto_round:auto_gptq'."
+        )
+
     if packing_format == "auto":
         packing_format = "auto_round:auto_gptq"
-    layer_configs = get_layer_config(model, quantization_config)
-    if packing_format == "auto_round:awq":  # handle tricky setting
+    elif packing_format == "auto_round:awq":  # normalize tricky settings
         packing_format = "auto_round:auto_awq"
-    if packing_format == "auto_round:gptq":
+    elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
 
+    # Replace layers with quantized versions
+    layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+
+    # Suggest a better backend if available
     if backend == "auto":
-        best_backend = get_highest_priority_backend(  # TODO pass activation scheme
+        best_backend = get_highest_priority_backend( # TODO add activation scheme
             quantization_config.bits,
             quantization_config.sym,
             quantization_config.group_size,
             target_device,
             packing_format,
         )
-        if best_backend is not None and best_backend not in used_backends:
+        if best_backend and best_backend not in used_backends:
             requirements = BackendInfos[best_backend].requirements
             process_requirement(requirements, target_device, "warning")
 
