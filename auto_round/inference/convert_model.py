@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import re
-from typing import Union, Any
+from typing import Any, Union
 
 import torch
 import torch.nn as nn
@@ -123,10 +123,10 @@ def get_keys_to_not_convert(model):
 
 
 def _get_modules_to_not_convert(
-        model,
-        skip_modules=None,
-        keep_in_fp32_modules=None,
-        add_default_skips: bool = False,
+    model,
+    skip_modules=None,
+    keep_in_fp32_modules=None,
+    add_default_skips: bool = False,
 ):
     if skip_modules is None or add_default_skips:
         modules_to_not_convert = get_keys_to_not_convert(model)
@@ -284,11 +284,11 @@ def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
 
 
 def _replace_by_quant_layers(
-        module: nn.Module,
-        layer_configs: dict,
-        backend: str,
-        target_device: str,
-        packing_format: str,
+    module: nn.Module,
+    layer_configs: dict,
+    backend: str,
+    target_device: str,
+    packing_format: str,
 ) -> list:
     """Replaces linear layers in a module with quantized layers according to configs.
 
@@ -395,9 +395,9 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
         )
     elif (
-            AutoRoundFormat.FP8_STATIC.value in layer_backend
-            or AutoRoundFormat.MXFP8.value in layer_backend
-            or AutoRoundFormat.MXFP4.value in layer_backend
+        AutoRoundFormat.FP8_STATIC.value in layer_backend
+        or AutoRoundFormat.MXFP8.value in layer_backend
+        or AutoRoundFormat.MXFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 
@@ -537,16 +537,16 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     if getattr(quantization_config, "desc_act", False):
         if not getattr(quantization_config, "static_groups", False):
             raise NotImplementedError(
-                "This GPTQ model may contain a non-dummy g_idx, "
-                "which is not yet supported by AutoRound."
+                "This GPTQ model may contain a non-dummy g_idx, " "which is not yet supported by AutoRound."
             )
 
     # Determine backend
     backend = getattr(quantization_config, "backend", "auto")
 
     # Determine packing format
-    if (hasattr(quantization_config, "packing_format") and
-            "auto-round" in quantization_config.quant_method):  # pragma: no cover
+    if (
+        hasattr(quantization_config, "packing_format") and "auto-round" in quantization_config.quant_method
+    ):  # pragma: no cover
         packing_format = quantization_config.packing_format
     elif "gptq" in quantization_config.quant_method:  # pragma: no cover
         packing_format = "auto_round:auto_gptq"
@@ -554,10 +554,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     else:  # pragma: no cover
         packing_format = "auto_round:auto_gptq"
-        logger.warning(
-            "Quantization backend must be specified. "
-            "Defaulting to 'auto_round:auto_gptq'."
-        )
+        logger.warning("Quantization backend must be specified. " "Defaulting to 'auto_round:auto_gptq'.")
 
     if packing_format == "auto":
         packing_format = "auto_round:auto_gptq"
@@ -572,7 +569,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     # Suggest a better backend if available
     if backend == "auto":
-        best_backend = get_highest_priority_backend( # TODO add activation scheme
+        best_backend = get_highest_priority_backend(  # TODO add activation scheme
             quantization_config.bits,
             quantization_config.sym,
             quantization_config.group_size,
