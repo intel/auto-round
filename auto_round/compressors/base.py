@@ -385,10 +385,11 @@ class BaseCompressor(object):
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
-        
+
         # sq, for test
         if sq:
             from auto_round.calib_dataset import get_dataloader
+
             dataloader = get_dataloader(tokenizer, seqlen, bs=batch_size, nsamples=nsamples)
             auto_alpha_args = {
                 "init_alpha": 0.5,
