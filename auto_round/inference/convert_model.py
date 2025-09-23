@@ -13,11 +13,10 @@
 # limitations under the License.
 import os
 import re
-from typing import Any, Union
+from typing import Union
 
 import torch
 import torch.nn as nn
-from pyparsing import Optional
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
@@ -235,7 +234,7 @@ def get_layer_config(model, quantization_config):
             # Find matching blocks if no explicit names are provided
             all_blocks = get_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
-            ##speed up the matching
+            # Speed up the matching
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
 
@@ -412,7 +411,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     )
 
 
-def infer_target_device(device_map: Optional[Union[dict[Any, Any], int, str]] = None) -> str:
+def infer_target_device(device_map: Union[dict, int, str, None]= None) -> str:
     """Infers the target device from a device_map.
 
     Args:

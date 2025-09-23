@@ -356,7 +356,7 @@ BackendInfos["qbits"] = BackendInfo(
 BackendInfos["qbits_zp"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
-    packing_format=AWQ_FORMAT + GPTQ_FORMAT,
+    packing_format=GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
     dtype=["float16", "bfloat16"],
@@ -366,10 +366,35 @@ BackendInfos["qbits_zp"] = BackendInfo(
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
+BackendInfos["qbits"] = BackendInfo(
+    device=["cpu"],
+    sym=[True, False],
+    packing_format=GPTQ_FORMAT_NO_ZP,
+    bits=[2, 4, 8],
+    group_size=None,
+    priority=1,
+    checkers=[],
+    alias=["itrex", "qbits"],
+    dtype=["float16", "bfloat16"],
+    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
+)
+
+BackendInfos["qbits_awq"] = BackendInfo(
+    device=["cpu"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    bits=[2, 4, 8],
+    group_size=None,
+    dtype=["float16", "bfloat16"],
+    priority=1,
+    checkers=[],
+    alias=["itrex", "qbits"],
+    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
+)
 BackendInfos["ipex_gptq"] = BackendInfo(
     device=["cpu", "xpu"],
     sym=[True, False],
-    packing_format=GPTQ_FORMAT + AWQ_FORMAT,
+    packing_format=GPTQ_FORMAT,
     bits=[4],
     group_size=None,
     priority=5,
@@ -379,6 +404,18 @@ BackendInfos["ipex_gptq"] = BackendInfo(
     requirements=["intel-extension-for-pytorch>=2.5"],
 )
 
+BackendInfos["ipex_awq"] = BackendInfo(
+    device=["cpu", "xpu"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    bits=[4],
+    group_size=None,
+    priority=5,
+    checkers=[],
+    dtype=["float16", "bfloat16"],
+    alias=["ipex"],
+    requirements=["intel-extension-for-pytorch>=2.5"],
+)
 BackendInfos["hpu"] = BackendInfo(
     device=["hpu"],
     sym=[True, False],
