@@ -506,7 +506,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             target_dtype = torch.bfloat16
 
         if target_dtype:
-            model.to(target_dtype)
+            model = model.to(target_dtype)
             logger.warning(f"Forced model to {target_dtype}")
 
 
