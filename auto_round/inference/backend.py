@@ -344,7 +344,7 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
 BackendInfos["qbits"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
-    packing_format=AWQ_FORMAT + GPTQ_FORMAT_NO_ZP,
+    packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[2, 4, 8],
     group_size=None,
     priority=1,
@@ -367,18 +367,6 @@ BackendInfos["qbits_zp"] = BackendInfo(
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
-BackendInfos["qbits"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT_NO_ZP,
-    bits=[2, 4, 8],
-    group_size=None,
-    priority=1,
-    checkers=[],
-    alias=["itrex", "qbits"],
-    dtype=["float16", "bfloat16"],
-    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
-)
 
 BackendInfos["qbits_awq"] = BackendInfo(
     device=["cpu"],

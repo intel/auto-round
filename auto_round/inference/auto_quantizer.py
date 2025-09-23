@@ -57,7 +57,7 @@ AUTOROUND_MINIMUM_VERSION = version.parse("0.2")
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
-    try:  ##TODO remove it later
+    try:  # TODO remove it later
         import auto_round
 
         return True, auto_round.__version__
