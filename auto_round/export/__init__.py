@@ -78,14 +78,14 @@ def _packing_layer_with_autoawq(*args, **kwargs):
     return pack_layer(*args, **kwargs)
 
 
-@register_format("llmcompressor")
+@register_format("llm_compressor")
 def _save_quantized_as_llmcompressor(*args, **kwargs):
     from auto_round.export.export_to_llmcompressor.export import save_quantized_as_llmcompressor
 
     return save_quantized_as_llmcompressor(*args, **kwargs)
 
 
-@register_layer_packing("llmcompressor")
+@register_layer_packing("llm_compressor")
 def _packing_layer_with_llmcompressor(*args, **kwargs):
     from auto_round.export.export_to_llmcompressor.export import pack_layer
 

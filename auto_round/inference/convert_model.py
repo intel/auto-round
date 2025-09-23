@@ -21,6 +21,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
+from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
@@ -29,6 +30,8 @@ from auto_round.inference.backend import (
     get_layer_backend,
     process_requirement,
 )
+from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -37,11 +40,9 @@ from auto_round.utils import (
     get_block_names,
     get_layer_names_in_block,
     get_module,
-    is_hpu_supported,
+    is_hpex_available,
     set_module,
 )
-
-logger = getLogger(__name__)
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
@@ -61,7 +62,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except:
-        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
+        modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
             if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
@@ -163,7 +164,7 @@ def get_available_devices():
     if torch.cuda.is_available():
         devices.append("cuda")
 
-    if is_hpu_supported():
+    if is_hpex_available():
         devices.append("hpu")
 
     if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -238,6 +239,24 @@ def get_layer_config(model, quantization_config):
     data_type = getattr(quantization_config, "data_type", "int")  # Default to "int" if not specified
     sym = quantization_config.sym
 
+    act_bits = getattr(quantization_config, "act_bits", None)
+    act_group_size = getattr(quantization_config, "act_group_size", False)
+    act_sym = getattr(quantization_config, "act_sym", None)
+    act_data_type = getattr(quantization_config, "act_data_type", None)
+    act_dynamic = getattr(quantization_config, "act_dynamic", False)
+
+    default_quant_scheme = QuantizationScheme(
+        bits=bits,
+        group_size=group_size,
+        data_type=data_type,
+        sym=sym,
+        act_bits=act_bits,
+        act_group_size=act_group_size,
+        act_sym=act_sym,
+        act_data_type=act_data_type,
+        act_dynamic=act_dynamic,
+    )
+
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
@@ -284,17 +303,14 @@ def get_layer_config(model, quantization_config):
     layer_names = list(set(layer_names).union(extra_config.keys()))
 
     # Construct final layer configuration
-    layer_configs = {
-        layer_name: {
-            "bits": extra_config.get(layer_name, {}).get("bits", bits),
-            "group_size": extra_config.get(layer_name, {}).get("group_size", group_size),
-            "data_type": extra_config.get(layer_name, {}).get("data_type", data_type),
-            "sym": extra_config.get(layer_name, {}).get("sym", sym),
-            "clip": extra_config.get(layer_name, {}).get("clip", False),
-        }
-        for layer_name in layer_names
-    }
-
+    layer_configs = {}
+    quant_scheme_attrs = QuantizationScheme.get_attributes()
+    for layer_name in layer_names:
+        layer_config = {}
+        layer_extra_config = extra_config.get(layer_name, {})
+        for scheme_attr in quant_scheme_attrs:
+            layer_config[scheme_attr] = layer_extra_config.get(scheme_attr, getattr(default_quant_scheme, scheme_attr))
+        layer_configs[layer_name] = QuantizationScheme.from_dict(layer_config)
     return layer_configs
 
 
@@ -361,12 +377,13 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
                 layer_backend = _get_layer_backend(
                     target_device, target_backend, orig_backend, config, in_features, out_features
                 )
+                logger.trace(f"Got backend {layer_backend} for {layer_name}.")
                 backend_cache[key] = layer_backend
 
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
-        logger.debug(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
+        logger.debug(f"{layer_name}: {layer_backend} backend is used")  # TODO delete
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
@@ -391,9 +408,7 @@ def _get_layer_backend(target_device, target_backend, orig_backend, config, in_f
         target_device,
         target_backend,
         orig_backend,
-        config["bits"],
-        config["group_size"],
-        config["sym"],
+        config,
         in_features,
         out_features,
     )
@@ -415,7 +430,7 @@ def _import_exllamav2_kernels():
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
     """Creates a quantized layer using the appropriate class."""
-    QuantLinear = dynamic_import_inference_linear(layer_backend, config["bits"], config["group_size"], config["sym"])
+    QuantLinear = dynamic_import_inference_linear(layer_backend, config)
     bias = layer.bias is not None
 
     # Special handling for AWQ layers
@@ -437,6 +452,12 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
         )
+    elif (
+        AutoRoundFormat.FP8_STATIC.value in layer_backend
+        or AutoRoundFormat.MXFP8.value in layer_backend
+        or AutoRoundFormat.MXFP4.value in layer_backend
+    ):
+        return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
     try:
         return QuantLinear(
@@ -561,7 +582,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = quantization_config.backend
     else:
         backend = "auto"
-
     ##target_backend could be None
     _, backend = parse_target_device_and_backend(backend)
 
@@ -582,13 +602,13 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     layer_configs = get_layer_config(model, quantization_config)
     if packing_format.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
         packing_format = packing_format[len("auto_round:") :]
+
     orig_backend = find_backend(packing_format)
 
     if backend.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
         backend = backend[len("auto_round:") :]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
-
     if backend == "auto" or backend == "":
         best_backend = get_highest_priority_backend(
             quantization_config.bits,

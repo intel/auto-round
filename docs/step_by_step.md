@@ -107,19 +107,25 @@ Please use ',' to split datasets, ':' to split parameters of a dataset and '+' t
 
 ## 3 Quantization
 
-### Supported Quantization Configurations
+### Supported Quantization Schemes
 
-AutoRound supports several quantization configurations:
+AutoRound supports several Schemes:
 
-- **Int8 Weight Only**
-- **Int4 Weight Only**
-- **Int3 Weight Only**
-- **Int2 Weight Only**
+- **W4A16**(bits:4,group_size:128,sym:True,act_bits:16)
+- **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
+- **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
+- **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
 - **Mixed bits Weight only**
+- **NVFP4**(data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
+- **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
+- **FPW8A16**(**Research feature,no real kernel**, data_type:fp8,act_data_type 16:,group_size 0->per tensor )
+- **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tenosr)
+
+Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
 
 ### Supported export Formats
 
-**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+**AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
 inference. **[2,3,4,8] bits are supported**.
 
 **GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
@@ -133,8 +139,7 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
 
-**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
-supported**.
+**LLM-Compressor Format**:** NVFP4, MXFP(Kernel is WIP), INT8 are supported**.
 
 ### Hardware Compatibility
 
@@ -148,7 +153,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
    This setting offers a better trade-off between accuracy and tuning cost, and is recommended in all scenarios.
 
     ```bash
-    auto-round --model facebook/opt-125m  --bits 4 --group_size 128  --format "auto_gptq,auto_awq,auto_round"
+    auto-round --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 - **Best Settings:**
@@ -156,7 +161,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
   This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
   
   ```bash
-  auto-round-best --model facebook/opt-125m  --bits 4 --group_size 128  --format "auto_gptq,auto_awq,auto_round"
+  auto-round-best --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 - **Light Settings:**
@@ -164,7 +169,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
     This setting offers the best speed (2-3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B
     
     ```bash
-    auto-round-light --model facebook/opt-125m  --bits 4  --group_size 128 --format "auto_gptq,auto_awq,auto_round"
+    auto-round-light --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 ### API usage
@@ -172,25 +177,18 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
 This setting offers a better trade-off between accuracy and tuning cost, and is recommended in all scenarios.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-bits, group_size, sym = 4, 128, True
-autoround = AutoRound(
-    model,
-    tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
+model_name_or_path = "facebook/opt-125m"
+ar = AutoRound(
+    model_name_or_path,
+    scheme="W4A16",
     # enable_torch_compile=True,
 )
 
 output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
+ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
 #### Mixed bits Usage
@@ -199,74 +197,55 @@ Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. I
 vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign different bit widths to these layers.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-bits, group_size, sym = 4, 128, True
+model_name_or_path = "facebook/opt-125m"
+
 layer_config = {  #  Supports both full layer names and fuzzy (partial) matching
     "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32},
     "model.decoder.layers.*k_proj": {"bits": 2, "group_size": 32},
 }
-autoround = AutoRound(
-    model,
-    tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
+ar = AutoRound(
+    model_name_or_path,
     layer_config=layer_config,
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format="auto_round")
+ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 #### AutoRoundBest recipe
 This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-bits, group_size, sym = 4, 128, True
-autoround = AutoRound(
-    model, tokenizer, bits=bits, group_size=group_size, sym=sym, nsamples=512, iters=1000, low_gpu_mem_usage=True
-)
+model_name_or_path = "facebook/opt-125m"
+ar = AutoRound(model=model_name_or_path, scheme="W4A16", nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format="auto_round")
+ar.quantize_and_save(output_dir, format="auto_round")
 ```
 #### AutoRoundLight recipe
 This setting offers the best speed (2 - 3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-bits, group_size, sym = 4, 128, True
-autoround = AutoRound(
-    model,
-    tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
+model_name_or_path = "facebook/opt-125m"
+
+ar = AutoRound(
+    model=model_name_or_path,
+    scheme="W4A16",
     iters=50,
     lr=5e-3,
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format="auto_round")
+ar.quantize_and_save(output_dir, format="auto_round")
 ```
 #### Recipe recommendation
 
-In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
+In conclusion, we recommend using **auto-round for W4A16 and auto-round-best for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
 W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version
@@ -297,42 +276,31 @@ AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free b
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-bits, group_size, sym = 4, 32, True
-autoround = AutoRound(
-    model,
-    tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
+model_name_or_path = "facebook/opt-125m"
+ar = AutoRound(
+    model=model_name_or_path,
+    scheme="W4A16",
     iters=0,
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format="auto_round")
+ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
 This format is well-suited for CPU devices and is widely adopted by the community.
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-autoround = AutoRound(
-    model,
-    tokenizer,
+model_name_or_path = "facebook/opt-125m"
+ar = AutoRound(
+    model=model_name_or_path,
 )
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
+ar.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
 ```
 
 
@@ -361,29 +329,50 @@ The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, whi
 
 
 ### Device/Multi-GPU setting in Quantization
-**The tuning device is specified using the `device` argument in AutoRound API, _not_ through the `device_map` 
+**The tuning device is specified using the `device_map` argument in AutoRound API, _not_ through the `device_map` 
 parameter used by Transformers.from_pretrained.**
 
-
-There are typically two scenarios that require multi-GPU tuning: one is the calibration phase during LM head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
-
-#### Enable multiple gpus calibration in lm_head quantization
-For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
-  the GPU for efficient calibration. If the model is too large to fit into a single GPU, AutoRound will prompt the user to use `--device '0,1'` to load the model across multiple GPUs.
-
-#### Enable multiple gpus tuning for extremely large model
 AutoRound tunes the model in a block-by-block manner. Although the block size is much smaller than the model size, it still requires a significant amount of GPU memory for tuning—typically 10 times the block size. This can lead to out-of-memory (OOM) errors when working with extremely large models.
 
 For strategies to reduce GPU memory usage, please refer to the [Reduced GPU Memory Usage](###Adjust Hyperparameters)
-section below, where you 
-can adjust hyperparameters to optimize memory consumption.
+section below, where you  can adjust hyperparameters to optimize memory consumption.
 
-If adjusting hyperparameters does not resolve the issue, we also support mapping different layers within a block to 
+If adjusting hyperparameters does not resolve the issue a, a simple solution is just adding more devices in device_map, for example, 
+~~~python
+from auto_round import AutoRound
+
+model_name_or_path = "facebook/opt-125m"
+ar = AutoRound(
+    model=model_name_or_path,
+    device_map="0,1,2,3"
+)
+~~~
+
+or
+
+~~~bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "facebook/opt-125m" --scheme "W4A16" --device_map "auto"
+~~~
+
+
+There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
+
+#### Enable multiple gpus calibration in lm_head quantization
+For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
+  the GPU for efficient calibration. If there is no enough VRAM, some layers will fallback to RTN mode
+
+#### Manually set the device_map
+
+<details>
+<summary>Customized device map</summary>
+If device_map=auto does not correctly map the model, we also support mapping different layers within a block to 
 different devices by setting the `device_map` argument in the AutoRound API. For reference, we provide an example of 
 quantizing the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
-~~~python
+
+```python
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 model_name = "opensourcerelease/DeepSeek-R1-bf16"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -394,16 +383,23 @@ device_map = {}
 
 for n, m in block.named_modules():
     if isinstance(m, (torch.nn.Linear)):
-        if "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) < 63:
+        if "experts" in n and ("shared_experts" not in n) and int(n.split(".")[-2]) < 63:
             device = "cuda:1"
-        elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 63 and int(
-                n.split('.')[-2]) < 128:
+        elif (
+            "experts" in n
+            and ("shared_experts" not in n)
+            and int(n.split(".")[-2]) >= 63
+            and int(n.split(".")[-2]) < 128
+        ):
             device = "cuda:2"
-        elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 128 and int(
-                n.split('.')[-2]) < 192:
+        elif (
+            "experts" in n
+            and ("shared_experts" not in n)
+            and int(n.split(".")[-2]) >= 128
+            and int(n.split(".")[-2]) < 192
+        ):
             device = "cuda:3"
-        elif "experts" in n and ("shared_experts" not in n) and int(
-                n.split('.')[-2]) >= 192:
+        elif "experts" in n and ("shared_experts" not in n) and int(n.split(".")[-2]) >= 192:
             device = "cuda:4"
         else:
             device = "cuda:0"
@@ -413,13 +409,19 @@ for n, m in block.named_modules():
 
 from auto_round import AutoRound
 
-autoround = AutoRound(model=model, tokenizer=tokenizer, device_map=device_map, nsamples=512,
-                      batch_size=4, low_gpu_mem_usage=True, seqlen=2048,
-                      )
+autoround = AutoRound(
+    model=model,
+    tokenizer=tokenizer,
+    device_map=device_map,
+    nsamples=512,
+    batch_size=4,
+    low_gpu_mem_usage=True,
+    seqlen=2048,
+)
 autoround.quantize()
 autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
-~~~
-  
+```
+</details> 
   
 
 ### Adjust Hyperparameters
@@ -470,7 +472,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Currently only support in AutoRound format inference for this config
 
     ```bash
-    auto-round --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head --format "auto_round"
+    auto-round --model_name facebook/opt-125m  --scheme "W4A16" --quant_lm_head --format "auto_round"
     ```
 
 
@@ -615,6 +617,8 @@ If not explicitly specify '--task', the default value will be used (typically co
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
+Note: To use the vllm backend, please add `--vllm` into the upper command.
+
 ###  Eval the Quantized model
 
 - AutoRound format
@@ -649,4 +653,5 @@ If not explicitly specify '--task', the default value will be used (typically co
 
 * Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
+
 

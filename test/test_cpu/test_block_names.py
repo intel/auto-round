@@ -119,7 +119,7 @@ class NestedMoEModel(nn.Module):
 class TestQuantizationBlocks(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "MBZUAI/LaMini-GPT-124M"
+        self.model_name = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -196,7 +196,7 @@ class TestQuantizationBlocks(unittest.TestCase):
 
         from auto_round.utils import get_block_names
 
-        model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
         self.assertTrue(len(block_name) == 2)
@@ -208,7 +208,7 @@ class TestQuantizationBlocks(unittest.TestCase):
     def test_moe(self):
         from auto_round.utils import get_block_names
 
-        model_name = "Qwen/Qwen1.5-MoE-A2.7B"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
         # config = AutoConfig.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(model_name)
 
@@ -217,24 +217,6 @@ class TestQuantizationBlocks(unittest.TestCase):
         self.assertTrue(block_name == block_name_2)
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue("model.layers.23" == block_name_2[0][-1])
-        ##tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # python_path = sys.executable
-        # res = os.system(
-        #     f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iter 1 --nsamples 1 --format auto_round --output_dir test/saved --disable_eval")
-        # if res > 0 or res == -1:
-        #     assert False, "cmd line test fail, please have a check"
-        #
-        # quantized_model_path = "../saved"
-        #
-        # from auto_round import AutoHfQuantizer
-        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-        # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        # text = "There is a girl who likes adventure,"
-        # inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        # shutil.rmtree("./saved", ignore_errors=True)
-        # quant_config = model.config.quantization_config
-        # assert quant_config.to_quant_block_names is not None
 
 
 if __name__ == "__main__":

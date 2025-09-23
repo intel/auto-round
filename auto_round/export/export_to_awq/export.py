@@ -31,19 +31,21 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.export.utils import save_model
+from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
+    copy_python_files_from_model_cache,
     extract_block_names_to_str,
     filter_quantization_config,
     get_block_names,
     get_module,
-    logger,
     set_module,
 )
 
 
-def pack_layer(name, model, backend):
+def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  ##dese not support lm-head
         return
     layer = get_module(model, name)
@@ -72,6 +74,7 @@ def pack_layer(name, model, backend):
         init_only=False,
         scales=scale,
         zeros=zp,
+        device=device,
     )
     set_module(model, name, q_linear)
     if hasattr(layer, "weight"):
@@ -85,6 +88,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
     to_quant_block_names = kwargs.get("to_quant_block_names", None)
+    device = kwargs.get("device", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     image_processor = kwargs.get("image_processor", None)
@@ -124,7 +128,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, compressed_model, backend)
+                    pack_layer(name, compressed_model, backend, device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -141,11 +145,10 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
-
+    quantization_config["provider"] = "auto-round"
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
-
     quantization_config["modules_to_not_convert"] = modules_to_not_convert
     ##check module quantized in block, this may have bug for mixed precision quantization
     filter_quantization_config(quantization_config)
@@ -153,46 +156,6 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         compressed_model.config.quantization_config = quantization_config
     safe_serialization = kwargs.get("safe_serialization", True)
     dtype = torch.float16  ##force dtype to fp16
-    save(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model
-
-
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
-    """Save model state dict and configs.
-
-    Args:
-        model (`nn.Module`):
-            Model to be saved. The model can be wrapped or unwrapped.
-        save_dir (`str`):
-            Directory to which to save. Will be created if it doesn't exist.
-        max_shard_size (`str`, defaults to `"10GB"`):
-            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
-            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
-            <Tip warning={true}>
-
-            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
-            which will be bigger than `max_shard_size`.
-
-            </Tip>
-        safe_serialization (`bool`, defaults to `True`):
-            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    try:
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    except ValueError as e:
-        if hasattr(model, "generation_config"):
-            setattr(model.generation_config, "do_sample", True)
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_path = os.path.join(save_dir, "config.json")
-    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, "r") as file:
-            data = json.load(file)
-        data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, "w") as file:
-            json.dump(data, file, indent=2)
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)

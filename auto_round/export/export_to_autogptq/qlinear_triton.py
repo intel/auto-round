@@ -77,17 +77,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, g_idx=None):
+    def pack(self, linear, scales, zeros, g_idx=None, device=None):
         scales_t = scales.t().contiguous()
         self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):

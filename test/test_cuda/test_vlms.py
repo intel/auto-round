@@ -130,6 +130,33 @@ class TestAutoRound(unittest.TestCase):
         self.assertTrue(len(block_name) == 1)
         self.assertTrue(get_block_names(model) == block_name)
 
+    def test_mllm_detect(self):
+        from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
+
+        for model_name in [
+            "/models/Llama-3.2-11B-Vision-Instruct/",
+            "/models/deepseek-vl2-tiny/",
+            "/models/gemma-3-12b-it/",
+            "/models/Phi-3.5-vision-instruct",
+            "/models/Qwen2-VL-2B-Instruct",
+            "/models/SmolVLM-256M-Instruct",
+            "/models/Llama-4-Maverick-17B-128E-Instruct",
+            "/models/Mistral-Small-3.1-24B-Instruct-2503",
+            "/models/InternVL3-1B",
+            "/models/pixtral-12b",
+        ]:
+            self.assertTrue(is_mllm_model(model_name))
+            try:
+                model, _, _, _ = mllm_load_model(model_name)
+            except:
+                continue
+            self.assertTrue(is_mllm_model(model))
+
+        for model_name in ["/models/glm-4-9b-chat", "/models/Qwen2.5-1.5B-Instruct/"]:
+            self.assertFalse(is_mllm_model(model_name))
+            model, _, _ = llm_load_model(model_name)
+            self.assertFalse(is_mllm_model(model))
+
 
 if __name__ == "__main__":
     unittest.main()

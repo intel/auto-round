@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import transformers
 
+from auto_round.utils import _get_packing_device
 from auto_round_extension.triton.triton_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
@@ -102,16 +103,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, g_idx=None):
+    def pack(self, linear, scales, zeros, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):

@@ -41,6 +41,8 @@ import torch
 import torch.nn as nn
 import transformers
 
+from auto_round.utils import _get_packing_device
+
 logger = getLogger(__name__)
 
 
@@ -116,7 +118,8 @@ class QuantLinear(nn.Module):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None):
+    def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None, device=None):
+        device = _get_packing_device(device)
         scales_t = scales.t().contiguous()
 
         self.act_scales.data.copy_(act_scales.squeeze().clone())
@@ -124,9 +127,6 @@ class QuantLinear(nn.Module):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):

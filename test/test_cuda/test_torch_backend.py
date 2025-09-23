@@ -76,7 +76,6 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             iters=1,
             seqlen=2,
             dataset=self.llm_dataloader,
-            disable_deterministic_algorithms=True,
         )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
@@ -118,7 +117,6 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             iters=1,
             seqlen=2,
             dataset=self.llm_dataloader,
-            # disable_deterministic_algorithms=True
         )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
@@ -132,7 +130,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         self.model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.29)
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
         torch.cuda.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 

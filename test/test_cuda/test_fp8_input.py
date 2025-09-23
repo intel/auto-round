@@ -3,14 +3,13 @@ import shutil
 import sys
 import unittest
 
-from auto_round.eval.evaluation import simple_evaluate
-
 sys.path.insert(0, "../..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.eval.evaluation import simple_evaluate
 
 
 class TestAutoRound(unittest.TestCase):
@@ -94,6 +93,31 @@ class TestAutoRound(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.55)
 
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_fp8_model_gguf(self):
+        from llama_cpp import Llama
+
+        model_name = "Qwen/Qwen3-0.6B-FP8"
+
+        ar = AutoRound(model=model_name, iters=0)
+        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
+        for file in os.listdir(self.save_dir):
+            if file.endswith(".gguf"):
+                gguf_file = file
+        llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
+        output = llm("There is a girl who likes adventure,", max_tokens=32)
+        print(output)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+        ar = AutoRound(model=model_name, iters=1)
+        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
+        for file in os.listdir(self.save_dir):
+            if file.endswith(".gguf"):
+                gguf_file = file
+        llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
+        output = llm("There is a girl who likes adventure,", max_tokens=32)
+        print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
 

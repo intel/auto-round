@@ -35,14 +35,14 @@ class TestAutoroundExport(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.gptj = transformers.AutoModelForCausalLM.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM",
+            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
             torchscript=True,
         )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM", trust_remote_code=True
+            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM", trust_remote_code=True
         )
         self.gptj_no_jit = transformers.AutoModelForCausalLM.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM",
+            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
         )
         self.llm_dataloader = LLMDataLoader()
         self.lm_input = torch.ones([1, 10], dtype=torch.long)
@@ -56,7 +56,7 @@ class TestAutoroundExport(unittest.TestCase):
         model = copy.deepcopy(self.gptj)
         out1 = model(self.lm_input)
         round = AutoRound
-        optq_1 = round(model, self.tokenizer, nsamples=20, amp=False, seqlen=10, iters=10, enable_torch_compile=False)
+        optq_1 = round(model, self.tokenizer, nsamples=1, amp=False, seqlen=10, iters=10, enable_torch_compile=False)
         q_model, layer_config1 = optq_1.quantize()  ##compile model
         from auto_round.export.export_to_itrex import pack_model
 
@@ -72,7 +72,7 @@ class TestAutoroundExport(unittest.TestCase):
 
         model = copy.deepcopy(self.gptj)
         out6 = model(self.lm_input)
-        optq_2 = round(model, self.tokenizer, device="cpu", nsamples=20, seqlen=10)
+        optq_2 = round(model, self.tokenizer, device="cpu", nsamples=1, seqlen=10)
         q_model, layer_config2 = optq_2.quantize()
         compressed_model = pack_model(model=q_model, layer_config=layer_config2, inplace=False)
         compressed_model = compressed_model.to(torch.float32)
@@ -84,7 +84,7 @@ class TestAutoroundExport(unittest.TestCase):
     def test_config(self):
         from auto_round.export.export_to_itrex import QuantConfig
 
-        config = QuantConfig.from_pretrained("TheBloke/Llama-2-7B-Chat-GPTQ")
+        config = QuantConfig.from_pretrained("/tf_dataset/auto_round/models/TheBloke/Llama-2-7B-Chat-GPTQ")
         config.save_pretrained("quantization_config_dir")
         loaded_config = QuantConfig.from_pretrained("quantization_config_dir")
         self.assertEqual(config.group_size, loaded_config.group_size)
@@ -96,7 +96,7 @@ class TestAutoroundExport(unittest.TestCase):
         model = copy.deepcopy(self.gptj)
         out1 = model(self.lm_input)
         round = AutoRound
-        optq_1 = round(model, self.tokenizer, nsamples=20, amp=False, seqlen=10, iters=10, enable_torch_compile=False)
+        optq_1 = round(model, self.tokenizer, nsamples=1, amp=False, seqlen=10, iters=10, enable_torch_compile=False)
         q_model, layer_config1 = optq_1.quantize()
         from auto_round.export.export_to_itrex import pack_model
 

@@ -7,6 +7,10 @@ Validating the configuration and printing results for manual checking.
 Run `pytest test/test_cuda/test_vllm.py`.
 """
 
+import os
+import shutil
+import subprocess
+
 import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
@@ -43,3 +47,30 @@ def test_auto_round(model):
         generated_text = output.outputs[0].text
         if "France" in prompt:
             assert "Paris" in generated_text
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_vllm_lm_eval(model):
+    if shutil.which("auto-round") is None:
+        pytest.skip("auto-round CLI not available")
+
+    env = os.environ.copy()
+    env["VLLM_SKIP_WARMUP"] = "true"
+    env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+    cmd = [
+        "auto-round",
+        "--model",
+        model,
+        "--eval",
+        "--tasks",
+        "lambada_openai",
+        "--eval_bs",
+        "8",
+        "--limit",
+        "10",
+        "--vllm",
+    ]
+
+    proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert proc.returncode == 0, f"auto-round failed (rc={proc.returncode}):\n{proc.stdout}"

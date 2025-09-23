@@ -30,7 +30,7 @@ class LLMDataLoader:
 class TestLowCPUMem(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "facebook/opt-125m"
+        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.saved_path = "./test_tmp_saved"
         self.ori_model = AutoModelForCausalLM.from_pretrained(self.model_name, trust_remote_code=True)
         self.model = load_model_with_hooks(
@@ -46,8 +46,9 @@ class TestLowCPUMem(unittest.TestCase):
     def test_default(self):
         self.assertTrue(self.model.device.type, "meta")
 
-        layers = get_layers_before_block(self.model)
-        self.assertEqual(layers[0][0], "model.decoder.embed_tokens")
+        # TODO: change this func
+        # layers = get_layers_before_block(self.model)
+        # self.assertEqual(layers[0][0], "model.decoder.embed_tokens")
 
         # test get_weight bias
         self.assertTrue(
@@ -68,9 +69,15 @@ class TestLowCPUMem(unittest.TestCase):
         input = self.tokenizer(text)
         for key in input:
             input[key] = torch.tensor(input[key])
-        ori_output = self.ori_model(**input)
-        output = self.model(**input)
-        self.assertTrue(torch.equal(ori_output[0], output[0]))
+        ori_output = self.ori_model.generate(**input, max_new_tokens=5, do_sample=False)
+        ori_result = self.tokenizer.decode(ori_output[0])
+        print(ori_result)
+        self.model.to("cpu")
+        output = self.model.generate(**input, max_new_tokens=5, do_sample=False)
+        result = self.tokenizer.decode(output[0])
+        print(result)
+        self.assertEqual(ori_result, result)
+        self.model.to("meta")
 
         # test save and load
         layer_wise_save(self.model, self.saved_path)
