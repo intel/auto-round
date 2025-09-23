@@ -253,6 +253,18 @@ BackendInfos["auto_round:tritonv2"] = BackendInfo(
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
 )
 
+BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
+    device=["cuda", "xpu"],
+    sym=[True],
+    packing_format=GPTQ_FORMAT,
+    dtype=["float16", "bfloat16"],
+    bits=[2, 4, 8],
+    priority=2,
+    checkers=[feature_multiply_checker_32],
+    alias=["tritonv2", "tritonv2_zp", "triton"],
+    requirements=["triton>=2.0", "auto-round>=0.5.0"],
+)
+
 BackendInfos["auto_round:torch"] = BackendInfo(
     device=["cuda", "xpu", "cpu"],
     sym=[True, False],
@@ -265,17 +277,6 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     requirements=["auto-round>=0.5.1"],
 )
 
-BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
-    device=["cuda", "xpu"],
-    sym=[True],
-    packing_format=GPTQ_FORMAT,
-    dtype=["float16", "bfloat16"],
-    bits=[2, 4, 8],  # TODO add 3bits
-    priority=2,
-    checkers=[feature_multiply_checker_32],
-    alias=["tritonv2", "tritonv2_zp", "triton"],
-    requirements=["triton>=2.0", "auto-round>=0.5.0"],
-)
 
 BackendInfos["auto_round:torch_zp"] = BackendInfo(
     device=["cuda", "xpu", "cpu"],

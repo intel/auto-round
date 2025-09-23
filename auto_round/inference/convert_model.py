@@ -339,7 +339,7 @@ def _replace_by_quant_layers(
                 )
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
-        logger.debug(f"{layer_name}: {layer_backend} backend is used")  # TODO delete
+        logger.debug(f"{layer_name}: {layer_backend} backend is used")
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
