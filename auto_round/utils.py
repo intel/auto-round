@@ -1385,7 +1385,6 @@ def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
         if _is_fp8_linear(m):
             m.is_fp8_linear = True
             if not hasattr(model, "is_fp8"):
-                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 model.is_fp8 = True
     if hasattr(model, "is_fp8"):
         return True
