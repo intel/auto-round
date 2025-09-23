@@ -1199,9 +1199,6 @@ class BaseCompressor(object):
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
 
-        # if _is_fp8_model(self.model):
-        #     convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
-
         if isinstance(self.dataset, str):
             if self.tokenizer is None:
                 raise ValueError("A tokenizer must be set for the model when using a dataset string.")
@@ -1243,6 +1240,7 @@ class BaseCompressor(object):
         hooks = register_act_hook(model)
 
         try:
+            raise ValueError("Debug OOM")
             # Move model to target device
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 dispatch_model(self.model, self.model.hf_device_map)
@@ -1286,7 +1284,7 @@ class BaseCompressor(object):
                     clear_memory()
                     cnt = 1
                 cnt += 1
-        except RuntimeError as e:
+        except (RuntimeError,ValueError) as e:
             try:
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
