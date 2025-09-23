@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from auto_round.quantizers.base import QuantizerType
+from auto_round.quantizers.base import QuantizerType, BaseQuantizer
 from auto_round.quantizers.mode import TuningQuantizer, RTNQuantizer
 from auto_round.quantizers.model_type import LLMQuantizer
 from auto_round.quantizers.data_type import GGUFQuantizer
