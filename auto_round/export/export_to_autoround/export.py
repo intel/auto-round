@@ -235,7 +235,7 @@ def pack_layer(layer_name, model, backend, device=None):
             qlayer.pack(layer, scale, device=device)
         else:
             qlayer.pack(layer, scale, zp, None, device=device)
-        qlayer.to(device)
+        qlayer.to(orig_device)
     else:
         scale = scale.to(torch.float32).t().contiguous()
         if isinstance(zp, torch.Tensor):
