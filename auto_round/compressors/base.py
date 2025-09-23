@@ -1236,7 +1236,6 @@ class BaseCompressor(object):
         hooks = register_act_hook(model)
 
         try:
-            raise ValueError("Debug OOM")
             # Move model to target device
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 dispatch_model(self.model, self.model.hf_device_map)
