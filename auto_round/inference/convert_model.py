@@ -411,7 +411,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     )
 
 
-def infer_target_device(device_map: Union[dict, int, str, None]= None) -> str:
+def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
     """Infers the target device from a device_map.
 
     Args:
