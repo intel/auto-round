@@ -81,9 +81,9 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_hpex_available,
     is_mx_fp,
     is_nv_fp,
-    is_optimum_habana_available,
     is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
@@ -380,8 +380,8 @@ class BaseCompressor(object):
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
-        if is_optimum_habana_available():
-            logger.info("optimum Habana is available, import htcore explicitly.")
+        if is_hpex_available():
+            logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
@@ -3279,7 +3279,7 @@ class BaseCompressor(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return scale_loss
 
@@ -3296,7 +3296,7 @@ class BaseCompressor(object):
         """
         optimizer.step()
         # for hpu
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -3478,7 +3478,7 @@ class AdamCompressor(BaseCompressor):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return loss
 
@@ -3492,5 +3492,5 @@ class AdamCompressor(BaseCompressor):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()

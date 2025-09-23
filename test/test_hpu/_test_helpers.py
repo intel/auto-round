@@ -1,3 +1,14 @@
+import pytest
+
+
+def is_pytest_mode_compile():
+    return pytest.mode == "compile"
+
+
+def is_pytest_mode_lazy():
+    return pytest.mode == "lazy"
+
+
 def model_infer(model, tokenizer, apply_chat_template=False):
     prompts = [
         "Hello,my name is",
