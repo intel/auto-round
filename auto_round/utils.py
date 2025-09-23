@@ -2303,8 +2303,8 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
             set_module(model, n, new_module)
             cnt += 1
-        if cnt % 10 == 0:  # Tricky setting
-            clear_memory()
+            if cnt % 10 == 0:  # Tricky setting
+                clear_memory()
     return model
 
 
