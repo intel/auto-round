@@ -42,7 +42,7 @@ from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
-from auto_round.utils import is_hpu_supported
+from auto_round.utils import is_hpex_available
 
 logger = getLogger(__name__)
 import sys
@@ -126,7 +126,7 @@ class AutoHfQuantizer:
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
             )
-        if "auto-round" in quant_method or is_hpu_supported():  # pragma: no cover
+        if "auto-round" in quant_method or is_hpex_available():  # pragma: no cover
             target_cls = AutoRoundQuantizer
         else:
             target_cls = AUTO_QUANTIZER_MAPPING[quant_method]

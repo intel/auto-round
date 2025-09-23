@@ -37,7 +37,7 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_module,
-    is_hpu_supported,
+    is_hpex_available,
     set_module,
 )
 
@@ -161,7 +161,7 @@ def get_available_devices():
     if torch.cuda.is_available():
         devices.append("cuda")
 
-    if is_hpu_supported():
+    if is_hpex_available():
         devices.append("hpu")
 
     if hasattr(torch, "xpu") and torch.xpu.is_available():
