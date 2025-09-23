@@ -823,7 +823,7 @@ class BaseCompressor(object):
 
         if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
             for i in range(len(formats)):
-                if formats[i] != "fake" and formats[i] != self.scheme.lower().startswith("gguf"):
+                if formats[i] != "fake" and formats[i] != self.scheme.lower():
                     logger.warning(
                         f"reset format {formats[i]} to {self.scheme.lower()} "
                         f"since scheme {self.scheme} can only be exported to format {self.scheme.lower()}"
