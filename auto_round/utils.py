@@ -79,8 +79,7 @@ SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 # Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
-# INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
-
+transformers.integrations.finegrained_fp8.FP8Linear
 if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
@@ -2302,6 +2301,11 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     for n, m in model.named_modules():
         if m.__class__.__name__ == "FP8Linear":
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
+            # 保存 forward hooks
+            forward_hooks = list(m._forward_hooks.values())
+            # 恢复 hooks
+            for hook in forward_hooks:
+                new_module.register_forward_hook(hook)
             set_module(model, n, new_module)
     return model
 
