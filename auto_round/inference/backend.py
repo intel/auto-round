@@ -70,7 +70,7 @@ class BackendInfo:
     group_size: Optional[list[int]] = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
-    alias: Optional[list[str]] = (None,)
+    alias: Optional[list[str]] = None
     requirements: Optional[list[str]] = None
     # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
