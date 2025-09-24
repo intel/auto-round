@@ -68,11 +68,15 @@ class BackendInfo:
     bits: list[int]
     dtype: list[str] = None
     group_size: Optional[list[int]] = None
+    act_bits: Optional[int] = None
+    act_group_size: Optional[int] = None
+    act_sym: Optional[bool] = None
+    act_data_type: Optional[str] = None
+    act_dynamic: Optional[bool] = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
     alias: Optional[list[str]] = None
     requirements: Optional[list[str]] = None
-    # TODO(Yi): Add more fields for activation dtype, group size, etc.
 
 
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
@@ -119,48 +123,6 @@ def fp8_static_scheme_checker(
     from auto_round.schemes import FP8_STATIC
 
     return config == FP8_STATIC
-
-
-def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationScheme):
-    SCHEME_CHECK_ATTRS = ["bits", "group_size", "sym", "data_type", "act_bits", "act_group_size", "act_sym"]
-
-    for attr in SCHEME_CHECK_ATTRS:
-        if getattr(config1, attr) != getattr(config2, attr):
-            logger.debug(
-                f"Scheme check failed on attribute {attr}: {getattr(config1, attr)} != {getattr(config2, attr)}"
-            )
-            return False
-    return True
-
-
-def mxfp8_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
-):
-    return _scheme_checker_common(config, ar_schemes.MXFP8)
-
-
-def mxfp4_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
-):
-    return _scheme_checker_common(config, ar_schemes.MXFP4)
-
-
-def nvfp4_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
-):
-    return _scheme_checker_common(config, ar_schemes.NVFP4)
 
 
 GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
@@ -226,6 +188,7 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     requirements=["auto-round>0.6.0"],
 )
 
+# TODO: complete the act_data_type for MXFP8/MXFP4/NVFP4
 # MXFP8
 BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
@@ -234,8 +197,13 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     group_size=[32],
     bits=[8],
+    act_bits=[8],
+    act_group_size=[32],
+    act_sym=[True],
+    act_data_type=["mx_fp_rceil"],
+    act_dynamic=[True],
     priority=0,
-    checkers=[mxfp8_scheme_checker, feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -248,8 +216,13 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     group_size=[32],
     bits=[4],
+    act_bits=[4],
+    act_group_size=[32],
+    act_sym=[True],
+    act_data_type=["mx_fp_rceil"],
+    act_dynamic=[True],
     priority=0,
-    checkers=[mxfp4_scheme_checker, feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -263,8 +236,13 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     group_size=[16],
     bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["nv_fp4_with_static_gs"],
+    act_dynamic=[True],
     priority=0,
-    checkers=[nvfp4_scheme_checker, feature_multiply_checker_16],
+    checkers=[feature_multiply_checker_16],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
