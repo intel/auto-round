@@ -446,7 +446,6 @@ def tune(args):
         minmax_lr=args.minmax_lr,
         mem_per_param_scale=args.mem_per_param_scale,
         nblocks=args.nblocks,
-        quant_lm_head=args.quant_lm_head,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
     )
@@ -461,6 +460,7 @@ def tune(args):
         act_dynamic=act_dynamic,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
+        quant_lm_head=args.quant_lm_head,
     )
     mllm_config = MLLMExtraConfig(
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
