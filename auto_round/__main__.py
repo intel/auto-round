@@ -461,6 +461,7 @@ def tune(args):
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
+        fp_layers=args.fp_layers,
     )
     mllm_config = MLLMExtraConfig(
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
@@ -482,7 +483,6 @@ def tune(args):
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,
-        fp_layers=args.fp_layers,
         not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
