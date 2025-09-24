@@ -137,6 +137,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         return model
 
     quantization_config = kwargs["serialization_dict"]
+    quantization_config.pop("regex_config") #as awq do not support mixed bits config saving
 
     if output_dir is None:
         return compressed_model
@@ -159,3 +160,4 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model
+
