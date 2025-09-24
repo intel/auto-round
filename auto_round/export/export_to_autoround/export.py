@@ -51,6 +51,7 @@ class AutoRoundFormat(str, Enum):
     FP8_STATIC = "fp8_static"
     MXFP8 = "mxfp8"
     MXFP4 = "mxfp4"
+    NVFP4 = "nvfp4"
     FP8 = "fp8"
 
 

@@ -95,6 +95,7 @@ def feature_multiply_checker_group_size(
 
 
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
+feature_multiply_checker_16 = functools.partial(feature_multiply_checker, in_feature_multiplier=16)
 in_output_feature_multiply_checker_32 = functools.partial(
     feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
@@ -150,6 +151,16 @@ def mxfp4_scheme_checker(
     out_feature_multiplier: Optional[int] = None,
 ):
     return _scheme_checker_common(config, ar_schemes.MXFP4)
+
+
+def nvfp4_scheme_checker(
+    in_feature: int,
+    out_feature: int,
+    config: QuantizationScheme,
+    in_feature_multiplier: Optional[int] = None,
+    out_feature_multiplier: Optional[int] = None,
+):
+    return _scheme_checker_common(config, ar_schemes.NVFP4)
 
 
 GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
@@ -221,9 +232,10 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
+    group_size=[32],
     bits=[8],
     priority=0,
-    checkers=[mxfp8_scheme_checker],
+    checkers=[mxfp8_scheme_checker, feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -234,9 +246,25 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
+    group_size=[32],
     bits=[4],
     priority=0,
-    checkers=[mxfp4_scheme_checker],
+    checkers=[mxfp4_scheme_checker, feature_multiply_checker_32],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.7.0"],
+)
+
+# NVFP4
+
+BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    dtype=["float32", "float16", "bfloat16"],
+    group_size=[16],
+    bits=[4],
+    priority=0,
+    checkers=[nvfp4_scheme_checker, feature_multiply_checker_16],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -535,6 +563,8 @@ def dynamic_import_inference_linear(backend, config):
         return ar_qmodules.MXFP8QuantLinear
     if "torch_mxfp4" in backend:
         return ar_qmodules.MXFP4QuantLinear
+    if "torch_nvfp4" in backend:
+        return ar_qmodules.NVFP4QuantLinear
 
     if "qbits" in backend:
         try:
