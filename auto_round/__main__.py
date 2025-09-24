@@ -436,16 +436,18 @@ def tune(args):
     extra_config = ExtraConfig()
     tuning_config = TuningExtraConfig(
         amp=not args.disable_amp,
-        lr=args.lr,
-        minmax_lr=args.minmax_lr,
-        enable_quanted_input=not args.disable_quanted_input,
-        nblocks=args.nblocks,
-        enable_minmax_tuning=not args.disable_minmax_tuning,
-        enable_norm_bias_tuning=args.enable_norm_bias_tuning,
-        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
-        to_quant_block_names=args.to_quant_block_names,
         disable_opt_rtn=args.disable_opt_rtn,
         enable_alg_ext=args.enable_alg_ext,
+        enable_minmax_tuning=not args.disable_minmax_tuning,
+        enable_norm_bias_tuning=args.enable_norm_bias_tuning,
+        enable_quanted_input=not args.disable_quanted_input,
+        enable_deterministic_algorithms=args.enable_deterministic_algorithms,
+        lr=args.lr,
+        minmax_lr=args.minmax_lr,
+        mem_per_param_scale=args.mem_per_param_scale,
+        nblocks=args.nblocks,
+        quant_lm_head=args.quant_lm_head,
+        to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
     )
     scheme_config = SchemeExtraConfig(
