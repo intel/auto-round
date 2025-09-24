@@ -349,11 +349,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
                 if layer_config[layer_name][key] is not None:
                     extra_config[layer_name][key] = layer_config[layer_name][key]
 
-    dynamic_config = quantization_config.pop("dynamic_config")
-    if dynamic_config is not None:
-        for name in dynamic_config.keys():
+    regex_config = quantization_config.pop("regex_config")
+    if regex_config is not None:
+        for name in regex_config.keys():
             regex_name = to_standard_regex(name)
-            extra_config[regex_name] = {**{k: dynamic_config[name][k] for k in REQUIRED_CONFIG_KEYS}}
+            extra_config[regex_name] = {**{k: regex_config[name][k] for k in REQUIRED_CONFIG_KEYS}}
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
@@ -399,3 +399,4 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+

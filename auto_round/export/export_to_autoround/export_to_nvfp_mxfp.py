@@ -39,6 +39,7 @@ from auto_round.utils import (
     is_nv_fp,
     set_amax_for_all_moe_layers,
     set_module,
+    to_standard_regex,
 )
 from auto_round.wrapper import WrapperWALayer
 
@@ -215,6 +216,13 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             for key in neq_keys:
                 if layer_config[layer_name][key] is not None:
                     extra_config[layer_name][key] = layer_config[layer_name][key]
+
+    regex_config = quantization_config.pop("regex_config")
+    if regex_config is not None:
+        for name in regex_config.keys():
+            regex_name = to_standard_regex(name)
+            extra_config[regex_name] = {**{k: regex_config[name][k] for k in REQUIRED_CONFIG_KEYS}}
+
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
@@ -254,3 +262,4 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+
