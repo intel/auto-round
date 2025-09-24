@@ -7456,7 +7456,7 @@ class ExaoneModel(TextModel):
         layer_norm_eps = hparams["layer_norm_epsilon"]
         intermediate_size = hparams["intermediate_size"] if "intermediate_size" in hparams else 4 * embed_dim
         num_layers = hparams["num_layers"]
-        # ignore for now as EXAONE-3.0-7.8B-Instruct attentino_dropout is 0.0
+        # ignore for now as EXAONE-3.0-7.8B-Instruct attention_dropout is 0.0
         # attention_dropout_rate = hparams["attention_dropout"]
         # ignore for now as EXAONE-3.0-7.8B-Instruct embed_dropout is 0.0
         # embed_dropout_rate = hparams["embed_dropout"]

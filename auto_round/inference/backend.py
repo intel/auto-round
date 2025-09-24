@@ -764,7 +764,7 @@ def find_backend(target_backend: str, orig_backend: str = None):
         target_info = BackendInfos[key]
         if (
             target_info.packing_format == orig_info.packing_format
-            or orig_info.packing_format in target_info.convertable_format
+            or orig_info.packing_format in target_info.convertible_format
         ):
             return key
 

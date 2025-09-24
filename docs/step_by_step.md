@@ -119,7 +119,7 @@ AutoRound supports several Schemes:
 - **NVFP4**(data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
 - **FPW8A16**(**Research feature,no real kernel**, data_type:fp8,act_data_type 16:,group_size 0->per tensor )
-- **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tenosr)
+- **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tensor)
 
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
 

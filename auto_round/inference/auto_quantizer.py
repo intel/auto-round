@@ -270,8 +270,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
             raise ValueError("group_size must be greater than 0 or equal to -1")
 
     def get_loading_attributes(self):
-        loading_attibutes_dict = {"backend": self.backend}
-        return loading_attibutes_dict
+        loading_attributes_dict = {"backend": self.backend}
+        return loading_attributes_dict
 
     def to_dict(self):
         config_dict = super().to_dict()
