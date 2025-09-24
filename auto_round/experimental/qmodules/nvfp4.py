@@ -118,6 +118,19 @@ class NVFP4QuantLinear(QModuleBase):
             ),
         )
 
+    @staticmethod
+    def _convert_global_scale_to_float32(state_dict: dict[str, torch.Tensor], name: str):
+        if name not in state_dict or state_dict[name].dtype == torch.float32:
+            return
+        original_scale = state_dict[name]
+        state_dict[name] = original_scale.to(torch.float32)
+        logger.warning_once("Forcing global scale to float32 for better precision.")
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        self._convert_global_scale_to_float32(state_dict, "weight_global_scale")
+        self._convert_global_scale_to_float32(state_dict, "input_global_scale")
+        return super().load_state_dict(state_dict, strict, assign)
+
     def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
         """
         Initialize weights.
@@ -153,7 +166,9 @@ class NVFP4QuantLinear(QModuleBase):
         return dq_weight
 
     def qdq_input(self, activation: torch.Tensor):
-        return _nvfp4_qdq(activation, self.config, self.input_global_scale)
+        original_dtype = activation.dtype
+        temp_qdq_act = _nvfp4_qdq(activation.to(torch.float32), self.config, self.input_global_scale)
+        return temp_qdq_act.to(original_dtype)
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
