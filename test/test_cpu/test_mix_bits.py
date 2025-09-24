@@ -8,9 +8,10 @@ from parameterized import parameterized
 sys.path.insert(0, "../..")
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
-from auto_round.testing_utils import require_gptqmodel
 
 from auto_round import AutoRound
+from auto_round.testing_utils import require_gptqmodel
+
 
 def _get_folder_size(path: str) -> float:
     """Return folder size in GB."""
@@ -45,7 +46,7 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    
+
     @require_gptqmodel
     def test_mixed_gptqmodel(self):
         bits, sym, group_size = 4, True, 128
@@ -68,11 +69,12 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
         from gptqmodel import GPTQModel
+
         model = GPTQModel.load(quantized_model_path)
-        assert (model.model.model.decoder.layers[0].self_attn.k_proj.bits == 8)
-        assert (model.model.model.decoder.layers[0].self_attn.q_proj.bits == 4)
-        result = model.generate("Uncovering deep insights begins with")[0] # tokens
-        assert("!!!" not in model.tokenizer.decode(result)) # string output
+        assert model.model.model.decoder.layers[0].self_attn.k_proj.bits == 8
+        assert model.model.model.decoder.layers[0].self_attn.q_proj.bits == 4
+        result = model.generate("Uncovering deep insights begins with")[0]  # tokens
+        assert "!!!" not in model.tokenizer.decode(result)  # string output
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_autoround_format(self):
@@ -97,14 +99,14 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
-        assert (model.model.decoder.layers[0].self_attn.k_proj.bits == 8)
-        assert (model.model.decoder.layers[0].self_attn.q_proj.bits == 3)
+        assert model.model.decoder.layers[0].self_attn.k_proj.bits == 8
+        assert model.model.decoder.layers[0].self_attn.q_proj.bits == 3
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+
 if __name__ == "__main__":
     unittest.main()
-
