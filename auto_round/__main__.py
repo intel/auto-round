@@ -40,6 +40,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
+        self.add_argument("--sq", action="store_true", help="whether to use smoothquant")
+
         self.add_argument(
             "--scheme",
             default="W4A16",
@@ -473,6 +475,7 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         scheme=scheme,
+        sq=args.sq,
         dataset=args.dataset,
         iters=args.iters,
         seqlen=args.seqlen,

@@ -130,6 +130,7 @@ class BaseCompressor(object):
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        sq: bool = False,
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -384,6 +385,33 @@ class BaseCompressor(object):
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
+        # sq, for test
+        if sq:
+            from auto_round.calib_dataset import get_dataloader
+
+            dataloader = get_dataloader(tokenizer, seqlen, bs=batch_size, nsamples=nsamples)
+            auto_alpha_args = {
+                "init_alpha": 0.5,
+                "alpha_min": 0.1,
+                "alpha_max": 1.0,
+                "alpha_step": 0.1,
+                "shared_criterion": "mean",
+                "n_samples": 512,  ##512 for cuda, 128 for cpu?
+                # "do_blockwise": True
+            }
+            from auto_round.smooth_quant import SmoothQuant
+
+            model = model.to(self.device)
+            sq = SmoothQuant(model, dataloader, device=model.device, group_size=-1)
+            model = sq.transform_model(
+                alpha=0.5,
+                # alpha="auto",
+                auto_alpha_args=auto_alpha_args,
+                folding=True,
+                op_types=[torch.nn.Linear, torch.nn.Conv2d],
+                calib_iter=100,
+            )
 
     def _set_device(self, device_map):
         if hasattr(self, "device") and self.device is not None:
