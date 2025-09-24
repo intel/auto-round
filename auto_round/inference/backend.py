@@ -256,7 +256,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
 
 BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
-    packing_format="",
+    packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
