@@ -1279,7 +1279,7 @@ class BaseCompressor(object):
                     clear_memory()
                     cnt = 1
                 cnt += 1
-        except (RuntimeError, ValueError) as e:
+        except RuntimeError as e:
             try:
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
