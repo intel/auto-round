@@ -119,7 +119,7 @@ class NestedMoEModel(nn.Module):
 class TestQuantizationBlocks(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "MBZUAI/LaMini-GPT-124M"
+        self.model_name = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -196,7 +196,7 @@ class TestQuantizationBlocks(unittest.TestCase):
 
         from auto_round.utils import get_block_names
 
-        model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
         self.assertTrue(len(block_name) == 2)
@@ -208,7 +208,7 @@ class TestQuantizationBlocks(unittest.TestCase):
     def test_moe(self):
         from auto_round.utils import get_block_names
 
-        model_name = "Qwen/Qwen1.5-MoE-A2.7B"
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
         # config = AutoConfig.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(model_name)
 

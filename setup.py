@@ -115,14 +115,22 @@ LIB_INSTALL_CFG = {
 if __name__ == "__main__":
     # There are two ways to install hpu-only package:
     # 1. python setup.py lib install
-    # 2. Within the gaudi docker where the HPU is available, we install the auto_round_lib by default.
+    # 2. Within the gaudi docker where the HPU is available, we install the "auto_round_lib" by default.
     is_user_requesting_library_build = "lib" in sys.argv
     if is_user_requesting_library_build:
         sys.argv.remove("lib")
     should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
-
     if should_build_library:
         package_name = "auto_round_lib"
+
+    # Install hpu dependencies when hpu is build args, and keep "auto_round" package name.
+    # Only available for source code installation, "python setup.py install hpu".
+    hpu_build = "hpu" in sys.argv
+    if hpu_build:
+        sys.argv.remove("hpu")
+        package_name = "auto_round"
+
+    if should_build_library or hpu_build:
         INSTALL_CFG = LIB_INSTALL_CFG
     else:
         package_name = "auto_round"

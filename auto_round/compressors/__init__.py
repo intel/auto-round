@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .mllm_dataset import get_mllm_dataloader
-from .template import Template, get_template, TEMPLATES
-from .autoround_mllm import AutoRoundMLLM
-from ..utils import LazyImport
-from .eval import mllm_eval, lmms_eval
+from auto_round.compressors.base import *
+from auto_round.compressors.mllm.compressor import MLLMCompressor
+from auto_round.compressors.config import (
+    ExtraConfig,
+    MLLMExtraConfig,
+    SchemeExtraConfig,
+    TuningExtraConfig,
+)

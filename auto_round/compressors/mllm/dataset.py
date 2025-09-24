@@ -20,8 +20,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
-from ..special_model_handler import check_mllm_model_batch
-from ..utils import logger
+from auto_round.logger import logger
+from auto_round.special_model_handler import check_mllm_model_batch
+
 from .template import Template
 from .utils import _extract_data_dir
 
@@ -246,7 +247,7 @@ def get_mllm_dataloader(
         return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
     else:
         # try to load text calibration dataset
-        from ..calib_dataset import get_dataloader
+        from auto_round.calib_dataset import get_dataloader
 
         dataloader = get_dataloader(tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:

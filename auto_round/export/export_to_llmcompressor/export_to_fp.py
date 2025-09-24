@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
+from auto_round.export.utils import save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -114,9 +115,8 @@ def pack_layer(name, model, backend, device=None):
     scale = layer.scale
     global_scale = getattr(layer, "weight_global_scale", None)
     input_global_scale = getattr(layer, "input_global_scale", None)
-    # zero = layer.zp
+    # zero = layer.zp # no zeros to handle, as mxfp not support asym quantization
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
-    ## no zeros to handle, as mxfp not support asym quantization
     qlayer.to(orig_device)
 
 
@@ -155,6 +155,9 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     device = kwargs.get("device", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    ar_quantization_config = kwargs["serialization_dict"]
+    regex_config = ar_quantization_config.pop("regex_config")
+    layer_config = kwargs["layer_config"]
     extra_config = {}
 
     if act_bits <= 8:
@@ -199,8 +202,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             for _ in executor.map(wrapper, names):
                 pass
 
-    ignore = ["lm_head"]
-    # ignore = generate_ignore_regex_list()
+    ignore = generate_ignore_regex_list(regex_config=regex_config, layer_config=layer_config)
 
     # get llm-compressor format config
     check_compressed_tensors_supported()
@@ -239,46 +241,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         processor.save_pretrained(output_dir)
 
     dtype = None
-    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-
-
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
-    """Save model state dict and configs.
-
-    Args:
-        model (`nn.Module`):
-            Model to be saved. The model can be wrapped or unwrapped.
-        save_dir (`str`):
-            Directory to which to save. Will be created if it doesn't exist.
-        max_shard_size (`str`, defaults to `"10GB"`):
-            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
-            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
-            <Tip warning={true}>
-
-            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
-            which will be bigger than `max_shard_size`.
-
-            </Tip>
-        safe_serialization (`bool`, defaults to `True`):
-            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_path = os.path.join(save_dir, "config.json")
-    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, "r") as file:
-            data = json.load(file)
-        data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, "w") as file:
-            json.dump(data, file, indent=2)
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
-
-    try:
-        copy_python_files_from_model_cache(model, save_dir)
-    except Exception as e:
-        logger.warning("Skipping source model Python file copy due to error: %s", e)
