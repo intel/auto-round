@@ -972,11 +972,7 @@ class BaseCompressor(object):
                 elif "auto_round" in format and (
                     is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
                 ):
-                    logger.warning(
-                        f"AutoRound supports exporting to format '{format}', "
-                        "but loading quantized models in this format is not yet supported. "
-                        "It is currently recommended to export to the 'llm_compressor' format."
-                    )
+                    pass
                 elif format != "fake":
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"

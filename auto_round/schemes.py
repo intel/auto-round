@@ -32,7 +32,6 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    clip: Optional[bool] = False
 
     @classmethod
     def from_dict(cls, config: dict):
