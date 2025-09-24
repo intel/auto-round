@@ -79,8 +79,7 @@ SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 # Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
-# INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
-
+# transformers.integrations.finegrained_fp8.FP8Linear
 if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
@@ -2298,10 +2297,14 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
     """
+    cnt = 0
     for n, m in model.named_modules():
         if m.__class__.__name__ == "FP8Linear":
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
             set_module(model, n, new_module)
+            cnt += 1
+            if cnt % 10 == 0:  # Tricky setting
+                clear_memory()
     return model
 
 
@@ -2344,7 +2347,6 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     """Download hugging face model from hf hub."""
     from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
     from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
-    from huggingface_hub.utils import EntryNotFoundError
 
     if cache_dir is None:
         cache_dir = HUGGINGFACE_HUB_CACHE
@@ -2829,4 +2831,3 @@ def json_serialize(obj: Any):
     if isinstance(obj, torch.dtype):
         return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
