@@ -95,6 +95,7 @@ def feature_multiply_checker_group_size(
 
 
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
+feature_multiply_checker_16 = functools.partial(feature_multiply_checker, in_feature_multiplier=16)
 in_output_feature_multiply_checker_32 = functools.partial(
     feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
@@ -233,7 +234,7 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[8],
     priority=0,
-    checkers=[mxfp8_scheme_checker],
+    checkers=[mxfp8_scheme_checker, feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -246,7 +247,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
     priority=0,
-    checkers=[mxfp4_scheme_checker],
+    checkers=[mxfp4_scheme_checker, feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -260,7 +261,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     dtype=["float32", "float16", "bfloat16"],
     bits=[4],
     priority=0,
-    checkers=[nvfp4_scheme_checker],
+    checkers=[nvfp4_scheme_checker, feature_multiply_checker_16],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
