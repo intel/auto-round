@@ -532,12 +532,8 @@ def dynamic_import_inference_linear(backend, config):
     Args:
         backend (str):
             The backend to be used for quantization (e.g., 'qbits', 'marlin', 'hpu', 'gptq', 'awq', 'auto_round').
-        bits (int):
-            The number of bits to be used for quantization.
-        group_size (Optional[int]):
-            The size of the quantization group (if applicable).
-        sym (bool):
-            Whether symmetric quantization is required.
+        config (QuantizationScheme):
+            The quantization configuration containing parameters like bits, group_size, and sym.
 
     Returns:
         class:
