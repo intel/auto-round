@@ -41,9 +41,11 @@ if TYPE_CHECKING:
 
 if "NO_LOCAL_GGUF" not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / "gguf-py"))
+
 from auto_round.utils import LazyImport
 
 gguf = LazyImport("gguf")
+
 MistralTokenizerType = LazyImport("gguf.vocab.MistralTokenizerType")
 MistralVocab = LazyImport("gguf.vocab.MistralVocab")
 DATASET_MEAN = LazyImport("mistral_common.tokens.tokenizers.multimodal.DATASET_MEAN")

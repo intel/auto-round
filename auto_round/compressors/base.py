@@ -1195,9 +1195,6 @@ class BaseCompressor(object):
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
 
-        if _is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
-
         if isinstance(self.dataset, str):
             if self.tokenizer is None:
                 raise ValueError("A tokenizer must be set for the model when using a dataset string.")
@@ -1244,6 +1241,8 @@ class BaseCompressor(object):
                 dispatch_model(self.model, self.model.hf_device_map)
             else:
                 model = model.to(self.device)
+            if _is_fp8_model(self.model):
+                convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
             cnt = 0
 
             # Run forward pass to accumulate imatrix
@@ -1422,7 +1421,6 @@ class BaseCompressor(object):
         """
         m = get_module(self.model, name)
 
-        # if m.__class__.__name__ == "FP8Linear":
         if _is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
