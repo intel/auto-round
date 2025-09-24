@@ -52,6 +52,8 @@ class NVFP4QuantLinear(QModuleBase):
     Quantized linear layer using NVFP4 quantization scheme.
     """
 
+    SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
+
     def __init__(
         self,
         in_features: int,
@@ -70,12 +72,10 @@ class NVFP4QuantLinear(QModuleBase):
         self.dtype = dtype
         self.pre_dequantized = False
 
-        SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
-
         # Validate dtype
         assert (
-            dtype in SUPPORTED_HIGHER_DTYPE
-        ), f"Expected dtype to be one of {SUPPORTED_HIGHER_DTYPE}, but got {dtype}."
+            dtype in self.SUPPORTED_HIGHER_DTYPE
+        ), f"Expected dtype to be one of {self.SUPPORTED_HIGHER_DTYPE}, but got {dtype}."
 
         # check group size
         assert self.group_size == config.group_size, f"Group size mismatch: {self.group_size} vs {config.group_size}"
