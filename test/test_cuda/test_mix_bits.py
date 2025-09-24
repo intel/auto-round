@@ -12,17 +12,6 @@ from auto_round.testing_utils import require_gptqmodel
 
 from auto_round import AutoRound
 
-def _get_folder_size(path: str) -> float:
-    """Return folder size in GB."""
-    total_size = 0
-    for dirpath, _, filenames in os.walk(path):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            if os.path.isfile(fp):
-                total_size += os.path.getsize(fp)
-    return total_size / (1024**3)  # convert to GB
-
-
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1
@@ -113,7 +102,6 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(
             self.model,
             self.tokenizer,
-            model_name,
             scheme="W4A16",
             iters=2,
             seqlen=2,
