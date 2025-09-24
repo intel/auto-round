@@ -46,13 +46,27 @@ class BackendInfo:
         device: A list of strings representing the devices the backend supports
             (e.g., 'cuda', 'cpu').
         sym: A list of booleans indicating whether the backend supports symmetric
-            quantization (True if symmetric, False if not).
-        packing_format: A string representing the packing format used by the backend
+            quantization for weights (True if symmetric, False if not).
+        packing_format: A list of strings representing the packing formats used by the backend
             (e.g., 'triton', 'qbits').
         bits: A list of integers specifying the bit-widths supported by the backend
-            (e.g., [2, 4, 8]).
-        group_size: An optional list of integers specifying the group size for
-            quantization. Defaults to None.
+            for weight quantization (e.g., [2, 4, 8]).
+        group_size: An optional list of integers specifying the group sizes supported
+            for weight quantization. Group size determines how weights are grouped
+            during quantization. Defaults to None.
+        dtype: An optional list of strings representing the data types supported by
+            the backend for weight quantization (e.g., 'float32', 'int8'). Defaults to None.
+        act_bits: An optional list of integers specifying the bit-widths supported
+            for activation quantization (e.g., [8, 16]). Defaults to None.
+        act_group_size: An optional list of integers specifying the group sizes
+            supported for activation quantization. Defaults to None.
+        act_sym: An optional list of booleans indicating whether the backend supports
+            symmetric quantization for activations (True if symmetric, False if not).
+            Defaults to None.
+        act_data_type: An optional list of strings representing the data types
+            supported for activations (e.g., 'mx_fp_rceil'). Defaults to None.
+        act_dynamic: An optional list of booleans indicating whether the backend
+            supports dynamic quantization for activations. Defaults to None.
         priority: An integer representing the backend's priority, where higher values
             indicate higher priority. Defaults to 0.
         checkers: A list of check functions (e.g., validation methods)
@@ -68,11 +82,11 @@ class BackendInfo:
     bits: list[int]
     dtype: list[str] = None
     group_size: Optional[list[int]] = None
-    act_bits: Optional[int] = None
-    act_group_size: Optional[int] = None
-    act_sym: Optional[bool] = None
-    act_data_type: Optional[str] = None
-    act_dynamic: Optional[bool] = None
+    act_bits: Optional[list[int]] = None
+    act_group_size: Optional[list[int]] = None
+    act_sym: Optional[list[int]] = None
+    act_data_type: Optional[list[str]] = None
+    act_dynamic: Optional[list[bool]] = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
     alias: Optional[list[str]] = None
