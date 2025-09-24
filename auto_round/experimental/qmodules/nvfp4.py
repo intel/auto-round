@@ -26,8 +26,6 @@ from auto_round.schemes import QuantizationScheme
 
 __all__ = ["NVFP4QuantLinear"]
 
-SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
-
 
 # Adapted from auto_round/data_type/nvfp.py
 def _nv_fp4_with_static_gs(
@@ -71,6 +69,8 @@ class NVFP4QuantLinear(QModuleBase):
         self.config = config
         self.dtype = dtype
         self.pre_dequantized = False
+
+        SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
 
         # Validate dtype
         assert (
