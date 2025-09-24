@@ -7705,7 +7705,7 @@ class GraniteHybridModel(Mamba2Model, GraniteMoeModel):
     def get_attn_layers(self):
         # Explicit list of layer type names
         if layer_types := self.hparams.get("layer_types"):
-            return [i for i, typ in enumerate(layer_types) if typ == "attention"]
+            return [i for i, layer_type in enumerate(layer_types) if layer_type == "attention"]
 
         # Layer types indicated by index or period
         attn_layers = self.hparams.get("attn_layer_indices", [])

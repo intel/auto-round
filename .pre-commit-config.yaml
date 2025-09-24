@@ -51,6 +51,11 @@ repos:
         additional_dependencies:
           - tomli
 
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.36.2
+    hooks:
+      - id: typos
+
   - repo: https://github.com/pycqa/isort
     rev: 6.0.1
     hooks:
