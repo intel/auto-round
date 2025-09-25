@@ -2750,6 +2750,16 @@ def get_avg_bits(module, with_lm_head=False):
         - For certain data types ("fp4_v2", "nv_fp4", "mx_fp4", "mx_fp8"), scale bits are added.
         - For "fp4_v2" and "nv_fp4", an additional 32 global scale bits are included.
     """
+    def _get_scale_num(bits, group_size, input_features, weight_numel):
+        if bits >= 16:
+            return 0
+        if group_size == 0:
+            return 1
+        elif group_size == -1:
+            return input_features
+        else:
+            return weight_numel // group_size
+
     all_numel = 0
     all_bits = 0
 
@@ -2760,18 +2770,18 @@ def get_avg_bits(module, with_lm_head=False):
         if n == lm_head_name and not with_lm_head:
             continue
         if isinstance(m, SUPPORTED_LAYER_TYPES):
+            # get weight bits
             m_numel = m.weight.numel()
             all_numel += m_numel
             w_bits = m.bits * m_numel
             all_bits += w_bits
-            if m.data_type in ("fp4_v2", "nv_fp", "mx_fp", "nv_fp4", "mx_fp4", "mx_fp8"):
-                scale_bits = 8 * (m_numel // m.group_size)
-                if m.data_type in ("fp4_v2", "nv_fp"):
-                    scale_bits += 32  # global scale bits
-                all_bits += scale_bits
-            else: # woq
-                scale_bits = 16 * (m_numel // m.group_size)
-                all_bits += scale_bits
+            # get scale bits
+            scale_num = _get_scale_num(m.bits, m.group_size, m.weight.shape[-1], m_numel)
+            bits_per_scale = 16 if m.data_type == "int" else 8
+            scale_bits = bits_per_scale * scale_num
+            if m.data_type in ("fp4_v2", "nv_fp"):
+                scale_bits += 32  # global scale bits
+            all_bits += scale_bits
 
     avg_bits = all_bits / all_numel if all_numel > 0 else 0
     return round(avg_bits, 6)
