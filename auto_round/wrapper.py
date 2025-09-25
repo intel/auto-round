@@ -110,7 +110,7 @@ class WrapperLinear(torch.nn.Module):
         if deepspeed_exists:
             if type(self.orig_layer) in [torch.nn.Linear, LinearLayer]:
                 self.orig_forward = self.linear_forward
-            elif isinstance(self.orig_layer, LinearAllreduce):
+            elif type(self.orig_layer) == LinearAllreduce:
                 self.orig_forward = self.all_reduce_linear_forward
                 self.mp_group = self.orig_layer.mp_group
             else:
