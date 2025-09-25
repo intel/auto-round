@@ -27,7 +27,7 @@ from auto_round.compressors import (
 )
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_mllm_model, is_diffusion_model
+from auto_round.utils import is_diffusion_model, is_mllm_model
 
 
 class AutoRound:
@@ -625,4 +625,4 @@ class AutoRoundDiffusion(DiffusionCompressor):
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             **kwargs,
-    )
+        )

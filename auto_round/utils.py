@@ -468,14 +468,14 @@ def collect_best_params(block):
 
 
 def block_forward(
-        block,
-        input_ids,
-        input_others,
-        amp=False,
-        amp_dtype=torch.float16,
-        device=torch.device("cpu"),
-        output_return_id=0,
-    ):
+    block,
+    input_ids,
+    input_others,
+    amp=False,
+    amp_dtype=torch.float16,
+    device=torch.device("cpu"),
+    output_return_id=0,
+):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -2808,11 +2808,12 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 def is_diffusion_model(model_or_path: Union[str, object]):
     if isinstance(model_or_path, str):
         if not os.path.isdir(model_or_path):
-                try:
-                    from huggingface_hub import hf_hub_download
-                    index_file = hf_hub_download(model_or_path, "model_index.json")
-                except:
-                    index_file = None
+            try:
+                from huggingface_hub import hf_hub_download
+
+                index_file = hf_hub_download(model_or_path, "model_index.json")
+            except:
+                index_file = None
 
         elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
             index_file = os.path.join(model_or_path, "model_index.json")

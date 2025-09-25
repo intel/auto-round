@@ -2690,9 +2690,7 @@ class BaseCompressor(object):
             batch_dim=self.batch_dim,
             share_cache_keys=self.shared_cache_keys,
         )
-        output_q = block_forward(
-            block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
-        )
+        output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
         return output_q
 
     def _quantize_block(
