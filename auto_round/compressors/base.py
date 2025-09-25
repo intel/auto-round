@@ -66,6 +66,7 @@ from auto_round.utils import (
     estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
+    get_avg_bits,
     get_block_names,
     get_device_memory,
     get_fp_layer_names,
@@ -95,7 +96,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    get_avg_bits,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 

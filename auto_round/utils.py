@@ -2750,6 +2750,7 @@ def get_avg_bits(module, with_lm_head=False):
         - For certain data types ("fp4_v2", "nv_fp4", "mx_fp4", "mx_fp8"), scale bits are added.
         - For "fp4_v2" and "nv_fp4", an additional 32 global scale bits are included.
     """
+
     def _get_scale_num(bits, group_size, input_features, weight_numel):
         if bits >= 16:
             return 0
