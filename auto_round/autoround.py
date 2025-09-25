@@ -154,6 +154,7 @@ class AutoRound:
         else:
             if extra_config:
                 extra_config.mllm_config = None
+                extra_config.diffusion_config = None
             model_cls.append(LLMCompressor)
 
         if enable_adam:
