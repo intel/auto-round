@@ -180,13 +180,13 @@ class DiffusionCompressor(BaseCompressor):
         return current_output
 
     def _get_current_q_output(
-            self,
-            block: torch.nn.Module,
-            input_ids: dict,
-            input_others: dict,
-            indices: list[int],
-            device: str,
-        ) -> torch.Tensor:
+        self,
+        block: torch.nn.Module,
+        input_ids: dict,
+        input_others: dict,
+        indices: list[int],
+        device: str,
+    ) -> torch.Tensor:
         output_config = output_configs.get(block.__class__.__name__, [])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
         current_input_ids, current_input_others = self._sampling_inputs(
