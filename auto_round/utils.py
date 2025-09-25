@@ -2820,8 +2820,7 @@ def is_diffusion_model(model_or_path: Union[str, object]):
             index_file = os.path.join(model_or_path, "model_index.json")
         return index_file is not None
     elif not isinstance(model_or_path, torch.nn.Module):
-        from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-
-        return isinstance(model_or_path, DiffusionPipeline)
+        pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
+        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False

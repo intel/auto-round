@@ -146,11 +146,13 @@ class AutoRound:
         if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
-            extra_config.diffusion_config = None
+            if extra_config:
+                extra_config.diffusion_config = None
         elif (extra_config and not extra_config.diffusion_config.is_default()) or is_diffusion_model(model):
             logger.info("using Diffusion mode for diffusion model.")
             model_cls.append(DiffusionCompressor)
-            extra_config.mllm_config = None
+            if extra_config:
+                extra_config.mllm_config = None
         else:
             if extra_config:
                 extra_config.mllm_config = None
