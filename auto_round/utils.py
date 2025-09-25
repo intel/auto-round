@@ -2308,24 +2308,6 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     return model
 
 
-def get_quant_keys():
-    keys = [
-        "bits",
-        "group_size",
-        "sym",
-        "data_type",
-        "scale_dtype",
-        "act_bits",
-        "act_group_size",
-        "act_sym",
-        "act_dynamic",
-        "act_data_type",
-        "super_bits",
-        "super_group_size",
-    ]
-    return keys
-
-
 def out_of_vram(error_msg):
     error_msg = str(error_msg)
     # CUDA

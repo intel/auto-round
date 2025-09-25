@@ -75,7 +75,6 @@ from auto_round.utils import (
     get_lm_head_name,
     get_max_vram,
     get_module,
-    get_quant_keys,
     get_shared_keys,
     htcore,
     infer_bits_by_data_type,
@@ -1710,7 +1709,7 @@ class BaseCompressor(object):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
-        self.has_qlayer_outside_block = self._set_layerwise_config(model, self.layer_config)
+        self.has_qlayer_outside_block = self._set_layerwise_config(self.model, self.layer_config)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
@@ -1956,7 +1955,7 @@ class BaseCompressor(object):
         # Process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
-        keys = get_quant_keys()
+        keys = [f.name for f in fields(QuantizationScheme)]
 
         for n, m in model.named_modules():
             # Delete previous configuration to avoid conflicts with prior tuning
