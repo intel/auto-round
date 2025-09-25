@@ -23,15 +23,38 @@ from transformers import set_seed
 from auto_round.utils import logger
 
 
-class DiffusionDataset(Dataset):
-    """Dataset for supervised fine-tuning."""
+DIFFUSION_DATASET: Dict[str, Dataset] = {}
 
-    COCO_URL = {
-        "coco2014": (
-            "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/"
-            "coco2014/captions/captions_source.tsv"
-        )
-    }
+
+COCO_URL = {
+    "coco2014": (
+        "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/"
+        "coco2014/captions/captions_source.tsv"
+    )
+}
+
+
+def register_dataset(name_list):
+    """Class decorator to register a DATASET subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        name: A string. Define the dataset type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(dataset):
+        for name in name_list.replace(" ", "").split(","):
+            DIFFUSION_DATASET[name] = dataset
+
+    return register
+
+@register_dataset("local")
+class Text2ImgDataset(Dataset):
+    """Dataset for supervised fine-tuning."""
 
     def __init__(
         self,
@@ -42,22 +65,9 @@ class DiffusionDataset(Dataset):
         self.captions = []
         self.caption_ids = []
 
-        if os.path.exists(dataset_path):
-            logger.info(f"use dataset {dataset_path}, loading from disk...")
-            df = pd.read_csv(dataset_path, sep="\t")
-        else:
-            from io import StringIO
+        logger.info(f"use dataset {dataset_path}, loading from disk...")
+        df = pd.read_csv(dataset_path, sep="\t")
 
-            import requests
-
-            dataset_path = "coco2014"
-
-            if dataset_path in self.COCO_URL:
-                logger.info(f"use dataset {dataset_path}, downloading ...")
-                text_data = requests.get(self.COCO_URL[dataset_path]).text
-                df = pd.read_csv(StringIO(text_data), sep="\t")
-            else:
-                raise KeyError(f"{dataset_path} is not support, we support {self.COCO_URL.keys()}.")
         for index, row in df.iterrows():
             if nsamples > 0 and index + 1 > nsamples:
                 break
@@ -88,7 +98,19 @@ def get_diffusion_dataloader(
     Returns:
         DataLoader: The DataLoader for the calibrated datasets.
     """
-    dataset = DiffusionDataset(dataset, nsamples)
+    if dataset in COCO_URL:
+        import requests
+
+        logger.info(f"use dataset {dataset}, downloading ...")
+        text_data = requests.get(COCO_URL[dataset]).text
+        with open("captions_source.tsv", "w") as f:
+            f.write(text_data)
+        dataset = "captions_source.tsv"
+
+    if isinstance(dataset, str) and os.path.exists(dataset):
+        dataset = DIFFUSION_DATASET["local"](dataset, nsamples)
+    else:
+        raise ValueError("Only support coco2014 dataset or loading local tsv file now.")
     set_seed(seed)
     dataloader_params = {"batch_size": bs, "shuffle": True}
 
