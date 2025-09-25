@@ -208,6 +208,7 @@ class TestAutoRound(unittest.TestCase):
             model = None
             del model
             torch.cuda.empty_cache()
+
     @multi_card
     def test_device_map_dict(self):
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
@@ -226,7 +227,7 @@ class TestAutoRound(unittest.TestCase):
             device_map=device_map,
         )
         autoround.quantize()
-        
+
         # test model_name
         model_name = "/models/opt-125m"
         autoround = AutoRound(
@@ -240,7 +241,7 @@ class TestAutoRound(unittest.TestCase):
             device_map=device_map,
         )
         autoround.quantize()
-    
+
     @multi_card
     @require_greater_than_050
     def test_device_map_for_triton(self):
