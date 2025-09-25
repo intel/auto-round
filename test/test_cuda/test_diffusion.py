@@ -57,7 +57,7 @@ class TestAutoRound(unittest.TestCase):
             layer_config=layer_config,
             dataset="/dataset/captions_source.tsv",
         )
-        # skip model saving since it taks much time
+        # skip model saving since it takes much time
         autoround.quantize()
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
