@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from collections import UserDict
+from dataclasses import fields
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -2278,8 +2279,8 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-
-    keys = get_quant_keys() + ["tmp_name"]
+    scheme_keys = [f.name for f in fields(QuantizationScheme)]
+    keys = scheme_keys + ["tmp_name"]
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
