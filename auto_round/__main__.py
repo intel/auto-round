@@ -483,7 +483,7 @@ def tune(args):
         fp_layers=args.fp_layers,
         not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
-        extra_config=extra_config
+        extra_config=extra_config,
     )
 
     model_name = args.model.rstrip("/")
