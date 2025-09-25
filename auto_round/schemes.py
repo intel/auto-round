@@ -14,9 +14,9 @@
 import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import Generator, List, Optional
+from typing import Optional, Iterable
 
-__all__ = ["QuantizationScheme", "preset_name_to_scheme"]
+__all__ = ["QuantizationScheme", "preset_name_to_scheme", "AutoScheme"]
 
 
 @dataclass
@@ -38,7 +38,7 @@ class QuantizationScheme:
         return cls(**config)
 
     @classmethod
-    def get_attributes(cls: "QuantizationScheme") -> List[str]:
+    def get_attributes(cls: "QuantizationScheme") -> list[str]:
         return [field.name for field in fields(cls)]
 
     def __getitem__(self, key: str):
@@ -180,6 +180,8 @@ FPW8A16 = QuantizationScheme.from_dict(
     }
 )
 
+
+
 # FP8 = asdict(QuantArgs.from_dict({
 #     "bits": 8,
 #     "group_size": 128,
@@ -201,6 +203,18 @@ FP8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
+# For AutoScheme 16 bits options
+BF16 = QuantizationScheme.from_dict(
+    {
+        "bits": 16,
+        "group_size": 0,
+        "data_type": "fp",
+        "act_bits": 16,
+        "act_data_type": "fp",
+    }
+)
+
+
 PRESET_SCHEMES = {
     "W4A16": W4A16,
     "W2A16": W2A16,
@@ -211,6 +225,7 @@ PRESET_SCHEMES = {
     "NVFP4": NVFP4,
     "FPW8A16": FPW8A16,
     "FP8_STATIC": FP8_STATIC,
+    "BF16": BF16,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
@@ -220,3 +235,11 @@ for key, val in GGUF_CONFIG.items():
     value.pop("embedding", None)
     value.pop("lm_head", None)
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
+
+
+@dataclass
+class AutoScheme:
+    options:Optional[Iterable[QuantizationScheme]]
+    target_bits:float
+    shared_layers:Optional[Iterable[Iterable[str]]]=None
+    method:str="naive_pre"

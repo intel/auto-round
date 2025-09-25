@@ -25,7 +25,7 @@ from auto_round.compressors import (
     MLLMCompressor,
 )
 from auto_round.logger import deprecated, logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, AutoScheme
 from auto_round.utils import is_mllm_model
 
 
@@ -64,6 +64,7 @@ class AutoRound:
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        auto_scheme: AutoScheme = None,
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -77,7 +78,6 @@ class AutoRound:
         seed: int = 42,
         # for adam
         enable_adam: bool = False,
-        # for MLLM
         extra_config: ExtraConfig = None,
         **kwargs,
     ) -> BaseCompressor:
@@ -159,6 +159,7 @@ class AutoRound:
             model=model,
             tokenizer=tokenizer,
             scheme=scheme,
+            auto_scheme=auto_scheme,
             layer_config=layer_config,
             dataset=dataset,
             iters=iters,

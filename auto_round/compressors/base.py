@@ -35,7 +35,7 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme, AutoScheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -130,6 +130,7 @@ class BaseCompressor(object):
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        auto_scheme: AutoScheme = None,
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -204,7 +205,6 @@ class BaseCompressor(object):
         """
         self.scheme = None
         self._parse_and_set_scheme(scheme, kwargs)
-
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
@@ -237,7 +237,7 @@ class BaseCompressor(object):
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        # deprecated, default not to use torch.use_deterministic_algorithms
+        # Deprecated, default not to use torch.use_deterministic_algorithms
         if not disable_deterministic_algorithms or enable_deterministic_algorithms:
             if not disable_deterministic_algorithms:
                 logger.warning(
@@ -255,26 +255,14 @@ class BaseCompressor(object):
         if device_map is None:
             device_map = 0
 
-        # Set device, must place after model loading
-        self._set_device(device_map)
-
-        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
-            self.device_map = device_map
-        elif isinstance(device_map, str) and "," in device_map:
-            device_map = device_map.replace(" ", "")  # Remove any spaces
-            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-            self.device_map = "auto"
-        else:
-            self.device_map = None
-        self._set_device_map_in_blocks(self.device_map)
 
         # Model related
         self.quantized = False
         if isinstance(model, str):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model,
-                device="cpu",
-                low_cpu_mem_mode=low_cpu_mem_usage,  # always load cpu first
+                device="cpu", # always load cpu first
+                low_cpu_mem_mode=low_cpu_mem_usage,
             )
         elif tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
@@ -289,16 +277,22 @@ class BaseCompressor(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
-        if len(not_quantize_layer_names) > 0:
-            logger.info(f"{not_quantize_layer_names} will not be quantized.")
-        if layer_config is None:
-            layer_config = {}
-        for name in not_quantize_layer_names:
-            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
-        self._parse_layer_config(layer_config)  # must place after model init
+        self._parse_layer_config(layer_config, fp_layers)  # must place after model init
 
         self.to_quant_block_names = to_quant_block_names
+
+        # Set device, must place after model loading
+        self._set_device(device_map)
+
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
+            self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
+        else:
+            self.device_map = None
+        self._set_device_map_in_blocks(self.device_map)
 
         # Tuning hyperparameters
         self.seed = seed
@@ -385,7 +379,7 @@ class BaseCompressor(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-    def _set_device(self, device_map):
+    def _set_device(self, device_map:Union[str, torch.device, int,dict])->None:
         if hasattr(self, "device") and self.device is not None:
             return
         if isinstance(device_map, (str, torch.device, int)):
@@ -409,8 +403,16 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
+    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]], fp_layers) -> None:
         """Parse and set the layer-wise quantization configuration."""
+        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
+        if len(not_quantize_layer_names) > 0:
+            logger.info(f"{not_quantize_layer_names} will not be quantized.")
+        if layer_config is None:
+            layer_config = {}
+        for name in not_quantize_layer_names:
+            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
+
         # Some other quantization configs
         self.layer_config = {} if layer_config is None else layer_config
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
@@ -1709,7 +1711,7 @@ class BaseCompressor(object):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
-        self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
+        self.has_qlayer_outside_block = self._set_layerwise_config(model, self.layer_config)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
@@ -1935,7 +1937,7 @@ class BaseCompressor(object):
             del layer_input
             clear_memory(q_layer_input)
 
-    def _set_layerwise_config(self, layer_config: dict) -> bool:
+    def _set_layerwise_config(self, model:torch.nn.Module, layer_config: dict) -> bool:
         """
         Sets the layer-wise configuration based on the provided `layer_config`.
         By default, only quantize layers in blocks.
@@ -1950,14 +1952,14 @@ class BaseCompressor(object):
         # Get the names of layers in quantization blocks
         supported_types = self.supported_types
         layers_in_blocks = get_layer_names_in_block(
-            self.model, supported_types, self.quant_block_list, self.inner_supported_types
+            model, supported_types, self.quant_block_list, self.inner_supported_types
         )
-        ##process regex in layer_config
+        # Process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
         keys = get_quant_keys()
 
-        for n, m in self.model.named_modules():
+        for n, m in model.named_modules():
             # Delete previous configuration to avoid conflicts with prior tuning
             for key in keys:
                 if hasattr(m, key):
@@ -1981,7 +1983,7 @@ class BaseCompressor(object):
                 for match_name in matched_names:
                     layer_config[match_name] = val
             else:
-                tmp_m = get_module(self.model, name)
+                tmp_m = get_module(model, name)
                 if not isinstance(tmp_m, torch.nn.Embedding):  # TODO not good code style
                     raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
 
@@ -1989,17 +1991,17 @@ class BaseCompressor(object):
 
         # Iterate through all modules in the model
         is_gguf = hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
-        for n, m in self.model.named_modules():
+        for n, m in model.named_modules():
             # Skip unsupported types
             if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                if n in self.layer_config:
+                if n in layer_config:
                     if not isinstance(m, torch.nn.Embedding):
                         logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
-                        self.layer_config.pop(n)
+                        layer_config.pop(n)
                         continue
                     if not is_gguf:
                         if not check_to_quantized(layer_config[n]):
-                            self.layer_config.pop(n)
+                            layer_config.pop(n)
                             continue
                 else:
                     continue
