@@ -2682,13 +2682,13 @@ class BaseCompressor(object):
         return current_output
 
     def _get_current_q_output(
-            self,
-            block: torch.nn.Module,
-            input_ids: list[torch.Tensor],
-            input_others: dict,
-            indices: list[int],
-            device: str,
-        ) -> torch.Tensor:
+        self,
+        block: torch.nn.Module,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        indices: list[int],
+        device: str,
+    ) -> torch.Tensor:
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
             input_others,

@@ -2821,6 +2821,7 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         return index_file is not None
     elif not isinstance(model_or_path, torch.nn.Module):
         from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+
         return isinstance(model_or_path, DiffusionPipeline)
     else:
         return False

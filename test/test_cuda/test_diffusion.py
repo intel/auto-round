@@ -73,9 +73,9 @@ class TestAutoRound(unittest.TestCase):
         self.assertTrue(len(block_name) == 2)
         self.assertTrue(any(["context_embedder" not in n for n in block_name]))
 
-
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model
+
         self.assertTrue(is_diffusion_model("/dataset/FLUX.1-dev"))
         self.assertTrue(is_diffusion_model("/models/stable-diffusion-2-1"))
         self.assertTrue(is_diffusion_model("/models/stable-diffusion-xl-base-1.0"))
