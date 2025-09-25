@@ -30,7 +30,7 @@ class LLMDataLoader:
 class TestLowCPUMem(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "facebook/opt-125m"
+        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.saved_path = "./test_tmp_saved"
         self.ori_model = AutoModelForCausalLM.from_pretrained(self.model_name, trust_remote_code=True)
         self.model = load_model_with_hooks(

@@ -82,9 +82,9 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_hpex_available,
     is_mx_fp,
     is_nv_fp,
-    is_optimum_habana_available,
     is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
@@ -381,8 +381,8 @@ class BaseCompressor(object):
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
-        if is_optimum_habana_available():
-            logger.info("optimum Habana is available, import htcore explicitly.")
+        if is_hpex_available():
+            logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
@@ -824,7 +824,7 @@ class BaseCompressor(object):
 
         if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
             for i in range(len(formats)):
-                if formats[i] != "fake" and formats[i] != self.scheme.lower().startswith("gguf"):
+                if formats[i] != "fake" and formats[i] != self.scheme.lower():
                     logger.warning(
                         f"reset format {formats[i]} to {self.scheme.lower()} "
                         f"since scheme {self.scheme} can only be exported to format {self.scheme.lower()}"
@@ -866,9 +866,9 @@ class BaseCompressor(object):
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
                 elif is_static_wfp8afp8(self):  # staic wfp8afp8
-                    format = f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"
+                    format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
-                    format = "auto_round:fp8"
+                    format = f"auto_round:{AutoRoundFormat.FP8.value}"
                 elif self.act_bits < 16:
                     raise ValueError(
                         "AutoRound format does not support exporting "
@@ -883,6 +883,20 @@ class BaseCompressor(object):
                     check_compressed_tensors_supported()
                     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
                     formats[index] = format
+                elif is_static_wfp8afp8(self):
+                    format = f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}"
+                    formats[index] = format
+                    if self.act_group_size != 0:
+                        logger.warning(
+                            f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
+                            f" ,but got act_group_size={self.act_group_size}, reset = 0"
+                        )
+                        self.act_group_size = 0
+                    if self.group_size > 0:
+                        logger.warning(
+                            f"please note that group_size={self.group_size}"
+                            " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
+                        )
                 elif not is_wfp8afp8(self):
                     logger.error(
                         "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
@@ -959,11 +973,7 @@ class BaseCompressor(object):
                 elif "auto_round" in format and (
                     is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
                 ):
-                    logger.warning(
-                        f"AutoRound supports exporting to format '{format}', "
-                        "but loading quantized models in this format is not yet supported. "
-                        "It is currently recommended to export to the 'llm_compressor' format."
-                    )
+                    pass
                 elif format != "fake":
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
@@ -972,13 +982,25 @@ class BaseCompressor(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == f"auto_round:{AutoRoundFormat.TORCH_FP8_STATIC.value}"):
+                if format not in [
+                    "auto_round",
+                    f"auto_round:{AutoRoundFormat.FP8_STATIC.value}",
+                    f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}",
+                    "auto_round:llm_compressor",
+                ]:
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         f" change format {format} to auto_round"
                     )
-                    format = "auto_round"
-            if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
+                    if is_static_wfp8afp8(self):
+                        format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
+                    else:
+                        format = f"auto_round:{AutoRoundFormat.FP8.value}"
+            if (
+                self.act_group_size != 0
+                and not self.act_dynamic
+                and format == f"auto_round:{AutoRoundFormat.FP8.value}"
+            ):
                 logger.warning(
                     f"Please note that quantize activation with act_group_size={self.act_group_size}"
                     " may result in failure to export or import normally."
@@ -1174,9 +1196,6 @@ class BaseCompressor(object):
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
 
-        if _is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
-
         if isinstance(self.dataset, str):
             if self.tokenizer is None:
                 raise ValueError("A tokenizer must be set for the model when using a dataset string.")
@@ -1199,7 +1218,7 @@ class BaseCompressor(object):
             def get_imatrix_hook(module, input, output):
                 input = input[0] if isinstance(input, (tuple, list)) else input
                 flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(flattened**2, dim=0).to(torch.float32)
+                squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
@@ -1223,6 +1242,8 @@ class BaseCompressor(object):
                 dispatch_model(self.model, self.model.hf_device_map)
             else:
                 model = model.to(self.device)
+            if _is_fp8_model(self.model):
+                convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
             cnt = 0
 
             # Run forward pass to accumulate imatrix
@@ -1401,7 +1422,6 @@ class BaseCompressor(object):
         """
         m = get_module(self.model, name)
 
-        # if m.__class__.__name__ == "FP8Linear":
         if _is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
@@ -3100,6 +3120,8 @@ class BaseCompressor(object):
             )
         if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
             format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
+        if format == "llm_compressor" and is_static_wfp8afp8(self):
+            format = format.replace("llm_compressor", "llm_compressor:{AutoRoundFormat.FP8_STATIC.value}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -3257,7 +3279,7 @@ class BaseCompressor(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return scale_loss
 
@@ -3274,7 +3296,7 @@ class BaseCompressor(object):
         """
         optimizer.step()
         # for hpu
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -3456,7 +3478,7 @@ class AdamCompressor(BaseCompressor):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return loss
 
@@ -3470,5 +3492,5 @@ class AdamCompressor(BaseCompressor):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()

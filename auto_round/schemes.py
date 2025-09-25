@@ -32,7 +32,6 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    clip: Optional[bool] = False
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -143,6 +142,7 @@ MXFP4 = QuantizationScheme.from_dict(
         "act_bits": 4,
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
+        "act_sym": True,
     }
 )
 
@@ -154,6 +154,7 @@ MXFP8 = QuantizationScheme.from_dict(
         "act_bits": 8,
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
+        "act_sym": True,
     }
 )
 
@@ -165,6 +166,7 @@ NVFP4 = QuantizationScheme.from_dict(
         "act_bits": 4,
         "act_data_type": "nv_fp4_with_static_gs",
         "act_group_size": 16,
+        "act_sym": True,
     }
 )
 

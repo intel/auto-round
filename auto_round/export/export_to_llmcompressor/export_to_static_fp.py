@@ -15,6 +15,7 @@
 import copy
 import json
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import threadpoolctl as tctl
@@ -23,9 +24,9 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
+from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
+from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
 from auto_round.export.utils import save_model
-from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     _get_packing_device,
@@ -34,45 +35,14 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     filter_quantization_config,
     get_module,
+    logger,
     set_module,
 )
 
 
-class FP8QLinear(torch.nn.Module):
-
-    def __init__(
-        self,
-        in_features,
-        out_features,
-        weight,
-        weight_scale,
-        bias=None,
-        weight_zp=None,
-        input_scale=None,
-        dtype=torch.bfloat16,
-    ):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = torch.nn.Parameter(weight, requires_grad=False)
-
-        if bias is not None:
-            self.bias = torch.nn.Parameter(bias, requires_grad=False)
-        else:
-            self.register_parameter("bias", None)
-
-        self.register_buffer("weight_scale", weight_scale.to(dtype))
-
-        if weight_zp:
-            self.register_buffer("weight_zp", weight_zp.to(dtype))
-
-        if input_scale is not None:
-            self.register_buffer("input_scale", input_scale.to(dtype))
-
-
-def pack_layer(layer_name, model, data_type, device=None):
+def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str = None) -> None:
     """
-     Packs a model layer for quantization based on its type and configuration.
+    Packs a model layer for quantization based on its type and configuration.
 
     This function retrieves the specified layer from the model, checks its
     compatibility for quantization, and replaces it with a quantized version
@@ -122,9 +92,6 @@ def pack_layer(layer_name, model, data_type, device=None):
     if isinstance(layer, torch.nn.Linear):
         in_features = layer.in_features
         out_features = layer.out_features
-    # elif isinstance(layer, nn.Conv2d):
-    #     in_features = layer.in_channels
-    #     out_features = layer.out_channels
     elif isinstance(layer, transformers.pytorch_utils.Conv1D):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
@@ -139,60 +106,46 @@ def pack_layer(layer_name, model, data_type, device=None):
         input_scale=act_scale,
         dtype=model.dtype,
     )
+    if len(my_linear.weight_scale.shape) and my_linear.weight_scale.shape[0] != 1:
+        my_linear.weight_scale = my_linear.weight_scale.reshape(-1, 1)
 
     my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
 
 
-def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", **kwargs):
+def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs) -> torch.nn.Module:
+    """
+    Saves a quantized model of FP8_STATIC scheme in the llm-compressor format.
+
+    Args:
+        output_dir (str): The directory where the quantized model will be saved.
+        inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
+                                Default is True.
+        backend (str, optional): The backend to be used for quantization.
+                                  Default is "autoround:exllamav2".
+        **kwargs: Additional keyword arguments including:
+            - model (nn.Module): The model to be quantized.
+            - layer_config (dict): The layer configuration for each layer.
+            - serialization_dict (dict): The serialization configuration.
+            - tokenizer (Tokenizer, optional): The tokenizer to be saved.
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If the backend is not supported.
+    """
     model = kwargs["model"]
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_config = kwargs["layer_config"]
-    quantization_config = kwargs["serialization_dict"]
-    quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-    quantization_config["quant_method"] = "auto-round"
-    if "e5m2" in kwargs.get("data_type", "fp8"):
-        quantization_config["fmt"] = "e5m2"
-    else:
-        quantization_config["fmt"] = "e4m3"
-    quantization_config["activation_scheme"] = "dynamic" if quantization_config["act_dynamic"] else "static"
 
+    layer_config = kwargs["layer_config"]
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     device = kwargs.get("device", None)
     image_processor = kwargs.get("image_processor", None)
-    extra_config = {}
-    block_name_to_quantize = quantization_config["block_name_to_quantize"]
-    if isinstance(block_name_to_quantize, str):
-        block_name_to_quantize = block_name_to_quantize.split(",")
-    elif isinstance(block_name_to_quantize, list):
-        for i in range(len(block_name_to_quantize)):
-            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
-    for layer_name in layer_config:
-        if (
-            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
-        ):  ##lm head ##TODO fix act and so on
-            extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        elif layer_config[layer_name]["in_blocks"] or (
-            block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
-        ):
-            neq_keys = check_neq_config(
-                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
-            )
-            if len(neq_keys) > 0:
-                extra_config[layer_name] = {}
-            for key in neq_keys:
-                if layer_config[layer_name][key] is not None:
-                    extra_config[layer_name][key] = layer_config[layer_name][key]
-    if len(extra_config) > 0:
-        quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
@@ -208,30 +161,85 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
 
             for _ in executor.map(wrapper, names):
                 pass
-    filter_quantization_config(quantization_config)
+
+    # Get llm-compressor format config
+    check_compressed_tensors_supported()
+    from compressed_tensors.quantization import (  # pylint: disable=E0401
+        QuantizationArgs,
+        QuantizationConfig,
+        QuantizationScheme,
+        QuantizationStatus,
+        QuantizationStrategy,
+        QuantizationType,
+    )
+
+    group_size = kwargs["serialization_dict"]["group_size"]
+    if group_size == -1:
+        strategy = QuantizationStrategy.CHANNEL
+    elif group_size == 0:
+        strategy = QuantizationStrategy.TENSOR
+    else:
+        strategy = QuantizationStrategy.GROUP
+    if kwargs["serialization_dict"]["act_group_size"] != 0:
+        logger.error(
+            f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
+            f" but got {kwargs['serialization_dict']['act_group_size']}, please check."
+        )
+        sys.exit(-1)
+    scheme_args = dict(
+        weights=QuantizationArgs(
+            num_bits=8,
+            type=QuantizationType.FLOAT,
+            strategy=strategy,
+            symmetric=True,
+            dynamic=False,
+        ),
+        input_activations=QuantizationArgs(
+            num_bits=8,
+            type=QuantizationType.FLOAT,
+            strategy=QuantizationStrategy.TENSOR,
+            symmetric=True,
+            dynamic=False,
+        ),
+    )
+    targets = ["Linear"]
+    ignore = []
+    for layer_name in layer_config:
+        if not check_to_quantized(layer_config[layer_name]):
+            ignore.append(layer_name)
+    config_groups = {}
+    scheme = QuantizationScheme(targets=targets, **scheme_args)
+    config_groups["group_0"] = scheme
+    quantization_config = QuantizationConfig(
+        config_groups=config_groups,
+        kv_cache_scheme=None,
+        quantization_status=QuantizationStatus.COMPRESSED,
+        ignore=ignore,
+    )
+    quantization_config = quantization_config.to_dict()
+    quantization_config["provider"] = "auto-round"
+    quantization_config["format"] = "float-quantized"
+    if group_size > 0:
+        quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = group_size
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
+
     if output_dir is None:
         return model
 
-    if output_dir is None:
-        model.tokenizer = tokenizer
-        return model
     if os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
+
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
     if processor is not None:
         processor.save_pretrained(output_dir)
+
     if image_processor is not None:
         image_processor.save_pretrained(output_dir)
-    if quantization_config.get("act_bits", 16) <= 8:
-        dtype = torch.bfloat16
-    elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
-        dtype = torch.float16  ## awq kernel only supports float16 on cuda
-    else:
-        dtype = None
+
+    dtype = None
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model

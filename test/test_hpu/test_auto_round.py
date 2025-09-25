@@ -2,7 +2,7 @@ import pytest
 import torch
 from _test_helpers import is_pytest_mode_compile, is_pytest_mode_lazy
 
-from auto_round.utils import is_hpu_supported
+from auto_round.utils import is_hpex_available
 
 
 def run_opt_125m_on_hpu():
@@ -28,13 +28,13 @@ def run_opt_125m_on_hpu():
     assert q_model is not None, "Expected q_model to be not None"
 
 
-@pytest.mark.skipif(not is_hpu_supported(), reason="HPU is not supported")
+@pytest.mark.skipif(not is_hpex_available(), reason="HPU is not supported")
 @pytest.mark.skipif(not is_pytest_mode_lazy(), reason="Only for lazy mode")
 def test_opt_125m_lazy_mode():
     run_opt_125m_on_hpu()
 
 
-@pytest.mark.skipif(not is_hpu_supported(), reason="HPU is not supported")
+@pytest.mark.skipif(not is_hpex_available(), reason="HPU is not supported")
 @pytest.mark.skipif(not is_pytest_mode_compile(), reason="Only for compile mode")
 def test_opt_125m_compile_mode():
     torch._dynamo.reset()
