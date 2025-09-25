@@ -1186,7 +1186,7 @@ def get_layer_features(layer):
         return layer.weight.shape[0], layer.weight.shape[1]
     elif isinstance(layer, torch.nn.Embedding):
         return layer.num_embeddings, layer.embedding_dim
-    elif deepspeed_exists and type(layer) in [LinearLayer, LinearAllreduce]:
+    elif deepspeed_exists and type(layer) in (LinearLayer, LinearAllreduce):
         return layer.weight.shape[1], layer.weight.shape[0]  # (input_dim, output_dim)
     return None, None  # Unsupported layer type
 

@@ -3219,7 +3219,7 @@ class BaseCompressor(object):
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit(-1)
-            if type(layer) not in self.supported_types and check_to_quantized(self.layer_config[key]):
+            if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
         return layer_names
