@@ -14,6 +14,7 @@
 
 import importlib
 import os
+
 import numpy as np
 import torch
 from PIL import Image
@@ -70,8 +71,14 @@ def diffusion_eval(
     batch_size,
     gen_kwargs,
 ):
-    if not importlib.util.find_spec("clip") or not importlib.util.find_spec("ImageReward") or not importlib.util.find_spec("torchmetrics"):
-        raise ImportError("Please make sure clip, image-reward and torchmetrics are installed for diffusion model evaluation.")
+    if (
+        not importlib.util.find_spec("clip")
+        or not importlib.util.find_spec("ImageReward")
+        or not importlib.util.find_spec("torchmetrics")
+    ):
+        raise ImportError(
+            "Please make sure clip, image-reward and torchmetrics are installed for diffusion model evaluation."
+        )
     dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=-1, bs=batch_size)
     prompt_list = []
     image_list = []

@@ -25,13 +25,13 @@ from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
+    LazyImport,
     block_forward,
     clear_memory,
+    diffusion_load_model,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
-    diffusion_load_model,
-    LazyImport
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -40,6 +40,7 @@ output_configs = {
     "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
 }
+
 
 class DiffusionCompressor(BaseCompressor):
     """Class for automatic rounding-based quantization with Diffusion models.
@@ -122,7 +123,7 @@ class DiffusionCompressor(BaseCompressor):
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
-        
+
         if iters > 0 and batch_size != 1:
             logger.warning(
                 f"reset batch_size({batch_size}) to 1 and "
@@ -198,9 +199,7 @@ class DiffusionCompressor(BaseCompressor):
             hidden_states = current_input_ids.pop("hidden_states")
             current_input_others.update(current_input_ids)
             current_input_ids = hidden_states
-        output_q = block_forward(
-            block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx
-        )
+        output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx)
         return output_q
 
     @torch.no_grad()
@@ -253,9 +252,7 @@ class DiffusionCompressor(BaseCompressor):
                     if self.batch_size == 1:
                         output[name].append(out.to(cache_device))
                     else:
-                        output[name].extend(
-                            list(torch.split(out.to(cache_device), 1, dim=self.batch_dim))
-                        )
+                        output[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
         if self.low_gpu_mem_usage:
             clear_memory()
 
@@ -273,8 +270,10 @@ class DiffusionCompressor(BaseCompressor):
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
-        logger.warning("Diffusion model will catch nsamples * num_inference_steps inputs, "
-                       "you can reduce nsamples or num_inference_steps if OOM or take too much time.")
+        logger.warning(
+            "Diffusion model will catch nsamples * num_inference_steps inputs, "
+            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
+        )
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
@@ -362,7 +361,5 @@ class DiffusionCompressor(BaseCompressor):
         Returns:
             object: The compressed model object.
         """
-        compressed_model = super().save_quantized(
-            output_dir=output_dir, format=format, inplace=inplace, **kwargs
-        )
+        compressed_model = super().save_quantized(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
         return compressed_model

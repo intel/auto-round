@@ -293,6 +293,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--image_save_dir", default="./tmp_image_save", type=str, help="path to save generated images"
         )
 
+
 def setup_parser():
     parser = BasicArgumentParser()
 
@@ -502,7 +503,9 @@ def tune(args):
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
     )
     diffusion_config = DiffusionExtraConfig(
-        guidance_scale=args.guidance_scale, num_inference_steps=args.num_inference_steps, generator_seed=args.generator_seed
+        guidance_scale=args.guidance_scale,
+        num_inference_steps=args.num_inference_steps,
+        generator_seed=args.generator_seed,
     )
     extra_config.tuning_config = tuning_config
     extra_config.scheme_config = scheme_config
