@@ -350,9 +350,9 @@ def _replace_by_quant_layers(
 
 def _get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         return layer.in_features, layer.out_features
-    elif isinstance(layer, Conv1D):  # TODO: Verify correctness
+    elif type(layer) == Conv1D:  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
     return None, None  # Unsupported layer type
 

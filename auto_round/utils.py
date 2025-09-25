@@ -1104,7 +1104,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     if bits != 4:
         return False, "AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
-        if isinstance(m, transformers.pytorch_utils.Conv1D):
+        if type(m) == transformers.pytorch_utils.Conv1D:
             return False, "AutoAWQ GEMM kernel does not support conv1d"
 
     layer_names = get_layer_names_in_block(model)
@@ -1182,7 +1182,7 @@ def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
     if type(layer) == torch.nn.Linear:
         return layer.in_features, layer.out_features
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
+    elif type(layer) == transformers.pytorch_utils.Conv1D:  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
     elif isinstance(layer, torch.nn.Embedding):
         return layer.num_embeddings, layer.embedding_dim
@@ -1912,7 +1912,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             continue
         new_type = GGUF_CONFIG[target_gguf_format]["mostly"]
         layer = get_module(model, layer_name)
-        if isinstance(layer, transformers.pytorch_utils.Conv1D):
+        if type(layer) == transformers.pytorch_utils.Conv1D:
             input_features = layer.weight.shape[0]
         else:
             input_features = layer.weight.shape[-1]

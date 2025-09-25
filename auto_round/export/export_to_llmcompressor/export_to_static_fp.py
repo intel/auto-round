@@ -92,7 +92,7 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     if type(layer) == torch.nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias

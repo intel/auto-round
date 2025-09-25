@@ -227,13 +227,13 @@ def pack_model(
             else:
                 scale = scale.to(dtype=convert_dtype)
                 zp = zp.to(dtype=torch.int32) if isinstance(zp, torch.Tensor) else zp
-        if isinstance(m, transformers.pytorch_utils.Conv1D):
+        if type(m) == transformers.pytorch_utils.Conv1D:
             fp_weight = fp_weight.t_().contiguous()
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         if type(m) == torch.nn.Linear:
             in_features = m.in_features
             out_features = m.out_features
-        elif isinstance(m, transformers.pytorch_utils.Conv1D):
+        elif type(m) == transformers.pytorch_utils.Conv1D:
             in_features = m.weight.shape[0]
             out_features = m.weight.shape[1]
         int_weight = int_weight.type(torch.int32)

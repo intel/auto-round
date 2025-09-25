@@ -125,7 +125,7 @@ def pack_layer(layer_name, model, data_type, device=None):
     # elif isinstance(layer, nn.Conv2d):
     #     in_features = layer.in_channels
     #     out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias

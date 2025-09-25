@@ -118,13 +118,13 @@ def pack_qact_layer(name, model):
 
     QuantLinear = auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
 
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
+    elif type(layer) == nn.Conv2d:
         in_features = layer.in_channels
         out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
@@ -200,13 +200,13 @@ def pack_layer(layer_name, model, backend, device=None):
     zp = layer.zp
     QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits)
 
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
+    elif type(layer) == nn.Conv2d:
         in_features = layer.in_channels
         out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
