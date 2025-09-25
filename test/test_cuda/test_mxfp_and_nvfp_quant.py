@@ -11,10 +11,11 @@ from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 
-mx_schemes = [AutoRoundFormat.MXFP8.value, AutoRoundFormat.MXFP4.value]
+testing_schemes = [AutoRoundFormat.MXFP8.value, AutoRoundFormat.MXFP4.value, AutoRoundFormat.NVFP4.value]
 QMODULE_MAPPING = {
     AutoRoundFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
     AutoRoundFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    AutoRoundFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
 
 
@@ -26,7 +27,7 @@ def has_module(model: torch.nn.Module, target_module_type: torch.nn.Module) -> b
     return False
 
 
-@pytest.mark.parametrize("scheme", mx_schemes)
+@pytest.mark.parametrize("scheme", testing_schemes)
 @torch.inference_mode()
 def test_e2e_quant_and_infer(scheme):
     # Use a temporary directory for saving the quantized model

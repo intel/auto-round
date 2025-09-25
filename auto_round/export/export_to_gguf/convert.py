@@ -394,7 +394,10 @@ def prepare_tensors(cls):
         clean_weight_list = []
 
         modify_name = _special_name_handle(cls, name)
+        orig_device = data_torch.device
+        data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
+            data_torch.to(orig_device)
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
                 if new_name in tensor_info:
@@ -545,7 +548,7 @@ def prepare_tensors(cls):
                                 attr_tensor = getattr(module, attr)
                             else:
                                 attr_tensor = getattr(module, "w_" + attr)
-                            if attr_tensor is None:
+                            if attr_tensor is None or not isinstance(attr_tensor, torch.Tensor):
                                 continue
                             kv_b = attr_tensor.view(n_head_kv, v_head_dim + qk_nope_head_dim, -1)
                             k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)

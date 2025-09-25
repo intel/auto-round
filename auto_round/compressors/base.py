@@ -82,9 +82,9 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_hpex_available,
     is_mx_fp,
     is_nv_fp,
-    is_optimum_habana_available,
     is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
@@ -382,8 +382,8 @@ class BaseCompressor(object):
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
-        if is_optimum_habana_available():
-            logger.info("optimum Habana is available, import htcore explicitly.")
+        if is_hpex_available():
+            logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
@@ -825,7 +825,7 @@ class BaseCompressor(object):
 
         if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
             for i in range(len(formats)):
-                if formats[i] != "fake" and formats[i] != self.scheme.lower().startswith("gguf"):
+                if formats[i] != "fake" and formats[i] != self.scheme.lower():
                     logger.warning(
                         f"reset format {formats[i]} to {self.scheme.lower()} "
                         f"since scheme {self.scheme} can only be exported to format {self.scheme.lower()}"
@@ -974,11 +974,7 @@ class BaseCompressor(object):
                 elif "auto_round" in format and (
                     is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
                 ):
-                    logger.warning(
-                        f"AutoRound supports exporting to format '{format}', "
-                        "but loading quantized models in this format is not yet supported. "
-                        "It is currently recommended to export to the 'llm_compressor' format."
-                    )
+                    pass
                 elif format != "fake":
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
@@ -1201,9 +1197,6 @@ class BaseCompressor(object):
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
 
-        if _is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
-
         if isinstance(self.dataset, str):
             if self.tokenizer is None:
                 raise ValueError("A tokenizer must be set for the model when using a dataset string.")
@@ -1250,6 +1243,8 @@ class BaseCompressor(object):
                 dispatch_model(self.model, self.model.hf_device_map)
             else:
                 model = model.to(self.device)
+            if _is_fp8_model(self.model):
+                convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
             cnt = 0
 
             # Run forward pass to accumulate imatrix
@@ -1428,7 +1423,6 @@ class BaseCompressor(object):
         """
         m = get_module(self.model, name)
 
-        # if m.__class__.__name__ == "FP8Linear":
         if _is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
@@ -3301,7 +3295,7 @@ class BaseCompressor(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return scale_loss
 
@@ -3318,7 +3312,7 @@ class BaseCompressor(object):
         """
         optimizer.step()
         # for hpu
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -3505,7 +3499,7 @@ class AdamCompressor(BaseCompressor):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()
         return loss
 
@@ -3519,5 +3513,5 @@ class AdamCompressor(BaseCompressor):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_optimum_habana_available():
+        if is_hpex_available():
             htcore.mark_step()

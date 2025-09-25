@@ -43,7 +43,6 @@ class ExtraConfig:
         minmax_lr: float = None,
         mem_per_param_scale: int = None,
         nblocks: int = 1,
-        quant_lm_head: bool = False,
         to_quant_block_names: Union[str, list, None] = None,
         scale_dtype: str = "fp16",
         # scheme
@@ -59,6 +58,8 @@ class ExtraConfig:
         super_bits: int = None,
         super_group_size: int = None,
         static_kv_dtype: Union[str, torch.dtype] = None,
+        quant_lm_head: bool = False,
+        fp_layers: str = None,
         # mllm
         processor: Callable = None,
         image_processor: Callable = None,
@@ -125,7 +126,6 @@ class ExtraConfig:
             minmax_lr=minmax_lr,
             mem_per_param_scale=mem_per_param_scale,
             nblocks=nblocks,
-            quant_lm_head=quant_lm_head,
             to_quant_block_names=to_quant_block_names,
             scale_dtype=scale_dtype,
         )
@@ -142,6 +142,8 @@ class ExtraConfig:
             super_bits=super_bits,
             super_group_size=super_group_size,
             static_kv_dtype=static_kv_dtype,
+            quant_lm_head=quant_lm_head,
+            fp_layers=fp_layers,
         )
         self.mllm_config = MLLMExtraConfig(
             processor=processor,
@@ -260,7 +262,6 @@ class TuningExtraConfig(BaseExtraConfig):
     minmax_lr: float = None
     mem_per_param_scale: int = None
     nblocks: int = 1
-    quant_lm_head: bool = False
     to_quant_block_names: Union[str, list, None] = None
     scale_dtype: str = "fp16"
 
@@ -279,6 +280,8 @@ class SchemeExtraConfig(BaseExtraConfig):
     super_bits: int = None
     super_group_size: int = None
     static_kv_dtype: Union[str, torch.dtype] = None
+    quant_lm_head: bool = False
+    fp_layers: str = None
 
 
 @dataclass

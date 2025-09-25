@@ -79,8 +79,7 @@ SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 # Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
-# INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
-
+# transformers.integrations.finegrained_fp8.FP8Linear
 if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
@@ -116,7 +115,7 @@ class LazyImport(object):
         """Init LazyImport object.
 
         Args:
-           module_name (string): The name of module imported later
+            module_name (string): The name of module imported later
         """
         self.module_name = module_name
         self.module = None
@@ -145,12 +144,31 @@ auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
 
+################ Check available sys.module to decide behavior #################
+def is_package_available(package_name: str) -> bool:
+    """Check if the package exists in the environment without importing.
+
+    Args:
+        package_name (str): package name
+    """
+    from importlib.util import find_spec
+
+    package_spec = find_spec(package_name)
+    return package_spec is not None
+
+
+## check hpex
+if is_package_available("habana_frameworks"):
+    _hpex_available = True
+    import habana_frameworks.torch.hpex  # pylint: disable=E0401
+else:
+    _hpex_available = False
+
+
 @torch._dynamo.disable()
 @lru_cache(None)
-def is_optimum_habana_available():
-    from transformers.utils.import_utils import is_optimum_available
-
-    return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
+def is_hpex_available():
+    return _hpex_available
 
 
 def get_module(module, key):
@@ -570,7 +588,7 @@ def detect_device(device: Union[str, int, torch.device] = None) -> str:
         if torch.cuda.is_available():
             device = torch.device("cuda")
             # logger.info("Using GPU device")
-        elif is_optimum_habana_available():  # pragma: no cover
+        elif is_hpex_available():  # pragma: no cover
             device = torch.device("hpu")
             # logger.info("Using HPU device")
         elif torch.xpu.is_available():  # pragma: no cover
@@ -585,7 +603,16 @@ def detect_device(device: Union[str, int, torch.device] = None) -> str:
     elif isinstance(device, torch.device):
         device = str(device)
     elif isinstance(device, str):  ## for cuda:0
-        device = device
+        if device == "tp":  # pragma: no cover
+            # should not specify card, e.g., cuda:0
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif is_hpex_available():
+                device = "hpu"
+            else:
+                device = "cpu"
+        else:
+            device = device
     return device
 
 
@@ -797,15 +824,6 @@ def is_autoround_exllamav2_available():
     return res
 
 
-@lru_cache(None)
-def is_hpu_supported():  # pragma: no cover
-    try:
-        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-    except ImportError as e:
-        return False
-    return True
-
-
 def get_library_version(library_name):
     from packaging.version import Version
 
@@ -923,7 +941,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
 
 @torch._dynamo.disable()
 def clear_memory(tensor=None):
-    if is_hpu_supported():
+    if is_hpex_available():
         # hpu does not have empty_cache
         return
     else:
@@ -1383,7 +1401,6 @@ def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
         if _is_fp8_linear(m):
             m.is_fp8_linear = True
             if not hasattr(model, "is_fp8"):
-                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 model.is_fp8 = True
     if hasattr(model, "is_fp8"):
         return True
@@ -2321,10 +2338,14 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
     """
+    cnt = 0
     for n, m in model.named_modules():
         if m.__class__.__name__ == "FP8Linear":
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
             set_module(model, n, new_module)
+            cnt += 1
+            if cnt % 10 == 0:  # Tricky setting
+                clear_memory()
     return model
 
 
@@ -2367,7 +2388,6 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     """Download hugging face model from hf hub."""
     from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
     from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
-    from huggingface_hub.utils import EntryNotFoundError
 
     if cache_dir is None:
         cache_dir = HUGGINGFACE_HUB_CACHE
