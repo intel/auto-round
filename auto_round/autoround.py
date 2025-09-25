@@ -78,7 +78,7 @@ class AutoRound:
         seed: int = 42,
         # for adam
         enable_adam: bool = False,
-        # for MLLM
+        # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
         **kwargs,
     ) -> BaseCompressor:
@@ -593,7 +593,7 @@ class AutoRoundDiffusion(DiffusionCompressor):
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator_seed: int = None,
-        scheme: Union[str, dict, QuantizationScheme] = "W8A16",
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "coco2014",
         iters: int = 200,

@@ -1641,7 +1641,7 @@ def diffusion_load_model(
     pretrained_model_name_or_path,
     device="cpu",
     torch_dtype="auto",
-    use_auto_mapping=True,
+    use_auto_mapping=False,
     trust_remote_code=True,
     model_dtype=None,
     **kwargs,
@@ -2807,6 +2807,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 
 def is_diffusion_model(model_or_path: Union[str, object]):
     if isinstance(model_or_path, str):
+        index_file = None
         if not os.path.isdir(model_or_path):
             try:
                 from huggingface_hub import hf_hub_download
@@ -2818,6 +2819,8 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
             index_file = os.path.join(model_or_path, "model_index.json")
         return index_file is not None
+    elif not isinstance(model_or_path, torch.nn.Module):
+        from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+        return isinstance(model_or_path, DiffusionPipeline)
     else:
-        pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
-        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+        return False

@@ -85,7 +85,7 @@ class DiffusionCompressor(BaseCompressor):
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator_seed: int = None,
-        scheme: Union[str, dict, QuantizationScheme] = "W8A16",
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "coco2014",
         iters: int = 200,
@@ -160,31 +160,33 @@ class DiffusionCompressor(BaseCompressor):
             **kwargs,
         )
 
-    def _update_inputs(self, inputs, q_inputs):
+    def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, dict]:
         # flux transformer model's blocks will update hidden_states and encoder_hidden_states
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         if q_inputs is not None:
             q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
         return inputs, q_inputs
 
-    def _split_inputs(self, inputs):
+    def _split_inputs(self, inputs: dict) -> tuple[dict, dict]:
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
         return input_ids, input_others
 
-    def _get_current_output(self, output, indices):
-        if isinstance(output, list):
-            current_output = [output[x] for x in indices]
-            current_output = torch.cat(current_output, dim=self.batch_dim)
-
-        elif isinstance(output, dict):
-            assert "hidden_states" in output
-            current_output = [output["hidden_states"][x] for x in indices]
-            current_output = torch.cat(current_output, dim=self.batch_dim)
+    def _get_current_output(self, output: dict, indices: list[int]) -> torch.Tensor:
+        assert "hidden_states" in output
+        current_output = [output["hidden_states"][x] for x in indices]
+        current_output = torch.cat(current_output, dim=self.batch_dim)
         return current_output
 
-    def _get_current_q_output(self, block, input_ids, input_others, indices, device):
+    def _get_current_q_output(
+            self,
+            block: torch.nn.Module,
+            input_ids: dict,
+            input_others: dict,
+            indices: list[int],
+            device: str,
+        ) -> torch.Tensor:
         output_config = output_configs.get(block.__class__.__name__, [])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
         current_input_ids, current_input_others = self._sampling_inputs(
