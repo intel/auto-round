@@ -202,7 +202,6 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     requirements=["auto-round>0.6.0"],
 )
 
-# TODO: complete the act_data_type for MXFP8/MXFP4/NVFP4
 # MXFP8
 BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
