@@ -53,6 +53,7 @@ class TestAutoRound(unittest.TestCase):
             scheme="MXFP4",
             iters=1,
             nsamples=1,
+            num_inference_steps=2,
             layer_config=layer_config,
             dataset="/dataset/captions_source.tsv",
         )
@@ -71,6 +72,14 @@ class TestAutoRound(unittest.TestCase):
         block_name = get_block_names(model)
         self.assertTrue(len(block_name) == 2)
         self.assertTrue(any(["context_embedder" not in n for n in block_name]))
+
+
+    def test_diffusion_model_checker(self):
+        from auto_round.utils import is_diffusion_model
+        self.assertTrue(is_diffusion_model("/dataset/FLUX.1-dev"))
+        self.assertTrue(is_diffusion_model("/models/stable-diffusion-2-1"))
+        self.assertTrue(is_diffusion_model("/models/stable-diffusion-xl-base-1.0"))
+        self.assertFalse(is_diffusion_model("/models/Qwen3-8B"))
 
 
 if __name__ == "__main__":

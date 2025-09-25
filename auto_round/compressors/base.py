@@ -1699,7 +1699,7 @@ class BaseCompressor(object):
                 cnt = 1
             cnt += 1
 
-    def _update_inputs(self, inputs, q_inputs):
+    def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
         input_id_str = [key for key in keys if key.startswith("hidden_state")]
         if len(input_id_str) != 1:
@@ -1709,8 +1709,8 @@ class BaseCompressor(object):
             )
         inputs["input_ids"] = inputs.pop(input_id_str[0], None)
         if q_inputs is not None:
-            q_inputs["input_ids"] = q_inputs.pop(input_id_str[0], None)
-        return inputs, q_inputs["input_ids"]
+            q_inputs = q_inputs.pop(input_id_str[0], None)
+        return inputs, q_inputs
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -2695,12 +2695,19 @@ class BaseCompressor(object):
                     continue
         return hook_handles
 
-    def _get_current_output(self, output, indices):
+    def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
         current_output = [output[x] for x in indices]
         current_output = torch.cat(current_output, dim=self.batch_dim)
         return current_output
 
-    def _get_current_q_output(self, block, input_ids, input_others, indices, device):
+    def _get_current_q_output(
+            self,
+            block: torch.nn.Module,
+            input_ids: list[torch.Tensor],
+            input_others: dict,
+            indices: list[int],
+            device: str,
+        ) -> torch.Tensor:
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
             input_others,
@@ -2941,7 +2948,7 @@ class BaseCompressor(object):
             clear_memory(input_ids)
             return None, output
 
-    def _split_inputs(self, inputs):
+    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
@@ -3319,7 +3326,7 @@ class BaseCompressor(object):
     @torch.no_grad()
     def _sampling_inputs(
         cls,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
         indices: list[int],
         seqlen: int,

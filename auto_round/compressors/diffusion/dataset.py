@@ -27,7 +27,10 @@ class DiffusionDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
     COCO_URL = {
-        "coco2014": "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv"
+        "coco2014": (
+            "https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/"
+            "coco2014/captions/captions_source.tsv"
+        )
     }
 
     def __init__(

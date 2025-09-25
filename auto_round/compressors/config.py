@@ -111,7 +111,7 @@ class ExtraConfig:
             guidance_scale (float): Control how much the image generation process follows the text prompt.
                                     The more it is, the more closely it follows the prompt (default is 7.5).
             num_inference_steps (int): The reference number of denoising steps (default is 50).
-            generator_seed (int): A sees that controls the initial noise from which an image is generated (default is None).
+            generator_seed (int): A seed that controls the initial noise for image generation (default is None).
         """
         self.tuning_config = TuningExtraConfig(
             amp=amp,
