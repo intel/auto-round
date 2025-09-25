@@ -2057,7 +2057,7 @@ class BaseCompressor(object):
                 has_qlayer_outside_block = True
 
             in_features, out_features = get_layer_features(m)
-            if in_features <= layer_config[n]["group_size"]:
+            if in_features is not None and in_features <= layer_config[n]["group_size"]:
                 layer_config[n]["group_size"] = -1
 
             # Apply the configuration to the corresponding layer in the model
