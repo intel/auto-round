@@ -401,11 +401,10 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-
-
     # TODO gguf apply mixd bits, so the gguf scheme meanings in scheme and autoscheme are different
-    def _convert_value_layer_config_to_dict(self,
-                                            layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> dict:
+    def _convert_value_layer_config_to_dict(
+        self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]
+    ) -> dict:
 
         new_layer_config = {} if layer_config is None else layer_config
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
@@ -431,19 +430,28 @@ class BaseCompressor(object):
             new_layer_config[key]["fixed_by_user"] = True
         return new_layer_config
 
-    def _expand_layer_config(self, model: torch.nn.Module, layer_config: dict[str, dict], fp_layers, quant_lm_head,
-                             scheme, quant_block_list, supported_types, inner_supported_types):
+    def _expand_layer_config(
+        self,
+        model: torch.nn.Module,
+        layer_config: dict[str, dict],
+        fp_layers,
+        quant_lm_head,
+        scheme,
+        quant_block_list,
+        supported_types,
+        inner_supported_types,
+    ):
         """
-       Sets the layer-wise configuration based on the provided `layer_config`.
-       By default, only quantize layers in blocks.
+        Sets the layer-wise configuration based on the provided `layer_config`.
+        By default, only quantize layers in blocks.
 
-       Args:
-           layer_config (dict): The configuration dictionary for each layer containing various configuration options.
+        Args:
+            layer_config (dict): The configuration dictionary for each layer containing various configuration options.
 
-       Returns:
-           bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head),
-                 otherwise returns False.
-       """
+        Returns:
+            bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head),
+                  otherwise returns False.
+        """
 
         # set fp layers
         not_quantize_layer_names = get_fp_layer_names(model, fp_layers)
@@ -452,13 +460,16 @@ class BaseCompressor(object):
         if layer_config is None:
             layer_config = {}
         for name in not_quantize_layer_names:
-            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float",
-                                  "act_data_type": "float", "fixed_by_user": True}
+            layer_config[name] = {
+                "bits": 16,
+                "act_bits": 16,
+                "data_type": "float",
+                "act_data_type": "float",
+                "fixed_by_user": True,
+            }
 
         # Get the names of layers in quantization blocks
-        layers_in_blocks = get_layer_names_in_block(
-            model, supported_types, quant_block_list, inner_supported_types
-        )
+        layers_in_blocks = get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types)
         # Process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
@@ -494,8 +505,9 @@ class BaseCompressor(object):
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
 
         # Iterate through all modules in the model
-        is_gguf = ("gguf" in scheme.lower() or
-                   (hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)))
+        is_gguf = "gguf" in scheme.lower() or (
+            hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
+        )
         for n, m in model.named_modules():
             # Skip unsupported types
             if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
@@ -556,9 +568,9 @@ class BaseCompressor(object):
 
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
             if (
-                    n not in layers_in_blocks
-                    and check_to_quantized(layer_config[n])
-                    and not isinstance(m, torch.nn.Embedding)
+                n not in layers_in_blocks
+                and check_to_quantized(layer_config[n])
+                and not isinstance(m, torch.nn.Embedding)
             ):
                 has_qlayer_outside_block = True
 
@@ -569,7 +581,6 @@ class BaseCompressor(object):
             # Apply the configuration to the corresponding layer in the model
             for key in scheme_keys:
                 setattr(m, key, layer_config[n][key])
-
 
         # TODO self.quant_lm_head has not handleed yet
 
