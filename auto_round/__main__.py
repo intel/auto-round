@@ -468,7 +468,8 @@ def tune(args):
     extra_config.mllm_config = mllm_config
     layer_config = {}
     from auto_round.auto_schemes.delta_loss import get_mixed_config_layer_config
-    best_path = get_mixed_config_layer_config(model_name,target_bits=6)
+
+    best_path = get_mixed_config_layer_config(model_name, target_bits=6)
     for item in best_path:
         layer_config[item[0]] = {}
         layer_config[item[0]]["bits"] = item[1]
@@ -491,8 +492,7 @@ def tune(args):
         not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
-        layer_config=layer_config
-
+        layer_config=layer_config,
     )
 
     model_name = args.model.rstrip("/")

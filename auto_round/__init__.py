@@ -17,6 +17,7 @@ from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam
 from auto_round.schemes import QuantizationScheme, AutoScheme
 from auto_round.utils import LazyImport
 
+
 def __getattr__(name):
     if name == "AutoHfQuantizer":
         from auto_round.inference.auto_quantizer import AutoHfQuantizer

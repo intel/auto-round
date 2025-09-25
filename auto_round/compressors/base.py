@@ -35,7 +35,7 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme, AutoScheme
+from auto_round.schemes import AutoScheme, QuantizationScheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -255,13 +255,12 @@ class BaseCompressor(object):
         if device_map is None:
             device_map = 0
 
-
         # Model related
         self.quantized = False
         if isinstance(model, str):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model,
-                device="cpu", # always load cpu first
+                device="cpu",  # always load cpu first
                 low_cpu_mem_mode=low_cpu_mem_usage,
             )
         elif tokenizer is None and iters > 0:
@@ -379,7 +378,7 @@ class BaseCompressor(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-    def _set_device(self, device_map:Union[str, torch.device, int,dict])->None:
+    def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
         if hasattr(self, "device") and self.device is not None:
             return
         if isinstance(device_map, (str, torch.device, int)):
@@ -1937,7 +1936,7 @@ class BaseCompressor(object):
             del layer_input
             clear_memory(q_layer_input)
 
-    def _set_layerwise_config(self, model:torch.nn.Module, layer_config: dict) -> bool:
+    def _set_layerwise_config(self, model: torch.nn.Module, layer_config: dict) -> bool:
         """
         Sets the layer-wise configuration based on the provided `layer_config`.
         By default, only quantize layers in blocks.

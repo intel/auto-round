@@ -14,7 +14,7 @@
 import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import Optional, Iterable
+from typing import Iterable, Optional
 
 __all__ = ["QuantizationScheme", "preset_name_to_scheme", "AutoScheme"]
 
@@ -181,7 +181,6 @@ FPW8A16 = QuantizationScheme.from_dict(
 )
 
 
-
 # FP8 = asdict(QuantArgs.from_dict({
 #     "bits": 8,
 #     "group_size": 128,
@@ -239,7 +238,7 @@ for key, val in GGUF_CONFIG.items():
 
 @dataclass
 class AutoScheme:
-    options:Optional[Iterable[QuantizationScheme]]
-    target_bits:float
-    shared_layers:Optional[Iterable[Iterable[str]]]=None
-    method:str="naive_pre"
+    options: Optional[Iterable[QuantizationScheme]]
+    target_bits: float
+    shared_layers: Optional[Iterable[Iterable[str]]] = None
+    method: str = "naive_pre"
