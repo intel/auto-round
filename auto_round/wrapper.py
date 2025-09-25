@@ -108,7 +108,7 @@ class WrapperLinear(torch.nn.Module):
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         if deepspeed_exists:
-            if type(self.orig_layer) in [torch.nn.Linear, LinearLayer]:
+            if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward
             elif type(self.orig_layer) == LinearAllreduce:
                 self.orig_forward = self.all_reduce_linear_forward
