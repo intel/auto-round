@@ -241,7 +241,7 @@ def get_layer_config(model, quantization_config):
     # Get layer names that will be quantized
     layer_names = []
     for n, m in model.named_modules():
-        if not isinstance(m, SUPPORTED_LAYER_TYPES):
+        if type(m) not in SUPPORTED_LAYER_TYPES:
             continue
         if check_start_with_block_name(n, quant_block_list):
             layer_names.append(n)

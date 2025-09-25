@@ -54,7 +54,7 @@ def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
     layer = get_module(model, name)
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
     if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
@@ -167,7 +167,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
         # generate static input_global_scale
         for n, m in model.named_modules():
-            if isinstance(m, SUPPORTED_LAYER_TYPES):
+            if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
                 if layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")

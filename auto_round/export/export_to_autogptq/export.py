@@ -73,7 +73,7 @@ def pack_layer(name, model, backend, device=None):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  # already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES:  # already packed
         return
 
     orig_device = layer.weight.device  # must place after 74

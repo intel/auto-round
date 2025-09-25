@@ -230,7 +230,7 @@ def pack_model(
         if isinstance(m, transformers.pytorch_utils.Conv1D):
             fp_weight = fp_weight.t_().contiguous()
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
-        if isinstance(m, torch.nn.Linear):
+        if type(m) == torch.nn.Linear:
             in_features = m.in_features
             out_features = m.out_features
         elif isinstance(m, transformers.pytorch_utils.Conv1D):

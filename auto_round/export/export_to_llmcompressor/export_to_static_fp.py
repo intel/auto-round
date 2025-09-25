@@ -62,7 +62,7 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
     if not check_to_quantized(layer):
@@ -89,7 +89,7 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
     q_weight = torch.clamp(q_weight, info.min, info.max)
     q_weight = q_weight.to(torch_dtype)
-    if isinstance(layer, torch.nn.Linear):
+    if type(layer) == torch.nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
     elif isinstance(layer, transformers.pytorch_utils.Conv1D):

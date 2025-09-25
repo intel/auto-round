@@ -181,7 +181,7 @@ def pack_layer(layer_name, model, backend, device=None):
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
     if int(layer.act_bits) <= 8:

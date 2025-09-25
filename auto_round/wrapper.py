@@ -108,7 +108,7 @@ class WrapperLinear(torch.nn.Module):
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         if deepspeed_exists:
-            if isinstance(self.orig_layer, (torch.nn.Linear, LinearLayer)):
+            if type(self.orig_layer) in [torch.nn.Linear, LinearLayer]:
                 self.orig_forward = self.linear_forward
             elif isinstance(self.orig_layer, LinearAllreduce):
                 self.orig_forward = self.all_reduce_linear_forward
@@ -116,9 +116,7 @@ class WrapperLinear(torch.nn.Module):
             else:
                 self.orig_forward = self.conv1d_forward
         else:
-            self.orig_forward = (
-                self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
-            )
+            self.orig_forward = self.linear_forward if type(self.orig_layer) == torch.nn.Linear else self.conv1d_forward
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
@@ -624,7 +622,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device="
     quantized_layers = []
     unquantized_layers = []
     for n, m in block.named_modules():
-        if isinstance(m, SUPPORTED_LAYER_TYPES):
+        if type(m) in SUPPORTED_LAYER_TYPES:
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue

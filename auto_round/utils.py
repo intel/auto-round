@@ -1066,7 +1066,7 @@ def get_fp_layer_names(model, fp_layers):
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
+        if type(m) in [torch.nn.Linear, transformers.pytorch_utils.Conv1D]:
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
@@ -1180,7 +1180,7 @@ def is_debug_mode():
 
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    if isinstance(layer, torch.nn.Linear):
+    if type(layer) == torch.nn.Linear:
         return layer.in_features, layer.out_features
     elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
@@ -1367,7 +1367,7 @@ def _is_fp8_model(model: torch.nn.Module) -> bool:
 def _is_fp8_linear(module: torch.nn.Module) -> bool:
     if hasattr(module, "is_fp8_linear"):
         return module.is_fp8_linear
-    if not (isinstance(module, torch.nn.Linear) or module.__class__.__name__ == "FP8Linear"):
+    if not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear"):
         return False
     if module.weight is None:
         return False
