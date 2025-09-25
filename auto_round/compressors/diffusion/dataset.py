@@ -22,7 +22,6 @@ from transformers import set_seed
 
 from auto_round.utils import logger
 
-
 DIFFUSION_DATASET: Dict[str, Dataset] = {}
 
 
@@ -51,6 +50,7 @@ def register_dataset(name_list):
             DIFFUSION_DATASET[name] = dataset
 
     return register
+
 
 @register_dataset("local")
 class Text2ImgDataset(Dataset):
