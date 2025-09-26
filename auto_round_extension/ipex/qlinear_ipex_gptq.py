@@ -186,9 +186,9 @@ class QuantLinear(nn.Module):
 
     def pack(self, linear, scales, zeros, g_idx=None):
         W = linear.weight.data.clone()
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         # self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx

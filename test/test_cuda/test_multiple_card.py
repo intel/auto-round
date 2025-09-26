@@ -210,6 +210,39 @@ class TestAutoRound(unittest.TestCase):
             torch.cuda.empty_cache()
 
     @multi_card
+    def test_device_map_dict(self):
+        device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
+        bits, group_size, sym = 4, 128, False
+        model_name = "/models/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            device_map=device_map,
+        )
+        autoround.quantize()
+
+        # test model_name
+        model_name = "/models/opt-125m"
+        autoround = AutoRound(
+            model_name,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            device_map=device_map,
+        )
+        autoround.quantize()
+
+    @multi_card
     @require_greater_than_050
     def test_device_map_for_triton(self):
         from transformers import AutoModelForCausalLM, AutoTokenizer

@@ -249,25 +249,6 @@ class BaseCompressor(object):
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
 
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
-        if device_map is None:
-            device_map = 0
-
-        # Set device, must place after model loading
-        self._set_device(device_map)
-
-        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
-            self.device_map = device_map
-        elif isinstance(device_map, str) and "," in device_map:
-            device_map = device_map.replace(" ", "")  # Remove any spaces
-            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-            self.device_map = "auto"
-        else:
-            self.device_map = None
-        self._set_device_map_in_blocks(self.device_map)
-
         # Model related
         self.quantized = False
         if isinstance(model, str):
@@ -288,6 +269,25 @@ class BaseCompressor(object):
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
+
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
+
+        if device_map is None:
+            device_map = 0
+
+        # Set device, must place after model loading
+        self._set_device(device_map)
+
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
+            self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
+        else:
+            self.device_map = None
+        self._set_device_map_in_blocks(self.device_map)
 
         not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
         if len(not_quantize_layer_names) > 0:
@@ -766,7 +766,7 @@ class BaseCompressor(object):
             and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
         ):
             for n, m in self.model.named_modules():
-                if isinstance(m, self.supported_types):
+                if type(m) in self.supported_types:
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                         self.layer_config[n] = {"bits": 16}
                         logger.info(
@@ -1991,7 +1991,7 @@ class BaseCompressor(object):
         is_gguf = hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
         for n, m in self.model.named_modules():
             # Skip unsupported types
-            if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
+            if type(m) not in supported_types and m.__class__.__name__ not in self.inner_supported_types:
                 if n in self.layer_config:
                     if not isinstance(m, torch.nn.Embedding):
                         logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
@@ -2495,7 +2495,7 @@ class BaseCompressor(object):
         from functools import partial
 
         for n, m in self.model.named_modules():
-            if n in self.to_cached_layers and not isinstance(m, tuple(self.supported_types)):  ##block
+            if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
                 m.orig_forward = m.forward
                 m.forward = partial(self._get_block_forward_func(n), m)
             elif n in self.to_cached_layers:  ##linear layer or conv1d layer
@@ -3219,7 +3219,7 @@ class BaseCompressor(object):
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit(-1)
-            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.layer_config[key]):
+            if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
         return layer_names

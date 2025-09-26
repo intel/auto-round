@@ -382,7 +382,7 @@ block = model.model.layers
 device_map = {}
 
 for n, m in block.named_modules():
-    if isinstance(m, (torch.nn.Linear)):
+    if type(m) == torch.nn.Linear:
         if "experts" in n and ("shared_experts" not in n) and int(n.split(".")[-2]) < 63:
             device = "cuda:1"
         elif (
