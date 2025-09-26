@@ -415,14 +415,14 @@ class BaseCompressor(object):
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
     def _prepare_layer_config(
-            self,
-            model: torch.nn.Module,
-            orig_layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
-            default_scheme: "QuantizationScheme",
-            supported_types,
-            inner_supported_types,
-            fp_layers: str = "",
-            quant_lm_head: bool = False,
+        self,
+        model: torch.nn.Module,
+        orig_layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
+        default_scheme: "QuantizationScheme",
+        supported_types,
+        inner_supported_types,
+        fp_layers: str = "",
+        quant_lm_head: bool = False,
     ) -> dict:
         """
         Normalize and validate layer-specific quantization schemes,
