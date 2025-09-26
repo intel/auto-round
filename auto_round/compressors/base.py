@@ -66,6 +66,7 @@ from auto_round.utils import (
     estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
+    get_avg_bits,
     get_block_names,
     get_device_memory,
     get_fp_layer_names,
@@ -1710,6 +1711,11 @@ class BaseCompressor(object):
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
         self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
+        average_bits = get_avg_bits(self.model)
+        average_bits_w_lm_head = get_avg_bits(self.model, with_lm_head=True)
+        logger.info(f"The target average bits: {average_bits:.3f} bits")
+        if average_bits_w_lm_head != average_bits:
+            logger.debug(f"The target average bits (including lm_head): {average_bits_w_lm_head:.3f} bits")
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:

@@ -2755,3 +2755,59 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
                 return True
 
     return False
+
+
+def get_avg_bits(module, with_lm_head=False):
+    """
+    Calculates the average number of bits per weight element for supported layers in a given module.
+
+    Iterates through all named modules in the module, accumulating the total number of weight elements
+    and the corresponding bit usage, including additional scale bits for specific data types.
+
+    Args:
+        module: A neural network module containing layers to be analyzed.
+
+    Returns:
+        float: The average number of bits per weight element across all supported layers.
+
+    Note:
+        - Only layers of types specified in SUPPORTED_LAYER_TYPES are considered.
+        - For certain data types ("fp4_v2", "nv_fp4", "mx_fp4", "mx_fp8"), scale bits are added.
+        - For "fp4_v2" and "nv_fp4", an additional 32 global scale bits are included.
+    """
+
+    def _get_scale_num(bits, group_size, input_features, weight_numel):
+        if bits >= 16:
+            return 0
+        if group_size == 0:
+            return 1
+        elif group_size == -1:
+            return input_features
+        else:
+            return weight_numel // group_size
+
+    all_numel = 0
+    all_bits = 0
+
+    lm_head_name = get_lm_head_name(module)
+    if lm_head_name is None:
+        with_lm_head = False
+    for n, m in module.named_modules():
+        if n == lm_head_name and not with_lm_head:
+            continue
+        if type(m) in SUPPORTED_LAYER_TYPES:
+            # get weight bits
+            m_numel = m.weight.numel()
+            all_numel += m_numel
+            w_bits = m.bits * m_numel
+            all_bits += w_bits
+            # get scale bits
+            scale_num = _get_scale_num(m.bits, m.group_size, m.weight.shape[-1], m_numel)
+            bits_per_scale = 16 if m.data_type == "int" else 8
+            scale_bits = bits_per_scale * scale_num
+            if m.data_type in ("fp4_v2", "nv_fp"):
+                scale_bits += 32  # global scale bits
+            all_bits += scale_bits
+
+    avg_bits = all_bits / all_numel if all_numel > 0 else 0
+    return round(avg_bits, 6)
