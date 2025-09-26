@@ -522,7 +522,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
-        breakpoint()
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
