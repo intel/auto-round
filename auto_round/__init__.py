@@ -13,8 +13,8 @@
 # limitations under the License.
 from auto_round.autoround import AutoRound
 
-# support for old api
 from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam
+from auto_round.schemes import QuantizationScheme, AutoScheme
 from auto_round.utils import LazyImport
 
 

@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from collections import UserDict
+from dataclasses import fields
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -1045,7 +1046,7 @@ def can_pack_with_numba():  # pragma: no cover
     return True
 
 
-def get_fp_layer_names(model, fp_layers):
+def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
     """Identifies and returns layers in the model to exclude from quantization.
 
     This function processes a comma-separated list of fully precision (FP) layers,
@@ -2278,8 +2279,8 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-
-    keys = get_quant_keys() + ["tmp_name"]
+    scheme_keys = (f.name for f in fields(QuantizationScheme))
+    keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
@@ -2306,24 +2307,6 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
             if cnt % 10 == 0:  # Tricky setting
                 clear_memory()
     return model
-
-
-def get_quant_keys():
-    keys = [
-        "bits",
-        "group_size",
-        "sym",
-        "data_type",
-        "scale_dtype",
-        "act_bits",
-        "act_group_size",
-        "act_sym",
-        "act_dynamic",
-        "act_data_type",
-        "super_bits",
-        "super_group_size",
-    ]
-    return keys
 
 
 def out_of_vram(error_msg):
