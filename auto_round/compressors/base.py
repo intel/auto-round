@@ -2145,7 +2145,7 @@ class BaseCompressor(object):
         # Process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
-        keys = [f.name for f in fields(QuantizationScheme)]
+        keys = (f.name for f in fields(QuantizationScheme)) + ("scale_dtype")
 
         for n, m in model.named_modules():
             # Delete previous configuration to avoid conflicts with prior tuning
