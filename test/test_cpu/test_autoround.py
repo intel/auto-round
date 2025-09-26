@@ -335,7 +335,24 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_device_map_dict(self):
+        bits, group_size, sym = 4, 128, False
+        device_map = {".*": "cpu"}
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            device_map=device_map,
+        )
+        autoround.quantize()
+        
         # test model_name
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         autoround = AutoRound(
             model_name,
             self.tokenizer,
@@ -345,6 +362,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
+            device_map=device_map,
         )
         autoround.quantize()
 
