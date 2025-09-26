@@ -249,25 +249,6 @@ class BaseCompressor(object):
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
 
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
-        if device_map is None:
-            device_map = 0
-
-        # Set device, must place after model loading
-        self._set_device(device_map)
-
-        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
-            self.device_map = device_map
-        elif isinstance(device_map, str) and "," in device_map:
-            device_map = device_map.replace(" ", "")  # Remove any spaces
-            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-            self.device_map = "auto"
-        else:
-            self.device_map = None
-        self._set_device_map_in_blocks(self.device_map)
-
         # Model related
         self.quantized = False
         if isinstance(model, str):
@@ -288,6 +269,25 @@ class BaseCompressor(object):
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
+
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
+
+        if device_map is None:
+            device_map = 0
+
+        # Set device, must place after model loading
+        self._set_device(device_map)
+
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
+            self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
+        else:
+            self.device_map = None
+        self._set_device_map_in_blocks(self.device_map)
 
         not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
         if len(not_quantize_layer_names) > 0:
