@@ -416,13 +416,16 @@ class BaseCompressor(object):
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
         for key, item in self.layer_config.items():
             if isinstance(item, str):
-                item = asdict(preset_name_to_scheme(item.upper()))
-                self.layer_config[key] = item
-
-            if isinstance(item, QuantizationScheme):
+                config = asdict(preset_name_to_scheme(item.upper()))
+                tmp_keys = copy.deepcopy(list(config.keys()))
+                for tmp_key in tmp_keys:  # Pop None value to be overridden
+                    if config[tmp_key] is None:
+                        config.pop(tmp_key)
+                self.layer_config[key] = config
+            elif isinstance(item, QuantizationScheme):
                 config = asdict(item)
                 tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  ## Pop None value to be overridden
+                for tmp_key in tmp_keys:  # Pop None value to be overridden
                     if config[tmp_key] is None:
                         config.pop(tmp_key)
                 self.layer_config[key] = config
