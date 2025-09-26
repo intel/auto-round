@@ -235,13 +235,14 @@ for key, val in GGUF_CONFIG.items():
     value.pop("lm_head", None)
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
 
-def is_gguf_scheme(scheme:Union[str, QuantizationScheme])->bool:
-    if isinstance(scheme,str) and scheme.upper().startswith("GGUF"):
+
+def is_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> bool:
+    if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return True
     for key, val in PRESET_SCHEMES.items():
         if not key.upper().startswith("GGUF"):
             continue
-        if val==scheme:
+        if val == scheme:
             return True
     return False
 
