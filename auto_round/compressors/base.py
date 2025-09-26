@@ -446,11 +446,6 @@ class BaseCompressor(object):
                         f"only {scheme_keys} are supported."
                     )
                 config = dict(item)
-            else:
-                raise TypeError(
-                    f"Unsupported type for layer_config[{key}]: {type(item)}. "
-                    f"Expected str, dict, or QuantizationScheme."
-                )
 
             # Drop None values
             config = {k: v for k, v in config.items() if v is not None}
