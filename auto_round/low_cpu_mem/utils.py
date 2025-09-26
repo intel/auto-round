@@ -423,16 +423,16 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
             module.get_bias = partial(_get_value, name, "bias")
         module.update = partial(_update, name, module)
 
-    def _repalce_to(module, name):
+    def _replace_to(module, name):
         if len(module._modules) > 0:
             for n, m in module.named_children():
                 if len(name) > 0:
                     n = name + "." + n
-                _repalce_to(m, n)
+                _replace_to(m, n)
         module.ori_to = module.to
         module.to = partial(_layer_wise_to, module, name)
 
-    _repalce_to(empty_model, "")
+    _replace_to(empty_model, "")
 
 
 def load_model_with_hooks(

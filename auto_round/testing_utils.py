@@ -47,7 +47,7 @@ def is_itrex_available():
     return importlib.util.find_spec("intel_extension_for_transformers") is not None
 
 
-def is_flash_attn_avaliable():
+def is_flash_attn_available():
     return importlib.util.find_spec("flash_attn") is not None
 
 
@@ -203,7 +203,7 @@ def require_vlm_env(test_case):
 
     env_check = True
     # pip install flash-attn --no-build-isolation
-    env_check &= is_flash_attn_avaliable()
+    env_check &= is_flash_attn_available()
 
     # pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
     env_check &= importlib.util.find_spec("llava") is not None
