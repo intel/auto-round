@@ -524,9 +524,7 @@ class BaseCompressor(object):
                         layer_config[n]["bits"] = 16
                         layer_config[n]["data_type"] = "fp"
                         layer_config[n]["fixed_by_user"] = True
-                        logger.warning_once(
-                            f"{n} will not be quantized because its shape is not divisible by 32. "
-                        )
+                        logger.warning_once(f"{n} will not be quantized because its shape is not divisible by 32. ")
 
         # Handle lm_head
         lm_head_name = get_lm_head_name(model)
