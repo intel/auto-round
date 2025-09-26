@@ -416,31 +416,48 @@ class BaseCompressor(object):
 
     # TODO gguf apply mixd bits, so the gguf scheme meanings in scheme and autoscheme are different
     def _convert_value_layer_config_to_dict(
-        self, layer_config: dict[str, Union[str, dict, QuantizationScheme]],default_scheme:QuantizationScheme,
+            self,
+            layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
+            default_scheme: "QuantizationScheme",
+            use_auto_mixed_bit_in_gguf: bool = False,
     ) -> dict:
+        """
+        Convert layer_config values (string, dict, QuantizationScheme) into a standardized dict format.
+        Adds 'fixed_by_user': True for each processed layer config.
+        """
+        if layer_config is None:
+            return {}
 
-        new_layer_config = {} if layer_config is None else layer_config
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        scheme_keys = {f.name for f in fields(QuantizationScheme)}
+        new_layer_config = copy.deepcopy(layer_config)
+
         for key, item in new_layer_config.items():
             if isinstance(item, str):
-                item = asdict(preset_name_to_scheme(item.upper()))
-                new_layer_config[key] = item
+                # Convert preset name to scheme dict
+                config = asdict(preset_name_to_scheme(item.upper()))
             elif isinstance(item, QuantizationScheme):
                 config = asdict(item)
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  # Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
             elif isinstance(item, dict):
-                item_keys = item.keys()
-                if item_keys not in scheme_keys:
-                    for item_key in item_keys:
-                        if item_key not in scheme_keys:
-                            raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {scheme_keys} are supported"
-                            )
-            new_layer_config[key]["fixed_by_user"] = True
+                # Validate dict keys
+                invalid_keys = set(item) - scheme_keys
+                if invalid_keys:
+                    raise ValueError(
+                        f"Invalid keys {invalid_keys} in layer_config for layer '{key}', "
+                        f"only {scheme_keys} are supported."
+                    )
+                config = dict(item)
+            else:
+                raise TypeError(
+                    f"Unsupported type for layer_config[{key}]: {type(item)}. "
+                    f"Expected str, dict, or QuantizationScheme."
+                )
+
+            # Drop None values
+            config = {k: v for k, v in config.items() if v is not None}
+
+            # Mark as user-fixed
+            config["fixed_by_user"] = True
+            new_layer_config[key] = config
 
         return new_layer_config
 
