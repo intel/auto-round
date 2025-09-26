@@ -350,7 +350,7 @@ class TestAutoRound(unittest.TestCase):
             device_map=device_map,
         )
         autoround.quantize()
-        
+
         # test model_name
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         autoround = AutoRound(
