@@ -296,7 +296,7 @@ class BaseCompressor(object):
         for name in not_quantize_layer_names:
             layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
         self._parse_layer_config(layer_config)  # must place after model init
-        
+
         self.to_quant_block_names = to_quant_block_names
 
         # Set device, must place after model loading
