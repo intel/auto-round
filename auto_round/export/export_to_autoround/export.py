@@ -42,6 +42,7 @@ from auto_round.utils import (
     is_nv_fp,
     is_standard_fp,
     set_module,
+    to_standard_regex,
 )
 
 
@@ -333,6 +334,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
+            extra_config[layer_name]["act_bits"] = layer_config[layer_name]["act_bits"]
+            extra_config[layer_name]["act_data_type"] = layer_config[layer_name]["act_data_type"]
+            extra_config[layer_name]["act_group_size"] = layer_config[layer_name]["act_group_size"]
+            extra_config[layer_name]["act_sym"] = layer_config[layer_name]["act_sym"]
         elif layer_config[layer_name]["in_blocks"] or (
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
@@ -344,6 +349,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             for key in neq_keys:
                 if layer_config[layer_name][key] is not None:
                     extra_config[layer_name][key] = layer_config[layer_name][key]
+
+    regex_config = quantization_config.pop("regex_config")
+    if regex_config is not None:
+        for name in regex_config.keys():
+            regex_name = to_standard_regex(name)
+            extra_config[regex_name] = {**{k: regex_config[name][k] for k in REQUIRED_CONFIG_KEYS}}
+
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
