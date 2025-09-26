@@ -87,7 +87,7 @@ class BackendInfo:
     group_size: Optional[list[int]] = None
     act_bits: Optional[list[int]] = None
     act_group_size: Optional[list[int]] = None
-    act_sym: Optional[list[int]] = None
+    act_sym: Optional[list[bool]] = None
     act_data_type: Optional[list[str]] = None
     act_dynamic: Optional[list[bool]] = None
     priority: int = 0  ##higher is better
@@ -219,7 +219,7 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
-    data_type=["mx_fp"],
+    data_type=["mx_fp", "max_fp_rceil"],
     group_size=[32],
     bits=[8],
     act_bits=[8],
