@@ -54,8 +54,8 @@ class BackendInfo:
         group_size: An optional list of integers specifying the group sizes supported
             for weight quantization. Group size determines how weights are grouped
             during quantization. Defaults to None.
-        compute_dtype: An optional list of strings representing the data types supported by
-            the backend (e.g., 'float32', 'int8'). Defaults to None.
+        compute_dtype: An optional list of strings representing the compute data types
+            supported by the backend (e.g., 'float32', 'bfloat16'). Defaults to None.
         data_type: An optional list of strings representing the data types
             supported for weight quantization (e.g., 'int', 'nv_fp'). Defaults to None.
         act_bits: An optional list of integers specifying the bit-widths supported
