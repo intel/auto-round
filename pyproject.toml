@@ -1,4 +1,5 @@
 [tool.codespell]
+skip = 'pyproject.toml,.azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt'
 ignore-words = ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt"
 
 [tool.isort]
@@ -9,6 +10,15 @@ extend_skip_glob = ["**/__init__.py"]
 
 [tool.black]
 line-length = 120
+
+[tool.typos]
+[tool.typos.files]
+extend-exclude = [
+    ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt"
+]
+[tool.typos.default.extend-words]
+ue = "ue"
+endianess = "endianess"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

@@ -72,7 +72,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_consective_quant(self):
+    def test_consecutive_quant(self):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
             self.model,
