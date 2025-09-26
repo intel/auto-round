@@ -56,6 +56,8 @@ class BackendInfo:
             during quantization. Defaults to None.
         dtype: An optional list of strings representing the data types supported by
             the backend for weight quantization (e.g., 'float32', 'int8'). Defaults to None.
+        data_type: An optional list of strings representing the data types
+            supported for weight quantization (e.g., 'int', 'nv_fp'). Defaults to None.
         act_bits: An optional list of integers specifying the bit-widths supported
             for activation quantization (e.g., [8, 16]). Defaults to None.
         act_group_size: An optional list of integers specifying the group sizes
@@ -81,6 +83,7 @@ class BackendInfo:
     packing_format: list[str]
     bits: list[int]
     dtype: list[str] = None
+    data_type: Optional[list[str]] = None
     group_size: Optional[list[int]] = None
     act_bits: Optional[list[int]] = None
     act_group_size: Optional[list[int]] = None
@@ -143,6 +146,7 @@ GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
+WOQ_DEFAULT_ACT_BITS = [16, 32]
 
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
@@ -195,6 +199,7 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     packing_format=["auto_round:fp8_static"],
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
+    data_type=["fp"],
     bits=[8],
     priority=0,
     checkers=[fp8_static_scheme_checker],
@@ -208,6 +213,7 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
+    data_type=["mx_fp"],
     group_size=[32],
     bits=[8],
     act_bits=[8],
@@ -227,6 +233,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
+    data_type=["mx_fp"],
     group_size=[32],
     bits=[4],
     act_bits=[4],
@@ -247,6 +254,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     dtype=["float32", "float16", "bfloat16"],
+    data_type=["nv_fp"],
     group_size=[16],
     bits=[4],
     act_bits=[4],
