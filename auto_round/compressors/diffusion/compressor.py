@@ -99,6 +99,8 @@ class DiffusionCompressor(BaseCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator_seed = generator_seed
