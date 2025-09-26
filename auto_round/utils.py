@@ -1046,7 +1046,7 @@ def can_pack_with_numba():  # pragma: no cover
     return True
 
 
-def get_fp_layer_names(model:torch.nn.Module, fp_layers:str):
+def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
     """Identifies and returns layers in the model to exclude from quantization.
 
     This function processes a comma-separated list of fully precision (FP) layers,
