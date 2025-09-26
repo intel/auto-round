@@ -248,12 +248,6 @@ class BaseCompressor(object):
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
 
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
-        if device_map is None:
-            device_map = 0
-
         # Model related
         self.quantized = False
         if isinstance(model, str):
@@ -275,8 +269,34 @@ class BaseCompressor(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
-        self._parse_layer_config(layer_config, fp_layers)  # must place after model init
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
 
+        if device_map is None:
+            device_map = 0
+
+        # Set device, must place after model loading
+        self._set_device(device_map)
+
+        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
+            self.device_map = device_map
+        elif isinstance(device_map, str) and "," in device_map:
+            device_map = device_map.replace(" ", "")  # Remove any spaces
+            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
+            self.device_map = "auto"
+        else:
+            self.device_map = None
+        self._set_device_map_in_blocks(self.device_map)
+
+        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
+        if len(not_quantize_layer_names) > 0:
+            logger.info(f"{not_quantize_layer_names} will not be quantized.")
+        if layer_config is None:
+            layer_config = {}
+        for name in not_quantize_layer_names:
+            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
+        self._parse_layer_config(layer_config)  # must place after model init
+        
         self.to_quant_block_names = to_quant_block_names
 
         # Set device, must place after model loading
