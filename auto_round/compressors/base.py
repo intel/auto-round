@@ -416,7 +416,7 @@ class BaseCompressor(object):
 
     # TODO gguf apply mixd bits, so the gguf scheme meanings in scheme and autoscheme are different
     def _convert_value_layer_config_to_dict(
-        self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]
+        self, layer_config: dict[str, Union[str, dict, QuantizationScheme]],default_scheme:QuantizationScheme,
     ) -> dict:
 
         new_layer_config = {} if layer_config is None else layer_config
@@ -441,6 +441,7 @@ class BaseCompressor(object):
                                 f" only {scheme_keys} are supported"
                             )
             new_layer_config[key]["fixed_by_user"] = True
+
         return new_layer_config
 
     def _expand_layer_config(
