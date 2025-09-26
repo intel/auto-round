@@ -14,7 +14,7 @@
 
 import functools
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from transformers.utils.versions import require_version
 
@@ -28,6 +28,9 @@ from auto_round.utils import get_library_version
 BackendInfos = {}
 
 import cpuinfo
+
+if TYPE_CHECKING:
+    from auto_quantizer import AutoRoundConfig
 
 
 def get_cpu_manufacturer():
@@ -94,6 +97,15 @@ class BackendInfo:
     checkers: list[Any] = field(default_factory=list)
     alias: Optional[list[str]] = None
     requirements: Optional[list[str]] = None
+
+
+BACKEND_ACT_ATTRS = [
+    "act_bits",
+    "act_group_size",
+    "act_sym",
+    "act_data_type",
+    "act_dynamic",
+]
 
 
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
@@ -910,7 +922,9 @@ def get_layer_backend(
     return supported_backends[0]
 
 
-def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
+def get_highest_priority_backend(
+    quantization_config: "AutoRoundConfig", device: str, packing_format: str
+) -> str | None:
     supported_backends = []
     for key in BackendInfos.keys():
         backend = BackendInfos[key]
@@ -919,15 +933,15 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
             continue
 
         # Check if bit-width is supported
-        if bits not in backend.bits:
+        if quantization_config.bits not in backend.bits:
             continue
 
         # Check if group_size is valid (if required by backend)
-        if backend.group_size is not None and group_size not in backend.group_size:
+        if backend.group_size is not None and quantization_config.group_size not in backend.group_size:
             continue
 
         # Check if symmetric/asymmetric quantization is supported
-        if sym not in backend.sym:
+        if quantization_config.sym not in backend.sym:
             continue
 
         # Check if the format is convertible when packing formats differ
@@ -935,6 +949,17 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
             pass
         else:
             continue
+
+        def _is_act_field_supported(backend, quantization, field_name):
+            q_val = getattr(quantization, field_name, None)
+            b_val = getattr(backend, field_name, None)
+            # Case 1. quantization field is None, assume it is not used, so supported
+            # Case 2. backend field is not None and contains the quantization field value
+            return (q_val is None) or (b_val is not None and q_val in b_val)
+
+        if not all(_is_act_field_supported(backend, quantization_config, field) for field in BACKEND_ACT_ATTRS):
+            continue
+
         supported_backends.append(key)
 
     if len(supported_backends) > 0:

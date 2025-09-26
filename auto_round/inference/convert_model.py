@@ -569,10 +569,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     # Suggest a better backend if available
     if backend == "auto":
-        best_backend = get_highest_priority_backend(  # TODO add activation scheme
-            quantization_config.bits,
-            quantization_config.sym,
-            quantization_config.group_size,
+        best_backend = get_highest_priority_backend(
+            quantization_config,
             target_device,
             packing_format,
         )
