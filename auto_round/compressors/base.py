@@ -269,7 +269,7 @@ class BaseCompressor(object):
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
-        
+
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
