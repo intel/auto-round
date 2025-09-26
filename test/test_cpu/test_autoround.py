@@ -334,6 +334,19 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
+        
+        # test model_name
+        autoround = AutoRound(
+            model_name,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
 
     def test_fp32(self):
         bits, group_size, sym = 4, 128, False
