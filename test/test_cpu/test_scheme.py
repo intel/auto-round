@@ -78,6 +78,18 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.act_data_type, "nv_fp4_with_static_gs")
         ar.quantize()
 
+    def test_all_scheme(self):
+        from auto_round.schemes import PRESET_SCHEMES
+
+        for scheme in PRESET_SCHEMES:
+            model_name = self.model_name
+            if "gguf" in scheme.lower():
+                model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
+            print(f"scheme={scheme}")
+            ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
+            ar.quantize_and_save(self.save_folder)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
+
     def test_scheme_in_layer_config(self):
         layer_config = {
             "model.decoder.layers.2.self_attn": {"bits": 2},
