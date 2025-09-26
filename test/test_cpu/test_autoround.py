@@ -334,7 +334,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
-        
+
         # test model_name
         autoround = AutoRound(
             model_name,
