@@ -751,11 +751,11 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
 
     tmp_L = all_L.reshape(nb, 4, 64) & 0xF
     output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2).cpu().numpy().astype(np.uint8)
-    ouptut_qh = (all_L >> 4).reshape(nb, 2, 4, 32) << torch.tensor([0, 2, 4, 6], device=all_L.device).reshape(
+    output_qh = (all_L >> 4).reshape(nb, 2, 4, 32) << torch.tensor([0, 2, 4, 6], device=all_L.device).reshape(
         1, 1, 4, 1
     )
     output_qh = (
-        np.bitwise_or.reduce(ouptut_qh.cpu().numpy(), axis=2, dtype=np.uint8)  # pylint: disable=E1121
+        np.bitwise_or.reduce(output_qh.cpu().numpy(), axis=2, dtype=np.uint8)  # pylint: disable=E1121
         .reshape(nb, QK_K // 4)
         .astype(np.uint8)
     )  # pylint: disable=E1121

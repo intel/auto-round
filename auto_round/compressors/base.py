@@ -93,7 +93,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupport_meta_device,
+    unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -259,7 +259,7 @@ class BaseCompressor(object):
         elif tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupport_meta_device(model):
+        if unsupported_meta_device(model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
@@ -350,7 +350,7 @@ class BaseCompressor(object):
         elif tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupport_meta_device(model):
+        if unsupported_meta_device(model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
@@ -707,29 +707,26 @@ class BaseCompressor(object):
             layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
 
         # Some other quantization configs
-        self.layer_config = {} if layer_config is None else layer_config
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        self.layer_config = copy.deepcopy(layer_config) if layer_config is not None else {}
+        scheme_keys = {f.name for f in fields(QuantizationScheme)}
+
         for key, item in self.layer_config.items():
             if isinstance(item, str):
-                item = asdict(preset_name_to_scheme(item.upper()))
-                self.layer_config[key] = item
-
-            if isinstance(item, QuantizationScheme):
+                config = asdict(preset_name_to_scheme(item.upper()))
+            elif isinstance(item, QuantizationScheme):
                 config = asdict(item)
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  ## Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
-                self.layer_config[key] = config
             elif isinstance(item, dict):
-                item_keys = item.keys()
-                if item_keys not in scheme_keys:
-                    for item_key in item_keys:
-                        if item_key not in scheme_keys:
-                            raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {scheme_keys} are supported"
-                            )
+                invalid_keys = set(item) - scheme_keys
+                if invalid_keys:
+                    raise ValueError(
+                        f"Invalid keys {invalid_keys} in layer_config for layer '{key}', "
+                        f"only {scheme_keys} are supported"
+                    )
+                config = dict(item)
+
+            # Drop None values
+            config = {k: v for k, v in config.items() if v is not None}
+            self.layer_config[key] = config
 
         if not self.quant_lm_head or (isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf")):
             return
@@ -919,20 +916,20 @@ class BaseCompressor(object):
         device_0_memory = get_device_memory(
             self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
         )
-        block_memory, input_ouput_memory = estimate_tuning_block_mem(block, input_ids)
+        block_memory, input_output_memory = estimate_tuning_block_mem(block, input_ids)
         if self.low_gpu_mem_usage:
-            input_ouput_memory = 0
+            input_output_memory = 0
 
         mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
         if self.iters == 0:
             mem_per_param_scale = 1  # for rtn
 
-        if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
+        if (block_memory * mem_per_param_scale + input_output_memory) < device_0_memory:
             return  # fit in one GPU
 
         device_map = {}
         device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
-        device_memory[device_0] = device_0_memory - input_ouput_memory
+        device_memory[device_0] = device_0_memory - input_output_memory
 
         device_idx = 0
         # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
@@ -1159,7 +1156,7 @@ class BaseCompressor(object):
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
-                elif is_static_wfp8afp8(self):  # staic wfp8afp8
+                elif is_static_wfp8afp8(self):  # static wfp8afp8
                     format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
                 elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
                     format = f"auto_round:{AutoRoundFormat.FP8.value}"
