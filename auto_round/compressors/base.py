@@ -967,7 +967,7 @@ class BaseCompressor(object):
                         f" act_bits={self.act_bits}"
                     )
                 elif "auto_round" in format and (
-                    is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
+                    is_mx_fp(self.act_data_type) or (is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type)
                 ):
                     pass
                 elif format != "fake":
