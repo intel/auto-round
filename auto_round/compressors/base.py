@@ -604,7 +604,9 @@ class BaseCompressor(object):
         # Return whether there are quantized layers outside the blocks
         return has_qlayer_outside_block
 
-    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]], fp_layers:str) -> None:
+    def _parse_layer_config(
+        self, layer_config: dict[str, Union[str, dict, QuantizationScheme]], fp_layers: str
+    ) -> None:
         """Parse and set the layer-wise quantization configuration."""
         not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
         if len(not_quantize_layer_names) > 0:
