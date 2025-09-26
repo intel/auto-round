@@ -2795,7 +2795,7 @@ def get_avg_bits(module, with_lm_head=False):
     for n, m in module.named_modules():
         if n == lm_head_name and not with_lm_head:
             continue
-        if isinstance(m, SUPPORTED_LAYER_TYPES):
+        if type(m) in SUPPORTED_LAYER_TYPES:
             # get weight bits
             m_numel = m.weight.numel()
             all_numel += m_numel
