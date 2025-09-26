@@ -519,12 +519,13 @@ class BaseCompressor(object):
             for n, m in model.named_modules():
                 if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                        if n in layer_config:
-                            layer_config[n]["bits"] = 16
-                            layer_config[n]["data_type"] = "fp"
+                        if n not in layer_config:
+                            layer_config[n] = default_dict.copy()
+                        layer_config[n]["bits"] = 16
+                        layer_config[n]["data_type"] = "fp"
+                        layer_config[n]["fixed_by_user"] = True
                         logger.warning_once(
                             f"{n} will not be quantized because its shape is not divisible by 32. "
-                            "It will be exported in FP16 instead."
                         )
 
         # Handle lm_head
