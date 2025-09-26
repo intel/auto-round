@@ -7458,7 +7458,7 @@ class ExaoneModel(TextModel):
         layer_norm_eps = hparams["layer_norm_epsilon"]
         intermediate_size = hparams["intermediate_size"] if "intermediate_size" in hparams else 4 * embed_dim
         num_layers = hparams["num_layers"]
-        # ignore for now as EXAONE-3.0-7.8B-Instruct attentino_dropout is 0.0
+        # ignore for now as EXAONE-3.0-7.8B-Instruct attention_dropout is 0.0
         # attention_dropout_rate = hparams["attention_dropout"]
         # ignore for now as EXAONE-3.0-7.8B-Instruct embed_dropout is 0.0
         # embed_dropout_rate = hparams["embed_dropout"]
@@ -7707,7 +7707,7 @@ class GraniteHybridModel(Mamba2Model, GraniteMoeModel):
     def get_attn_layers(self):
         # Explicit list of layer type names
         if layer_types := self.hparams.get("layer_types"):
-            return [i for i, typ in enumerate(layer_types) if typ == "attention"]
+            return [i for i, layer_type in enumerate(layer_types) if layer_type == "attention"]
 
         # Layer types indicated by index or period
         attn_layers = self.hparams.get("attn_layer_indices", [])

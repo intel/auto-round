@@ -220,7 +220,7 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
-def unsupport_meta_device(model):
+def unsupported_meta_device(model):
     """Checks if the model is a valid model for auto_round.
 
     Args:
@@ -810,8 +810,8 @@ def is_autoround_exllamav2_available():
 def get_library_version(library_name):
     from packaging.version import Version
 
-    python_vesion = Version(sys.version.split()[0])
-    if python_vesion < Version("3.8"):
+    python_version = Version(sys.version.split()[0])
+    if python_version < Version("3.8"):
         import warnings
 
         warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -1290,7 +1290,7 @@ def _gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType
 
     pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
-    unsupport_list, reset_list = [], []
+    unsupported_list, reset_list = [], []
     for format in GGUF_CONFIG:
         if format in formats:
             if format == "q6_k_s":
@@ -1303,7 +1303,7 @@ def _gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType
                 else:
                     pre_dq_format = format
 
-            unsupport_list, reset_list = [], []
+            unsupported_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
                 if not hasattr(args_or_ar, k):
@@ -1315,12 +1315,12 @@ def _gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType
                     k = "asym"
                     v = not v
                 if getattr(args_or_ar, k) != v:
-                    unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
+                    unsupported_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
                     setattr(args_or_ar, k, v)
-            if len(unsupport_list) > 0:
+            if len(unsupported_list) > 0:
                 logger.info(
-                    f"format {format} does not support for {', '.join(unsupport_list)},"
+                    f"format {format} does not support for {', '.join(unsupported_list)},"
                     f" reset to {', '.join(reset_list)}."
                 )
     # Removed obsolete commented-out block for improved readability and maintainability.
@@ -2415,7 +2415,7 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
     elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
         return ["w1_linear", "w2_linear", "v1_linear"]
     else:
-        # assuing w1, w2, w3 by default
+        # assuming w1, w2, w3 by default
         return ["w1", "w2", "w3"]
 
 
