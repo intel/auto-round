@@ -412,32 +412,26 @@ class BaseCompressor(object):
     def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
         """Parse and set the layer-wise quantization configuration."""
         # Some other quantization configs
-        self.layer_config = {} if layer_config is None else layer_config
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        self.layer_config = copy.deepcopy(layer_config) if layer_config is not None else {}
+        scheme_keys = {f.name for f in fields(QuantizationScheme)}
+
         for key, item in self.layer_config.items():
             if isinstance(item, str):
                 config = asdict(preset_name_to_scheme(item.upper()))
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  # Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
-                self.layer_config[key] = config
             elif isinstance(item, QuantizationScheme):
                 config = asdict(item)
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  # Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
-                self.layer_config[key] = config
             elif isinstance(item, dict):
-                item_keys = item.keys()
-                if item_keys not in scheme_keys:
-                    for item_key in item_keys:
-                        if item_key not in scheme_keys:
-                            raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {scheme_keys} are supported"
-                            )
+                invalid_keys = set(item) - scheme_keys
+                if invalid_keys:
+                    raise ValueError(
+                        f"Invalid keys {invalid_keys} in layer_config for layer '{key}', "
+                        f"only {scheme_keys} are supported"
+                    )
+                config = dict(item)
+
+            # Drop None values
+            config = {k: v for k, v in config.items() if v is not None}
+            self.layer_config[key] = config
 
         if not self.quant_lm_head or (isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf")):
             return
