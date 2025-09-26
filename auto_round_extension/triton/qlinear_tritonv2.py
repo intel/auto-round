@@ -111,9 +111,9 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.scales = scales_t.clone().half()
 
         W = linear.weight.data.to(device).clone()
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
