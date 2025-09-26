@@ -79,14 +79,17 @@ class TestAutoRound(unittest.TestCase):
         ar.quantize()
 
     def test_all_scheme(self):
+        import copy
+
         from auto_round.schemes import PRESET_SCHEMES
 
-        PRESET_SCHEMES.pop("W3A16")
-        PRESET_SCHEMES.pop("W4A16")
-        PRESET_SCHEMES.pop("W2A16")
-        PRESET_SCHEMES.pop("MXFP4")
-        PRESET_SCHEMES.pop("NVFP4")
-        for scheme in PRESET_SCHEMES:
+        preset_schemes = copy.deepcopy(PRESET_SCHEMES)
+        preset_schemes.pop("W3A16")
+        preset_schemes.pop("W4A16")
+        preset_schemes.pop("W2A16")
+        preset_schemes.pop("MXFP4")
+        preset_schemes.pop("NVFP4")
+        for scheme in preset_schemes:
             model_name = self.model_name
             if "gguf" in scheme.lower():
                 model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
