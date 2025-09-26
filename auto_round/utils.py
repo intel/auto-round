@@ -777,7 +777,7 @@ def get_layer_names_in_block(
     if class_names is None:
         class_names = []
     for n, m in model.named_modules():
-        if isinstance(m, supported_types) or (class_names is not None and m.__class__.__name__ in class_names):
+        if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
@@ -1067,7 +1067,7 @@ def get_fp_layer_names(model, fp_layers):
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
+        if type(m) in SUPPORTED_LAYER_TYPES:
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
@@ -1105,7 +1105,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     if bits != 4:
         return False, "AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
-        if isinstance(m, transformers.pytorch_utils.Conv1D):
+        if type(m) == transformers.pytorch_utils.Conv1D:
             return False, "AutoAWQ GEMM kernel does not support conv1d"
 
     layer_names = get_layer_names_in_block(model)
@@ -1181,13 +1181,13 @@ def is_debug_mode():
 
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    if isinstance(layer, torch.nn.Linear):
+    if type(layer) == torch.nn.Linear:
         return layer.in_features, layer.out_features
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
+    elif type(layer) == transformers.pytorch_utils.Conv1D:  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
     elif isinstance(layer, torch.nn.Embedding):
         return layer.num_embeddings, layer.embedding_dim
-    elif deepspeed_exists and isinstance(layer, (LinearLayer, LinearAllreduce)):
+    elif deepspeed_exists and type(layer) in (LinearLayer, LinearAllreduce):
         return layer.weight.shape[1], layer.weight.shape[0]  # (input_dim, output_dim)
     return None, None  # Unsupported layer type
 
@@ -1368,7 +1368,7 @@ def _is_fp8_model(model: torch.nn.Module) -> bool:
 def _is_fp8_linear(module: torch.nn.Module) -> bool:
     if hasattr(module, "is_fp8_linear"):
         return module.is_fp8_linear
-    if not (isinstance(module, torch.nn.Linear) or module.__class__.__name__ == "FP8Linear"):
+    if not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear"):
         return False
     if module.weight is None:
         return False
@@ -1913,7 +1913,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             continue
         new_type = GGUF_CONFIG[target_gguf_format]["mostly"]
         layer = get_module(model, layer_name)
-        if isinstance(layer, transformers.pytorch_utils.Conv1D):
+        if type(layer) == transformers.pytorch_utils.Conv1D:
             input_features = layer.weight.shape[0]
         else:
             input_features = layer.weight.shape[-1]

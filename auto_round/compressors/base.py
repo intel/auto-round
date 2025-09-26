@@ -956,7 +956,7 @@ class BaseCompressor(object):
             and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
         ):
             for n, m in self.model.named_modules():
-                if isinstance(m, self.supported_types):
+                if type(m) in self.supported_types:
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                         self.layer_config[n] = {"bits": 16}
                         logger.info(
@@ -2181,8 +2181,8 @@ class BaseCompressor(object):
         is_gguf = hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
         for n, m in model.named_modules():
             # Skip unsupported types
-            if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                if n in layer_config:
+            if type(m) not in supported_types and m.__class__.__name__ not in self.inner_supported_types:
+                if n in self.layer_config:
                     if not isinstance(m, torch.nn.Embedding):
                         logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
                         layer_config.pop(n)
@@ -2685,7 +2685,7 @@ class BaseCompressor(object):
         from functools import partial
 
         for n, m in self.model.named_modules():
-            if n in self.to_cached_layers and not isinstance(m, tuple(self.supported_types)):  ##block
+            if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
                 m.orig_forward = m.forward
                 m.forward = partial(self._get_block_forward_func(n), m)
             elif n in self.to_cached_layers:  ##linear layer or conv1d layer
@@ -3409,7 +3409,7 @@ class BaseCompressor(object):
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit(-1)
-            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.layer_config[key]):
+            if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
         return layer_names
