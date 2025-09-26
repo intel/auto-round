@@ -494,7 +494,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         _import_exllamav2_kernels()
 
     # Determine common data type across backends
-    data_types = [set(BackendInfos[b].dtype) for b in used_backends]
+    data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
     common_dtypes = set.intersection(*data_types) if data_types else set()
 
     # Force model dtype if needed
