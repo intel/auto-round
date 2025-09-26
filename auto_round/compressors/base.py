@@ -230,7 +230,7 @@ class BaseCompressor(object):
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         # Scale factor for RAM usage per parameter.
         self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
-        fp_layers = kwargs.pop("fp_layers", None)
+        fp_layers = kwargs.pop("fp_layers", "")
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -288,14 +288,7 @@ class BaseCompressor(object):
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
 
-        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
-        if len(not_quantize_layer_names) > 0:
-            logger.info(f"{not_quantize_layer_names} will not be quantized.")
-        if layer_config is None:
-            layer_config = {}
-        for name in not_quantize_layer_names:
-            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
-        self._parse_layer_config(layer_config)  # must place after model init
+        self._parse_layer_config(layer_config, fp_layers)  # Must place after model init
 
         self.to_quant_block_names = to_quant_block_names
 
@@ -611,7 +604,7 @@ class BaseCompressor(object):
         # Return whether there are quantized layers outside the blocks
         return has_qlayer_outside_block
 
-    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]], fp_layers) -> None:
+    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]], fp_layers:str) -> None:
         """Parse and set the layer-wise quantization configuration."""
         not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
         if len(not_quantize_layer_names) > 0:
