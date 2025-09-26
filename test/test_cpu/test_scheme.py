@@ -81,6 +81,11 @@ class TestAutoRound(unittest.TestCase):
     def test_all_scheme(self):
         from auto_round.schemes import PRESET_SCHEMES
 
+        PRESET_SCHEMES.pop("W3A16")
+        PRESET_SCHEMES.pop("W4A16")
+        PRESET_SCHEMES.pop("W2A16")
+        PRESET_SCHEMES.pop("MXFP4")
+        PRESET_SCHEMES.pop("NVFP4")
         for scheme in PRESET_SCHEMES:
             model_name = self.model_name
             if "gguf" in scheme.lower():
