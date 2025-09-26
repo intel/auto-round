@@ -539,7 +539,7 @@ class BaseCompressor(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
 
-        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile:
+        if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
@@ -863,7 +863,7 @@ class BaseCompressor(object):
                     format = f"auto_round:{self.data_type}"
                 elif is_static_wfp8afp8(self):  # static wfp8afp8
                     format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
-                elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
+                elif self.data_type.startswith("fp") and self.bits == 8 and self.act_bits >= 16:  # woq fp8
                     format = f"auto_round:{AutoRoundFormat.FP8.value}"
                 elif self.act_bits < 16:
                     raise ValueError(
@@ -934,8 +934,8 @@ class BaseCompressor(object):
         format = format.replace("q*_", f"q{self.bits}_")
 
         # format check for fp8
-        w_fp8 = self.data_type == "fp" and self.bits == 8
-        act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
+        w_fp8 = self.data_type.startswith("fp") and self.bits == 8
+        act_fp8 = self.act_data_type.startswith("fp") and self.act_bits == 8
         if (w_fp8 or act_fp8) and re.search("^auto_round|^llm_compressor", format) is None:
             error_msg = (
                 f"is only supported to export auto_round or llm_compressor format," f" but got {format}, please check."
