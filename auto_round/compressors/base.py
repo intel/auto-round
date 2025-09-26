@@ -128,8 +128,7 @@ class BaseCompressor(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        auto_scheme: AutoScheme = None,
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -2247,7 +2246,7 @@ class BaseCompressor(object):
         # Process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
-        keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype")
+        keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
 
         for n, m in model.named_modules():
             # Delete previous configuration to avoid conflicts with prior tuning
