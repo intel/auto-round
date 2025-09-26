@@ -414,47 +414,125 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    # TODO gguf apply mixd bits, so the gguf scheme meanings in scheme and autoscheme are different
-    def _convert_value_layer_config_to_dict(
+    def _prepare_layer_config(
             self,
-            layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
+            model: torch.nn.Module,
+            orig_layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
             default_scheme: "QuantizationScheme",
-            use_auto_mixed_bit_in_gguf: bool = False,
+            supported_types,
+            inner_supported_types,
+            fp_layers: str = "",
+            quant_lm_head: bool = False,
     ) -> dict:
         """
-        Convert layer_config values (string, dict, QuantizationScheme) into a standardized dict format.
-        Adds 'fixed_by_user': True for each processed layer config.
+        Normalize and validate layer-specific quantization schemes,
+        expand regex-based configs, and merge with default scheme.
         """
-        if layer_config is None:
-            return {}
+        from auto_round.schemes import is_gguf_scheme
 
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
-        new_layer_config = copy.deepcopy(layer_config)
+        layer_config = copy.deepcopy(orig_layer_config) or {}
 
-        for key, item in new_layer_config.items():
+        # Mark layers that should stay in FP
+        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
+        for name in not_quantize_layer_names:
+            layer_config[name] = {
+                "bits": 16,
+                "act_bits": 16,
+                "data_type": "float",
+                "act_data_type": "float",
+            }
+
+        def normalize_item(item, layer_name: str) -> dict:
+            """Convert a single config entry to dict and validate keys."""
             if isinstance(item, str):
-                # Convert preset name to scheme dict
                 config = asdict(preset_name_to_scheme(item.upper()))
             elif isinstance(item, QuantizationScheme):
                 config = asdict(item)
             elif isinstance(item, dict):
-                # Validate dict keys
                 invalid_keys = set(item) - scheme_keys
                 if invalid_keys:
                     raise ValueError(
-                        f"Invalid keys {invalid_keys} in layer_config for layer '{key}', "
+                        f"Invalid keys {invalid_keys} in layer_config for layer '{layer_name}', "
                         f"only {scheme_keys} are supported."
                     )
                 config = dict(item)
-
-            # Drop None values
+            else:
+                raise TypeError(
+                    f"Unsupported type for layer_config[{layer_name}]: {type(item)}. "
+                    f"Expected str, dict, or QuantizationScheme."
+                )
+            # Drop None values & mark as fixed
             config = {k: v for k, v in config.items() if v is not None}
-
-            # Mark as user-fixed
             config["fixed_by_user"] = True
-            new_layer_config[key] = config
+            return config
 
-        return new_layer_config
+        # Normalize configs
+        layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
+
+        # Infer missing bits from data_type / act_data_type
+        for cfg in layer_config.values():
+            if "data_type" in cfg and "bits" not in cfg:
+                if (tmp_bits := infer_bits_by_data_type(cfg["data_type"])) is not None:
+                    cfg["bits"] = tmp_bits
+            if "act_data_type" in cfg and "act_bits" not in cfg:
+                if (tmp_bits := infer_bits_by_data_type(cfg["act_data_type"])) is not None:
+                    cfg["act_bits"] = tmp_bits
+
+        # Fill missing values from default scheme
+        default_dict = asdict(default_scheme)
+        for cfg in layer_config.values():
+            for scheme_key in scheme_keys:
+                cfg.setdefault(scheme_key, default_dict.get(scheme_key))
+
+        # Special case for GGUF
+        is_gguf = is_gguf_scheme(default_scheme)
+        if is_gguf and torch.nn.Embedding not in supported_types:
+            supported_types = tuple(list(supported_types) + [torch.nn.Embedding])
+
+        # Collect all supported layer names
+        all_supported_layer_names = []
+        for n, m in model.named_modules():
+            # Clear old attributes to avoid conflicts
+            for key in scheme_keys:
+                if hasattr(m, key):
+                    delattr(m, key)
+            if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:
+                continue
+            all_supported_layer_names.append(n)
+
+        # Expand regex configs (compile once, reuse)
+        for name in list(layer_config.keys()):
+            if name in all_supported_layer_names:
+                continue
+            regex = re.compile(name)
+            matched_names = [ln for ln in all_supported_layer_names if regex.search(ln)]
+            if matched_names:
+                val = layer_config.pop(name)
+                for match_name in matched_names:
+                    layer_config[match_name] = val
+            else:
+                raise ValueError(f"Key '{name}' in layer_config is invalid, please double check.")
+
+        # Enforce group_size = 32 constraint for INT weight-only quantization
+        if default_scheme.data_type == "int" and default_scheme.act_bits >= 16 and not is_gguf:
+            for n, m in model.named_modules():
+                if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
+                    if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                        if n in layer_config:
+                            layer_config[n]["bits"] = 16
+                            layer_config[n]["data_type"] = "fp"
+                        logger.warning_once(
+                            f"{n} will not be quantized because its shape is not divisible by 32. "
+                            "It will be exported in FP16 instead."
+                        )
+
+        # Handle lm_head
+        lm_head_name = get_lm_head_name(model)
+        if lm_head_name not in layer_config and (quant_lm_head or is_gguf):
+            layer_config[lm_head_name] = default_dict.copy()
+
+        return layer_config
 
     def _expand_layer_config(
         self,
