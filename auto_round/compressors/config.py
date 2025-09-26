@@ -26,6 +26,7 @@ class ExtraConfig:
     _scheme_config = None
     _tuning_config = None
     _mllm_config = None
+    _diffusion_config = None
 
     def __init__(
         self,
@@ -65,6 +66,10 @@ class ExtraConfig:
         quant_nontext_module: bool = False,
         extra_data_dir: str = None,
         template: str = None,
+        # diffusion
+        guidance_scale: float = 7.5,
+        num_inference_steps: int = 50,
+        generator_seed: int = None,
     ):
         """Initialize
 
@@ -103,6 +108,10 @@ class ExtraConfig:
             quant_nontext_module: Whether to quantize nontext module.
             extra_data_dir: The path of extra data such as images, audio and videos.
             template: The path or name of template used to specify process for different MLLMs.
+            guidance_scale (float): Control how much the image generation process follows the text prompt.
+                                    The more it is, the more closely it follows the prompt (default is 7.5).
+            num_inference_steps (int): The reference number of denoising steps (default is 50).
+            generator_seed (int): A seed that controls the initial noise for image generation (default is None).
         """
         self.tuning_config = TuningExtraConfig(
             amp=amp,
@@ -143,6 +152,11 @@ class ExtraConfig:
             extra_data_dir=extra_data_dir,
             template=template,
         )
+        self.diffusion_config = DiffusionExtraConfig(
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            generator_seed=generator_seed,
+        )
 
     @property
     def tuning_config(self):
@@ -179,6 +193,20 @@ class ExtraConfig:
                 config, MLLMExtraConfig
             ), f"mllm_config should be MLLMExtraConfig, but got {config.__class__.__name__}"
             self._mllm_config = config
+
+    @property
+    def diffusion_config(self):
+        return self._diffusion_config
+
+    @diffusion_config.setter
+    def diffusion_config(self, config: DiffusionExtraConfig):
+        if config is None:
+            self._diffusion_config = None
+        else:
+            assert isinstance(
+                config, DiffusionExtraConfig
+            ), f"diffusion_config should be DiffusionExtraConfig, but got {config.__class__.__name__}"
+            self._diffusion_config = config
 
     def to_dict(self):
         output_dict = {}
@@ -263,3 +291,10 @@ class MLLMExtraConfig(BaseExtraConfig):
     quant_nontext_module: bool = False
     extra_data_dir: str = None
     template: str = None
+
+
+@dataclass
+class DiffusionExtraConfig(BaseExtraConfig):
+    guidance_scale: float = 7.5
+    num_inference_steps: int = 50
+    generator_seed: int = None
