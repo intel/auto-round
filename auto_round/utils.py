@@ -2280,7 +2280,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
     scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = scheme_keys + ("tmp_name", "scale_dtype")
+    keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
