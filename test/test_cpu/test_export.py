@@ -504,6 +504,34 @@ class TestAutoRound(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
+    def test_nvfp4_autoround_save_quantized(self):
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        from transformers import AutoConfig
+
+        scheme = "NVFP4"
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            scheme="NVFP4",
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize()
+        compressed_model = autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
+        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        assert (
+            hasattr(tmp_layer, "weight_scale")
+            and hasattr(tmp_layer, "weight_global_scale")
+            and hasattr(tmp_layer, "input_global_scale")
+            and tmp_layer.weight_packed.dtype is torch.uint8
+            and tmp_layer.weight_scale.dtype is torch.float8_e4m3fn
+            and tmp_layer.weight_scale.shape[0] == 768
+        ), "Illegal NVFP4 packing name or data_type or shape"
+        shutil.rmtree("./saved", ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
