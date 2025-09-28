@@ -625,7 +625,8 @@ class BaseCompressor(object):
         if self.low_gpu_mem_usage:
             input_output_memory = 0
 
-        mem_per_param_scale = 13 * self.batch_size if self.mem_per_param_scale is None else self.mem_per_param_scale
+        mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
+        mem_per_param_scale *= self.batch_size
         if self.iters == 0:
             mem_per_param_scale = 1  # for rtn
 
