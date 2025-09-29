@@ -303,7 +303,6 @@ class BaseCompressor(object):
             layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
         self._parse_layer_config(layer_config)  # must place after model init
 
-
         # Tuning hyperparameters
         self.seed = seed
         set_seed(self.seed)
@@ -339,8 +338,6 @@ class BaseCompressor(object):
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
-
-
 
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self._set_amp_dtype()
