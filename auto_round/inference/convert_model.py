@@ -494,7 +494,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         _import_exllamav2_kernels()
 
     # Determine common data type across backends
-    data_types = [set(BackendInfos[b].dtype) for b in used_backends]
+    data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
     common_dtypes = set.intersection(*data_types) if data_types else set()
 
     # Force model dtype if needed
@@ -569,10 +569,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     # Suggest a better backend if available
     if backend == "auto":
-        best_backend = get_highest_priority_backend(  # TODO add activation scheme
-            quantization_config.bits,
-            quantization_config.sym,
-            quantization_config.group_size,
+        best_backend = get_highest_priority_backend(
+            quantization_config,
             target_device,
             packing_format,
         )

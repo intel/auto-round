@@ -14,7 +14,7 @@
 
 import functools
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from transformers.utils.versions import require_version
 
@@ -28,6 +28,9 @@ from auto_round.utils import get_library_version
 BackendInfos = {}
 
 import cpuinfo
+
+if TYPE_CHECKING:
+    from auto_quantizer import AutoRoundConfig
 
 
 def get_cpu_manufacturer():
@@ -46,13 +49,29 @@ class BackendInfo:
         device: A list of strings representing the devices the backend supports
             (e.g., 'cuda', 'cpu').
         sym: A list of booleans indicating whether the backend supports symmetric
-            quantization (True if symmetric, False if not).
-        packing_format: A string representing the packing format used by the backend
+            quantization for weights (True if symmetric, False if not).
+        packing_format: A list of strings representing the packing formats used by the backend
             (e.g., 'triton', 'qbits').
         bits: A list of integers specifying the bit-widths supported by the backend
-            (e.g., [2, 4, 8]).
-        group_size: An optional list of integers specifying the group size for
-            quantization. Defaults to None.
+            for weight quantization (e.g., [2, 4, 8]).
+        group_size: An optional list of integers specifying the group sizes supported
+            for weight quantization. Group size determines how weights are grouped
+            during quantization. Defaults to None.
+        compute_dtype: An optional list of strings representing the compute data types
+            supported by the backend (e.g., 'float32', 'bfloat16'). Defaults to None.
+        data_type: An optional list of strings representing the data types
+            supported for weight quantization (e.g., 'int', 'nv_fp'). Defaults to None.
+        act_bits: An optional list of integers specifying the bit-widths supported
+            for activation quantization (e.g., [8, 16]). Defaults to None.
+        act_group_size: An optional list of integers specifying the group sizes
+            supported for activation quantization. Defaults to None.
+        act_sym: An optional list of booleans indicating whether the backend supports
+            symmetric quantization for activations (True if symmetric, False if not).
+            Defaults to None.
+        act_data_type: An optional list of strings representing the data types
+            supported for activations (e.g., 'mx_fp_rceil'). Defaults to None.
+        act_dynamic: An optional list of booleans indicating whether the backend
+            supports dynamic quantization for activations. Defaults to None.
         priority: An integer representing the backend's priority, where higher values
             indicate higher priority. Defaults to 0.
         checkers: A list of check functions (e.g., validation methods)
@@ -66,13 +85,27 @@ class BackendInfo:
     sym: list[bool]
     packing_format: list[str]
     bits: list[int]
-    dtype: list[str] = None
+    compute_dtype: list[str] = None
+    data_type: Optional[list[str]] = None
     group_size: Optional[list[int]] = None
+    act_bits: Optional[list[int]] = None
+    act_group_size: Optional[list[int]] = None
+    act_sym: Optional[list[bool]] = None
+    act_data_type: Optional[list[str]] = None
+    act_dynamic: Optional[list[bool]] = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
     alias: Optional[list[str]] = None
     requirements: Optional[list[str]] = None
-    # TODO(Yi): Add more fields for activation dtype, group size, etc.
+
+
+BACKEND_ACT_ATTRS = [
+    "act_bits",
+    "act_group_size",
+    "act_sym",
+    "act_data_type",
+    "act_dynamic",
+]
 
 
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
@@ -121,52 +154,11 @@ def fp8_static_scheme_checker(
     return config == FP8_STATIC
 
 
-def _scheme_checker_common(config1: QuantizationScheme, config2: QuantizationScheme):
-    SCHEME_CHECK_ATTRS = ["bits", "group_size", "sym", "data_type", "act_bits", "act_group_size", "act_sym"]
-
-    for attr in SCHEME_CHECK_ATTRS:
-        if getattr(config1, attr) != getattr(config2, attr):
-            logger.debug(
-                f"Scheme check failed on attribute {attr}: {getattr(config1, attr)} != {getattr(config2, attr)}"
-            )
-            return False
-    return True
-
-
-def mxfp8_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
-):
-    return _scheme_checker_common(config, ar_schemes.MXFP8)
-
-
-def mxfp4_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
-):
-    return _scheme_checker_common(config, ar_schemes.MXFP4)
-
-
-def nvfp4_scheme_checker(
-    in_feature: int,
-    out_feature: int,
-    config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
-):
-    return _scheme_checker_common(config, ar_schemes.NVFP4)
-
-
 GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
+WOQ_DEFAULT_ACT_BITS = [16, 32]
 
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
@@ -174,7 +166,9 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     packing_format=GPTQ_FORMAT,
     bits=[4],
     priority=5,
-    dtype=["float16"],
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     # 16, 384,768 accuracy issue
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
     checkers=[exllamav2_feature_checker],
@@ -188,7 +182,9 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     packing_format=GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
-    dtype=["float16"],
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     priority=0,
     checkers=[exllamav2_feature_checker],
     alias=["auto_gptq:tritonv2"],
@@ -203,7 +199,9 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     group_size=None,
     priority=1,
     checkers=[exllamav2_feature_checker],
-    dtype=["float16"],
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_gptq:cuda"],
     requirements=[
         "torch<2.6.0",
@@ -218,7 +216,8 @@ BackendInfos["auto_round:torch_fp8_static"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
     packing_format=["auto_round:fp8_static"],
     sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["fp"],
     bits=[8],
     priority=0,
     checkers=[fp8_static_scheme_checker],
@@ -231,11 +230,17 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["mx_fp", "max_fp_rceil"],
     group_size=[32],
     bits=[8],
+    act_bits=[8],
+    act_group_size=[32],
+    act_sym=[True],
+    act_data_type=["mx_fp_rceil"],
+    act_dynamic=[True],
     priority=0,
-    checkers=[mxfp8_scheme_checker, feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -245,11 +250,17 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["mx_fp"],
     group_size=[32],
     bits=[4],
+    act_bits=[4],
+    act_group_size=[32],
+    act_sym=[True],
+    act_data_type=["mx_fp_rceil"],
+    act_dynamic=[True],
     priority=0,
-    checkers=[mxfp4_scheme_checker, feature_multiply_checker_32],
+    checkers=[feature_multiply_checker_32],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -260,11 +271,17 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
-    dtype=["float32", "float16", "bfloat16"],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["nv_fp"],
     group_size=[16],
     bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["nv_fp4_with_static_gs"],
+    act_dynamic=[True],
     priority=0,
-    checkers=[nvfp4_scheme_checker, feature_multiply_checker_16],
+    checkers=[feature_multiply_checker_16],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -273,7 +290,7 @@ BackendInfos["auto_round:tritonv2"] = BackendInfo(
     device=["cuda", "xpu"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
     bits=[2, 4, 8],
     priority=2,
     checkers=[feature_multiply_checker_32],
@@ -285,7 +302,9 @@ BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     device=["cuda", "xpu"],
     sym=[True],
     packing_format=GPTQ_FORMAT,
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     bits=[2, 4, 8],
     priority=2,
     checkers=[feature_multiply_checker_32],
@@ -297,7 +316,9 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     device=["cuda", "xpu", "cpu"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     bits=[2, 3, 4, 8],
     priority=0,
     checkers=[exllamav2_feature_checker],
@@ -310,7 +331,9 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     device=["cuda", "xpu", "cpu"],
     sym=[True],
     packing_format=GPTQ_FORMAT,
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     bits=[2, 3, 4, 8],
     priority=0,
     checkers=[exllamav2_feature_checker],
@@ -324,7 +347,9 @@ BackendInfos["gptqmodel:marlin"] = BackendInfo(
     packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[4, 8],
     group_size=[-1, 32, 64, 128],
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     priority=6,
     checkers=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
@@ -337,7 +362,9 @@ BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
     packing_format=GPTQ_FORMAT,
     bits=[4, 8],
     group_size=[-1, 32, 64, 128],
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     priority=6,
     checkers=[gptqmodel_marlin_feature_checker],
     alias=["marlin", "gptqmodel"],
@@ -350,7 +377,9 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     packing_format=GPTQ_FORMAT,
     bits=[4],
     group_size=[-1, 32, 64, 128],  ##16 seems has accuracy issue
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     priority=5,
     checkers=[exllamav2_feature_checker],
     alias=["exllamav2"],
@@ -364,7 +393,9 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     bits=[4],
     group_size=None,
     priority=5,
-    dtype=["float16"],
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
     requirements=["autoawq"],
 )
@@ -378,7 +409,9 @@ BackendInfos["qbits"] = BackendInfo(
     priority=1,
     checkers=[],
     alias=["itrex", "qbits"],
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch<2.7.0", "intel-extension-for-transformers"],
 )
 
@@ -388,7 +421,9 @@ BackendInfos["qbits_zp"] = BackendInfo(
     packing_format=GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     priority=1,
     checkers=[],
     alias=["itrex", "qbits"],
@@ -402,7 +437,9 @@ BackendInfos["qbits_awq"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     priority=1,
     checkers=[],
     alias=["itrex", "qbits"],
@@ -416,7 +453,9 @@ BackendInfos["ipex_gptq"] = BackendInfo(
     group_size=None,
     priority=5,
     checkers=[],
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
     requirements=["intel-extension-for-pytorch>=2.5"],
 )
@@ -429,7 +468,9 @@ BackendInfos["ipex_awq"] = BackendInfo(
     group_size=None,
     priority=5,
     checkers=[],
-    dtype=["float16", "bfloat16"],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
     requirements=["intel-extension-for-pytorch>=2.5"],
 )
@@ -438,7 +479,9 @@ BackendInfos["hpu"] = BackendInfo(
     sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[4],
-    dtype=["bfloat16"],
+    compute_dtype=["bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["hpu"],
     priority=0,
 )
@@ -448,7 +491,9 @@ BackendInfos["hpu_zp"] = BackendInfo(
     sym=[True, False],
     packing_format=GPTQ_FORMAT,
     bits=[4],
-    dtype=["bfloat16"],
+    compute_dtype=["bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["hpu"],
     priority=0,
 )
@@ -540,12 +585,8 @@ def dynamic_import_inference_linear(backend, config):
     Args:
         backend (str):
             The backend to be used for quantization (e.g., 'qbits', 'marlin', 'hpu', 'gptq', 'awq', 'auto_round').
-        bits (int):
-            The number of bits to be used for quantization.
-        group_size (Optional[int]):
-            The size of the quantization group (if applicable).
-        sym (bool):
-            Whether symmetric quantization is required.
+        config (QuantizationScheme):
+            The quantization configuration containing parameters like bits, group_size, and sym.
 
     Returns:
         class:
@@ -881,7 +922,9 @@ def get_layer_backend(
     return supported_backends[0]
 
 
-def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
+def get_highest_priority_backend(
+    quantization_config: "AutoRoundConfig", device: str, packing_format: str
+) -> str | None:
     supported_backends = []
     for key in BackendInfos.keys():
         backend = BackendInfos[key]
@@ -890,15 +933,15 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
             continue
 
         # Check if bit-width is supported
-        if bits not in backend.bits:
+        if quantization_config.bits not in backend.bits:
             continue
 
         # Check if group_size is valid (if required by backend)
-        if backend.group_size is not None and group_size not in backend.group_size:
+        if backend.group_size is not None and quantization_config.group_size not in backend.group_size:
             continue
 
         # Check if symmetric/asymmetric quantization is supported
-        if sym not in backend.sym:
+        if quantization_config.sym not in backend.sym:
             continue
 
         # Check if the format is convertible when packing formats differ
@@ -906,6 +949,17 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
             pass
         else:
             continue
+
+        def _is_act_field_supported(backend, quantization, field_name):
+            q_val = getattr(quantization, field_name, None)
+            b_val = getattr(backend, field_name, None)
+            # Case 1. quantization field is None, assume it is not used, so supported
+            # Case 2. backend field is not None and contains the quantization field value
+            return (q_val is None) or (b_val is not None and q_val in b_val)
+
+        if not all(_is_act_field_supported(backend, quantization_config, field) for field in BACKEND_ACT_ATTRS):
+            continue
+
         supported_backends.append(key)
 
     if len(supported_backends) > 0:
