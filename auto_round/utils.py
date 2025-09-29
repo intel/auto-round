@@ -775,9 +775,6 @@ def get_layer_names_in_block(
     """
     if class_names is None:
         class_names = []
-    for n, m in model.named_modules():
-        if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
-            m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
         all_blocks = quant_block_list
@@ -787,7 +784,7 @@ def get_layer_names_in_block(
         for block_name in block_names:
             block = get_module(model, block_name)
             for n, m in block.named_modules():
-                if hasattr(m, "tmp_name"):
+                if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
                     layers_in_block.append(m.tmp_name)
     return layers_in_block
 
