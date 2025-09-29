@@ -110,7 +110,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument(
             "--scale_dtype",
-            default="fp16",
+            default=None,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="scale data type to use for quantization",
         )

@@ -244,7 +244,7 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
             continue
         if val == scheme:
             return key
-    return None
+    return ""
 
 
 @dataclass

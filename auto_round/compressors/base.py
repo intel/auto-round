@@ -202,6 +202,10 @@ class BaseCompressor(object):
             ... }
         """
         self.scheme = self._parse_and_set_scheme(scheme, kwargs)
+
+        gguf_scheme_name = get_gguf_scheme(self.scheme)
+        # GGUF uses fp32 scale dtype as default
+        scale_dtype = kwargs.pop("scale_dtype", "fp32") if gguf_scheme_name else kwargs.pop("scale_dtype", "fp16")
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
@@ -214,7 +218,6 @@ class BaseCompressor(object):
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
-        scale_dtype = kwargs.pop("scale_dtype", "fp16")
         nblocks = kwargs.pop("nblocks", 1)
         low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
@@ -287,7 +290,6 @@ class BaseCompressor(object):
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
 
-        # self._parse_layer_config(layer_config, fp_layers)  # Must place after model init
 
         self.to_quant_block_names = to_quant_block_names
 
