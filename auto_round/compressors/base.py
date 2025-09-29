@@ -35,7 +35,7 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import AutoScheme, QuantizationScheme, preset_name_to_scheme, get_gguf_scheme
+from auto_round.schemes import AutoScheme, QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -414,18 +414,18 @@ class BaseCompressor(object):
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
     def _prepare_layer_config(
-            self,
-            model: torch.nn.Module,
-            layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
-            default_scheme: "QuantizationScheme",
-            default_scale_dtype: torch.dtype | str,
-            supported_types: tuple,
-            inner_supported_types: tuple,
-            quant_block_list=None,
-            fp_layers: str = "",
-            quant_lm_head: bool = False,
-            enable_gguf_official_mixed: bool = True,
-            is_mllm: bool = False,
+        self,
+        model: torch.nn.Module,
+        layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
+        default_scheme: "QuantizationScheme",
+        default_scale_dtype: torch.dtype | str,
+        supported_types: tuple,
+        inner_supported_types: tuple,
+        quant_block_list=None,
+        fp_layers: str = "",
+        quant_lm_head: bool = False,
+        enable_gguf_official_mixed: bool = True,
+        is_mllm: bool = False,
     ) -> tuple[dict, bool]:
         """
         Normalize, validate, and expand layer-specific quantization configs.
@@ -452,8 +452,7 @@ class BaseCompressor(object):
                 invalid = set(item) - set(scheme_keys)
                 if invalid:
                     raise ValueError(
-                        f"Invalid keys {invalid} in layer_config for '{layer_name}'. "
-                        f"Allowed keys: {scheme_keys}"
+                        f"Invalid keys {invalid} in layer_config for '{layer_name}'. " f"Allowed keys: {scheme_keys}"
                     )
                 config = dict(item)
             else:
@@ -472,10 +471,7 @@ class BaseCompressor(object):
 
         # 1. fp_layers -> force 16
         for name in get_fp_layer_names(self.model, fp_layers):
-            layer_config[name] = {
-                "bits": 16, "act_bits": 16,
-                "data_type": "float", "act_data_type": "float"
-            }
+            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
 
         # 2. normalize
         layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
@@ -528,17 +524,15 @@ class BaseCompressor(object):
         # 7. lm_head
         lm_head_name = get_lm_head_name(model)
         tied_lm_head = False
-        if (
-            hasattr(model, "config")
-            and model.config.tie_word_embeddings
-            and hasattr(model, "_tied_weights_keys")
-        ):
-            tied_keys =model._tied_weights_keys
+        if hasattr(model, "config") and model.config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
+            tied_keys = model._tied_weights_keys
             if lm_head_name in tied_keys:
-                tied_lm_head=True
+                tied_lm_head = True
         if quant_lm_head and tied_lm_head:
-            quant_lm_head=False
-            logger.warning("reset `quant_lm_head` to false as quantizing lm_head with tied weights has not been supported currently")
+            quant_lm_head = False
+            logger.warning(
+                "reset `quant_lm_head` to false as quantizing lm_head with tied weights has not been supported currently"
+            )
 
         if lm_head_name not in layer_config and quant_lm_head:
             layer_config[lm_head_name] = default_dict.copy()
@@ -588,8 +582,6 @@ class BaseCompressor(object):
 
         dispatch_layer_config(layer_config)
         return layer_config, has_qlayer_outside_block
-
-
 
     def _parse_layer_config(
         self, layer_config: dict[str, Union[str, dict, QuantizationScheme]], fp_layers: str
@@ -651,7 +643,7 @@ class BaseCompressor(object):
             if key not in lm_head_layer_config:
                 lm_head_layer_config[key] = getattr(self, key)
 
-    def  _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
+    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
         """Parse and set the quantization scheme."""
         if isinstance(scheme, QuantizationScheme):
             scheme = asdict(scheme)
@@ -1023,7 +1015,6 @@ class BaseCompressor(object):
                     )
                     formats[i] = gguf_format_name.lower()
 
-
         _gguf_args_check(self, formats, model_type=ModelType.TEXT)
         if self.mllm:
             _gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
@@ -1032,8 +1023,6 @@ class BaseCompressor(object):
             if f.startswith("gguf"):
                 self.scheme = preset_name_to_scheme(f)
                 break
-
-
 
         for format_ in formats:
             if format_ not in SUPPORTED_FORMATS:
@@ -1518,7 +1507,6 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
-
     def _quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
@@ -1818,7 +1806,7 @@ class BaseCompressor(object):
         Returns:
         The quantized model and layer configurations.
         """
-        for n, m in self.model.named_modules(): # TODO check if could removed
+        for n, m in self.model.named_modules():  # TODO check if could removed
             m.tmp_name = n
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
@@ -1827,11 +1815,19 @@ class BaseCompressor(object):
         self.model = _handle_moe_model(self.model, formats=formats)
         # self.has_qlayer_outside_block = self._set_layerwise_config(self.model, self.layer_config)
         # TODO check scale_dtype
-        self.layer_config, self.has_qlayer_outside_block = (
-            self._prepare_layer_config(self.model, self.layer_config,self.scheme, self.scale_dtype,
-                                       self.supported_types,self.inner_supported_types,self.quant_block_list,
-                                       self.fp_layers,self.quant_lm_head,
-                                       enable_gguf_official_mixed=True,is_mllm=self.mllm))
+        self.layer_config, self.has_qlayer_outside_block = self._prepare_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=True,
+            is_mllm=self.mllm,
+        )
 
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")

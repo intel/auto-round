@@ -766,8 +766,10 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-    model:torch.nn.Module, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D),
-        quant_block_list:list=None, class_names:tuple=None
+    model: torch.nn.Module,
+    supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D),
+    quant_block_list: list = None,
+    class_names: tuple = None,
 ) -> list[str]:
     """Retrieves the names of layers within each block of the model.
 
@@ -1842,7 +1844,7 @@ def _gguf_type_fallback(gguf_type):
 
 
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
-def get_layer_config_by_gguf_format(layer_config, target_gguf_format:str, model, model_type=ModelType.TEXT):
+def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model, model_type=ModelType.TEXT):
     # # TODO: support for other format later
     # target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 

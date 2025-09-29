@@ -478,7 +478,6 @@ def tune(args):
     #     layer_config[item[0]] = {}
     #     layer_config[item[0]]["bits"] = item[1]
 
-
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         scheme=scheme,
