@@ -413,10 +413,10 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _prepare_layer_config(
+    def _set_layer_config(
         self,
         model: torch.nn.Module,
-        layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
+        layer_config: dict[str, str | dict | "QuantizationScheme"],
         default_scheme: "QuantizationScheme",
         default_scale_dtype: torch.dtype | str,
         supported_types: tuple,
@@ -523,15 +523,15 @@ class BaseCompressor(object):
 
         # 7. lm_head
         lm_head_name = get_lm_head_name(model)
-        tied_lm_head = False
-        if hasattr(model, "config") and model.config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
-            tied_keys = model._tied_weights_keys
-            if lm_head_name in tied_keys:
-                tied_lm_head = True
-        if quant_lm_head and tied_lm_head:
+        tie_word_embeddings = False
+        if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
+            tie_word_embeddings = model.config.tie_word_embeddings
+
+        if quant_lm_head and tie_word_embeddings:
             quant_lm_head = False
             logger.warning(
-                "reset `quant_lm_head` to false as quantizing lm_head with tied weights has not been supported currently"
+                "reset `quant_lm_head` to false as quantizing "
+                "lm_head with tied weights has not been supported currently"
             )
 
         if lm_head_name not in layer_config and quant_lm_head:
@@ -566,7 +566,7 @@ class BaseCompressor(object):
             return layer_config, has_qlayer_outside_block
 
         # embed + lm_head defaults for gguf
-        if lm_head_name not in layer_config and not tied_lm_head:
+        if lm_head_name not in layer_config and not tie_word_embeddings:
             cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
             cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
             layer_config[lm_head_name] = cfg
@@ -1813,9 +1813,9 @@ class BaseCompressor(object):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
-        # self.has_qlayer_outside_block = self._set_layerwise_config(self.model, self.layer_config)
+
         # TODO check scale_dtype
-        self.layer_config, self.has_qlayer_outside_block = self._prepare_layer_config(
+        self.layer_config, self.has_qlayer_outside_block = self._set_layer_config(
             self.model,
             self.layer_config,
             self.scheme,
@@ -1832,21 +1832,6 @@ class BaseCompressor(object):
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
-            only_gguf = True
-            for format_ in self.formats:
-                if not ("gguf" in format_ or "fake" in format_):
-                    only_gguf = False
-                    break
-            if len(self.formats) == 1 and self.formats[0] == "fake":
-                only_gguf = False
-            # if only_gguf:
-            #     self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
-            #         self.layer_config, self.formats, self.model, model_type=ModelType.TEXT
-            #     )
-            #     if self.mllm:
-            #         self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
-            #             self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ
-            #         )
             # Determine if immediate packing is required
             formats = self.formats
             if (
@@ -1958,7 +1943,7 @@ class BaseCompressor(object):
         cost_time = end_time - self.start_time
         logger.info(f"quantization tuning time {cost_time}")
 
-        ## dump a summary
+        # Dump a summary
         quantized_layers = []
         unquantized_layers = []
         for n, m in self.model.named_modules():
