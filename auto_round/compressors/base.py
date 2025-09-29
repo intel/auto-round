@@ -270,6 +270,11 @@ class BaseCompressor(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
+        self.to_quant_block_names = to_quant_block_names
+        if not hasattr(self, "quant_block_list"):
+            all_blocks = get_block_names(model)
+            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
+
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
@@ -298,7 +303,6 @@ class BaseCompressor(object):
             layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
         self._parse_layer_config(layer_config)  # must place after model init
 
-        self.to_quant_block_names = to_quant_block_names
 
         # Tuning hyperparameters
         self.seed = seed
@@ -336,26 +340,7 @@ class BaseCompressor(object):
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
 
-        # Model related
-        self.quantized = False
-        if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(
-                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
-            )
-        elif tokenizer is None and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupported_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
-            )
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(model)
-            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
+
 
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self._set_amp_dtype()
