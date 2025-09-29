@@ -725,20 +725,20 @@ class BaseCompressor(object):
                     " We are likely to release new algorithm for certain configurations in the future."
                 )
 
-        # Check group_size 32 for auto_round
-        if (
-            self.data_type == "int"
-            and hasattr(self, "formats")
-            and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
-        ):
-            for n, m in self.model.named_modules():
-                if type(m) in self.supported_types:
-                    if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                        self.layer_config[n] = {"bits": 16}
-                        logger.info(
-                            f"{n} will not be quantized due to its shape not being divisible by 32,"
-                            " resulting in an exporting issue to autogptq"
-                        )
+        # # Check group_size 32 for auto_round
+        # if (
+        #     self.data_type == "int"
+        #     and hasattr(self, "formats")
+        #     and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
+        # ):
+        #     for n, m in self.model.named_modules():
+        #         if type(m) in self.supported_types:
+        #             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+        #                 self.layer_config[n] = {"bits": 16}
+        #                 logger.info(
+        #                     f"{n} will not be quantized due to its shape not being divisible by 32,"
+        #                     " resulting in an exporting issue to autogptq"
+        #                 )
 
         if (
             self.seqlen is not None
