@@ -201,7 +201,7 @@ class BaseCompressor(object):
             ...     # ...
             ... }
         """
-        if isinstance(scheme, AutoScheme): #TODO  AutoScheme could also be patched by group_size, etc
+        if isinstance(scheme, AutoScheme):  # TODO  AutoScheme could also be patched by group_size, etc
             self.scheme = self._parse_and_set_scheme(scheme.options[0], kwargs)
         else:
             self.scheme = self._parse_and_set_scheme(scheme, kwargs)
@@ -278,7 +278,6 @@ class BaseCompressor(object):
         if not hasattr(self, "quant_block_list"):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
-
 
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
