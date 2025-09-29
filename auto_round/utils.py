@@ -766,8 +766,9 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None, class_names=None
-):
+    model:torch.nn.Module, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D),
+        quant_block_list:list=None, class_names:tuple=None
+) -> list[str]:
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -778,7 +779,7 @@ def get_layer_names_in_block(
         class_names = []
     for n, m in model.named_modules():
         if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
-            m.tmp_name = n
+            m.backup_name = n
     layers_in_block = []
     if bool(quant_block_list):
         all_blocks = quant_block_list
@@ -788,8 +789,9 @@ def get_layer_names_in_block(
         for block_name in block_names:
             block = get_module(model, block_name)
             for n, m in block.named_modules():
-                if hasattr(m, "tmp_name"):
-                    layers_in_block.append(m.tmp_name)
+                if hasattr(m, "backup_name"):
+                    layers_in_block.append(m.backup_name)
+                    delattr(m, "backup_name")
     return layers_in_block
 
 
@@ -1840,9 +1842,9 @@ def _gguf_type_fallback(gguf_type):
 
 
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
-def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type=ModelType.TEXT):
-    # TODO: support for other format later
-    target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
+def get_layer_config_by_gguf_format(layer_config, target_gguf_format:str, model, model_type=ModelType.TEXT):
+    # # TODO: support for other format later
+    # target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
     import gguf  # pylint: disable=E0401
 

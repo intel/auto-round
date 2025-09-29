@@ -16,7 +16,7 @@ from copy import deepcopy
 from dataclasses import dataclass, fields
 from typing import Iterable, Optional, Union
 
-__all__ = ["QuantizationScheme", "is_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
+__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
 
 
 @dataclass
@@ -236,15 +236,15 @@ for key, val in GGUF_CONFIG.items():
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
 
 
-def is_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> bool:
+def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> bool:
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return True
     for key, val in PRESET_SCHEMES.items():
         if not key.upper().startswith("GGUF"):
             continue
         if val == scheme:
-            return True
-    return False
+            return key
+    return None
 
 
 @dataclass
