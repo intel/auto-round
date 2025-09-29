@@ -21,7 +21,7 @@ import os
 import re
 import sys
 from collections import UserDict
-from dataclasses import fields, asdict
+from dataclasses import asdict, fields
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -2744,7 +2744,6 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
     return False
 
 
-
 def set_layer_config(
     model: torch.nn.Module,
     layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
@@ -2802,7 +2801,13 @@ def set_layer_config(
 
     # 1. fp_layers -> force 16
     for name in get_fp_layer_names(model, fp_layers):
-        layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float","fixed_by_user":True}
+        layer_config[name] = {
+            "bits": 16,
+            "act_bits": 16,
+            "data_type": "float",
+            "act_data_type": "float",
+            "fixed_by_user": True,
+        }
 
     # 2. normalize
     layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
@@ -2861,8 +2866,7 @@ def set_layer_config(
     if quant_lm_head and tie_word_embeddings:
         quant_lm_head = False
         logger.warning(
-            "reset `quant_lm_head` to false as quantizing "
-            "lm_head with tied weights has not been supported currently"
+            "reset `quant_lm_head` to false as quantizing " "lm_head with tied weights has not been supported currently"
         )
 
     if lm_head_name not in layer_config and quant_lm_head:
@@ -2881,7 +2885,7 @@ def set_layer_config(
     for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
         if name not in layer_config:
             layer_config[name] = default_dict.copy()
-            layer_config[name]["fixed_by_user"]=False
+            layer_config[name]["fixed_by_user"] = False
         layer_config[name]["in_blocks"] = True
 
     # ---- restore: ensure missing in_blocks are set to False and compute flag ----

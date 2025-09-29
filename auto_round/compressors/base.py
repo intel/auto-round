@@ -90,10 +90,11 @@ from auto_round.utils import (
     mv_module_from_gpu,
     reset_params,
     set_amax_for_all_moe_layers,
+    set_layer_config,
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device, set_layer_config,
+    unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -292,23 +293,27 @@ class BaseCompressor(object):
             if self.mllm:
                 logger.info("AutoScheme with MLLM is not supported yet.")
                 sys.exit(1)
-            layer_config,_ = set_layer_config(self.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.fp_layers,
-            self.quant_lm_head,
-            enable_gguf_official_mixed=False,
-            is_mllm=self.mllm)
+            layer_config, _ = set_layer_config(
+                self.model,
+                self.layer_config,
+                self.scheme,
+                self.scale_dtype,
+                self.supported_types,
+                self.inner_supported_types,
+                self.quant_block_list,
+                self.fp_layers,
+                self.quant_lm_head,
+                enable_gguf_official_mixed=False,
+                is_mllm=self.mllm,
+            )
             quant_layer_names = layer_config.keys()
             fixed_layer_scheme = {k: v for k, v in layer_config.items() if v.get("fixed_by_user", False)}
             # mainly using quant_layers and fixed by users
             from auto_round.auto_schemes.gen_scheme import GenScheme
-            gen_scheme = GenScheme(scheme,self.model,quant_layer_names,fixed_layer_scheme, self.scale_dtype, self.dataset)
 
+            gen_scheme = GenScheme(
+                scheme, self.model, quant_layer_names, fixed_layer_scheme, self.scale_dtype, self.dataset
+            )
 
         # Set device, must place after model loading
         self._set_device(device_map)
@@ -420,7 +425,6 @@ class BaseCompressor(object):
             self.device = tmp_devices[0]
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
-
 
     def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
         """Parse and set the quantization scheme."""
