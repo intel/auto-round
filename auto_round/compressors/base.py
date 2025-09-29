@@ -201,7 +201,10 @@ class BaseCompressor(object):
             ...     # ...
             ... }
         """
-        self.scheme = self._parse_and_set_scheme(scheme, kwargs)
+        if isinstance(scheme, AutoScheme): #TODO  AutoScheme could also be patched by group_size, etc
+            self.scheme = self._parse_and_set_scheme(scheme.options[0], kwargs)
+        else:
+            self.scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -271,6 +274,12 @@ class BaseCompressor(object):
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
+        self.to_quant_block_names = to_quant_block_names
+        if not hasattr(self, "quant_block_list"):
+            all_blocks = get_block_names(model)
+            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
+
+
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
@@ -289,9 +298,6 @@ class BaseCompressor(object):
         else:
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
-
-
-        self.to_quant_block_names = to_quant_block_names
 
         # Set device, must place after model loading
         self._set_device(device_map)
@@ -341,27 +347,6 @@ class BaseCompressor(object):
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
-
-        # Model related
-        self.quantized = False
-        if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(
-                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
-            )
-        elif tokenizer is None and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupported_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
-            )
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(model)
-            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
 
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self._set_amp_dtype()
@@ -418,7 +403,7 @@ class BaseCompressor(object):
     def _set_layer_config(
         self,
         model: torch.nn.Module,
-        layer_config: dict[str, str | dict | "QuantizationScheme"],
+        layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
         default_scheme: "QuantizationScheme",
         default_scale_dtype: torch.dtype | str,
         supported_types: tuple,
@@ -558,7 +543,7 @@ class BaseCompressor(object):
         for cfg in layer_config.values():
             if "in_blocks" not in cfg:
                 cfg["in_blocks"] = False
-            # 如果 layer 不在 blocks 且需要量化，则标记存在 blocks 外的量化层
+            # mark layer outside block
             if not cfg["in_blocks"] and check_to_quantized(cfg):
                 has_qlayer_outside_block = True
 

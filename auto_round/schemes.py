@@ -249,7 +249,7 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
 
 @dataclass
 class AutoScheme:
-    options: Optional[Iterable[QuantizationScheme]]
+    options: Optional[Iterable[QuantizationScheme|str]]
     target_bits: float
     shared_layers: Optional[Iterable[Iterable[str]]] = None
-    method: str = "naive_pre"
+    method: str = "default"
