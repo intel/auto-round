@@ -2834,7 +2834,9 @@ def set_layer_config(
         supported_types = (*supported_types, torch.nn.Embedding)
 
     all_layer_names, embedding_layer_names = [], []
+    all_module_names = []
     for n, m in model.named_modules():
+        all_module_names.append(n)
         # cleanup stale attributes
         for key in scheme_keys:
             if hasattr(m, key):
@@ -2848,6 +2850,9 @@ def set_layer_config(
     # 6. expand regex configs
     for name in list(layer_config.keys()):
         if name in all_layer_names:
+            continue
+        if name in all_module_names:
+            logger.warning_once(f"the type of `{name}` is not supported in your scheme, ignore it for now.")
             continue
         regex = re.compile(name)
         matched = [ln for ln in all_layer_names if regex.search(ln)]

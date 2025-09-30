@@ -238,11 +238,16 @@ for key, val in GGUF_CONFIG.items():
 
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
-        return True
+        return scheme
     for key, val in PRESET_SCHEMES.items():
         if not key.upper().startswith("GGUF"):
             continue
-        if val == scheme:
+        equal = True
+        for scheme_key in val.keys():
+            if val[scheme_key] is not None and val[scheme_key] != scheme.get(scheme_key, None):
+                equal = False
+                break
+        if equal:
             return key
     return ""
 
