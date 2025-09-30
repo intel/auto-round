@@ -22,13 +22,13 @@ from auto_round.utils import get_layer_features
 
 class GenScheme:
     def __init__(
-            self,
-            auto_scheme: AutoScheme,
-            model: torch.nn.Module,
-            quant_layer_names: Iterable[str],
-            fixed_layer_scheme: dict[str, dict],
-            scale_dtype: str = "fp16",
-            dataset="pile-10k",
+        self,
+        auto_scheme: AutoScheme,
+        model: torch.nn.Module,
+        quant_layer_names: Iterable[str],
+        fixed_layer_scheme: dict[str, dict],
+        scale_dtype: str = "fp16",
+        dataset="pile-10k",
     ):
         self.auto_scheme = auto_scheme
         self.model = model
@@ -44,14 +44,14 @@ class GenScheme:
     def get_layer_bits(self, layer):
         weight = layer.weight
         n_param = weight.numel()
-        weight_bits = getattr(layer, 'bits', 16)
-        group_size = getattr(layer, 'group_size', 128)
-        super_group_size = getattr(layer, 'super_group_size', None)
-        super_weight_bits = getattr(layer, 'super_bits', None)
+        weight_bits = getattr(layer, "bits", 16)
+        group_size = getattr(layer, "group_size", 128)
+        super_group_size = getattr(layer, "super_group_size", None)
+        super_weight_bits = getattr(layer, "super_bits", None)
 
         # Main quantization cost
         weight_total_bits = weight_bits * n_param
-        if weight_bits>=16: # Unquantized layer
+        if weight_bits >= 16:  # Unquantized layer
             return weight_total_bits, 16
 
         in_features, output_features = get_layer_features(layer)
@@ -75,9 +75,9 @@ class GenScheme:
         # Double quantization case
         if super_group_size:
             # Number of super-groups
-            aux_total_bits+=n_group*super_weight_bits * 2 #sclae and min int count
+            aux_total_bits += n_group * super_weight_bits * 2  # sclae and min int count
             n_super_group = (n_group + super_group_size - 1) // super_group_size
-            aux_total_bits += n_super_group * 32 * 2 # double quant scale and min_v
+            aux_total_bits += n_super_group * 32 * 2  # double quant scale and min_v
 
         total_bits = weight_total_bits + aux_total_bits
         avg_bits = total_bits / n_param
