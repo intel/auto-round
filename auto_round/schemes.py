@@ -14,9 +14,9 @@
 import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import Generator, List, Optional
+from typing import Iterable, Optional, Union
 
-__all__ = ["QuantizationScheme", "preset_name_to_scheme"]
+__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
 
 
 @dataclass
@@ -38,7 +38,7 @@ class QuantizationScheme:
         return cls(**config)
 
     @classmethod
-    def get_attributes(cls: "QuantizationScheme") -> List[str]:
+    def get_attributes(cls: "QuantizationScheme") -> list[str]:
         return [field.name for field in fields(cls)]
 
     def __getitem__(self, key: str):
@@ -180,6 +180,7 @@ FPW8A16 = QuantizationScheme.from_dict(
     }
 )
 
+
 # FP8 = asdict(QuantArgs.from_dict({
 #     "bits": 8,
 #     "group_size": 128,
@@ -201,6 +202,18 @@ FP8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
+# For AutoScheme 16 bits options
+BF16 = QuantizationScheme.from_dict(
+    {
+        "bits": 16,
+        "group_size": 0,
+        "data_type": "fp",
+        "act_bits": 16,
+        "act_data_type": "fp",
+    }
+)
+
+
 PRESET_SCHEMES = {
     "W4A16": W4A16,
     "W2A16": W2A16,
@@ -211,6 +224,7 @@ PRESET_SCHEMES = {
     "NVFP4": NVFP4,
     "FPW8A16": FPW8A16,
     "FP8_STATIC": FP8_STATIC,
+    "BF16": BF16,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
@@ -220,3 +234,29 @@ for key, val in GGUF_CONFIG.items():
     value.pop("embedding", None)
     value.pop("lm_head", None)
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
+
+
+def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+    if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
+        return scheme
+    if isinstance(scheme, str):
+        return ""
+    for key, val in PRESET_SCHEMES.items():
+        if not key.upper().startswith("GGUF"):
+            continue
+        equal = True
+        for scheme_key in val.keys():
+            if val[scheme_key] is not None and val[scheme_key] != scheme.get(scheme_key, None):
+                equal = False
+                break
+        if equal:
+            return key
+    return ""
+
+
+@dataclass
+class AutoScheme:
+    options: Optional[Iterable[QuantizationScheme | str]]
+    avg_bits: float
+    shared_layers: Optional[Iterable[Iterable[str]]] = None
+    method: str = "default"
