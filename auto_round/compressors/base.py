@@ -328,7 +328,6 @@ class BaseCompressor(object):
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
 
-
         # Tuning hyperparameters
         self.seed = seed
         set_seed(self.seed)
@@ -416,13 +415,13 @@ class BaseCompressor(object):
 
     def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
         """Parse and set the quantization scheme."""
-        res= ""
+        res = ""
         if isinstance(scheme, QuantizationScheme):
             scheme = asdict(scheme)
         elif isinstance(scheme, dict):
             scheme = scheme
         elif isinstance(scheme, str):
-            res = scheme # gguf:q4_k_s and gguf_q4_k_m has the same dict scheme, but the result is different
+            res = scheme  # gguf:q4_k_s and gguf_q4_k_m has the same dict scheme, but the result is different
             scheme = scheme.upper()
             scheme = asdict(preset_name_to_scheme(scheme))
         scheme_keys = [f.name for f in fields(QuantizationScheme)]

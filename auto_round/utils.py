@@ -35,7 +35,7 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme, get_gguf_scheme
+from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1949,7 +1949,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 for key in config.keys():
                     if key not in scheme_keys:
                         config_tmp.pop(key, None)
-                matched_scheme = get_gguf_scheme(QuantizationScheme.from_dict(config_tmp)) # check matched
+                matched_scheme = get_gguf_scheme(QuantizationScheme.from_dict(config_tmp))  # check matched
                 if not matched_scheme:
                     if config.get("super_group_size", None) is not None:
                         new_type = new_type[:bits_index] + str(config["bits"]) + "_k"
@@ -1963,11 +1963,15 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                             if new_type not in GGUF_INNER_CONFIG:
                                 new_type = new_type[:bits_index] + str(config["bits"]) + "_0"
                     if new_type not in GGUF_INNER_CONFIG:
-                        raise ValueError(f"the setting in layer_config {layer_name} "
-                                         f"could not match any supported gguf format, please have a check.")
+                        raise ValueError(
+                            f"the setting in layer_config {layer_name} "
+                            f"could not match any supported gguf format, please have a check."
+                        )
                     else:
-                        logger.warning_once(f"the setting in layer_config {layer_name} "
-                                            f"could not match any supported gguf format, reset to {new_type}")
+                        logger.warning_once(
+                            f"the setting in layer_config {layer_name} "
+                            f"could not match any supported gguf format, reset to {new_type}"
+                        )
                 new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
@@ -2850,7 +2854,7 @@ def set_layer_config(
                 cfg["act_bits"] = b
 
     # 4. fill defaults
-    if isinstance(default_scheme,str):
+    if isinstance(default_scheme, str):
         default_dict = asdict(preset_name_to_scheme(default_scheme.upper()))
     else:
         default_dict = asdict(default_scheme)
