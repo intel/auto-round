@@ -158,7 +158,7 @@ GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
-WOQ_DEFAULT_ACT_BITS = [16, 32]
+WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
@@ -173,7 +173,7 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
     checkers=[exllamav2_feature_checker],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
-    requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
+    requirements=["auto-gptq>=0.7.1"],
 )
 
 BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
@@ -188,7 +188,7 @@ BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
     priority=0,
     checkers=[exllamav2_feature_checker],
     alias=["auto_gptq:tritonv2"],
-    requirements=["torch<2.6.0", "auto-gptq>=0.7.1", "triton>=2.0"],
+    requirements=["auto-gptq>=0.7.1", "triton>=2.0"],
 )
 
 BackendInfos["auto_gptq:cuda"] = BackendInfo(
@@ -204,7 +204,6 @@ BackendInfos["auto_gptq:cuda"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_gptq:cuda"],
     requirements=[
-        "torch<2.6.0",
         "auto-gptq>=0.7.1",
     ],
 )
@@ -374,7 +373,7 @@ BackendInfos["gptqmodel:marlin_zp"] = BackendInfo(
 BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
-    packing_format=GPTQ_FORMAT,
+    packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[4],
     group_size=[-1, 32, 64, 128],  ##16 seems has accuracy issue
     compute_dtype=["float16", "bfloat16"],
@@ -534,27 +533,19 @@ def check_compatible(
     - If the packing format does not match, it must be convertible.
     """
     backend = BackendInfos[backend_name]
-    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
-    # Check if device is supported by the backend
-    if device not in backend.device:
-        return False
-
-    # Check if bit-width is supported
-    if bits not in backend.bits:
-        return False
-
-    # Check if group_size is valid (if required by backend)
-    if backend.group_size is not None and group_size not in backend.group_size:
-        return False
-
-    # Check if symmetric/asymmetric quantization is supported
-    if sym not in backend.sym:
-        return False
-
     # Check if the format is convertible when packing formats differ
     if packing_format in backend.packing_format:
         pass
     else:
+        return False
+    # Check scheme
+    for key, value in config.items():
+        backend_value = getattr(backend, key, None)
+        if backend_value is not None and value not in backend_value:
+            return False
+
+    # Check if device is supported by the backend
+    if device not in backend.device:
         return False
 
     for check in backend.checkers:
@@ -980,7 +971,7 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         commands = []
 
         if gptq_req:
-            commands.append(f"pip install -v '{gptq_req}' --no-build-isolation")
+            commands.append(f"pip install -v {gptq_req} --no-build-isolation")
             try:
                 require_version("numpy<2.0")
             except:

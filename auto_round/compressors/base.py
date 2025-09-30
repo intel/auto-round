@@ -328,18 +328,6 @@ class BaseCompressor(object):
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
 
-        # Set device, must place after model loading
-        self._set_device(device_map)
-
-        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
-            self.device_map = device_map
-        elif isinstance(device_map, str) and "," in device_map:
-            device_map = device_map.replace(" ", "")  # Remove any spaces
-            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-            self.device_map = "auto"
-        else:
-            self.device_map = None
-        self._set_device_map_in_blocks(self.device_map)
 
         # Tuning hyperparameters
         self.seed = seed

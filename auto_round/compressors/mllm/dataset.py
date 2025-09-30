@@ -92,7 +92,7 @@ class LlavaDataset(Dataset):
                 dataset_path = dataset_path.split("/")[-1]
             dataset_name = dataset_path.split("/")[-1]
             if dataset_name in self.LLAVA_DATASET:
-                logger.info(f"use dataset {dataset_name}, downloading ...")
+                logger.info(f"use dataset {dataset_name}, downloading...")
                 self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
