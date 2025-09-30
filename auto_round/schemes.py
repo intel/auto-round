@@ -239,6 +239,8 @@ for key, val in GGUF_CONFIG.items():
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return scheme
+    if isinstance(scheme, str):
+        return ""
     for key, val in PRESET_SCHEMES.items():
         if not key.upper().startswith("GGUF"):
             continue

@@ -428,11 +428,13 @@ class BaseCompressor(object):
 
     def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
         """Parse and set the quantization scheme."""
+        res= ""
         if isinstance(scheme, QuantizationScheme):
             scheme = asdict(scheme)
         elif isinstance(scheme, dict):
             scheme = scheme
         elif isinstance(scheme, str):
+            res = scheme # gguf:q4_k_s and gguf_q4_k_m has the same dict scheme, but the result is different
             scheme = scheme.upper()
             scheme = asdict(preset_name_to_scheme(scheme))
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
@@ -481,7 +483,7 @@ class BaseCompressor(object):
                     break
         for key in scheme_keys:
             scheme[key] = getattr(self, key)
-        return QuantizationScheme.from_dict(scheme)
+        return res if res else QuantizationScheme.from_dict(scheme)
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
@@ -804,7 +806,7 @@ class BaseCompressor(object):
 
         for f in formats:
             if f.startswith("gguf"):
-                self.scheme = preset_name_to_scheme(f)
+                self.scheme = f.upper()
                 break
 
         for format_ in formats:

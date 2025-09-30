@@ -35,7 +35,7 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme, get_gguf_scheme
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1940,6 +1940,30 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 )
                 new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1 :]
             else:
+                config_tmp = config.copy()
+                scheme_keys = [f.name for f in fields(QuantizationScheme)]
+                for key in config.keys():
+                    if key not in scheme_keys:
+                        config_tmp.pop(key, None)
+                matched_scheme = get_gguf_scheme(QuantizationScheme.from_dict(config_tmp)) # check matched
+                if not matched_scheme:
+                    if config.get("super_group_size", None) is not None:
+                        new_type = new_type[:bits_index] + str(config["bits"]) + "_k"
+                    if config.get("super_group_size", None) is None or new_type not in GGUF_INNER_CONFIG:
+                        if config.get("sym", True):
+                            new_type = new_type[:bits_index] + str(config["bits"]) + "_0"
+                            if new_type not in GGUF_INNER_CONFIG:
+                                new_type = new_type[:bits_index] + str(config["bits"]) + "_1"
+                        if not config.get("sym", True):
+                            new_type = new_type[:bits_index] + str(config["bits"]) + "_1"
+                            if new_type not in GGUF_INNER_CONFIG:
+                                new_type = new_type[:bits_index] + str(config["bits"]) + "_0"
+                    if new_type not in GGUF_INNER_CONFIG:
+                        raise ValueError(f"the setting in layer_config {layer_name} "
+                                         f"could not match any supported gguf format, please have a check.")
+                    else:
+                        logger.warning_once(f"the setting in layer_config {layer_name} "
+                                            f"could not match any supported gguf format, reset to {new_type}")
                 new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
@@ -2747,7 +2771,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 def set_layer_config(
     model: torch.nn.Module,
     layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
-    default_scheme: "QuantizationScheme",
+    default_scheme: Union[str, "QuantizationScheme"],
     default_scale_dtype: torch.dtype | str,
     supported_types: tuple,
     inner_supported_types: tuple,
@@ -2822,11 +2846,14 @@ def set_layer_config(
                 cfg["act_bits"] = b
 
     # 4. fill defaults
-    default_dict = asdict(default_scheme)
+    if isinstance(default_scheme,str):
+        default_dict = asdict(preset_name_to_scheme(default_scheme.upper()))
+    else:
+        default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype
     for cfg in layer_config.values():
         for key in scheme_keys:
-            cfg.setdefault(key, default_dict.get(key))
+            cfg.setdefault(key, default_dict.copy().get(key))
 
     # 5. collect supported modules
     gguf_name = get_gguf_scheme(default_scheme)
@@ -2914,6 +2941,8 @@ def set_layer_config(
         layer_config[lm_head_name] = cfg
         has_qlayer_outside_block = True
     for emd_name in embedding_layer_names:
+        if emd_name in layer_config:
+            continue
         cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["embedding"]]
         cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
         layer_config[emd_name] = cfg
