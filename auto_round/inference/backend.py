@@ -539,10 +539,10 @@ def check_compatible(
     else:
         return False
     # Check scheme
-    for key,value in config.items():
-        backend_value = getattr(backend,key,None)
+    for key, value in config.items():
+        backend_value = getattr(backend, key, None)
         if backend_value is not None and value not in backend_value:
-            return  False
+            return False
 
     # Check if device is supported by the backend
     if device not in backend.device:
