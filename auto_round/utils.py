@@ -1190,6 +1190,8 @@ def get_layer_features(layer):
         return layer.num_embeddings, layer.embedding_dim
     elif deepspeed_exists and type(layer) in (LinearLayer, LinearAllreduce):
         return layer.weight.shape[1], layer.weight.shape[0]  # (input_dim, output_dim)
+    elif "FP8Linear" in layer.__class__.__name__:
+        return layer.in_features, layer.out_features
     return None, None  # Unsupported layer type
 
 
