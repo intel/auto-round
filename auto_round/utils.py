@@ -1585,6 +1585,8 @@ def mllm_load_model(
                     )
                     torch.cuda.get_device_capability = orig_func
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+                else:
+                    raise
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
