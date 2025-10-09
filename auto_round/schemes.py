@@ -250,7 +250,8 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
     if isinstance(scheme, str):
         return ""
     for key, val in PRESET_SCHEMES.items():
-        if not key.upper().startswith("GGUF"):
+        # For q40 or q4_1 we only support it with str scheme， otherwise it will be matched incorrectly with W4G32
+        if not key.upper().startswith("GGUF") and ("0" in key or "1" in key):
             continue
         equal = True
         for scheme_key in val.keys():
