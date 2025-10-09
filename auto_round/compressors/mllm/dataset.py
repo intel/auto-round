@@ -263,4 +263,4 @@ def get_mllm_dataloader(
                 " switching to liuhaotian/llava_conv_58k"
             )
             exit(-1)
-        return dataloader, bs, gradient_accumulate_steps
+        return dataloader, bs, gradient_accumulate_steps, seqlen

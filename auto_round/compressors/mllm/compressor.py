@@ -360,7 +360,7 @@ class MLLMCompressor(BaseCompressor):
         """
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
-            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_mllm_dataloader(
+            self.dataloader, self.batch_size, self.gradient_accumulate_steps, self.seqlen = get_mllm_dataloader(
                 template=self.template,
                 model=self.model,
                 tokenizer=self.tokenizer,
