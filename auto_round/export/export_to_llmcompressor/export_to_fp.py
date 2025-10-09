@@ -25,6 +25,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
 from auto_round.export.utils import save_model
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -114,9 +115,8 @@ def pack_layer(name, model, backend, device=None):
     scale = layer.scale
     global_scale = getattr(layer, "weight_global_scale", None)
     input_global_scale = getattr(layer, "input_global_scale", None)
-    # zero = layer.zp
+    # zero = layer.zp # no zeros to handle, as mxfp not support asym quantization
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
-    ## no zeros to handle, as mxfp not support asym quantization
     qlayer.to(orig_device)
 
 
@@ -155,6 +155,9 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     device = kwargs.get("device", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    ar_quantization_config = kwargs["serialization_dict"]
+    regex_config = ar_quantization_config.pop("regex_config")
+    layer_config = kwargs["layer_config"]
     extra_config = {}
 
     if act_bits <= 8:
@@ -199,12 +202,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             for _ in executor.map(wrapper, names):
                 pass
 
-    # TODO fix the ignore re match issue, compile with fp8 & int8 config
-    ignore = ["lm_head"]
-    for layer_name in layer_config:
-        if layer_config[layer_name]["bits"] > 8:  ## find ignore layers
-            ignore.append(layer_name)
-        ignore = list(set(ignore))
+    ignore = generate_ignore_regex_list(regex_config=regex_config, layer_config=layer_config)
 
     # get llm-compressor format config
     check_compressed_tensors_supported()

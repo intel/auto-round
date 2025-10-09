@@ -1929,6 +1929,7 @@ class BaseCompressor(object):
         """
         # Get the names of layers in quantization blocks
         supported_types = self.supported_types
+        regex_config = {}
         layers_in_blocks = get_layer_names_in_block(
             self.model, supported_types, self.quant_block_list, self.inner_supported_types
         )
@@ -1957,6 +1958,7 @@ class BaseCompressor(object):
                     matched_names.append(layer_name)
             if len(matched_names) > 0:
                 val = layer_config[name]
+                regex_config[name] = val  # keep regex config
                 layer_config.pop(name)
                 for match_name in matched_names:
                     layer_config[match_name] = val
@@ -2047,6 +2049,7 @@ class BaseCompressor(object):
         if need_to_quantize_lm_head:
             has_qlayer_outside_block = True
 
+        self.regex_config = regex_config
         # Return whether there are quantized layers outside the blocks
         return has_qlayer_outside_block
 
@@ -3141,6 +3144,7 @@ class BaseCompressor(object):
             "act_data_type",
             "super_bits",
             "super_group_size",
+            "regex_config",
         ]
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")

@@ -24,7 +24,7 @@ from collections import UserDict
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Tuple, Union
+from typing import Any, Callable, List, Tuple, Union
 
 import cpuinfo
 import torch
@@ -2761,3 +2761,79 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
                 return True
 
     return False
+
+
+def to_standard_regex(pattern: str) -> str:
+    """
+    Convert a user-specified string into a standardized regex for layer matching.
+
+    Rules:
+    - If the pattern already contains regex tokens ('.*', '^', '$', etc.),
+      keep them as-is.
+    - Otherwise, wrap the pattern with `.*` on both sides to allow substring matching.
+    - Always ensure the returned regex is valid (compilable by re).
+
+    Examples:
+    >>> to_standard_regex("model.embed_tokens")
+    '.*model\\.embed_tokens.*'
+    >>> to_standard_regex("mlp.gate")
+    '.*mlp\\.gate.*'
+    >>> to_standard_regex("mlp.gate$")
+    '.*mlp\\.gate$'
+    >>> to_standard_regex("mlp.*gate")
+    '.*mlp.*gate.*'
+    """
+    # Heuristic: if pattern contains regex meta characters, assume partial regex
+    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+"}
+    has_regex = any(tok in pattern for tok in meta_chars)
+    if not has_regex:
+        # Escape literal dots, etc., and wrap with .* for substring matching
+        pattern = re.escape(pattern)
+        regex = f".*{pattern}.*"
+    else:
+        # Only escape bare dots that are not already part of regex constructs
+        # Avoid double escaping .* sequences
+        tmp = []
+        i = 0
+        while i < len(pattern):
+            if pattern[i] == ".":
+                if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                    tmp.append(".*")  # keep regex token
+                    i += 2
+                    continue
+                else:
+                    tmp.append("\\.")  # escape bare dot
+            else:
+                tmp.append(pattern[i])
+            i += 1
+        regex = "".join(tmp)
+        # If no anchors are provided, allow substring matching
+        if not regex.startswith("^") and not regex.startswith(".*"):
+            regex = ".*" + regex
+        if not regex.endswith("$") and not regex.endswith(".*"):
+            regex = regex + ".*"
+    # Validate regex
+    try:
+        re.compile(regex)
+    except re.error as e:
+        raise ValueError(f"Invalid regex generated from pattern '{pattern}': {e}")
+    return regex
+
+
+def matches_any_regex(layer_name: str, regex_list: List[str], prefix="re:") -> bool:
+    """
+    Check if layer_name matches any regex pattern in regex_list.
+    """
+    for pattern in regex_list:
+        # Remove 're:' prefix for matching
+        pat = pattern.removeprefix(prefix)
+        if re.fullmatch(pat, layer_name):
+            return True
+    return False
+
+
+def json_serialize(obj: Any):
+    """Convert non-JSON-serializable objects into JSON-friendly formats."""
+    if isinstance(obj, torch.dtype):
+        return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
