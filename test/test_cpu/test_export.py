@@ -504,7 +504,6 @@ class TestAutoRound(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_nvfp4_autoround_save_quantized(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
