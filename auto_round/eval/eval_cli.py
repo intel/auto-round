@@ -67,7 +67,13 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="Limit the number of examples per task. "
             "If <1, limit is a percentage of the total number of examples.",
         )
-        self.add_argument("--eval_backend", default="hf", type=str, choices=["hf", "vllm"], help="Use hf backend for evaluation by default.")
+        self.add_argument(
+            "--eval_backend",
+            default="hf",
+            type=str,
+            choices=["hf", "vllm"],
+            help="Use hf backend for evaluation by default.",
+        )
         # vllm related arguments
         self.add_argument("--revision", default=None, type=str, help="model revision for vllm")
         self.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
