@@ -27,7 +27,7 @@ mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
 # Split test files into 5 parts
-find . -name "test*.py" ! -name "*hpu_only*.py" > all_tests.txt
+find . -name "test*.py" ! -name "*hpu_only*.py" | sort > all_tests.txt
 total_lines=$(wc -l < all_tests.txt)
 NUM_CHUNKS=5
 chunk_size=$(( (total_lines + NUM_CHUNKS - 1) / NUM_CHUNKS ))

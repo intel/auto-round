@@ -39,7 +39,6 @@ stages:
     dependsOn: []
     jobs:
       - job:
-        displayName: Unit Test
         timeoutInMinutes: 120
         strategy:
           matrix:

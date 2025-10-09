@@ -7,12 +7,11 @@ cd /auto-round/log_dir
 
 echo "collect coverage for PR branch"
 mkdir -p coverage_PR
-cp ut_*/.coverage.* ./coverage_PR/
+cp ut-*/.coverage.* ./coverage_PR/
 cd coverage_PR
 coverage combine --keep --rcfile=${COVERAGE_RCFILE}
 
-cp ut_coverage/.coverage /auto-round/
-mkdir -p coverage_PR
+cp .coverage /auto-round/
 cd /auto-round
 coverage report -m --rcfile=${COVERAGE_RCFILE} | tee ${coverage_log}
 coverage html -d log_dir/coverage_PR/htmlcov --rcfile=${COVERAGE_RCFILE}
