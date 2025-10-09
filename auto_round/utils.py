@@ -2868,7 +2868,7 @@ def set_layer_config(
     if gguf_name and torch.nn.Embedding not in supported_types:
         supported_types = (*supported_types, torch.nn.Embedding)
 
-    all_layer_names, embedding_layer_names = [], []
+    all_supported_layer_names, embedding_layer_names = [], []
     all_module_names = []
     for n, m in model.named_modules():
         all_module_names.append(n)
@@ -2878,19 +2878,16 @@ def set_layer_config(
                 delattr(m, key)
         if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:
             continue
-        all_layer_names.append(n)
+        all_supported_layer_names.append(n)
         if isinstance(m, torch.nn.Embedding):
             embedding_layer_names.append(n)
 
     # 6. expand regex configs
     for name in list(layer_config.keys()):
-        if name in all_layer_names:
-            continue
-        if name in all_module_names:
-            logger.warning_once(f"the type of `{name}` is not supported in your scheme, ignore it for now.")
+        if name in all_supported_layer_names:
             continue
         regex = re.compile(name)
-        matched = [ln for ln in all_layer_names if regex.search(ln)]
+        matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
         if not matched:
             raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
         val = layer_config.pop(name)

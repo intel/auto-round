@@ -463,14 +463,17 @@ class BaseCompressor(object):
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
         if tmp_act_bits is not None and tmp_act_bits < 16:
-            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+            for supported_dtype in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
                 if self.act_data_type.startswith(supported_dtype):
-                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # could not replace FP8_e4m3
+                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # Could not replace FP8_e4m3
                         self.act_data_type = supported_dtype
                     break
         for key in scheme_keys:
             scheme[key] = getattr(self, key)
-        return res if res else QuantizationScheme.from_dict(scheme)
+        if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
+            return res
+        else:
+            return  QuantizationScheme.from_dict(scheme)
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
