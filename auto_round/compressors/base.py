@@ -309,10 +309,10 @@ class BaseCompressor(object):
             quant_layer_names = layer_config.keys()
             fixed_layer_scheme = {k: v for k, v in layer_config.items() if v.get("fixed_by_user", False)}
             # mainly using quant_layers and fixed by users
-            from auto_round.auto_schemes.gen_scheme import GenScheme
+            from auto_round.auto_schemes.gen_auto_scheme import GenScheme
 
             gen_scheme = GenScheme(
-                scheme, self.model, quant_layer_names, fixed_layer_scheme, self.scale_dtype, self.dataset
+                scheme, self.model, quant_layer_names, fixed_layer_scheme, self.scale_dtype, dataset
             )
 
         # Set device, must place after model loading

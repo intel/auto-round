@@ -268,3 +268,4 @@ class AutoScheme:
     avg_bits: float
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
+    ignore_scale_zp_bits = False

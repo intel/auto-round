@@ -15,7 +15,7 @@
 AUTO_SCHEMES_ALGS = {}
 
 
-def register_dtype(names):
+def register_scheme_algs(names):
     """Class decorator to register a mixed precision algorithm to the registry.
 
     Decorator function used before a Pattern subclass.
