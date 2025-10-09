@@ -240,7 +240,7 @@ def get_mllm_dataloader(
                 f" reset to {MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN}"
             )
             seqlen = 512
-        dataset = MLLM_DATASET["liuhaotian/llava"](
+        dataset = MLLM_DATASET[dataset](
             template, model, tokenizer, dataset, extra_data_dir, seqlen=seqlen, truncation=truncation, nsamples=nsamples
         )
 
