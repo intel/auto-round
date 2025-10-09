@@ -62,6 +62,7 @@ class LlavaDataset(Dataset):
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
+    MAX_SUPPORT_SEQLEN = 512
 
     def __init__(
         self,
@@ -233,6 +234,12 @@ def get_mllm_dataloader(
         )
 
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
+        if seqlen > MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN:
+            logger.warning(
+                f"seqlen({seqlen}) is greater than the maximum length supported by the {dataset},"
+                f" reset to {MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN}"
+            )
+            seqlen = 512
         dataset = MLLM_DATASET["liuhaotian/llava"](
             template, model, tokenizer, dataset, extra_data_dir, seqlen=seqlen, truncation=truncation, nsamples=nsamples
         )

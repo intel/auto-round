@@ -230,11 +230,6 @@ class MLLMCompressor(BaseCompressor):
             if dataset in MLLM_DATASET.keys():
                 truncation = False
                 seqlen = 512 if seqlen is None else seqlen
-                if seqlen > 512:
-                    logger.warning(
-                        f"seqlen({seqlen}) is greater than the maximum length supported by the {dataset}, reset to 512"
-                    )
-                    seqlen = 512
                 if batch_size != 1:
                     logger.warning(
                         f"reset batch_size({batch_size}) to 1 and "
