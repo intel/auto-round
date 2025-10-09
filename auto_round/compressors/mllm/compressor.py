@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import traceback
 from copy import deepcopy
 from typing import Union
 
+import accelerate
 import torch
+from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
@@ -30,13 +33,16 @@ from auto_round.special_model_handler import (
     _handle_special_model,
 )
 from auto_round.utils import (
+    _is_fp8_model,
     check_to_quantized,
     clear_memory,
     detect_device,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    get_max_vram,
     mllm_load_model,
+    mv_module_from_gpu,
     to_device,
     to_dtype,
 )
@@ -284,7 +290,12 @@ class MLLMCompressor(BaseCompressor):
         """
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
-            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_mllm_dataloader(
+            (
+                self.dataloader,
+                self.batch_size,
+                self.seqlen,
+                self.gradient_accumulate_steps,
+            ) = get_mllm_dataloader(
                 template=self.template,
                 model=self.model,
                 tokenizer=self.tokenizer,

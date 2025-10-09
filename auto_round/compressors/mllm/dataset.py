@@ -62,6 +62,7 @@ class LlavaDataset(Dataset):
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
+    MAX_SUPPORT_SEQLEN = 512
 
     def __init__(
         self,
@@ -233,7 +234,13 @@ def get_mllm_dataloader(
         )
 
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
-        dataset = MLLM_DATASET["liuhaotian/llava"](
+        if seqlen > MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN:
+            logger.warning(
+                f"seqlen({seqlen}) is greater than the maximum length supported by the {dataset},"
+                f" reset to {MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN}"
+            )
+            seqlen = 512
+        dataset = MLLM_DATASET[dataset](
             template, model, tokenizer, dataset, extra_data_dir, seqlen=seqlen, truncation=truncation, nsamples=nsamples
         )
 
@@ -244,7 +251,7 @@ def get_mllm_dataloader(
         set_seed(seed)
         dataloader_params = {"batch_size": bs, "shuffle": True, "collate_fn": dataset.template.processor.data_collator}
 
-        return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
+        return DataLoader(dataset, **dataloader_params), bs, seqlen, gradient_accumulate_steps
     else:
         # try to load text calibration dataset
         from auto_round.calib_dataset import get_dataloader
@@ -256,4 +263,4 @@ def get_mllm_dataloader(
                 " switching to liuhaotian/llava_conv_58k"
             )
             exit(-1)
-        return dataloader, bs, gradient_accumulate_steps
+        return dataloader, bs, seqlen, gradient_accumulate_steps
