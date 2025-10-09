@@ -13,6 +13,7 @@
 # limitations under the License.
 import argparse
 import os
+import time
 
 from auto_round.utils import (
     clear_memory,
@@ -66,6 +67,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="Limit the number of examples per task. "
             "If <1, limit is a percentage of the total number of examples.",
         )
+        self.add_argument("--eval_backend", default="vllm", type=str, help="Using vllm evaluation by default.")
         # vllm related arguments
         self.add_argument("--revision", default=None, type=str, help="model revision for vllm")
         self.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
@@ -104,7 +106,16 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
-    import time
+    if args.eval_backend == "vllm" and isinstance(args.model, str):
+        try:
+            eval_with_vllm(args)
+            return
+        except Exception as e:  # pragma: no cover
+            print(f"vllm evaluation failed: {e}, fallback to default hf backend evaluation.")
+            args.eval_backend = "hf"
+            clear_memory()
+
+    assert args.eval_backend == "hf", "Currently only 'vllm' and 'hf' evaluation backend is supported."
 
     tasks, model_args, device_str = _eval_init(
         args.tasks, args.model, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
