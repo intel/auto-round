@@ -13,10 +13,12 @@
 # limitations under the License.
 from dataclasses import asdict
 from typing import Iterable
+
 import torch
+
 from auto_round import AutoScheme
-from auto_round.logger import logger
 from auto_round.auto_schemes.utils import compute_avg_bits_for_scheme
+from auto_round.logger import logger
 
 
 class GenScheme:
@@ -52,8 +54,7 @@ class GenScheme:
 
         if not (min_avg_bit <= target <= max_avg_bit):
             raise ValueError(
-                f"Target avg_bits={target:.2f} is outside the valid range "
-                f"[{min_avg_bit:.2f}, {max_avg_bit:.2f}]."
+                f"Target avg_bits={target:.2f} is outside the valid range " f"[{min_avg_bit:.2f}, {max_avg_bit:.2f}]."
             )
 
     def compute_avg_bit_range(self) -> tuple[float, float]:

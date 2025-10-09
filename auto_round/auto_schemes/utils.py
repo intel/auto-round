@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import asdict
-from typing import Union, Iterable
+from typing import Iterable, Union
 
 import torch
+
 from auto_round.low_cpu_mem import get_module
 from auto_round.schemes import preset_name_to_scheme
 from auto_round.utils import get_layer_features
@@ -91,7 +92,7 @@ def compute_avg_bits_for_scheme(
             total_quantized_bits: Total quantized bit count.
     """
     if scheme is not None:
-        apply_quant_scheme(model, quant_layer_names, fixed_layer_scheme,scheme)
+        apply_quant_scheme(model, quant_layer_names, fixed_layer_scheme, scheme)
 
     total_params = 0
     total_quantized_bits = 0
@@ -134,7 +135,7 @@ def compute_layer_bits(
 
     # Unquantized layer or ignoring scale/zp overhead
     if weight_bits >= 16 or ignore_scale_zp_bits:
-        if super_weight_bits is not None: # reset gguf 16 bits to 32 bits
+        if super_weight_bits is not None:  # reset gguf 16 bits to 32 bits
             return 32 * n_param, 32
         return weight_bits * n_param, 16.0
 

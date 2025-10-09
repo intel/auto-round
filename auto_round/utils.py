@@ -2886,12 +2886,11 @@ def set_layer_config(
     for name in list(layer_config.keys()):
         if name in all_supported_layer_names:
             continue
-        if name in all_module_names :
+        if name in all_module_names:
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
                 logger.warning(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
                 continue
-
 
         regex = re.compile(name)
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]

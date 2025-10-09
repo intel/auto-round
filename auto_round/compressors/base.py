@@ -311,9 +311,7 @@ class BaseCompressor(object):
             # mainly using quant_layers and fixed by users
             from auto_round.auto_schemes.gen_auto_scheme import GenScheme
 
-            gen_scheme = GenScheme(
-                scheme, self.model, quant_layer_names, fixed_layer_scheme, self.scale_dtype, dataset
-            )
+            gen_scheme = GenScheme(scheme, self.model, quant_layer_names, fixed_layer_scheme, self.scale_dtype, dataset)
 
         # Set device, must place after model loading
         self._set_device(device_map)
