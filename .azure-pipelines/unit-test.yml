@@ -43,20 +43,20 @@ stages:
         timeoutInMinutes: 120
         strategy:
           matrix:
-            iteration1:
-              ITERATION: 1
-            iteration2:
-              ITERATION: 2
-            iteration3:
-              ITERATION: 3
+            part1:
+              PART: 1
+            part2:
+              PART: 2
+            part3:
+              PART: 3
         steps:
           - template: template/ut-template.yml
             parameters:
               dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "ut-$(ITERATION)"
-              utTestMode: $(ITERATION)
+              utArtifact: "ut-$(PART)"
+              utTestMode: $(PART)
 
   - stage: Coverage
     displayName: "Collect Coverage"
