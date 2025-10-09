@@ -40,81 +40,74 @@ stages:
     jobs:
       - job:
         displayName: Unit Test
-        timeoutInMinutes: 240
+        timeoutInMinutes: 120
+        strategy:
+          matrix:
+            iteration1:
+              ITERATION: 1
+            iteration2:
+              ITERATION: 2
+            iteration3:
+              ITERATION: 3
         steps:
           - template: template/ut-template.yml
             parameters:
               dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "ut"
+              utArtifact: "ut-$(ITERATION)"
+              utTestMode: $(ITERATION)
 
-  # - stage: Unit_test_baseline
-  #   displayName: Unit Test Baseline
-  #   dependsOn: []
-  #   jobs:
-  #     - job:
-  #       displayName: Unit Test
-  #       timeoutInMinutes: 120
-  #       steps:
-  #         - template: template/ut-template.yml
-  #           parameters:
-  #             dockerConfigName: "gitCloneDockerConfig"
-  #             utScriptFileName: "run_ut"
-  #             uploadPath: $(UPLOAD_PATH)
-  #             utArtifact: "ut_baseline"
-  #             repo: $(REPO)
+  - stage: Coverage
+    displayName: "Collect Coverage"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: [Unit_test]
+    jobs:
+      - job: CollectDatafiles
+        steps:
+          - script: |
+              docker build -f ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/Dockerfile.devel -t ${IMAGE_NAME}:${IMAGE_TAG} .
+              docker images | grep -i ${IMAGE_NAME}
+              if [[ $? -ne 0 ]]; then
+                echo "NO Such Repo"
+                exit 1
+              fi
+            displayName: "Build develop docker image"
 
-  # - stage: Coverage
-  #   displayName: "Coverage Compare"
-  #   pool:
-  #     vmImage: "ubuntu-latest"
-  #   dependsOn: [Unit_test, Unit_test_baseline]
-  #   jobs:
-  #     - job: CollectDatafiles
-  #       steps:
-  #         - script: |
-  #             if [[ ! $(docker images | grep -i ${IMAGE_NAME}:${IMAGE_TAG}) ]]; then
-  #               docker build -f ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/Dockerfile.devel -t ${IMAGE_NAME}:${IMAGE_TAG} .
-  #             fi
-  #             docker images | grep -i ${IMAGE_NAME}
-  #             if [[ $? -ne 0 ]]; then
-  #               echo "NO Such Repo"
-  #               exit 1
-  #             fi
-  #           displayName: "Build develop docker image"
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact:
+              patterns: "*_coverage/.coverage"
+              path: $(DOWNLOAD_PATH)
 
-  #         - task: DownloadPipelineArtifact@2
-  #           inputs:
-  #             artifact:
-  #             patterns: "*_coverage/.coverage"
-  #             path: $(DOWNLOAD_PATH)
+          - script: |
+              echo "--- create container ---"
+              docker run -d -it --name="collectLogs"  -v ${BUILD_SOURCESDIRECTORY}:/auto-round  ${IMAGE_NAME}:${IMAGE_TAG} /bin/bash
+              echo "--- docker ps ---"
+              docker ps
+              echo "--- collect logs ---"
+              docker exec collectLogs bash -c "cd /auto-round \
+                && pip install -r requirements.txt \
+                && pip install -r requirements-cpu.txt \
+                && pip install -vvv --no-build-isolation . \
+                && pip list"
+              docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
+                && bash ut/collect_log.sh"
+            displayName: "Collect UT Coverage"
 
-  #         - script: |
-  #             echo "--- create container ---"
-  #             docker run -d -it --name="collectLogs"  -v ${BUILD_SOURCESDIRECTORY}:/auto-round  ${IMAGE_NAME}:${IMAGE_TAG} /bin/bash
-  #             echo "--- docker ps ---"
-  #             docker ps
-  #             echo "--- collect logs ---"
-  #             docker exec collectLogs bash -c "cd /auto-round \
-  #               && pip install -r requirements.txt \
-  #               && pip install -vvv --no-build-isolation -e .[cpu] \
-  #               && pip list"
-  #             docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
-  #               && bash ut/collect_log.sh"
-  #           displayName: "Collect UT Coverage"
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: $(UPLOAD_PATH)
+              artifact: $(ARTIFACT_NAME)
+              publishLocation: "pipeline"
 
-  #         - task: PublishPipelineArtifact@1
-  #           condition: succeededOrFailed()
-  #           inputs:
-  #             targetPath: $(UPLOAD_PATH)
-  #             artifact: $(ARTIFACT_NAME)
-  #             publishLocation: "pipeline"
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core sdk 7.0.x'
+            inputs:
+              version: 7.0.x
 
-  #         - task: Bash@3
-  #           condition: always()
-  #           inputs:
-  #             targetType: "inline"
-  #             script: |
-  #               docker exec collectLogs bash -c "rm -fr /auto-round/* && rm -fr /auto-round/.* || true"
-  #           displayName: "Docker clean up"
+          - task: PublishCodeCoverageResults@2
+            inputs:
+              summaryFileLocation: $(Build.SourcesDirectory)/log_dir/coverage_PR/coverage.xml

@@ -61,15 +61,6 @@ steps:
       artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
 
-  - task: UseDotNet@2
-    displayName: 'Use .NET Core sdk 7.0.x'
-    inputs:
-      version: 7.0.x
-
-  - task: PublishCodeCoverageResults@2
-    inputs:
-      summaryFileLocation: ${{ parameters.uploadPath }}/coverage.xml
-
   - task: Bash@3
     condition: always()
     inputs:
