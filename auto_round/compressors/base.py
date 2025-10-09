@@ -2572,7 +2572,7 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
-                        num_elm = self._get_current_num_elm(q_input_ids, whole_indices)
+                        num_elm = self._get_current_num_elm(q_inputs, whole_indices)
                     else:
                         num_elm = self._get_current_num_elm(inputs, whole_indices)
             for tmp_step in range(gradient_accumulate_steps):
