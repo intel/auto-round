@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import traceback
 from copy import deepcopy
 from typing import Union
 
+import accelerate
 import torch
+from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
@@ -30,13 +33,16 @@ from auto_round.special_model_handler import (
     _handle_special_model,
 )
 from auto_round.utils import (
+    _is_fp8_model,
     check_to_quantized,
     clear_memory,
     detect_device,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    get_max_vram,
     mllm_load_model,
+    mv_module_from_gpu,
     to_device,
     to_dtype,
 )
@@ -224,6 +230,11 @@ class MLLMCompressor(BaseCompressor):
             if dataset in MLLM_DATASET.keys():
                 truncation = False
                 seqlen = 512 if seqlen is None else seqlen
+                if seqlen > 512:
+                    logger.warning(
+                        f"seqlen({seqlen}) is greater than the maximum length supported by the {dataset}, reset to 512"
+                    )
+                    seqlen = 512
                 if batch_size != 1:
                     logger.warning(
                         f"reset batch_size({batch_size}) to 1 and "
@@ -269,6 +280,76 @@ class MLLMCompressor(BaseCompressor):
             to_quant_block_names=to_quant_block_names,
             **kwargs,
         )
+
+    @torch.no_grad()
+    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+        """Attempts to cache intermediate data on GPU, if failed, then using CPU.
+
+        Args:
+            block_names (list): List of block names to cache data for.
+            nsamples (int): Number of samples to use for caching.
+            layer_names (list, optional): List of layer names to cache data for. Defaults to [].
+            last_cache_name (str, optional): Name of the last cache. Defaults to None.
+
+        Returns:
+            all_inputs: Cached intermediate data.
+
+        Raises:
+            Exception: If caching on GPU fails, switches to CPU and caches there.
+        """
+        if _is_fp8_model(self.model):
+            layer_names = []
+        if layer_names is None:
+            layer_names = []
+
+        try:
+            if not self.model.device.type == "meta":
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
+                else:
+                    # Change this if new device is supported
+                    if str(self.model.device) == "cpu" and (
+                        self.device.startswith("xpu") or self.device.startswith("cuda")
+                    ):
+                        max_memory = get_max_vram()  # TODO model is not evenly split
+                        no_split_modules = getattr(self.model, "_no_split_modules", [])
+                        device_map = infer_auto_device_map(
+                            self.model, max_memory=max_memory, no_split_module_classes=no_split_modules
+                        )
+
+                        self.model = dispatch_model(self.model, device_map=device_map)
+                    else:
+                        self.model = self.model.to(self.device)
+
+            all_inputs = self.cache_inter_data(
+                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+            )
+            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                accelerate.hooks.remove_hook_from_submodules(self.model)
+
+        except RuntimeError as e:
+            cuda_error_msg = traceback.format_exc()
+            try:
+                logger.info("switch to cpu to cache block inputs")
+                if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
+                    logger.warning(
+                        "we recommend using more GPUs in calibration."
+                        " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
+                    )
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model
+                    )  ##self.model.hf_device_map has not been changed
+                self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+                clear_memory()
+                ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                )
+            except Exception as e:
+                logger.error(cuda_error_msg)
+                raise
+        return all_inputs
 
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
