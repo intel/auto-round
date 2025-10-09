@@ -473,7 +473,7 @@ class BaseCompressor(object):
         if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
             return res
         else:
-            return  QuantizationScheme.from_dict(scheme)
+            return QuantizationScheme.from_dict(scheme)
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""

@@ -72,10 +72,10 @@ class QuantizationScheme:
     def __eq__(self, other: "QuantizationScheme") -> bool:
         if not isinstance(other, QuantizationScheme):
             return False
-        skip_act_check= False
-        self_act_bits = 16  if self.act_bits is None else self.act_bits
-        other_act_bits =  16  if other.act_bits is None else other.act_bits
-        if self_act_bits==other_act_bits and other_act_bits>=16:
+        skip_act_check = False
+        self_act_bits = 16 if self.act_bits is None else self.act_bits
+        other_act_bits = 16 if other.act_bits is None else other.act_bits
+        if self_act_bits == other_act_bits and other_act_bits >= 16:
             skip_act_check = True
 
         for field in self.get_attributes():
