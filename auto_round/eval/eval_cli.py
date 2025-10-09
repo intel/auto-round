@@ -67,7 +67,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="Limit the number of examples per task. "
             "If <1, limit is a percentage of the total number of examples.",
         )
-        self.add_argument("--eval_backend", default="hf", type=str, help="Use hf backend for evaluation by default.")
+        self.add_argument("--eval_backend", default="hf", type=str, choices=["hf", "vllm"], help="Use hf backend for evaluation by default.")
         # vllm related arguments
         self.add_argument("--revision", default=None, type=str, help="model revision for vllm")
         self.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
@@ -106,8 +106,6 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
-    assert args.eval_backend in ["hf", "vllm"], "Currently only 'vllm' and 'hf' evaluation backends are supported."
-
     if args.eval_backend == "vllm":
         try:
             assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
