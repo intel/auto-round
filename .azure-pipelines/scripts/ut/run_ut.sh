@@ -26,10 +26,10 @@ LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
-# Split test files into 3 parts
+# Split test files into 5 parts
 find . -name "test*.py" ! -name "*hpu_only*.py" > all_tests.txt
 total_lines=$(wc -l < all_tests.txt)
-NUM_CHUNKS=3
+NUM_CHUNKS=5
 chunk_size=$(( (total_lines + NUM_CHUNKS - 1) / NUM_CHUNKS ))
 start_line=$(( (test_part - 1) * chunk_size + 1 ))
 selected_files=$(tail -n +$start_line all_tests.txt | head -n $chunk_size)
