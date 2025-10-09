@@ -75,7 +75,7 @@ class GenScheme:
         # Double quantization case
         if super_group_size:
             # Number of super-groups
-            aux_total_bits += n_group * super_weight_bits * 2  # sclae and min int count
+            aux_total_bits += n_group * super_weight_bits * 2  # scale and min int count
             n_super_group = (n_group + super_group_size - 1) // super_group_size
             aux_total_bits += n_super_group * 32 * 2  # double quant scale and min_v
 
