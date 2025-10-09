@@ -1420,7 +1420,7 @@ class BaseCompressor(object):
             m.zp = None
         else:
             try:
-                m.to(self.device)
+                m = m.to(self.device)
                 m = WrapperLinear(
                     m,
                     enable_minmax_tuning=False,
@@ -1858,6 +1858,7 @@ class BaseCompressor(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
+                layer = layer.to(self.device)
                 if _is_fp8_model(self.model):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
