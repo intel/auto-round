@@ -67,12 +67,11 @@ def test_vllm_lm_eval(model):
         "lambada_openai",
         "--eval_bs",
         "8",
-        "--eval_bs",
-        "8",
+        "--eval_backend",
+        "vllm",
         "--limit",
         "10",
     ]
-    print(cmd)
 
     proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert proc.returncode == 0, f"auto-round failed (rc={proc.returncode}):\n{proc.stdout}"
