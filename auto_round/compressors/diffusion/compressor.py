@@ -262,6 +262,14 @@ class DiffusionCompressor(BaseCompressor):
 
         return output
 
+    def _get_current_num_elm(
+        self,
+        input_ids: list[torch.Tensor],
+        indices: list[int],
+    ) -> int:
+        current_input_ids = [input_ids["hidden_states"][i] for i in indices]
+        return sum(id.numel() for id in current_input_ids)
+
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 

@@ -2572,10 +2572,9 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
-                        current_input = [q_inputs[i] for i in whole_indices]
+                        num_elm = self._get_current_num_elm(q_input_ids, whole_indices)
                     else:
-                        current_input = [inputs[i] for i in whole_indices]
-                    num_elm = sum(id.numel() for id in current_input)
+                        num_elm = self._get_current_num_elm(inputs, whole_indices)
             for tmp_step in range(gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
@@ -2699,6 +2698,14 @@ class BaseCompressor(object):
         )
         output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
         return output_q
+
+    def _get_current_num_elm(
+        self,
+        input_ids: list[torch.Tensor],
+        indices: list[int],
+    ) -> int:
+        current_input_ids = [input_ids[i] for i in indices]
+        return sum(id.numel() for id in current_input_ids)
 
     def _quantize_block(
         self,
@@ -2840,8 +2847,7 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 # We assume the block input and output shape is same
                 if self.gradient_accumulate_steps != 1:
-                    current_input_ids = [input_ids[i] for i in whole_indices]
-                    num_elm = sum(id.numel() for id in current_input_ids)
+                    num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
