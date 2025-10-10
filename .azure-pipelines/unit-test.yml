@@ -28,7 +28,7 @@ pool: ICX-16C
 variables:
   IMAGE_NAME: "auto-round"
   IMAGE_TAG: "py310"
-  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir/coverage_PR
+  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
@@ -102,7 +102,7 @@ stages:
           - task: PublishPipelineArtifact@1
             condition: succeededOrFailed()
             inputs:
-              targetPath: $(UPLOAD_PATH)
+              targetPath: $(UPLOAD_PATH)/coverage_PR
               artifact: $(ARTIFACT_NAME)
               publishLocation: "pipeline"
 
