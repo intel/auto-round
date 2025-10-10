@@ -41,4 +41,3 @@ class TestAutoScheme(unittest.TestCase):
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
-
