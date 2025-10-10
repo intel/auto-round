@@ -28,10 +28,10 @@ from auto_round.utils import (
 )
 
 RECIPES = {
-    "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsample": 128, "lr": None},
-    "best": {"batch_size": 8, "iters": 1000, "seqlen": 2048, "nsample": 512, "lr": None},
-    "light": {"batch_size": 8, "iters": 50, "seqlen": 2048, "nsample": 128, "lr": 5e-3},
-    "fast": {"batch_size": 4, "iters": 200, "seqlen": 512, "nsample": 128, "lr": None},
+    "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None},
+    "best": {"batch_size": 8, "iters": 1000, "seqlen": 2048, "nsamples": 512, "lr": None},
+    "light": {"batch_size": 8, "iters": 50, "seqlen": 2048, "nsamples": 128, "lr": 5e-3},
+    "fast": {"batch_size": 4, "iters": 200, "seqlen": 512, "nsamples": 128, "lr": None},
 }
 
 
