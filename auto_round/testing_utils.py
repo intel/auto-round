@@ -15,9 +15,9 @@
 import importlib.util
 import unittest
 from functools import wraps
-from typing import Literal
+from typing import Callable, Literal
+
 import torch
-from typing import Callable
 from transformers.utils.versions import require_version
 
 from auto_round.logger import logger
@@ -218,9 +218,7 @@ def require_vlm_env(test_case):
 
 
 def require_package_version(
-    package: str,
-    version_spec: str,
-    on_fail: Literal["skip", "warn", "error"] = "skip"
+    package: str, version_spec: str, on_fail: Literal["skip", "warn", "error"] = "skip"
 ) -> bool:
     """
     Check if a package satisfies a version requirement.
@@ -264,10 +262,9 @@ def require_package_version_ut(package: str, version_spec: str) -> Callable:
     Returns:
         Callable: A decorator to wrap unittest test methods.
     """
+
     def decorator(test_func: Callable) -> Callable:
         reason = f"Test requires {package}{version_spec}"
-        return unittest.skipUnless(
-            require_package_version(package, version_spec, on_fail="skip"),
-            reason
-        )(test_func)
+        return unittest.skipUnless(require_package_version(package, version_spec, on_fail="skip"), reason)(test_func)
+
     return decorator
