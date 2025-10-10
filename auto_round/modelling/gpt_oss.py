@@ -12,26 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 
 import torch
-import transformers.models.gpt_oss as transformers_gpt_oss
 from torch import nn
 from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
 __all__ = ["get_replacement_info"]
-
-
-@contextlib.contextmanager
-def align_module_device(module: torch.nn.Module):
-    device = next(module.parameters()).device
-    # return with torch.device(device)
-    try:
-        yield device
-    except:
-        pass
 
 
 def _update_parameter(
@@ -89,7 +77,8 @@ class SequentialGPTOSSMoE(nn.Module):
 
         # Build per-expert MLPs
         self.experts = nn.ModuleList()
-        with skip_weights_initialize(), align_module_device(original.experts):
+        target_device = next(original.experts.parameters()).device
+        with skip_weights_initialize(), torch.device(target_device):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
