@@ -43,12 +43,7 @@ def _update_parameter(
     param.data.copy_(data)
 
 
-def _get_top_k(config):
-    # GPT-OSS MoE: experts per token
-    return getattr(config, "num_experts_per_tok", None) or getattr(config, "num_experts_per_token", 1)
-
-
-class _GPTOSSMLP(nn.Module):
+class GPTOssSingleExpert(nn.Module):
     def __init__(self, hidden_size, intermediate_size, dtype=None):
         super().__init__()
         self.hidden_size = hidden_size
@@ -71,17 +66,17 @@ class _GPTOSSMLP(nn.Module):
 
 class SequentialGPTOSSMoE(nn.Module):
     """
-    Replaces GPT-OSS fused-expert MoE with per-expert _GPTOSSMLP modules.
+    Replaces GPT-OSS fused-expert MoE with per-expert `GPTOssSingleExpert` modules.
     Copies weights from fused tensors and reuses the original router and optional shared_expert.
     """
 
-    def __init__(self, config, original):
+    def __init__(self, config: GptOssConfig, original: GptOssMLP):
         super().__init__()
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
         dtype_str = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
         dtype = torch.bfloat16 if str(dtype_str).endswith("bfloat16") else torch.float32
-        top_k = _get_top_k(config)
+        top_k = config.num_experts_per_tok
         self.hidden_size = hidden_size
         self.intermediate = intermediate_size
         self.top_k = top_k
@@ -96,7 +91,7 @@ class SequentialGPTOSSMoE(nn.Module):
         self.experts = nn.ModuleList()
         with skip_weights_initialize(), align_module_device(original.experts):
             for _ in range(E):
-                self.experts.append(_GPTOSSMLP(hidden_size, intermediate_size, dtype=dtype))
+                self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
         gup = original.experts.gate_up_proj  # [E, H, 2I]
         gup_b = original.experts.gate_up_proj_bias  # [E, 2I]
