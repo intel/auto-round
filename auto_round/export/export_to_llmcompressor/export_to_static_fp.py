@@ -79,11 +79,9 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        q_weight = (
-            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp.to(packing_device)
-            if isinstance(zp, torch.Tensor)
-            else zp
-        )
+        if isinstance(zp, torch.Tensor):
+            zp = zp.to(packing_device)
+        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
@@ -243,3 +241,4 @@ def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs)
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+
