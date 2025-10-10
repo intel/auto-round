@@ -17,15 +17,15 @@ from typing import Iterable, Union
 import torch
 
 from auto_round.low_cpu_mem import get_module
-from auto_round.schemes import preset_name_to_scheme, QuantizationScheme
-from auto_round.utils import get_layer_features, check_to_quantized
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+from auto_round.utils import check_to_quantized, get_layer_features
 
 
 def apply_quant_scheme(
     model: torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict], #TODO add scale_dtype
+    scheme: Union[str, dict],  # TODO add scale_dtype
 ) -> None:
     """Apply a quantization scheme to each quantized layer.
 
@@ -54,7 +54,7 @@ def remove_quant_scheme(
         model: The model whose layers are to be cleared.
     """
     scheme_keys = [f.name for f in fields(QuantizationScheme)] + ["scale_dtype"]
-    for n,m in model.named_modules():
+    for n, m in model.named_modules():
         for key in scheme_keys:
             if hasattr(m, key):
                 delattr(m, key)
@@ -102,7 +102,8 @@ def compute_avg_bits_for_scheme(
 
     return avg_bits, total_quantized_bits
 
-def compute_avg_bits_for_model(model:torch.nn.Module, ignore_scale_zp_bits: bool = False):
+
+def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: bool = False):
     """Compute the average and total bit usage for the entire model.
 
     Args:
@@ -115,8 +116,8 @@ def compute_avg_bits_for_model(model:torch.nn.Module, ignore_scale_zp_bits: bool
     total_params = 0
     total_quantized_bits = 0
 
-    for n,module in model.named_modules():
-        if not  hasattr(module, "bits"):
+    for n, module in model.named_modules():
+        if not hasattr(module, "bits"):
             continue
         if not hasattr(module, "weight"):
             continue
@@ -126,9 +127,7 @@ def compute_avg_bits_for_model(model:torch.nn.Module, ignore_scale_zp_bits: bool
 
     avg_bits = float(total_quantized_bits) / total_params
 
-
     return avg_bits, total_quantized_bits
-
 
 
 def compute_layer_bits(

@@ -28,4 +28,4 @@ class TestAutoScheme(unittest.TestCase):
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, format="fake")
         model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
-        assert (2.9 < avg_bits <= 3.0)
+        assert 2.9 < avg_bits <= 3.0

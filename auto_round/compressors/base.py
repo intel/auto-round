@@ -204,22 +204,21 @@ class BaseCompressor(object):
         """
 
         if isinstance(scheme, AutoScheme):
-            if len(scheme.options)<=0:
+            if len(scheme.options) <= 0:
                 raise ValueError("options of AutoScheme must not be empty")
-            options=[]
+            options = []
             for option in scheme.options:
                 new_option = self._parse_and_set_scheme(option, kwargs)
                 options.append(new_option)
             scheme.options = options
             for opt in options:
-                if isinstance(opt, str) and opt=="BF16":
+                if isinstance(opt, str) and opt == "BF16":
                     continue
                 if isinstance(opt, QuantizationScheme):
-                    if opt.bits>=16 and (opt.act_bits is None or opt.act_bits>=16):
+                    if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
                         continue
-                self.scheme= opt # Choose the first one that not 16 bits
+                self.scheme = opt  # Choose the first one that not 16 bits
             self.is_auto_scheme = True
-
 
         else:
             self.scheme = self._parse_and_set_scheme(scheme, kwargs)
@@ -315,7 +314,7 @@ class BaseCompressor(object):
             if self.mllm:
                 logger.info("AutoScheme with MLLM is not supported yet.")
                 sys.exit(1)
-            layer_config, self.has_qlayer_outside_block  = set_layer_config(
+            layer_config, self.has_qlayer_outside_block = set_layer_config(
                 self.model,
                 self.layer_config,
                 self.scheme,
@@ -333,7 +332,9 @@ class BaseCompressor(object):
             # mainly using quant_layers and fixed by users
             from auto_round.auto_schemes.gen_auto_scheme import GenScheme
 
-            gen_scheme = GenScheme(scheme, self.model, quant_layer_names, fixed_layer_scheme, dataset,tokenizer=self.tokenizer)
+            gen_scheme = GenScheme(
+                scheme, self.model, quant_layer_names, fixed_layer_scheme, dataset, tokenizer=self.tokenizer
+            )
             self.layer_config = gen_scheme.get_layer_config()
 
         # Set device, must place after model loading
@@ -1626,11 +1627,11 @@ class BaseCompressor(object):
                 is_mllm=self.mllm,
             )
         else:
-            for n,scheme in self.layer_config.items():
+            for n, scheme in self.layer_config.items():
                 module = get_module(self.model, n)
-                if not isinstance(scheme,dict):
+                if not isinstance(scheme, dict):
                     raise ValueError("scheme return by scheme should be dict")
-                for key,item in scheme.items():
+                for key, item in scheme.items():
                     setattr(module, key, item)
                 # set_extra scale_dtype
                 module.scale_dtype = self.scale_dtype

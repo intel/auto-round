@@ -17,20 +17,21 @@ from typing import Iterable
 import torch
 
 from auto_round import AutoScheme
+from auto_round.auto_schemes import AUTO_SCHEMES_METHODS
 from auto_round.auto_schemes.utils import compute_avg_bits_for_scheme
 from auto_round.logger import logger
-from auto_round.auto_schemes import AUTO_SCHEMES_METHODS
+
 
 class GenScheme:
     """Generate and validate quantization schemes for model layers."""
 
     def __init__(
         self,
-        auto_scheme: AutoScheme, # TODO support shared layer
+        auto_scheme: AutoScheme,  # TODO support shared layer
         model: torch.nn.Module,
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
-        dataset: str = "pile-10k", # TODO use auto-round dataset
+        dataset: str = "pile-10k",  # TODO use auto-round dataset
         tokenizer=None,
     ):
         self.auto_scheme = auto_scheme
@@ -63,12 +64,9 @@ class GenScheme:
     def get_layer_config(self):
         method_name = self.auto_scheme.method
         method_func = AUTO_SCHEMES_METHODS[method_name]
-        layer_config = method_func(self.auto_scheme,
-        self.model,
-        self.quant_layer_names,
-        self.fixed_layer_scheme,
-        self.dataset,
-        self.tokenizer)
+        layer_config = method_func(
+            self.auto_scheme, self.model, self.quant_layer_names, self.fixed_layer_scheme, self.dataset, self.tokenizer
+        )
         return layer_config
 
     def compute_avg_bit_range(self) -> tuple[float, float]:
