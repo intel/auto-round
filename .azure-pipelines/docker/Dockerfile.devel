@@ -45,6 +45,7 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 
 USER hostuser
 
+ENV PATH="/home/hostuser/.local/bin:${PATH}"
 RUN python -m pip install --no-cache-dir --upgrade pip
 RUN python -m pip install --no-cache-dir setuptools
 
