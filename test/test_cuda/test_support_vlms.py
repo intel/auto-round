@@ -9,7 +9,7 @@ import requests
 from PIL import Image
 
 from auto_round import AutoRoundConfig  # # must import for auto-round format
-from auto_round.testing_utils import require_gptqmodel, require_vlm_env
+from auto_round.testing_utils import require_gptqmodel, require_package_version_ut, require_vlm_env
 
 
 class TestSupportVLMS(unittest.TestCase):
@@ -128,6 +128,7 @@ class TestSupportVLMS(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_vlm_env
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_phi3_vision_awq(self):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
