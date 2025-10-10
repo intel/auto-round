@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+__all__ = ["get_replacement_info"]
+
+
 import torch
 from transformers.modeling_utils import no_init_weights
 from transformers.models.llama4.modeling_llama4 import Llama4TextMLP
