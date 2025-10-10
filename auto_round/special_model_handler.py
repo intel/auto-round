@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from auto_round.utils import logger
+import auto_round.modelling as auto_round_modelling
+from auto_round.utils import LazyImport, logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -40,19 +41,20 @@ CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
 
 
 def _get_moe_converter(config):
+    # Dispatch table for model_type to replacement_info functions
+    moe_converters = {
+        "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
+        "llama4": LazyImport("auto_round.modelling.llama4.get_replacement_info"),
+    }
 
-    if config.model_type == "gpt_oss":
-        from auto_round.modelling.gpt_oss import get_replacement_info
-
-        return get_replacement_info(config)
-
-    # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
-    elif config.model_type == "llama4":
-        from auto_round.modelling.llama4 import get_replacement_info
-
-        return get_replacement_info(config)
+    # Retrieve the appropriate function based on model_type
+    if config.model_type in moe_converters:
+        return moe_converters[config.model_type](config)
     else:
-        raise ValueError(f"Currently moe converter only supports llama4 model_type, but get {config.model_type}")
+        raise ValueError(
+            f"Unsupported model_type '{config.model_type}'. "
+            f"Currently, MoE converter only supports: {', '.join(moe_converters.keys())}."
+        )
 
 
 def _handle_special_model(model):
