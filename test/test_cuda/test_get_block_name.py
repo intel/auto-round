@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, "../..")
 import torch
 import transformers
+from diffusers import AutoPipelineForText2Image
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForVision2Seq,
@@ -17,7 +18,6 @@ from transformers import (
 
 from auto_round import AutoRound
 from auto_round.utils import get_block_names, is_pure_text_model
-from diffusers import AutoPipelineForText2Image
 
 
 class TestAutoRound(unittest.TestCase):
@@ -193,10 +193,9 @@ class TestAutoRound(unittest.TestCase):
         model = pipe.transformer
 
         block_names = get_block_names(model)
-        self.check_block_names(
-            block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38]
-        )
+        self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
         self.assertTrue(any(["context_embedder" not in n for n in block_names]))
+
 
 if __name__ == "__main__":
     unittest.main()

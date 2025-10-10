@@ -1639,8 +1639,8 @@ def mllm_load_model(
 
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
-    device: Union[str, torch.device]="cpu",
-    torch_dtype: Union[str, torch.dtype]="auto",
+    device: Union[str, torch.device] = "cpu",
+    torch_dtype: Union[str, torch.dtype] = "auto",
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
     model_dtype: str = None,
@@ -2804,16 +2804,16 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 
     return False
 
+
 def check_diffusers_installed():  # pragma: no cover
     try:
         import diffusers  # noqa: F401
 
         return True
     except ImportError:
-        logger.error(
-            "Please install diffusers via 'pip install diffusers'" " to run diffusion model"
-        )
+        logger.error("Please install diffusers via 'pip install diffusers'" " to run diffusion model")
         exit(-1)
+
 
 def is_diffusion_model(model_or_path: Union[str, object]):
     if isinstance(model_or_path, str):
@@ -2836,6 +2836,7 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         check_diffusers_installed()
 
         from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+
         return isinstance(model_or_path, DiffusionPipeline)
     else:
         return False

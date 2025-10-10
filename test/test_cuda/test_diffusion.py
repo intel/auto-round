@@ -9,11 +9,11 @@ import requests
 
 sys.path.insert(0, "../..")
 
+from diffusers import AutoPipelineForText2Image
 from PIL import Image
 
 from auto_round import AutoRoundDiffusion
 from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
-from diffusers import AutoPipelineForText2Image
 
 
 class TestAutoRound(unittest.TestCase):
