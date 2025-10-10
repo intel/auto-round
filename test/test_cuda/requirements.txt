@@ -7,7 +7,7 @@ einops
 # gptqmodel>=2.0
 # pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
 intel-extension-for-pytorch
-lm-eval>=0.4.2,<0.5
+lm-eval>=0.4.9.1
 numpy < 2.0
 optimum
 pandas
