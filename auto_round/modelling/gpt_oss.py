@@ -13,13 +13,15 @@
 # limitations under the License.
 
 import contextlib
-import gc
-import os
 
 import torch
 import transformers.models.gpt_oss as transformers_gpt_oss
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.modeling_utils import no_init_weights as skip_weights_initialize
+from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
+from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
+
+__all__ = ["get_replacement_info"]
 
 
 @contextlib.contextmanager
@@ -32,15 +34,12 @@ def align_module_device(module: torch.nn.Module):
         pass
 
 
-from transformers.modeling_utils import no_init_weights as skip_weights_initialize
-
-
-def update_offload_parameter(
+def _update_parameter(
     module: torch.nn.Module,
     name: str,
     data: torch.Tensor,
 ) -> None:
-    param: torch.nn.Parameter = getattr(module, name)
+    param = getattr(module, name)
     param.data.copy_(data)
 
 
@@ -49,7 +48,7 @@ def _get_top_k(config):
     return getattr(config, "num_experts_per_tok", None) or getattr(config, "num_experts_per_token", 1)
 
 
-class GPTOSSMLP(nn.Module):
+class _GPTOSSMLP(nn.Module):
     def __init__(self, hidden_size, intermediate_size, dtype=None):
         super().__init__()
         self.hidden_size = hidden_size
@@ -72,7 +71,7 @@ class GPTOSSMLP(nn.Module):
 
 class SequentialGPTOSSMoE(nn.Module):
     """
-    Replaces GPT-OSS fused-expert MoE with per-expert GPTOSSMLP modules.
+    Replaces GPT-OSS fused-expert MoE with per-expert _GPTOSSMLP modules.
     Copies weights from fused tensors and reuses the original router and optional shared_expert.
     """
 
@@ -97,22 +96,21 @@ class SequentialGPTOSSMoE(nn.Module):
         self.experts = nn.ModuleList()
         with skip_weights_initialize(), align_module_device(original.experts):
             for _ in range(E):
-                self.experts.append(GPTOSSMLP(hidden_size, intermediate_size, dtype=dtype))
+                self.experts.append(_GPTOSSMLP(hidden_size, intermediate_size, dtype=dtype))
 
         gup = original.experts.gate_up_proj  # [E, H, 2I]
         gup_b = original.experts.gate_up_proj_bias  # [E, 2I]
         dwn = original.experts.down_proj  # [E, I, H]
         dwn_b = original.experts.down_proj_bias  # [E, H]
 
-        with align_module_device(self.experts):
-            for i, mlp in enumerate(self.experts):
-                update_offload_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
-                update_offload_parameter(mlp.up_proj, "weight", original.experts.gate_up_proj[i, :, 1::2].T)
-                update_offload_parameter(mlp.down_proj, "weight", original.experts.down_proj[i].T)
+        for i, mlp in enumerate(self.experts):
+            _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
+            _update_parameter(mlp.up_proj, "weight", original.experts.gate_up_proj[i, :, 1::2].T)
+            _update_parameter(mlp.down_proj, "weight", original.experts.down_proj[i].T)
 
-                update_offload_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
-                update_offload_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
-                update_offload_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
+            _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
+            _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
+            _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
 
     def forward(self, hidden_states):
         B, T, H = hidden_states.shape
@@ -141,5 +139,5 @@ def get_replacement_info(config):
     return (
         SequentialGPTOSSMoE,
         config.get_text_config(),
-        transformers_gpt_oss.modeling_gpt_oss.GptOssMLP.__name__,
+        GptOssMLP.__name__,
     )
