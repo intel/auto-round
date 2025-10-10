@@ -241,4 +241,3 @@ def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs)
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-
