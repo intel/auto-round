@@ -36,12 +36,17 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
-CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4"]
+CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
 
 
 def _get_moe_converter(config):
     import torch
     from transformers.modeling_utils import no_init_weights
+
+    if config.model_type == "gpt_oss":
+        from auto_round.modelling.gpt_oss import get_replacement_info
+
+        return get_replacement_info(config)
 
     # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
     if config.model_type == "llama4":
