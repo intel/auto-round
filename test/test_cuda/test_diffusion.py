@@ -11,28 +11,22 @@ sys.path.insert(0, "../..")
 
 from PIL import Image
 
-from auto_round import AutoRoundConfig
+from auto_round import AutoRoundDiffusion
 from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
+from diffusers import AutoPipelineForText2Image
 
 
 class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.save_dir = "./saved"
         self.model_name = "/dataset/FLUX.1-dev"
 
     @classmethod
     def tearDownClass(self):
-        shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
     def test_diffusion_tune(self):
-
-        from diffusers import AutoPipelineForText2Image
-
-        from auto_round import AutoRoundDiffusion
-
         ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
         model = pipe.transformer
@@ -44,7 +38,7 @@ class TestAutoRound(unittest.TestCase):
                 continue
             match = re.search(r"blocks\.(\d+)", n)
             if match and int(match.group(1)) > 0:
-                layer_config[n] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
+                layer_config[n] = {"bits": 16, "act_bits": 16}
 
         ## quantize the model
         autoround = AutoRoundDiffusion(
@@ -59,19 +53,22 @@ class TestAutoRound(unittest.TestCase):
         )
         # skip model saving since it takes much time
         autoround.quantize()
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_block_name(self):
-        from diffusers import AutoPipelineForText2Image
-
-        from auto_round.utils import get_block_names
-
+    def test_diffusion_rtn(self):
+        ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
-        model = pipe.transformer
 
-        block_name = get_block_names(model)
-        self.assertTrue(len(block_name) == 2)
-        self.assertTrue(any(["context_embedder" not in n for n in block_name]))
+        ## quantize the model
+        autoround = AutoRoundDiffusion(
+            pipe,
+            tokenizer=None,
+            scheme="MXFP4",
+            iters=0,
+            num_inference_steps=2,
+            dataset="/dataset/captions_source.tsv",
+        )
+        # skip model saving since it takes much time
+        autoround.quantize()
 
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model

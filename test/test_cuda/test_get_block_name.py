@@ -17,6 +17,7 @@ from transformers import (
 
 from auto_round import AutoRound
 from auto_round.utils import get_block_names, is_pure_text_model
+from diffusers import AutoPipelineForText2Image
 
 
 class TestAutoRound(unittest.TestCase):
@@ -186,6 +187,16 @@ class TestAutoRound(unittest.TestCase):
         )
         assert not is_pure_text_model(model)
 
+    def test_flux(self):
+        model_name = "/dataset/FLUX.1-dev"
+        pipe = AutoPipelineForText2Image.from_pretrained(model_name)
+        model = pipe.transformer
+
+        block_names = get_block_names(model)
+        self.check_block_names(
+            block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38]
+        )
+        self.assertTrue(any(["context_embedder" not in n for n in block_names]))
 
 if __name__ == "__main__":
     unittest.main()

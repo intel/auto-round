@@ -468,14 +468,14 @@ def collect_best_params(block):
 
 
 def block_forward(
-    block,
-    input_ids,
-    input_others,
-    amp=False,
-    amp_dtype=torch.float16,
-    device=torch.device("cpu"),
-    output_return_id=0,
-):
+    block: torch.nn.Module,
+    input_ids: torch.Tensor,
+    input_others: dict,
+    amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    device: torch.device = torch.device("cpu"),
+    output_return_id: int = 0,
+) -> Union[torch.Tensor, dict]:
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -1638,12 +1638,12 @@ def mllm_load_model(
 
 
 def diffusion_load_model(
-    pretrained_model_name_or_path,
-    device="cpu",
-    torch_dtype="auto",
-    use_auto_mapping=False,
-    trust_remote_code=True,
-    model_dtype=None,
+    pretrained_model_name_or_path: str,
+    device: Union[str, torch.device]="cpu",
+    torch_dtype: Union[str, torch.dtype]="auto",
+    use_auto_mapping: bool = False,
+    trust_remote_code: bool = True,
+    model_dtype: str = None,
     **kwargs,
 ):
     device_str, use_auto_mapping = get_device_and_parallelism(device)
@@ -2804,6 +2804,16 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 
     return False
 
+def check_diffusers_installed():  # pragma: no cover
+    try:
+        import diffusers  # noqa: F401
+
+        return True
+    except ImportError:
+        logger.error(
+            "Please install diffusers via 'pip install diffusers'" " to run diffusion model"
+        )
+        exit(-1)
 
 def is_diffusion_model(model_or_path: Union[str, object]):
     if isinstance(model_or_path, str):
@@ -2813,14 +2823,19 @@ def is_diffusion_model(model_or_path: Union[str, object]):
                 from huggingface_hub import hf_hub_download
 
                 index_file = hf_hub_download(model_or_path, "model_index.json")
-            except:
+                check_diffusers_installed()
+            except Exception as e:
+                print(e)
                 index_file = None
 
         elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
+            check_diffusers_installed()
             index_file = os.path.join(model_or_path, "model_index.json")
         return index_file is not None
     elif not isinstance(model_or_path, torch.nn.Module):
-        pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
-        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+        check_diffusers_installed()
+
+        from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+        return isinstance(model_or_path, DiffusionPipeline)
     else:
         return False
