@@ -9,7 +9,7 @@ import requests
 from PIL import Image
 
 from auto_round import AutoRoundConfig  # # must import for auto-round format
-from auto_round.testing_utils import require_gptqmodel, require_vlm_env
+from auto_round.testing_utils import require_gptqmodel, require_vlm_env, require_package_version_ut
 
 
 class TestSupportVLMS(unittest.TestCase):
