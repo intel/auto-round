@@ -50,7 +50,9 @@ class TestAutoRound(unittest.TestCase):
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
     def test_layer_config(self):
-        layer_config = {"self_attn": {"bits": 4, "data_type": "mx_fp", "act_bits": 4, "act_data_type": "mx_fp", "group_size": 32}}
+        layer_config = {
+            "self_attn": {"bits": 4, "data_type": "mx_fp", "act_bits": 4, "act_data_type": "mx_fp", "group_size": 32}
+        }
         autoround = AutoRound(
             self.model,
             self.tokenizer,
