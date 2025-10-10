@@ -202,10 +202,32 @@ class BaseCompressor(object):
             ...     # ...
             ... }
         """
-        if isinstance(scheme, AutoScheme):  # TODO  AutoScheme could also be patched by group_size, etc
-            self.scheme = self._parse_and_set_scheme(scheme.options[0], kwargs)
+
+        if isinstance(scheme, AutoScheme):
+            if len(scheme.options)<=0:
+                raise ValueError("options of AutoScheme must not be empty")
+            options=[]
+            for option in scheme.options:
+                new_option = self._parse_and_set_scheme(option, kwargs)
+                options.append(new_option)
+            scheme.options = options
+            for opt in options:
+                if isinstance(opt, str) and opt=="BF16":
+                    continue
+                if isinstance(opt, QuantizationScheme):
+                    if opt.bits>=16 and (opt.act_bits is None or opt.act_bits>=16):
+                        continue
+                self.scheme= opt # Choose the first one that not 16 bits
+            self.is_auto_scheme = True
+
+
         else:
             self.scheme = self._parse_and_set_scheme(scheme, kwargs)
+            self.is_auto_scheme = False
+
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        for key in scheme_keys:
+            kwargs.pop(key, None)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -293,7 +315,7 @@ class BaseCompressor(object):
             if self.mllm:
                 logger.info("AutoScheme with MLLM is not supported yet.")
                 sys.exit(1)
-            layer_config, _ = set_layer_config(
+            layer_config, self.has_qlayer_outside_block  = set_layer_config(
                 self.model,
                 self.layer_config,
                 self.scheme,
@@ -311,7 +333,8 @@ class BaseCompressor(object):
             # mainly using quant_layers and fixed by users
             from auto_round.auto_schemes.gen_auto_scheme import GenScheme
 
-            gen_scheme = GenScheme(scheme, self.model, quant_layer_names, fixed_layer_scheme, self.scale_dtype, dataset)
+            gen_scheme = GenScheme(scheme, self.model, quant_layer_names, fixed_layer_scheme, dataset,tokenizer=self.tokenizer)
+            self.layer_config = gen_scheme.get_layer_config()
 
         # Set device, must place after model loading
         self._set_device(device_map)
@@ -428,7 +451,7 @@ class BaseCompressor(object):
                 setattr(self, key, kwargs[key])
             else:
                 setattr(self, key, scheme.get(key, None))
-            kwargs.pop(key, None)
+            # kwargs.pop(key, None)
         if self.act_dynamic is None:
             self.act_dynamic = True
 
@@ -1588,19 +1611,29 @@ class BaseCompressor(object):
         self.model = _handle_moe_model(self.model, formats=formats)
 
         # TODO check scale_dtype
-        self.layer_config, self.has_qlayer_outside_block = set_layer_config(
-            self.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.fp_layers,
-            self.quant_lm_head,
-            enable_gguf_official_mixed=True,
-            is_mllm=self.mllm,
-        )
+        if not self.is_auto_scheme:
+            self.layer_config, self.has_qlayer_outside_block = set_layer_config(
+                self.model,
+                self.layer_config,
+                self.scheme,
+                self.scale_dtype,
+                self.supported_types,
+                self.inner_supported_types,
+                self.quant_block_list,
+                self.fp_layers,
+                self.quant_lm_head,
+                enable_gguf_official_mixed=True,
+                is_mllm=self.mllm,
+            )
+        else:
+            for n,scheme in self.layer_config.items():
+                module = get_module(self.model, n)
+                if not isinstance(scheme,dict):
+                    raise ValueError("scheme return by scheme should be dict")
+                for key,item in scheme.items():
+                    setattr(module, key, item)
+                # set_extra scale_dtype
+                module.scale_dtype = self.scale_dtype
 
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")

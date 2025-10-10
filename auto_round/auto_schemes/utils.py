@@ -11,21 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Iterable, Union
 
 import torch
 
 from auto_round.low_cpu_mem import get_module
-from auto_round.schemes import preset_name_to_scheme
-from auto_round.utils import get_layer_features
+from auto_round.schemes import preset_name_to_scheme, QuantizationScheme
+from auto_round.utils import get_layer_features, check_to_quantized
 
 
 def apply_quant_scheme(
     model: torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict],
+    scheme: Union[str, dict], #TODO add scale_dtype
 ) -> None:
     """Apply a quantization scheme to each quantized layer.
 
@@ -47,27 +47,17 @@ def apply_quant_scheme(
 
 def remove_quant_scheme(
     model: torch.nn.Module,
-    quant_layer_names: Iterable[str],
-    fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict],
 ) -> None:
     """Remove attributes corresponding to the applied quantization scheme.
 
     Args:
         model: The model whose layers are to be cleared.
-        scheme: The scheme preset name or dictionary previously applied.
-        quant_layer_names: Iterable of layer names to clear.
-        fixed_layer_scheme: Dictionary of fixed per-layer quantization schemes.
     """
-    for name in quant_layer_names:
-        layer_scheme = fixed_layer_scheme.get(name, scheme)
-        if isinstance(layer_scheme, str):
-            layer_scheme = asdict(preset_name_to_scheme(layer_scheme))
-
-        module = get_module(model, name)
-        for key in layer_scheme.keys():
-            if hasattr(module, key):
-                delattr(module, key)
+    scheme_keys = [f.name for f in fields(QuantizationScheme)] + ["scale_dtype"]
+    for n,m in model.named_modules():
+        for key in scheme_keys:
+            if hasattr(m, key):
+                delattr(m, key)
 
 
 def compute_avg_bits_for_scheme(
@@ -108,9 +98,37 @@ def compute_avg_bits_for_scheme(
     avg_bits = float(total_quantized_bits) / total_params
 
     if scheme is not None:
-        remove_quant_scheme(model, quant_layer_names, fixed_layer_scheme, scheme)
+        remove_quant_scheme(model)
 
     return avg_bits, total_quantized_bits
+
+def compute_avg_bits_for_model(model:torch.nn.Module, ignore_scale_zp_bits: bool = False):
+    """Compute the average and total bit usage for the entire model.
+
+    Args:
+        model: The model to analyze.
+        ignore_scale_zp_bits: If True, ignores overhead from scale and zero-points.
+        if scheme is not None:
+        apply_quant_scheme(model, quant_layer_names, fixed_layer_scheme, scheme)
+    """
+
+    total_params = 0
+    total_quantized_bits = 0
+
+    for n,module in model.named_modules():
+        if not  hasattr(module, "bits"):
+            continue
+        if not hasattr(module, "weight"):
+            continue
+        total_params += module.weight.numel()
+        layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
+        total_quantized_bits += layer_bits
+
+    avg_bits = float(total_quantized_bits) / total_params
+
+
+    return avg_bits, total_quantized_bits
+
 
 
 def compute_layer_bits(
@@ -135,7 +153,7 @@ def compute_layer_bits(
 
     # Unquantized layer or ignoring scale/zp overhead
     if weight_bits >= 16 or ignore_scale_zp_bits:
-        if super_weight_bits is not None:  # reset gguf 16 bits to 32 bits
+        if super_weight_bits is not None:  # reset gguf 16 bits to 32 bits, TODO gguf q4_0, q4_1 may have bug
             return 32 * n_param, 32
         return weight_bits * n_param, 16.0
 

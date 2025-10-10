@@ -214,7 +214,7 @@ FP8_STATIC = QuantizationScheme.from_dict(
 BF16 = QuantizationScheme.from_dict(
     {
         "bits": 16,
-        "group_size": 0,
+        "group_size": 128,
         "data_type": "fp",
         "act_bits": 16,
         "act_data_type": "fp",
@@ -265,8 +265,11 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
 
 @dataclass
 class AutoScheme:
-    options: Optional[Iterable[QuantizationScheme | str]]
+    options: Union[list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str]]]
     avg_bits: float
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
     ignore_scale_zp_bits = False
+    nsamples = None
+    seqlen = None
+    dataset: Optional[str] = None # Import Notice no comma for each item

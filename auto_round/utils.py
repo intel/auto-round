@@ -2861,7 +2861,7 @@ def set_layer_config(
     default_dict["scale_dtype"] = default_scale_dtype
     for cfg in layer_config.values():
         for key in scheme_keys:
-            cfg.setdefault(key, default_dict.copy().get(key))
+            cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
     gguf_name = get_gguf_scheme(default_scheme)
@@ -2913,21 +2913,21 @@ def set_layer_config(
         )
 
     if lm_head_name not in layer_config and quant_lm_head:
-        layer_config[lm_head_name] = default_dict.copy()
+        layer_config[lm_head_name] = copy.deepcopy(default_dict)
 
     # 8. enforce shape divisibility for int weight-only
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
         for n, m in model.named_modules():
             if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
                 if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
-                    layer_config.setdefault(n, default_dict.copy())
+                    layer_config.setdefault(n, copy.deepcopy(default_dict))
                     layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                     logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
 
     # 9. block layers: mark as in_blocks=True
     for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
         if name not in layer_config:
-            layer_config[name] = default_dict.copy()
+            layer_config[name] = copy.deepcopy(default_dict)
             layer_config[name]["fixed_by_user"] = False
         layer_config[name]["in_blocks"] = True
 

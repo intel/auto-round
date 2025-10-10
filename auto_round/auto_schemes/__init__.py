@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-AUTO_SCHEMES_ALGS = {}
+AUTO_SCHEMES_METHODS = {}
 
 
-def register_scheme_algs(names):
+def register_scheme_methods(names):
     """Class decorator to register a mixed precision algorithm to the registry.
 
     Decorator function used before a Pattern subclass.
@@ -30,10 +30,12 @@ def register_scheme_algs(names):
     def register(alg):
         if isinstance(names, (tuple, list)):
             for name in names:
-                AUTO_SCHEMES_ALGS[name] = alg
+                AUTO_SCHEMES_METHODS[name] = alg
         else:
-            AUTO_SCHEMES_ALGS[names] = alg
+            AUTO_SCHEMES_METHODS[names] = alg
 
         return alg
 
     return register
+
+import auto_round.auto_schemes.haha
