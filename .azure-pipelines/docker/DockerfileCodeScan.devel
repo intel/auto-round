@@ -40,6 +40,7 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 
 USER hostuser
 
+RUN python -m pip install --upgrade pip
 RUN python -m pip install --no-cache-dir pylint==2.12.1\
     bandit
 
