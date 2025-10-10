@@ -218,6 +218,11 @@ class BaseCompressor(object):
                     if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
                         continue
                 self.scheme = opt  # Choose the first one that not 16 bits
+                break
+
+            # apply scheme to set default bits
+            self._parse_and_set_scheme(self.scheme, kwargs)
+
             self.is_auto_scheme = True
 
         else:
@@ -1627,14 +1632,27 @@ class BaseCompressor(object):
                 is_mllm=self.mllm,
             )
         else:
-            for n, scheme in self.layer_config.items():
-                module = get_module(self.model, n)
-                if not isinstance(scheme, dict):
-                    raise ValueError("scheme return by scheme should be dict")
-                for key, item in scheme.items():
-                    setattr(module, key, item)
-                # set_extra scale_dtype
-                module.scale_dtype = self.scale_dtype
+            # for n, scheme in self.layer_config.items():
+            #     module = get_module(self.model, n)
+            #     if not isinstance(scheme, dict):
+            #         raise ValueError("scheme return by scheme should be dict")
+            #     for key, item in scheme.items():
+            #         setattr(module, key, item)
+            #     # set_extra scale_dtype
+            #     module.scale_dtype = self.scale_dtype
+            self.layer_config, self.has_qlayer_outside_block = set_layer_config(
+                self.model,
+                self.layer_config,
+                self.scheme,
+                self.scale_dtype,
+                self.supported_types,
+                self.inner_supported_types,
+                self.quant_block_list,
+                self.fp_layers,
+                self.quant_lm_head,
+                enable_gguf_official_mixed=False,
+                is_mllm=self.mllm,
+            )
 
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")

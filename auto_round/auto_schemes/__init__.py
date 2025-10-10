@@ -39,4 +39,4 @@ def register_scheme_methods(names):
     return register
 
 
-import auto_round.auto_schemes.haha
+import auto_round.auto_schemes.haha # pylint: disable=E0611
