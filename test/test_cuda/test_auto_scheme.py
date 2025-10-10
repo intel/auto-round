@@ -23,7 +23,7 @@ class TestAutoScheme(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_auto_scheme(self):
+    def test_avg_bits(self):
         model_name = "facebook/opt-125m"
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, format="fake")
@@ -32,7 +32,7 @@ class TestAutoScheme(unittest.TestCase):
         print(avg_bits)
         assert 2.9 < avg_bits <= 3.0
 
-    def test_auto_scheme(self):
+    def test_auto_scheme_export(self):
         model_name = "facebook/opt-125m"
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
