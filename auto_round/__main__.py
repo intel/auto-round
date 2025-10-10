@@ -389,11 +389,6 @@ def tune(args):
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
-    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
-        import shutil
-
-        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
-
     model.eval()
     clear_memory()
 
