@@ -10,7 +10,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.testing_utils import require_autogptq, require_awq, require_greater_than_050, require_ipex
+from auto_round.testing_utils import (
+    require_autogptq,
+    require_awq,
+    require_greater_than_050,
+    require_ipex,
+    require_package_version_ut,
+)
 
 
 class LLMDataLoader:
@@ -73,6 +79,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_greater_than_050
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_asym(self):
         for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -131,6 +138,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.32)
 
     @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_awq_backend(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -235,6 +243,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_awq
     @require_ipex
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_awq_sym_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -321,3 +330,4 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

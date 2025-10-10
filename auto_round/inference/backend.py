@@ -396,7 +396,7 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
-    requirements=["autoawq"],
+    requirements=["autoawq", "transformers<4.57.0"],
 )
 
 BackendInfos["qbits"] = BackendInfo(
@@ -1025,3 +1025,4 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         log(joined_cmds)
         if logger_level == "error":
             exit(-1)
+

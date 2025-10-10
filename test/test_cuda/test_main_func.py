@@ -9,10 +9,11 @@ import torch
 import transformers
 from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils.versions import require_version
 
 from auto_round import AutoRound, AutoRoundAdam
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.testing_utils import require_awq, require_gptqmodel, require_optimum
+from auto_round.testing_utils import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
 
 
 def get_accuracy(data):
@@ -38,7 +39,6 @@ class TestMainFunc(unittest.TestCase):
 
     @require_gptqmodel
     @require_optimum
-    @require_awq
     def test_backend(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
@@ -64,6 +64,16 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_optimum
+    @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
+    def test_backend_awq(self):
+        model_name = "/models/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
+        autoround.quantize()
+
         ##test auto_awq format
         autoround.save_quantized(self.save_dir, format="auto_awq", inplace=False)
         model_args = f"pretrained={self.save_dir}"
@@ -73,9 +83,9 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
+
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     @require_gptqmodel
-    @require_awq
     def test_fp_layers(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
@@ -98,6 +108,23 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
+
+    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
+    def test_fp_layers_awq(self):
+        model_name = "/models/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        from auto_round.utils import get_fp_layer_names
+
+        layer_names = get_fp_layer_names(model, "model.decoder.layers.0,model.decoder.layers.1")
+        layer_configs = {}
+        for name in layer_names:
+            layer_configs[name] = {"bits": 16}
+        autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
+        autoround.quantize()
+
         ##test auto_awq format
         autoround.save_quantized(self.save_dir, format="auto_awq", inplace=False)
         model_args = f"pretrained={self.save_dir}"
@@ -106,6 +133,7 @@ class TestMainFunc(unittest.TestCase):
         accuracy = get_accuracy(res)
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
+
 
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     def test_undivided_group_size_tuning(self):
@@ -157,3 +185,4 @@ class TestMainFunc(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
