@@ -28,7 +28,7 @@ pool: ICX-16C
 variables:
   IMAGE_NAME: "auto-round"
   IMAGE_TAG: "py310"
-  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir/coverage_PR
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
