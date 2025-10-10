@@ -83,7 +83,6 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     @require_gptqmodel
     def test_fp_layers(self):
@@ -107,7 +106,6 @@ class TestMainFunc(unittest.TestCase):
         accuracy = get_accuracy(res)
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
-
 
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     @require_awq
@@ -133,7 +131,6 @@ class TestMainFunc(unittest.TestCase):
         accuracy = get_accuracy(res)
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
-
 
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     def test_undivided_group_size_tuning(self):
@@ -185,4 +182,3 @@ class TestMainFunc(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
