@@ -74,27 +74,29 @@ class EvalArgumentParser(argparse.ArgumentParser):
             choices=["hf", "vllm"],
             help="Use hf backend for evaluation by default.",
         )
+
         # vllm related arguments
-        self.add_argument("--revision", default=None, type=str, help="model revision for vllm")
-        self.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
-        self.add_argument(
+        vllm_args = self.add_argument_group("vllm backend arguments")
+        vllm_args.add_argument("--revision", default=None, type=str, help="model revision for vllm")
+        vllm_args.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
+        vllm_args.add_argument(
             "--tokenizer_mode", default="auto", type=str, help="tokenizer mode for vllm (e.g. auto/fast/slow)"
         )
-        self.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
-        self.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
-        self.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
-        self.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
-        self.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
-        self.add_argument("--quantization", default=None, type=str, help="quantization setting for vllm")
-        self.add_argument("--max_gen_toks", default=256, type=int, help="max generation tokens for vllm")
-        self.add_argument("--swap_space", default=4, type=float, help="swap space (GB) for vllm")
-        self.add_argument("--max_batch_size", default=None, type=int, help="max batch size for vllm")
-        self.add_argument("--max_length", default=None, type=int, help="max generation length for vllm")
-        self.add_argument("--max_model_len", default=None, type=int, help="maximum model sequence length for vllm")
-        self.add_argument(
+        vllm_args.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
+        vllm_args.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
+        vllm_args.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
+        vllm_args.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
+        vllm_args.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
+        vllm_args.add_argument("--quantization", default=None, type=str, help="quantization setting for vllm")
+        vllm_args.add_argument("--max_gen_toks", default=256, type=int, help="max generation tokens for vllm")
+        vllm_args.add_argument("--swap_space", default=4, type=float, help="swap space (GB) for vllm")
+        vllm_args.add_argument("--max_batch_size", default=None, type=int, help="max batch size for vllm")
+        vllm_args.add_argument("--max_length", default=None, type=int, help="max generation length for vllm")
+        vllm_args.add_argument("--max_model_len", default=None, type=int, help="maximum model sequence length for vllm")
+        vllm_args.add_argument(
             "--gpu_memory_utilization", default=0.9, type=float, help="target GPU memory utilization for vllm"
         )
-        self.add_argument("--lora_local_path", default=None, type=str, help="local LoRA path for vllm")
+        vllm_args.add_argument("--lora_local_path", default=None, type=str, help="local LoRA path for vllm")
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
