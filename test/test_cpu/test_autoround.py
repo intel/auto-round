@@ -51,9 +51,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_layer_config(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        layer_config = {
-            "self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}
-        }
+        layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}
         autoround = AutoRound(
             model_name,
             self.tokenizer,
