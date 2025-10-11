@@ -1,4 +1,4 @@
-accelerate
+accelerate<=1.5.1
 datasets
 py-cpuinfo
 sentencepiece
