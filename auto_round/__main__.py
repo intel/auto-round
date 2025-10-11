@@ -110,7 +110,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument(
             "--scale_dtype",
-            default="fp16",
+            default=None,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="scale data type to use for quantization",
         )
@@ -512,6 +512,14 @@ def tune(args):
     extra_config.mllm_config = mllm_config
     extra_config.diffusion_config = diffusion_config
 
+    layer_config = {}
+    # from auto_round.auto_schemes.haha import get_mixed_config_layer_config
+    # layer_config = {}
+    # best_path = get_mixed_config_layer_config(model_name, target_bits=3)
+    # for item in best_path:
+    #     layer_config[item[0]] = {}
+    #     layer_config[item[0]]["bits"] = item[1]
+
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         scheme=scheme,
@@ -528,6 +536,7 @@ def tune(args):
         not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
+        layer_config=layer_config,
     )
 
     model_name = args.model.rstrip("/")
