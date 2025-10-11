@@ -49,6 +49,22 @@ class TestAutoRound(unittest.TestCase):
         if module.bits != 8:
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
+    def test_layer_config(self):
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}
+        autoround = AutoRound(
+            model_name,
+            self.tokenizer,
+            scheme="NVFP4",
+            iters=0,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config,
+            amp=False,
+        )
+        autoround.quantize_and_save(self.save_folder, inplace=False, format="fake")
+        shutil.rmtree(self.save_folder)
+
     def test_remove_whole_block(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         layer_config = {
