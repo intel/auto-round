@@ -26,7 +26,6 @@ from auto_round.compressors import (
     MLLMCompressor,
 )
 from auto_round.logger import deprecated, logger
-
 from auto_round.schemes import AutoScheme, QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
 

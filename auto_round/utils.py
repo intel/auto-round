@@ -3006,6 +3006,8 @@ def set_layer_config(
 
     dispatch_layer_config(layer_config)
     return layer_config, has_qlayer_outside_block
+
+
 def check_diffusers_installed():  # pragma: no cover
     try:
         import diffusers  # noqa: F401
