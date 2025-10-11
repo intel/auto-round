@@ -265,7 +265,7 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
 
 @dataclass
 class AutoScheme:
-    options: Union[list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str]]]
+    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str]]]
     avg_bits: float
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
@@ -273,3 +273,6 @@ class AutoScheme:
     nsamples = None
     seqlen = None
     dataset: Optional[str] = None  # Import Notice no comma for each item
+    def __post_init__(self):
+        if isinstance(self.options,str):
+            self.options = self.options.split(",")

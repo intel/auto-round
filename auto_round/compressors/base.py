@@ -335,12 +335,18 @@ class BaseCompressor(object):
                 is_mllm=self.mllm,
             )
             quant_layer_names = layer_config.keys()
-            fixed_layer_scheme = {k: v for k, v in layer_config.items() if v.get("fixed_by_user", False)}
+            scheme_keys = {f.name for f in fields(QuantizationScheme)}
+            fixed_layer_scheme_new = {
+                k: {key: v[key] for key in scheme_keys & v.keys()}
+                for k, v in layer_config.items()
+                if v.get("fixed_by_user", False)
+            }
+
             # mainly using quant_layers and fixed by users
             from auto_round.auto_schemes.gen_auto_scheme import GenScheme
 
             gen_scheme = GenScheme(
-                scheme, self.model, quant_layer_names, fixed_layer_scheme, dataset, tokenizer=self.tokenizer
+                scheme, self.model, quant_layer_names, fixed_layer_scheme_new, dataset, tokenizer=self.tokenizer
             )
             self.layer_config = gen_scheme.get_layer_config()
 
