@@ -18,7 +18,7 @@ import re
 import sys
 
 from auto_round.compressors import BaseCompressor
-from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task, eval_with_vllm
+from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
