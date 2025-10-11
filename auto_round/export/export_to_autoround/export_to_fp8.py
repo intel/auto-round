@@ -109,11 +109,9 @@ def pack_layer(layer_name, model, data_type, device=None):
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        q_weight = (
-            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp.to(packing_device)
-            if isinstance(zp, torch.Tensor)
-            else zp
-        )
+        if isinstance(zp, torch.Tensor):
+            zp = zp.to(packing_device)
+        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
