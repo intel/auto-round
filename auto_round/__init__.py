@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from auto_round.autoround import AutoRound
-
-from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam
+# support for old api
+from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam, AutoRoundDiffusion
 from auto_round.schemes import QuantizationScheme, AutoScheme
 from auto_round.utils import LazyImport
 

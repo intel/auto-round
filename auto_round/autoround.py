@@ -20,13 +20,15 @@ import torch
 from auto_round.compressors import (
     AdamCompressor,
     BaseCompressor,
+    DiffusionCompressor,
     ExtraConfig,
     LLMCompressor,
     MLLMCompressor,
 )
 from auto_round.logger import deprecated, logger
+
 from auto_round.schemes import AutoScheme, QuantizationScheme
-from auto_round.utils import is_mllm_model
+from auto_round.utils import is_diffusion_model, is_mllm_model
 
 
 class AutoRound:
@@ -77,6 +79,7 @@ class AutoRound:
         seed: int = 42,
         # for adam
         enable_adam: bool = False,
+        # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
         **kwargs,
     ) -> BaseCompressor:
@@ -144,9 +147,17 @@ class AutoRound:
         if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
+            if extra_config:
+                extra_config.diffusion_config = None
+        elif (extra_config and not extra_config.diffusion_config.is_default()) or is_diffusion_model(model):
+            logger.info("using Diffusion mode for diffusion model.")
+            model_cls.append(DiffusionCompressor)
+            if extra_config:
+                extra_config.mllm_config = None
         else:
             if extra_config:
                 extra_config.mllm_config = None
+                extra_config.diffusion_config = None
             model_cls.append(LLMCompressor)
 
         if enable_adam:
@@ -528,6 +539,86 @@ class AutoRoundMLLM(MLLMCompressor):
             layer_config=layer_config,
             dataset=dataset,
             quant_nontext_module=quant_nontext_module,
+            iters=iters,
+            seqlen=seqlen,
+            nsamples=nsamples,
+            batch_size=batch_size,
+            gradient_accumulate_steps=gradient_accumulate_steps,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            **kwargs,
+        )
+
+
+@deprecated("AutoRound")
+class AutoRoundDiffusion(DiffusionCompressor):
+    """Class for automatic rounding-based quantization with Diffusion models.
+
+    Args:
+        model: The PyTorch model to be quantized.
+        tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+        guidance_scale (float): Control how much the image generation process follows the text prompt.
+                                The more it is, the more closely it follows the prompt (default is 7.5).
+        num_inference_steps (int): The reference number of denoising steps (default is 50).
+        generator_seed (int): A sees that controls the initial noise from which an image is generated (default is None).
+        scheme: (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations.
+        layer_config (dict): Configuration for weight quantization (default is None).
+        dataset: The path or name of the calib dataset.
+        iters (int): Number of iterations (default is 200).
+        seqlen (int): Length of the sequence.
+        nsamples (int): Number of samples (default is 128).
+        batch_size (int): Batch size for training (default is 8).
+        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
+        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
+        device_map (str | dict | int | torch.device, optional): Device placement map. Defaults to 0.
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
+        **kwargs: Additional keyword arguments.
+    """
+
+    bits: int | None
+    group_size: int | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
+
+    def __init__(
+        self,
+        model: Union[object, str],
+        tokenizer=None,
+        guidance_scale: float = 7.5,
+        num_inference_steps: int = 50,
+        generator_seed: int = None,
+        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "coco2014",
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        batch_size: int = 8,
+        gradient_accumulate_steps: int = 1,
+        low_gpu_mem_usage: bool = False,
+        device_map: Union[str, torch.device, int, dict] = 0,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
+        **kwargs,
+    ):
+        super().__init__(
+            model=model,
+            tokenizer=None,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            generator_seed=generator_seed,
+            scheme=scheme,
+            layer_config=layer_config,
+            dataset=dataset,
             iters=iters,
             seqlen=seqlen,
             nsamples=nsamples,
