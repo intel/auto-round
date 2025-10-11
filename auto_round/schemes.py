@@ -273,6 +273,7 @@ class AutoScheme:
     nsamples = None
     seqlen = None
     dataset: Optional[str] = None  # Import Notice no comma for each item
+
     def __post_init__(self):
-        if isinstance(self.options,str):
+        if isinstance(self.options, str):
             self.options = self.options.split(",")

@@ -55,8 +55,8 @@ class GenScheme:
         target = self.auto_scheme.avg_bits
 
         logger.info("Average bits range: [%.3f, %.3f], target = %.3f", min_avg_bit, max_avg_bit, target)
-        if abs(target-min_avg_bit)<1e-3 or abs(target-max_avg_bit)<1e-3:
-            if target <=min_avg_bit:
+        if abs(target - min_avg_bit) < 1e-3 or abs(target - max_avg_bit) < 1e-3:
+            if target <= min_avg_bit:
                 target = min_avg_bit
             else:
                 target = max_avg_bit
