@@ -19,7 +19,6 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 
 
 @register_dtype("int_sym")
-@torch.compile
 def quant_tensor_sym(
     tensor,
     bits=4,
