@@ -109,10 +109,8 @@ def pack_layer(layer_name, model, data_type, device=None):
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        if not isinstance(zp, torch.Tensor):
-            zp = torch.tensor(zp, dtype=weight.dtype)
-
-        zp = zp.to(packing_device)
+        if isinstance(zp, torch.Tensor):
+            zp = zp.to(packing_device)
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
