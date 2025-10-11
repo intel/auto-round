@@ -63,7 +63,7 @@ class TestAutoRound(unittest.TestCase):
             layer_config=layer_config,
             amp=False,
         )
-        autoround.quantize_and_save(self.save_folder)
+        autoround.quantize_and_save(self.save_folder, inplace=False)
 
     def test_remove_whole_block(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
