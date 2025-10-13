@@ -234,7 +234,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="the template for building training dataset. It can be a custom one.",
         )
-        
+
         ## ======================= diffusion model eval =======================
         diffusion_args = self.add_argument_group("diffusion model arguments")
         diffusion_args.add_argument("--prompt_file", default=None, type=str, help="the prompt file to load prmpt.")
