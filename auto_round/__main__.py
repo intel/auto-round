@@ -18,7 +18,7 @@ import re
 import sys
 
 from auto_round.compressors import BaseCompressor
-from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task, eval_with_vllm
+from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
@@ -161,6 +161,25 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
         )
 
+        ## ===================== diffusion model ==================
+        self.add_argument(
+            "--guidance_scale",
+            default=7.5,
+            type=float,
+        )
+
+        self.add_argument(
+            "--num_inference_steps",
+            default=50,
+            type=int,
+        )
+
+        self.add_argument(
+            "--generator_seed",
+            default=None,
+            type=int,
+        )
+
         ## ======================= eval =======================
         eval_args = self.add_argument_group("eval arguments")
         eval_args.add_argument(
@@ -215,6 +234,86 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="the template for building training dataset. It can be a custom one.",
         )
+        
+        ## ======================= diffusion model eval =======================
+        diffusion_args = self.add_argument_group("diffusion model arguments")
+        diffusion_args.add_argument("--prompt_file", default=None, type=str, help="the prompt file to load prmpt.")
+        diffusion_args.add_argument("--prompt", default=None, type=str, help="the prompt for test.")
+        diffusion_args.add_argument(
+            "--metrics",
+            "--metric",
+            default="clip",
+            help="support clip, clip-iqa, imagereward",
+        )
+        diffusion_args.add_argument(
+            "--image_save_dir", default="./tmp_image_save", type=str, help="path to save generated images"
+        )
+
+
+def setup_parser():
+    parser = BasicArgumentParser()
+
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
+
+    parser.add_argument("--iters", "--iter", default=200, type=int, help="iteration to tune each block")
+
+    parser.add_argument(
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
+    )
+
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
+
+    parser.add_argument(
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
+
+    args = parser.parse_args()
+    return args
+
+
+def setup_best_parser():
+    parser = BasicArgumentParser()
+
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
+
+    parser.add_argument("--iters", "--iter", default=1000, type=int, help="iterations to tune each block")
+
+    parser.add_argument(
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
+    )
+
+    parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
+
+    parser.add_argument(
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
+
+    args = parser.parse_args()
+    args.low_gpu_mem_usage = True
+
+    return args
+
+
+def setup_light_parser():
+    parser = BasicArgumentParser()
+
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
+
+    parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
+
+    parser.add_argument(
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
+    )
+
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
+
+    parser.add_argument(
+        "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
+
+    args = parser.parse_args()
+
+    return args
 
 
 def setup_parser(recipe="default"):
@@ -300,6 +399,7 @@ def tune(args):
         )
 
     from auto_round.compressors import (
+        DiffusionExtraConfig,
         ExtraConfig,
         MLLMExtraConfig,
         SchemeExtraConfig,
@@ -339,9 +439,15 @@ def tune(args):
     mllm_config = MLLMExtraConfig(
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
     )
+    diffusion_config = DiffusionExtraConfig(
+        guidance_scale=args.guidance_scale,
+        num_inference_steps=args.num_inference_steps,
+        generator_seed=args.generator_seed,
+    )
     extra_config.tuning_config = tuning_config
     extra_config.scheme_config = scheme_config
     extra_config.mllm_config = mllm_config
+    extra_config.diffusion_config = diffusion_config
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -392,6 +498,45 @@ def tune(args):
     model.eval()
     clear_memory()
 
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+
+    # diffusion model has different evaluation path
+    if getattr(autoround, "diffusion", False):
+        pipe = autoround.pipe
+        pipe.to(model.dtype)
+        pipe.transformer = model
+        device_str = detect_device(device_str)
+        pipe = pipe.to(device_str)
+        if pipe.dtype != eval_model_dtype and eval_model_dtype != "auto":
+            pipe.to(getattr(torch, eval_model_dtype))
+
+        gen_kwargs = {
+            "guidance_scale": args.guidance_scale,
+            "output_type": "pil",
+            "num_inference_steps": args.num_inference_steps,
+            "generator": (
+                None
+                if args.generator_seed is None
+                else torch.Generator(device=pipe.device).manual_seed(args.generator_seed)
+            ),
+        }
+        if not os.path.exists(args.image_save_dir):
+            os.makedirs(args.image_save_dir)
+
+        if args.prompt is not None:
+            outputs = pipe(prompt=args.prompt, **gen_kwargs)
+            outputs.images[0].save(os.path.join(args.image_save_dir, "img.png"))
+            logger.info(
+                f"Image generated with prompt {args.prompt} is saved as {os.path.join(args.image_save_dir, 'img.png')}"
+            )
+
+        if args.prompt_file is not None:
+            from auto_round.compressors.diffusion import diffusion_eval
+
+            metrics = args.metrics.split(",")
+            diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs)
+        return
+
     lm_eval_version = get_library_version("lm-eval")
 
     eval_folder = folders[-1]
@@ -412,8 +557,6 @@ def tune(args):
             break
 
     import time
-
-    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
 
     if (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model:
         if eval_gguf_model:

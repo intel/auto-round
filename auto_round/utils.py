@@ -406,13 +406,21 @@ def get_block_names(model, quant_vision=False):
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
+    def _search_block(name, module):
+        if hasattr(type(module), "__name__") and "ModuleList" in type(module).__name__:
+            return [(name, module)]
+        target_modules = []
+        for n, m in module.named_children():
+            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                target_modules.append((".".join(filter(None, (name, n))), m))
+            else:
+                target_modules.extend(_search_block(".".join(filter(None, (name, n))), m))
+        return target_modules
+
     def _get_llm_block_names(model):
         block_names = []
-        target_modules = []
-        for n, m in model.named_modules():
-            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                target_modules.append((n, m))
-                break  ## only find the first modulelist, may be not robust
+        target_modules = _search_block("", model)
+
         for i, target_m in enumerate(target_modules):
             block_names.append([])
             for n, m in target_m[1].named_children():
@@ -459,7 +467,15 @@ def collect_best_params(block):
     return params
 
 
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+def block_forward(
+    block: torch.nn.Module,
+    input_ids: torch.Tensor,
+    input_others: dict,
+    amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    device: torch.device = torch.device("cpu"),
+    output_return_id: int = 0,
+) -> Union[torch.Tensor, dict]:
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -469,6 +485,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     amp: A boolean indicating whether to use automatic mixed precision.
     amp_dtype: The data type for automatic mixed precision.
     device: The target device.
+    output_return_id: if the output has more than one tenor, return the specified idx tensor.
 
     Returns:
     output: The output of the forward pass.
@@ -485,8 +502,8 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
             output = block(input_ids, *input_tuple, **input_others)
     else:
         output = block(input_ids, *input_tuple, **input_others)
-    if isinstance(output, list) or isinstance(output, tuple):
-        output = output[0]
+    if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
+        output = output[output_return_id]
     return output
 
 
@@ -1620,6 +1637,30 @@ def mllm_load_model(
     return model, processor, tokenizer, image_processor
 
 
+def diffusion_load_model(
+    pretrained_model_name_or_path: str,
+    device: Union[str, torch.device] = "cpu",
+    torch_dtype: Union[str, torch.dtype] = "auto",
+    use_auto_mapping: bool = False,
+    trust_remote_code: bool = True,
+    model_dtype: str = None,
+    **kwargs,
+):
+    device_str, use_auto_mapping = get_device_and_parallelism(device)
+    torch_dtype = "auto"
+    if device_str is not None and "hpu" in device_str:
+        torch_dtype = torch.bfloat16
+
+    pipelines = LazyImport("diffusers.pipelines")
+
+    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+        pretrained_model_name_or_path, torch_dtype=torch_dtype
+    )
+    pipe = _to_model_dtype(pipe, model_dtype)
+    model = pipe.transformer
+    return pipe, model.to(device)
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -2749,11 +2790,12 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
             return True
         if os.path.exists(os.path.join(model_path, "processor_config.json")):
             return True
-        with open(os.path.join(model_path, "config.json")) as f:
-            config = json.load(f)
-        for key in config.keys():
-            if any([k in key for k in MM_KEYS]):
-                return True
+        if os.path.exists(os.path.join(model_path, "config.json")):
+            with open(os.path.join(model_path, "config.json")) as f:
+                config = json.load(f)
+            for key in config.keys():
+                if any([k in key for k in MM_KEYS]):
+                    return True
 
     if isinstance(model_or_path, torch.nn.Module):
         for name, module in model_or_path.named_modules():
@@ -2761,3 +2803,38 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
                 return True
 
     return False
+
+
+def check_diffusers_installed():  # pragma: no cover
+    try:
+        import diffusers  # noqa: F401
+
+        return True
+    except ImportError:
+        logger.error("Please install diffusers via 'pip install diffusers'" " to run diffusion model")
+        exit(-1)
+
+
+def is_diffusion_model(model_or_path: Union[str, object]):
+    if isinstance(model_or_path, str):
+        index_file = None
+        if not os.path.isdir(model_or_path):
+            try:
+                from huggingface_hub import hf_hub_download
+
+                index_file = hf_hub_download(model_or_path, "model_index.json")
+                check_diffusers_installed()
+            except Exception as e:
+                print(e)
+                index_file = None
+
+        elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
+            check_diffusers_installed()
+            index_file = os.path.join(model_or_path, "model_index.json")
+        return index_file is not None
+    elif not isinstance(model_or_path, torch.nn.Module):
+        check_diffusers_installed()
+        pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
+        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+    else:
+        return False

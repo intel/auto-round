@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import traceback
+from collections import defaultdict
 from dataclasses import asdict, fields
 from enum import Enum
 from typing import Any, Callable, Union
@@ -229,6 +230,7 @@ class BaseCompressor(object):
         device = kwargs.pop("device", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         # Scale factor for RAM usage per parameter.
         self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
         fp_layers = kwargs.pop("fp_layers", None)
@@ -257,7 +259,7 @@ class BaseCompressor(object):
                 device="cpu",
                 low_cpu_mem_mode=low_cpu_mem_usage,  # always load cpu first
             )
-        elif tokenizer is None and iters > 0:
+        elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupported_meta_device(model):
@@ -1676,6 +1678,19 @@ class BaseCompressor(object):
                 cnt = 1
             cnt += 1
 
+    def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
+        keys = inputs.keys()
+        input_id_str = [key for key in keys if key.startswith("hidden_state")]
+        if len(input_id_str) != 1:
+            raise RuntimeError(
+                "hidden_states arg mismatch error,"
+                "please raise an issue in https://github.com/intel/auto-round/issues"
+            )
+        inputs["input_ids"] = inputs.pop(input_id_str[0], None)
+        if q_inputs is not None:
+            q_inputs = q_inputs.pop(input_id_str[0], None)
+        return inputs, q_inputs
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
@@ -1763,7 +1778,7 @@ class BaseCompressor(object):
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
-            pbar = None  # move the alg warning outside pbar
+            pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -1772,16 +1787,8 @@ class BaseCompressor(object):
             if all_q_inputs is not None:
                 q_inputs = all_q_inputs[block_names[0]]
                 all_q_inputs.pop(block_names[0])
-            keys = inputs.keys()
-            input_id_str = [key for key in keys if key.startswith("hidden_state")]
-            if len(input_id_str) != 1:
-                raise RuntimeError(
-                    "hidden_states arg mismatch error,"
-                    "please raise an issue in https://github.com/intel/auto-round/issues"
-                )
-            inputs["input_ids"] = inputs.pop(input_id_str[0], None)
-            if q_inputs is not None:
-                q_inputs["input_ids"] = q_inputs.pop(input_id_str[0], None)
+
+            inputs, q_inputs = self._update_inputs(inputs, q_inputs)
 
             clear_memory(self.inputs)
 
@@ -1795,7 +1802,7 @@ class BaseCompressor(object):
                 self.model,
                 inputs,
                 block_names,
-                q_input=q_inputs["input_ids"] if q_inputs is not None else None,
+                q_input=q_inputs if q_inputs is not None else None,
                 nblocks=self.nblocks,
                 device=self.device,
                 pbar=pbar,
@@ -1805,6 +1812,8 @@ class BaseCompressor(object):
                     f"Expected exactly one packing format when 'is_packing_immediate' is True, "
                     f"but got {len(self.formats)} formats."
                 )
+        pbar.set_description("Quantizing done")
+        pbar.close()
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -2563,10 +2572,9 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
-                        current_input = [q_inputs[i] for i in whole_indices]
+                        num_elm = self._get_current_num_elm(q_inputs, whole_indices)
                     else:
-                        current_input = [inputs[i] for i in whole_indices]
-                    num_elm = sum(id.numel() for id in current_input)
+                        num_elm = self._get_current_num_elm(inputs, whole_indices)
             for tmp_step in range(gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
@@ -2656,7 +2664,7 @@ class BaseCompressor(object):
                 config = self.layer_config[n]
                 act_dynamic = config.get("act_dynamic", True)
                 act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_data_type", 16)
+                act_bits = config.get("act_bits", 16)
                 if (
                     config["bits"] <= 8
                     and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
@@ -2666,6 +2674,38 @@ class BaseCompressor(object):
                     hook_handles.append(hook)
                     continue
         return hook_handles
+
+    def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
+        current_output = [output[x] for x in indices]
+        current_output = torch.cat(current_output, dim=self.batch_dim)
+        return current_output
+
+    def _get_current_q_output(
+        self,
+        block: torch.nn.Module,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        indices: list[int],
+        device: str,
+    ) -> torch.Tensor:
+        current_input_ids, current_input_others = self._sampling_inputs(
+            input_ids,
+            input_others,
+            indices,
+            seqlen=self.seqlen,
+            batch_dim=self.batch_dim,
+            share_cache_keys=self.shared_cache_keys,
+        )
+        output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
+        return output_q
+
+    def _get_current_num_elm(
+        self,
+        input_ids: list[torch.Tensor],
+        indices: list[int],
+    ) -> int:
+        current_input_ids = [input_ids[i] for i in indices]
+        return sum(id.numel() for id in current_input_ids)
 
     def _quantize_block(
         self,
@@ -2807,27 +2847,16 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 # We assume the block input and output shape is same
                 if self.gradient_accumulate_steps != 1:
-                    current_input_ids = [input_ids[i] for i in whole_indices]
-                    num_elm = sum(id.numel() for id in current_input_ids)
+                    num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-                current_input_ids, current_input_others = self._sampling_inputs(
-                    input_ids,
-                    input_others,
-                    indices,
-                    seqlen=self.seqlen,
-                    batch_dim=self.batch_dim,
-                    share_cache_keys=self.shared_cache_keys,
-                )
 
-                current_output = [output[x] for x in indices]
-                current_output = torch.cat(current_output, dim=self.batch_dim)
+                current_output = self._get_current_output(output, indices)
+
                 current_output = to_device(current_output, device)
 
-                output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
-                )
+                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
@@ -2906,6 +2935,12 @@ class BaseCompressor(object):
             clear_memory(input_ids)
             return None, output
 
+    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
+        input_ids = inputs["input_ids"]
+        inputs.pop("input_ids", None)
+        input_others = inputs
+        return input_ids, input_others
+
     def _quantize_blocks(
         self,
         model: torch.nn.Module,
@@ -2931,16 +2966,14 @@ class BaseCompressor(object):
         clear_memory()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
-        input_ids = inputs["input_ids"]
-        inputs.pop("input_ids", None)
-        input_others = inputs
+
+        input_ids, input_others = self._split_inputs(inputs)
         clear_memory()
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        for i in range(len(input_ids)):
-            input_ids[i] = input_ids[i].to(tmp_dtype)
+        input_ids = to_dtype(input_ids, tmp_dtype)
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
@@ -3038,9 +3071,9 @@ class BaseCompressor(object):
                         PACKING_LAYER_WITH_FORMAT[target_backend](
                             tmp_m.tmp_name, self.model, self.formats[0], device=self.device
                         )
-        pbar.set_description("Quantizing done")
-        pbar.update(1)
-        pbar.close()
+        if pbar is not None:
+            pbar.update(1)
+
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
@@ -3280,7 +3313,7 @@ class BaseCompressor(object):
     @torch.no_grad()
     def _sampling_inputs(
         cls,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
         indices: list[int],
         seqlen: int,
@@ -3299,9 +3332,14 @@ class BaseCompressor(object):
         current_input_ids: The sampled input IDs.
         current_input_others: The sampled other input data.
         """
-        current_input_ids = [input_ids[i] for i in indices]
-
-        current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+        if isinstance(input_ids, list):
+            current_input_ids = [input_ids[i] for i in indices]
+            current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+        elif isinstance(input_ids, dict):
+            current_input_ids = defaultdict(list)
+            for k in input_ids.keys():
+                current_input_ids[k].extend([input_ids[k][i] for i in indices])
+                current_input_ids[k] = torch.cat(current_input_ids[k], dim=batch_dim)
 
         current_input_others = {"positional_inputs": input_others["positional_inputs"]}
         for key in input_others.keys():
