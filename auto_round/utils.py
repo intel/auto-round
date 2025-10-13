@@ -30,6 +30,7 @@ from typing import Any, Callable, Tuple, Union
 import cpuinfo
 import torch
 import transformers
+from accelerate.utils import get_balanced_memory
 from packaging import version
 from torch.amp import autocast
 
@@ -3018,7 +3019,7 @@ def check_diffusers_installed():  # pragma: no cover
         exit(-1)
 
 
-def is_diffusion_model(model_or_path: Union[str, object]):
+def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     if isinstance(model_or_path, str):
         index_file = None
         if not os.path.isdir(model_or_path):
@@ -3041,3 +3042,6 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
+
+

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import asdict
-from typing import Iterable
+from typing import Iterable, Union
 
 import torch
 
@@ -32,6 +32,7 @@ class GenScheme:
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
         dataset: str = "pile-10k",  # TODO use auto-round dataset
+        device_map:Union[str,  torch.device, int, dict, None] = None,
         tokenizer=None,
     ):
         self.auto_scheme = auto_scheme
@@ -40,7 +41,7 @@ class GenScheme:
         self.quant_layer_names = quant_layer_names
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
-
+        self.device_map = device_map
         self._check_configs()
 
     def _check_configs(self) -> None:
@@ -71,7 +72,8 @@ class GenScheme:
         method_name = self.auto_scheme.method
         method_func = AUTO_SCHEMES_METHODS[method_name]
         layer_config = method_func(
-            self.auto_scheme, self.model, self.quant_layer_names, self.fixed_layer_scheme, self.dataset, self.tokenizer
+            self.auto_scheme, self.model, self.quant_layer_names, self.fixed_layer_scheme,
+            self.dataset, self.tokenizer,device_map=self.device_map,
         )
         return layer_config
 
