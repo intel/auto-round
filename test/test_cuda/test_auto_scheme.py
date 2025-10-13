@@ -4,6 +4,8 @@ import shutil
 import sys
 import unittest
 
+from auto_round.testing_utils import multi_card
+
 sys.path.insert(0, "../..")
 
 from auto_round import AutoRound, AutoRoundConfig, AutoScheme
@@ -23,7 +25,55 @@ class TestAutoScheme(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_avg_bits(self):
+    # @multi_card
+    # def test_multi_card(self):
+    #     model_name = "/models/Qwen3-8B"
+    #     target_bits = 4.644
+    #     scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4", "W8A16"))
+    #     ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+    #     model, layer_config = ar.quantize()
+    #     # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
+    #     avg_bits, _ = compute_avg_bits_for_model(model)
+    #     print(avg_bits)
+    #     assert target_bits - 0.1 < avg_bits <= target_bits+1e-3
+
+    def test_min_target_bits(self):
+        model_name = "/models/opt-125m"
+        target_bits = 4.644
+        scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+        model, layer_config = ar.quantize()
+        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
+        avg_bits, _ = compute_avg_bits_for_model(model)
+        print(avg_bits)
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
+    def test_max_target_bits(self):
+        model_name = "/models/opt-125m"
+        target_bits = 8.211
+        scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+        model, layer_config = ar.quantize()
+        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
+        avg_bits, _ = compute_avg_bits_for_model(model)
+        print(avg_bits)
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
+    def test_patch_scheme(self):
+        model_name = "/models/opt-125m"
+        target_bits = 5
+        scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, group_size=32)
+        model, layer_config = ar.quantize()
+        for n, m in model.named_modules():
+            if hasattr(m, "group_size"):
+                self.assertEqual(m.group_size, 32)
+        avg_bits, _ = compute_avg_bits_for_model(model)
+        print(avg_bits)
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
+    def test_layer_config(self):
+        target_bits = 3.0
         model_name = "/models/opt-125m"
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))
         user_layer_config = {"model.decoder.layers.10.fc1": {"bits": 8, "group_size": 32, "sym": False}}
@@ -38,21 +88,21 @@ class TestAutoScheme(unittest.TestCase):
         self.assertEqual(layer.group_size, 32)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
-        assert 2.9 < avg_bits <= 3.0
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     def test_lm_head_and_mix_dtype(self):
         model_name = "/models/Qwen3-8B"
-        target_bits = 8.192
+        target_bits = 6
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
-        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, quant_lm_head=True)
         model, layer_config = ar.quantize()
-        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
+        self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
-        assert target_bits - 0.1 < avg_bits <= target_bits
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     def test_auto_scheme_export(self):
-        model_name = "facebook/opt-125m"
+        model_name = "/models/opt-125m"
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
         ar.quantize_and_save(self.save_dir)
