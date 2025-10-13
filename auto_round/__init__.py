@@ -14,7 +14,7 @@
 from auto_round.autoround import AutoRound
 
 # support for old api
-from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam
+from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam, AutoRoundDiffusion
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import LazyImport
 
