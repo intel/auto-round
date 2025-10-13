@@ -32,7 +32,7 @@ class GenScheme:
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
         dataset: str = "pile-10k",  # TODO use auto-round dataset
-        device_map:Union[str,  torch.device, int, dict, None] = None,
+        device_map: Union[str, torch.device, int, dict, None] = None,
         tokenizer=None,
     ):
         self.auto_scheme = auto_scheme
@@ -72,8 +72,13 @@ class GenScheme:
         method_name = self.auto_scheme.method
         method_func = AUTO_SCHEMES_METHODS[method_name]
         layer_config = method_func(
-            self.auto_scheme, self.model, self.quant_layer_names, self.fixed_layer_scheme,
-            self.dataset, self.tokenizer,device_map=self.device_map,
+            self.auto_scheme,
+            self.model,
+            self.quant_layer_names,
+            self.fixed_layer_scheme,
+            self.dataset,
+            self.tokenizer,
+            device_map=self.device_map,
         )
         return layer_config
 

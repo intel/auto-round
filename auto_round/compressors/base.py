@@ -346,7 +346,13 @@ class BaseCompressor(object):
             from auto_round.auto_schemes.gen_auto_scheme import GenScheme
 
             gen_scheme = GenScheme(
-                scheme, self.model, quant_layer_names, fixed_layer_scheme_new, dataset, device_map=device_map,tokenizer=self.tokenizer
+                scheme,
+                self.model,
+                quant_layer_names,
+                fixed_layer_scheme_new,
+                dataset,
+                device_map=device_map,
+                tokenizer=self.tokenizer,
             )
             self.layer_config = gen_scheme.get_layer_config()
 
@@ -1581,7 +1587,7 @@ class BaseCompressor(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if (is_nv_fp(self.act_data_type) ) or is_static_wfp8afp8(self):
+                if (is_nv_fp(self.act_data_type)) or is_static_wfp8afp8(self):
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers

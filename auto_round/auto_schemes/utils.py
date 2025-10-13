@@ -15,7 +15,7 @@ from dataclasses import asdict, fields
 from typing import Iterable, Union
 
 import torch
-from accelerate import infer_auto_device_map, dispatch_model
+from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 
 from auto_round.low_cpu_mem import get_module
@@ -24,10 +24,10 @@ from auto_round.utils import check_to_quantized, get_layer_features, is_hpex_ava
 
 
 def apply_quant_scheme(
-        model: torch.nn.Module,
-        quant_layer_names: Iterable[str],
-        fixed_layer_scheme: dict[str, dict],
-        scheme: Union[str, dict],  # TODO add scale_dtype
+    model: torch.nn.Module,
+    quant_layer_names: Iterable[str],
+    fixed_layer_scheme: dict[str, dict],
+    scheme: Union[str, dict],  # TODO add scale_dtype
 ) -> None:
     """Apply a quantization scheme to each quantized layer.
 
@@ -48,7 +48,7 @@ def apply_quant_scheme(
 
 
 def remove_quant_scheme(
-        model: torch.nn.Module,
+    model: torch.nn.Module,
 ) -> None:
     """Remove attributes corresponding to the applied quantization scheme.
 
@@ -63,11 +63,11 @@ def remove_quant_scheme(
 
 
 def compute_avg_bits_for_scheme(
-        model: torch.nn.Module,
-        quant_layer_names: Iterable[str],
-        fixed_layer_scheme: dict[str, dict],
-        scheme: Union[str, dict, None] = None,
-        ignore_scale_zp_bits: bool = False,
+    model: torch.nn.Module,
+    quant_layer_names: Iterable[str],
+    fixed_layer_scheme: dict[str, dict],
+    scheme: Union[str, dict, None] = None,
+    ignore_scale_zp_bits: bool = False,
 ) -> tuple[float, float]:
     """Compute the average and total bit usage for the given quantization scheme.
 
@@ -133,8 +133,8 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
 
 
 def compute_layer_bits(
-        layer: torch.nn.Module,
-        ignore_scale_zp_bits: bool = False,
+    layer: torch.nn.Module,
+    ignore_scale_zp_bits: bool = False,
 ) -> tuple[int, float]:
     """Compute total and average bitwidth for a single quantized layer.
 
@@ -273,8 +273,9 @@ def parse_all_available_device(device_map: Union[str, torch.device, int, dict, N
 
 
 # Important Notice This dispatch does not follow dict device_map, just extract all available devices and use them
-def dispatch_model_by_all_available_devices(model: torch.nn.Module,
-                                            device_map: Union[str, int, dict, None]) -> torch.nn.Module:
+def dispatch_model_by_all_available_devices(
+    model: torch.nn.Module, device_map: Union[str, int, dict, None]
+) -> torch.nn.Module:
     if device_map is None:
         device_map = 0
 
@@ -285,11 +286,7 @@ def dispatch_model_by_all_available_devices(model: torch.nn.Module,
             max_memory=None,
             no_split_module_classes=no_split_modules,
         )
-        device_map = infer_auto_device_map(
-            model,
-            max_memory=max_memory,
-            no_split_module_classes=no_split_modules
-        )
+        device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
         model = dispatch_model(model, device_map=device_map)
         return model
 
@@ -317,10 +314,6 @@ def dispatch_model_by_all_available_devices(model: torch.nn.Module,
             raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
         new_max_memory[device] = max_memory[device]
 
-    device_map = infer_auto_device_map(
-        model,
-        max_memory=max_memory,
-        no_split_module_classes=no_split_modules
-    )
+    device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
     model = dispatch_model(model, device_map=device_map)
     return model

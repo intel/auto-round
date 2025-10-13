@@ -29,19 +29,19 @@ class TestAutoScheme(unittest.TestCase):
     def test_multi_card(self):
         model_name = "/models/Qwen3-8B"
         target_bits = 5.254
-        for device_map in ["auto","0,1","0",None]:
+        for device_map in ["auto", "0,1", "0", None]:
             scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
             ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, device_map=device_map)
             model, layer_config = ar.quantize()
             avg_bits, _ = compute_avg_bits_for_model(model)
             print(avg_bits)
-            assert target_bits - 0.1 < avg_bits <= target_bits+1e-3
+            assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     @multi_card
     def test_dict_device_map(self):
         model_name = "/models/Qwen3-8B"
         target_bits = 8.755
-        device_map = {"up_proj":0,"down_proj":1}
+        device_map = {"up_proj": 0, "down_proj": 1}
 
         # scheme = AutoScheme(avg_bits=target_bits, options=("MXFP8"))
         ar = AutoRound(model=model_name, scheme="W4A16", iters=0, nsamples=1, device_map=device_map)
@@ -51,10 +51,10 @@ class TestAutoScheme(unittest.TestCase):
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     @multi_card
-    def test_dict_device_map(self): # TODO rtn mode has bug
+    def test_dict_device_map(self):  # TODO rtn mode has bug
         model_name = "/models/Qwen3-8B"
         target_bits = 8.755
-        device_map = {"up_proj":0,"down_proj":1}
+        device_map = {"up_proj": 0, "down_proj": 1}
 
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP8"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=1, nsamples=1, device_map=device_map)
