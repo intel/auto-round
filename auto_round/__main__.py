@@ -389,7 +389,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--prompt_file",
             default=None,
             type=str,
-            hhelp="File containing prompts for evaluation, one per line. "
+            help="File containing prompts for evaluation, one per line. "
             "Use this for batch evaluation with multiple prompts.",
         )
         diffusion_args.add_argument(
