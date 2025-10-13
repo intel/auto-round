@@ -19,7 +19,7 @@ import sys
 
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
-from auto_round.schemes import PRESET_SCHEMES
+from auto_round.schemes import PRESET_SCHEMES, AutoScheme
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -47,7 +47,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
             help="quantization scheme",
         )
-
+        self.add_argument("--avg_bits", default=None, type=float, help="for auto scheme, number of avg weight bits")
+        self.add_argument("--options", default=None, type=str,help="for auto scheme, options for auto scheme, e.g. 'W4A16,W8A16'")
+        self.add_argument("--ignore_scale_zp_bits",  action="store_true", help="for auto scheme whether ignore scale zp bits calculation ")
         self.add_argument("--bits", default=None, type=int, help="number of weight bits")
         self.add_argument("--group_size", default=None, type=int, help="group size")
         self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
@@ -519,6 +521,11 @@ def tune(args):
     # for item in best_path:
     #     layer_config[item[0]] = {}
     #     layer_config[item[0]]["bits"] = item[1]
+
+    if args.avg_bits is not None:
+        if args.options is None:
+            raise ValueError("please set --options for auto scheme")
+        scheme = AutoScheme(options=args.options, avg_bits=args.avg_bits,  ignore_scale_zp_bits=args.ignore_scale_zp_bits)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,

@@ -265,15 +265,16 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
 
 @dataclass
 class AutoScheme:
-    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str]]]
     avg_bits: float
+    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str]]]
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
-    ignore_scale_zp_bits = False
-    nsamples = None
-    seqlen = None
+    ignore_scale_zp_bits: bool = False
+    nsamples: Optional[int] = None
+    seqlen: Optional[int] = None
     dataset: Optional[str] = None  # Import Notice no comma for each item
 
     def __post_init__(self):
         if isinstance(self.options, str):
-            self.options = self.options.split(",")
+            options = self.options.upper().replace(" ", "")
+            self.options = options.split(",")
