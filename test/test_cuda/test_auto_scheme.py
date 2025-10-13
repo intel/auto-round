@@ -37,8 +37,6 @@ class TestAutoScheme(unittest.TestCase):
             print(avg_bits)
             assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-
-
     @multi_card
     def test_dict_device_map(self):  # TODO rtn mode has bug
         model_name = "/models/Qwen3-8B"
