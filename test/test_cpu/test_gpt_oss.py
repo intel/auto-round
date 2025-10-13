@@ -14,7 +14,7 @@ def setup_gpt_oss():
     config.num_hidden_layers = 1  # Reduce layers for testing
     model = GptOssForCausalLM(config)
     output_dir = "/tmp/test_quantized_gpt_oss"
-    return model, tokenizer, output_dir
+    return model, tokenizer, output_dir, config
 
 
 def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
@@ -45,25 +45,27 @@ def count_modules_by_type(model, target_module_name_or_class):
 
 
 @pytest.mark.parametrize("scheme", ["MXFP4", "MXFP8"])
-@pytest.mark.parametrize("quantize_model", [0, 4])
-def test_quantization_with_mxfp4(setup_gpt_oss, scheme):
+def test_quantization(setup_gpt_oss, scheme):
     """Test quantization with the scheme."""
-    model, tokenizer, output_dir = setup_gpt_oss
+    model, tokenizer, output_dir, config = setup_gpt_oss
     quantized_model = quantize_model(model, tokenizer, output_dir, scheme)
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
+    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+    from auto_round.modelling.gpt_oss import GPTOssSingleExpert
 
-    # Count specific modules
-    single_expert_cnt = count_modules_by_type(quantized_model, "GPTOssSingleExpert")
-    quant_linear_cnt = count_modules_by_type(quantized_model, "QuantLinear")
+    single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
+    quant_linear_cnt = count_modules_by_type(quantized_model, QuantLinear)
+    assert (
+        single_expert_cnt == config.num_local_experts
+    ), f"Expected {config.num_local_experts} GPTOssSingleExpert modules, found {single_expert_cnt}."
+    assert (
+        quant_linear_cnt == config.num_hidden_layers * 3 * config.num_local_experts
+    ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
 
-    # Assertions
-    assert single_expert_cnt >= 0, "GPTOssSingleExpert count should be non-negative."
-    assert quant_linear_cnt >= 0, "QuantLinear count should be non-negative."
-
-    print(f"[{scheme}] Total GPTOssSingleExpert modules: {single_expert_cnt}")
-    print(f"[{scheme}] Total QuantLinear modules: {quant_linear_cnt}")
+    print(f"[{scheme}] Total {GPTOssSingleExpert.__name__} modules: {single_expert_cnt}")
+    print(f"[{scheme}] Total {QuantLinear.__name__} modules: {quant_linear_cnt}")
     # clean the output directory after test
     import shutil
 
