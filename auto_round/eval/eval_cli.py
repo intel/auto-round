@@ -28,7 +28,12 @@ class EvalArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
+            "--model",
+            "--model_name",
+            "--model_name_or_path",
+            default="facebook/opt-125m",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
         self.add_argument("--mllm", action="store_true", help="whether to eval multi-modal model.")
         self.add_argument(
@@ -49,16 +54,29 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--task",
             default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
             "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
-            help="lm-eval tasks",
+            help="LM-Evaluation-Harness tasks to run. "
+            "Specify specific tasks like 'mmlu,wikitext' for custom evaluation.",
         )
         self.add_argument(
-            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code"
+            "--disable_trust_remote_code",
+            action="store_true",
+            help="Disable trusting remote code when loading models. "
+            "Use for security if you don't trust the model source.",
         )
-        self.add_argument("--seed", default=42, type=int, help="random seed")
-        self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
-        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
+        self.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+            "--eval_bs", "--bs", "--batch_size", default=None, type=int, help="The batch size for evaluation"
+        )
+        self.add_argument(
+            "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "
+        )
+        self.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="Torch data type for model loading during evaluation. "
+            "Options: 'float16', 'bfloat16', 'float32'. "
+            "Should match your hardware capabilities for best performance.",
         )
         self.add_argument(
             "--limit",
@@ -66,14 +84,15 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default=None,
             metavar="N|0<N<1",
             help="Limit the number of examples per task. "
-            "If <1, limit is a percentage of the total number of examples.",
+            "Integer: exact number of examples (e.g., 1000). "
+            "Float between 0-1: fraction of total examples (e.g., 0.1 for 10%).",
         )
         self.add_argument(
             "--eval_backend",
             default="hf",
             type=str,
             choices=["hf", "vllm"],
-            help="Use hf backend for evaluation by default.",
+            help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
         )
 
         # vllm related arguments
