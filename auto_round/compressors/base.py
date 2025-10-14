@@ -1362,7 +1362,7 @@ class BaseCompressor(object):
             m.zp = None
         else:
             try:
-                m = m.to(self.device)
+                m = m.to(m.tuning_device if hasattr(m, "tuning_device") else self.device)
                 m = WrapperLinear(
                     m,
                     enable_minmax_tuning=False,
