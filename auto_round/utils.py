@@ -2997,7 +2997,10 @@ def set_layer_config(
     for emd_name in embedding_layer_names:
         if emd_name in layer_config:
             continue
-        cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["embedding"]]
+        if not tie_word_embeddings:
+            cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["embedding"]]
+        else:
+            cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
         cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
         layer_config[emd_name] = cfg
 
