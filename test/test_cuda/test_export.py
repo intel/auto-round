@@ -404,12 +404,9 @@ class TestAutoRound(unittest.TestCase):
 
     def test_nvfp4_moe_actmax_rtn(self):
         model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         scheme = "nvfp4"
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_name,
             scheme=scheme,
             iters=0,
             seqlen=2,
@@ -419,15 +416,13 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+    
 
     def test_nvfp4_moe_actmax_ar(self):
         model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         scheme = "nvfp4"
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_name,
             scheme=scheme,
             iters=1,
             seqlen=2,
@@ -437,7 +432,6 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
-
 
 if __name__ == "__main__":
     unittest.main()
