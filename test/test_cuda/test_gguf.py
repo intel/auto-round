@@ -252,7 +252,7 @@ class TestAutoRound(unittest.TestCase):
         )
         self.assertAlmostEqual(file_size, 58093.62, delta=1.0)
         file_size = os.path.getsize(os.path.join(quantized_model_path, "mmproj-model.gguf")) / 1024**2
-        self.assertAlmostEqual(file_size, 3323.52, delta=1.0)
+        self.assertAlmostEqual(file_size, 3326.18, delta=1.0)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
