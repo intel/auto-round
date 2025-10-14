@@ -169,7 +169,7 @@ def compute_layer_bits(
             if weight_bits >= 16:
                 return 32 * n_param, 32
 
-        return weight_bits * n_param, weight_bits if weight_bits<16 else 16
+        return weight_bits * n_param, min(16, weight_bits)
 
     in_features, out_features = get_layer_features(layer)
 
@@ -197,6 +197,7 @@ def compute_layer_bits(
     total_bits = weight_bits * n_param + aux_total_bits
     avg_bits = total_bits / n_param
     return total_bits, avg_bits
+
 
 def parse_all_available_device(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
     """

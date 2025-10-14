@@ -44,7 +44,6 @@ class TestAutoScheme(unittest.TestCase):
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-
     def test_shared_layers(self):
         model_name = "/models/opt-125m"
         from transformers import AutoModelForCausalLM, AutoTokenizer
