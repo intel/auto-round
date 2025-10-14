@@ -242,6 +242,19 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+        # test rtn
+        autoround = AutoRound(
+            model_name,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=0,
+            seqlen=2,
+            device_map=device_map,
+        )
+        autoround.quantize()
+
     @multi_card
     @require_greater_than_050
     def test_device_map_for_triton(self):
