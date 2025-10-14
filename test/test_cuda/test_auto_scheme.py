@@ -25,6 +25,26 @@ class TestAutoScheme(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_gguf_export(self):
+        model_name = "/models/Qwen3-0.6B"
+        target_bits = 3
+        scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0)
+        ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
+        shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_gguf(self):
+        model_name = "/models/Qwen3-8B"
+        target_bits = 3
+        scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, disable_opt_rtn=True)
+        model, layer_config = ar.quantize()
+        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
+        avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
+        print(avg_bits)
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
+
     def test_shared_layers(self):
         model_name = "/models/opt-125m"
         from transformers import AutoModelForCausalLM, AutoTokenizer

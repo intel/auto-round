@@ -98,6 +98,8 @@ def compute_avg_bits_for_scheme(
 
     for name in quant_layer_names:
         module = get_module(model, name)
+        # if isinstance(module,torch.nn.Embedding):
+        #     continue
         if not hasattr(module, "weight"):
             continue
         total_params += module.weight.numel()
@@ -130,6 +132,8 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
             continue
         if not hasattr(module, "weight"):
             continue
+        # if isinstance(module,torch.nn.Embedding): # Tricky setting for Embedding
+        #     continue
         total_params += module.weight.numel()
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
@@ -161,9 +165,11 @@ def compute_layer_bits(
 
     # Unquantized layer or ignoring scale/zp overhead
     if weight_bits >= 16 or ignore_scale_zp_bits:
-        if super_weight_bits is not None:  # reset gguf 16 bits to 32 bits, TODO gguf q4_0, q4_1 may have bug
-            return 32 * n_param, 32
-        return weight_bits * n_param, 16.0
+        if super_weight_bits is not None:  # reset gguf 16 bits to 32 bits, TODO gguf q4_0, q4_1 have bug (wenhua)
+            if weight_bits >= 16:
+                return 32 * n_param, 32
+
+        return weight_bits * n_param, weight_bits if weight_bits<16 else 16
 
     in_features, out_features = get_layer_features(layer)
 
@@ -191,7 +197,6 @@ def compute_layer_bits(
     total_bits = weight_bits * n_param + aux_total_bits
     avg_bits = total_bits / n_param
     return total_bits, avg_bits
-
 
 def parse_all_available_device(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
     """
