@@ -266,7 +266,7 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
 @dataclass
 class AutoScheme:
     avg_bits: float
-    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str]]]
+    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str],...]]
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
     ignore_scale_zp_bits: bool = False

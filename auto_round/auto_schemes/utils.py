@@ -20,8 +20,12 @@ from accelerate.utils import get_balanced_memory
 
 from auto_round.low_cpu_mem import get_module
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, get_layer_features, is_hpex_available
+from auto_round.utils import check_to_quantized, get_layer_features, is_hpex_available, get_block_names, \
+    SUPPORTED_LAYER_TYPES
 
+import re
+import torch
+from typing import Union, Iterable
 
 def apply_quant_scheme(
     model: torch.nn.Module,
@@ -317,3 +321,115 @@ def dispatch_model_by_all_available_devices(
     device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
     model = dispatch_model(model, device_map=device_map)
     return model
+
+
+def merge_lists_unionfind(list_of_lists):
+    parent = {}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        root_x, root_y = find(x), find(y)
+        if root_x != root_y:
+            parent[root_y] = root_x
+
+    # 初始化并查集
+    for lst in list_of_lists:
+        for item in lst:
+            if item not in parent:
+                parent[item] = item
+        for i in range(1, len(lst)):
+            union(lst[0], lst[i])
+
+    # 收集结果
+    groups = {}
+    for item in parent:
+        root = find(item)
+        groups.setdefault(root, []).append(item)
+    return list(groups.values())
+
+def parse_shared_layers(
+    model: torch.nn.Module,
+    shared_patterns: Iterable[Iterable[str]]
+) -> list[list[str]]:
+    """
+    Parse shared layer groups based on regex or substring matches.
+
+    Args:
+        model (torch.nn.Module): The model whose modules will be analyzed.
+        shared_patterns (Iterable[Iterable[str]]):
+            Each inner iterable defines one shared group. Each element can be:
+              - a string: checked by full-name or substring match
+              - a regex pattern: checked by re.fullmatch or re.search
+
+    Returns:
+        list[list[str]]: A list of matched shared layer groups.
+    """
+    if not shared_patterns:
+        return []
+    # Retrieve all high-level block names (for example, transformer blocks)
+    for n,m in model.named_modules():
+        m.tmp_name = n # attach global name
+
+    block_names = get_block_names(model, quant_vision=True)
+    block_names = [item for sublist in block_names for item in sublist]
+
+    # Collect all supported layer names from the model
+    supported_layer_names = [
+        name for name, module in model.named_modules()
+        if type(module) in SUPPORTED_LAYER_TYPES
+    ]
+
+    # Separate groups into those already fully matched and those requiring pattern matching
+    direct_match_groups = []
+    fuzzy_match_groups = []
+    for group in shared_patterns:
+        match_status = {name: (name in supported_layer_names) for name in group}
+        if all(match_status.values()):
+            direct_match_groups.append(list(match_status.keys()))
+        else:
+            fuzzy_match_groups.append(match_status)
+
+    matched_groups = list(direct_match_groups)
+
+    # Search each block for modules matching remaining patterns
+    for block_name in block_names:
+        block_module = get_module(model,block_name)
+        block_layer_local_names = [
+            name for name, module in block_module.named_modules()
+            if type(module) in SUPPORTED_LAYER_TYPES
+        ]
+        block_layer_names = []
+        for name in block_layer_local_names:
+            module = get_module(block_module,name)
+            block_layer_names.append(module.tmp_name)
+
+
+        for group in fuzzy_match_groups:
+            matched_layers = set()
+            for pattern, is_direct in group.items():
+                if is_direct:
+                    matched_layers.add(pattern)
+                    continue
+
+                for layer_name in block_layer_names:
+                    # Try regex match first
+                    try:
+                        if re.fullmatch(pattern, layer_name) or re.search(pattern, layer_name):
+                            matched_layers.add(layer_name)
+                            continue
+                    except re.error:
+                        pass  # Not a valid regex, fallback to substring matching
+
+                    # Substring or partial match
+                    if pattern in layer_name:
+                        matched_layers.add(layer_name)
+
+            if matched_layers:
+                matched_groups.append(sorted(matched_layers))
+    matched_groups = merge_lists_unionfind(matched_groups)
+    return matched_groups
