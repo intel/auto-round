@@ -8,8 +8,7 @@ from auto_round import AutoRound
 @pytest.fixture
 def setup_gpt_oss():
     """Fixture to set up the GPT-OSS model and tokenizer."""
-    model_name = "unsloth/gpt-oss-20b-BF16"
-    # model_name = "/data5/yliu7/HF_HOME/unsloth/gpt-oss-20b-BF16/"
+    model_name = "/tf_dataset/auto_round/models/unsloth/gpt-oss-20b-BF16"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.num_hidden_layers = 1  # Reduce layers for testing

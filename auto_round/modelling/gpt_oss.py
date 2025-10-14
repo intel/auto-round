@@ -32,7 +32,7 @@ def _update_parameter(
 
 
 class GPTOssSingleExpert(nn.Module):
-    def __init__(self, hidden_size, intermediate_size, dtype=None):
+    def __init__(self, hidden_size: int, intermediate_size: int, dtype: torch.dtype | None = None):
         super().__init__()
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
@@ -42,7 +42,7 @@ class GPTOssSingleExpert(nn.Module):
         self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=True, dtype=dtype)
         self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=True, dtype=dtype)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         gate = self.gate_proj(x)
         up = self.up_proj(x)
         gate = gate.clamp(max=self.limit)
@@ -96,7 +96,7 @@ class SequentialGPTOSSMoE(nn.Module):
             _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
             _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape
         x = hidden_states.reshape(-1, H)
 
