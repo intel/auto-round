@@ -329,7 +329,6 @@ class TestGGUF(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
         for file_name in os.listdir(quantized_model_path):
-            file_name = os.listdir(quantized_model_path)[0]
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
                 self.assertAlmostEqual(file_size, 2535, delta=1.0)
