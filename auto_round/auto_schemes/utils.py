@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
 from dataclasses import asdict, fields
 from typing import Iterable, Union
 
@@ -20,12 +21,14 @@ from accelerate.utils import get_balanced_memory
 
 from auto_round.low_cpu_mem import get_module
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, get_layer_features, is_hpex_available, get_block_names, \
-    SUPPORTED_LAYER_TYPES
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
+    get_block_names,
+    get_layer_features,
+    is_hpex_available,
+)
 
-import re
-import torch
-from typing import Union, Iterable
 
 def apply_quant_scheme(
     model: torch.nn.Module,
@@ -352,10 +355,8 @@ def merge_lists_unionfind(list_of_lists):
         groups.setdefault(root, []).append(item)
     return list(groups.values())
 
-def parse_shared_layers(
-    model: torch.nn.Module,
-    shared_patterns: Iterable[Iterable[str]]
-) -> list[list[str]]:
+
+def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterable[str]]) -> list[list[str]]:
     """
     Parse shared layer groups based on regex or substring matches.
 
@@ -372,17 +373,14 @@ def parse_shared_layers(
     if not shared_patterns:
         return []
     # Retrieve all high-level block names (for example, transformer blocks)
-    for n,m in model.named_modules():
-        m.tmp_name = n # attach global name
+    for n, m in model.named_modules():
+        m.tmp_name = n  # attach global name
 
     block_names = get_block_names(model, quant_vision=True)
     block_names = [item for sublist in block_names for item in sublist]
 
     # Collect all supported layer names from the model
-    supported_layer_names = [
-        name for name, module in model.named_modules()
-        if type(module) in SUPPORTED_LAYER_TYPES
-    ]
+    supported_layer_names = [name for name, module in model.named_modules() if type(module) in SUPPORTED_LAYER_TYPES]
 
     # Separate groups into those already fully matched and those requiring pattern matching
     direct_match_groups = []
@@ -398,16 +396,14 @@ def parse_shared_layers(
 
     # Search each block for modules matching remaining patterns
     for block_name in block_names:
-        block_module = get_module(model,block_name)
+        block_module = get_module(model, block_name)
         block_layer_local_names = [
-            name for name, module in block_module.named_modules()
-            if type(module) in SUPPORTED_LAYER_TYPES
+            name for name, module in block_module.named_modules() if type(module) in SUPPORTED_LAYER_TYPES
         ]
         block_layer_names = []
         for name in block_layer_local_names:
-            module = get_module(block_module,name)
+            module = get_module(block_module, name)
             block_layer_names.append(module.tmp_name)
-
 
         for group in fuzzy_match_groups:
             matched_layers = set()
