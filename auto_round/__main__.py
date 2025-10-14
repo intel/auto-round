@@ -200,7 +200,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         tuning.add_argument(
             "--disable_quanted_input",
             action="store_true",
-            help="Use original (non-quantized) inputs for each block instead of quantized outputs from previous blocks. ",
+            help="Use original (non-quantized) inputs for each block instead of"
+            " quantized outputs from previous blocks. ",
         )
         tuning.add_argument(
             "--to_quant_block_names",
@@ -339,7 +340,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             metavar="N|0<N<1",
             help="Limit the number of examples per task. "
             "Integer: exact number of examples (e.g., 1000). "
-            "Float between 0-1: fraction of total examples (e.g., 0.1 for 10%).",
+            "Float between 0-1: fraction of total examples.",
         )
         eval_args.add_argument(
             "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "

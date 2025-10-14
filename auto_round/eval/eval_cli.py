@@ -85,7 +85,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             metavar="N|0<N<1",
             help="Limit the number of examples per task. "
             "Integer: exact number of examples (e.g., 1000). "
-            "Float between 0-1: fraction of total examples (e.g., 0.1 for 10%).",
+            "Float between 0-1: fraction of total examples.",
         )
         self.add_argument(
             "--eval_backend",
