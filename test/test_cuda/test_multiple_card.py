@@ -241,7 +241,7 @@ class TestAutoRound(unittest.TestCase):
             device_map=device_map,
         )
         autoround.quantize()
-        
+
         # test rtn
         autoround = AutoRound(
             model_name,
