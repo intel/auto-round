@@ -2494,7 +2494,7 @@ class BaseCompressor(object):
                 config = self.layer_config[n]
                 act_dynamic = config.get("act_dynamic", True)
                 act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_data_type", 16)
+                act_bits = config.get("act_bits", 16)
                 if (
                     config["bits"] <= 8
                     and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
