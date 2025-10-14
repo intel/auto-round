@@ -320,8 +320,40 @@ class BaseCompressor(object):
 
         if isinstance(scheme, AutoScheme):
             if self.mllm:
-                logger.info("AutoScheme with MLLM is not supported yet.")
-                sys.exit(1)
+                logger.info("AutoScheme is not yet supported for multimodal LLMs.")
+                sys.exit(-1)
+
+            if getattr(model, "is_fp8", False):
+                logger.info("AutoScheme does not currently support FP8 models.")
+                sys.exit(-1)
+
+            all_dtypes = []
+            for option in scheme.options:
+                # Skip pure BF16 option
+                if option == "BF16":
+                    continue
+
+                # Resolve the quantization scheme or data type
+                dtype = "int"
+                if isinstance(option, str):
+                    option = preset_name_to_scheme(option)
+
+                if isinstance(option, QuantizationScheme):
+                    dtype = option.data_type
+                elif isinstance(option, dict):
+                    dtype = option.get("data_type", "int")
+
+                all_dtypes.append(dtype)
+
+            # Check for mixed data types
+            unique_dtypes = set(all_dtypes)
+            if len(unique_dtypes) > 1:
+                logger.warning(
+                    "Models with mixed data_types "
+                    "cannot yet be exported to real formats except GGUF. "
+                    "Please save the model using the `fake` format for now."
+                )
+
             layer_config, self.has_qlayer_outside_block = set_layer_config(
                 self.model,
                 self.layer_config,
