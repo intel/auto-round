@@ -26,6 +26,7 @@ from typing import Any, Callable, Union
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
+from accelerate.utils import get_balanced_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -2075,8 +2076,12 @@ class BaseCompressor(object):
                         if str(self.model.device) == "cpu" and (
                             self.device.startswith("xpu") or self.device.startswith("cuda")
                         ):
-                            max_memory = get_max_vram()  # TODO model is not evenly split
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
+                            max_memory = get_balanced_memory(
+                                self.model,
+                                max_memory=None,
+                                no_split_module_classes=no_split_modules,
+                            )
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=max_memory, no_split_module_classes=no_split_modules
                             )
