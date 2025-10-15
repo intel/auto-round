@@ -111,7 +111,7 @@ class BaseCompressor(object):
         sym (bool): Whether to use symmetric weight quantization.
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
-        enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
+        enable_torch_compile (bool): Whether to enable compile_func for quant blocks/layers.
     """
 
     bits: int | None
@@ -173,7 +173,7 @@ class BaseCompressor(object):
             act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
             act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
-            enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
+            enable_torch_compile (bool, optional): Enable compile_func for quant blocks/layers. Defaults to False.
             device_map (str | dict, optional): Device placement map. Defaults to None.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
@@ -361,6 +361,9 @@ class BaseCompressor(object):
         self.infer_bs_coeff = 1
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
+        self.block_forward = block_forward
+        if self.enable_torch_compile:
+            self.block_forward = compile_func(self.block_forward, self.device)
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
@@ -1428,6 +1431,7 @@ class BaseCompressor(object):
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
+                    enable_torch_compile=self.enable_torch_compile,
                 )
                 m = m.unwrapper({})
                 m.to("cpu")
@@ -1443,6 +1447,7 @@ class BaseCompressor(object):
                         enable_minmax_tuning=False,
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
+                        enable_torch_compile=self.enable_torch_compile,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1882,6 +1887,7 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
+                    enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                 )
                 new_layer = wrapper_layer.unwrapper({})
@@ -1911,10 +1917,7 @@ class BaseCompressor(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
-        if self.enable_torch_compile:
-            quant_layer = compile_func(self._quantize_layer, self.device)
-        else:
-            quant_layer = self._quantize_layer
+        quant_layer = self._quantize_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -2093,9 +2096,9 @@ class BaseCompressor(object):
             tmp_input_ids, tmp_input_others = self._sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
-            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
-                cache_device
-            )
+            tmp_output = self.block_forward(
+                block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device
+            ).to(cache_device)
             if save_output:
                 if self.batch_size == 1:
                     output.append(tmp_output)
@@ -2518,7 +2521,12 @@ class BaseCompressor(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(device)
+        wrapper_linear = WrapperLinear(
+            layer,
+            enable_minmax_tuning=self.enable_minmax_tuning,
+            enable_torch_compile=self.enable_torch_compile,
+            device=device,
+        ).to(device)
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -2696,7 +2704,7 @@ class BaseCompressor(object):
             batch_dim=self.batch_dim,
             share_cache_keys=self.shared_cache_keys,
         )
-        output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
+        output_q = self.block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
         return output_q
 
     def _get_current_num_elm(
@@ -2781,7 +2789,11 @@ class BaseCompressor(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device
+            block,
+            self.enable_minmax_tuning,
+            self.enable_norm_bias_tuning,
+            enable_torch_compile=self.enable_torch_compile,
+            device=self.device,
         )
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -3008,14 +3020,8 @@ class BaseCompressor(object):
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
                 quantize_block = self._quantize_block
-                if self.enable_torch_compile:
-                    quantize_block = compile_func(quantize_block, device)
-                else:
-                    quantize_block = quantize_block
         else:
             quantize_block = self._quantize_block
-            if self.enable_torch_compile:
-                quantize_block = compile_func(quantize_block, device)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
