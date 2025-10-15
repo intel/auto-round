@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 from dataclasses import asdict
 from typing import Iterable, Union
 
@@ -21,8 +22,8 @@ from auto_round.auto_schemes import AUTO_SCHEMES_METHODS
 from auto_round.auto_schemes.utils import compute_avg_bits_for_scheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-from auto_round.utils import get_layer_features, get_module, _gguf_type_fallback
-import math
+from auto_round.utils import _gguf_type_fallback, get_layer_features, get_module
+
 
 class GenScheme:
     """Generate and validate quantization schemes for model layers."""

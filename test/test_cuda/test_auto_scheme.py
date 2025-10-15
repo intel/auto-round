@@ -82,6 +82,7 @@ class TestAutoScheme(unittest.TestCase):
             self.assertEqual(len(bits), 1)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
     #
     @multi_card
     def test_multi_card(self):
@@ -118,6 +119,7 @@ class TestAutoScheme(unittest.TestCase):
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
     #
     def test_max_target_bits(self):
         model_name = "/models/opt-125m"

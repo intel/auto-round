@@ -1879,7 +1879,7 @@ def _search_gguf_type(gguf_type):
     return None
 
 
-def _gguf_type_fallback(gguf_type:str)->str:
+def _gguf_type_fallback(gguf_type: str) -> str:
     gguf_type = gguf_type.lower()
     if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
         gguf_type = "gguf:q5_0"
