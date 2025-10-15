@@ -85,6 +85,7 @@ from auto_round.utils import (
     is_hpex_available,
     is_mx_fp,
     is_nv_fp,
+    is_separate_lm_head,
     is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
@@ -1331,24 +1332,19 @@ class BaseCompressor(object):
             target_format = self.scheme.lower()
 
         tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
+        tie_word_embeddings &= not is_separate_lm_head(self.model)
+        lm_head_name: str = get_lm_head_name(self.model)
+        check_fixed_by_user = (
+            self.layer_config[lm_head_name].get("fixed_by_user", False) if lm_head_name in self.layer_config else False
+        )
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Embedding):
-                if tie_word_embeddings:
-                    config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-                    self._apply_config_to_layer("lm_head", config, False)
-                # key: str = "lm_head" if tie_word_embeddings else "embedding"
-                key: str = "embedding"
+                key: str = "lm_head" if tie_word_embeddings else "embedding"
                 config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format][key]]
                 self._apply_config_to_layer(name, config, True)
 
         if not tie_word_embeddings:
-            lm_head_name: str = get_lm_head_name(self.model)
             config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            check_fixed_by_user = (
-                self.layer_config[lm_head_name].get("fixed_by_user", False)
-                if lm_head_name in self.layer_config
-                else None
-            )
             self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
             return True
 

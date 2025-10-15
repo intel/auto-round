@@ -1999,7 +1999,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
-            new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
+            # new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
+            continue
         elif isinstance(layer, torch.nn.Embedding):
             if "embedding" in GGUF_CONFIG[target_gguf_format]:
                 new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
@@ -2838,3 +2839,27 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
+
+def is_separate_lm_head(model: torch.nn.Module) -> bool:
+    dir_path = model.name_or_path
+    if not os.path.isdir(dir_path):
+        dir_path = download_hf_model(dir_path)
+    lm_head_name: str = get_lm_head_name(model)
+    lm_head_name += ".weight"
+
+    if "model.safetensors.index.json" in os.listdir(dir_path):
+        with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
+            index_mapping = json.load(f)
+            if lm_head_name in index_mapping["weight_map"]:
+                return True
+            else:
+                return False
+    else:
+        from safetensors import safe_open
+
+        f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
+        if lm_head_name in f.keys():
+            return True
+        else:
+            return False
