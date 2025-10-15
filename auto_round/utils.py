@@ -1999,7 +1999,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
-            pass
+            new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
         elif isinstance(layer, torch.nn.Embedding):
             if "embedding" in GGUF_CONFIG[target_gguf_format]:
                 new_type = GGUF_CONFIG[target_gguf_format]["embedding"]

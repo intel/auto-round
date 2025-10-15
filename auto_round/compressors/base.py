@@ -1333,7 +1333,11 @@ class BaseCompressor(object):
         tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Embedding):
-                key: str = "lm_head" if tie_word_embeddings else "embedding"
+                if tie_word_embeddings:
+                    config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
+                    self._apply_config_to_layer("lm_head", config, False)
+                # key: str = "lm_head" if tie_word_embeddings else "embedding"
+                key: str = "embedding"
                 config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format][key]]
                 self._apply_config_to_layer(name, config, True)
 
