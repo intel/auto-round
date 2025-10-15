@@ -383,6 +383,7 @@ class WrapperLinear(torch.nn.Module):
             wrapper_layer = WrapperWALayer(
                 self.orig_layer,
                 enable_torch_compile=self.enable_torch_compile,
+                device=self.device,
             )
             return wrapper_layer
 
@@ -463,13 +464,14 @@ class WrapperLinear(torch.nn.Module):
 
 
 class WrapperWALayer(torch.nn.Module):
-    def __init__(self, orig_layer, enable_torch_compile=False):
+    def __init__(self, orig_layer, enable_torch_compile=False, device="cpu"):
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
+        self.enable_torch_compile = enable_torch_compile
+        self.device = device
         self.data_type = orig_layer.data_type if hasattr(orig_layer, "data_type") else None
         self.act_data_type = orig_layer.act_data_type if hasattr(orig_layer, "act_data_type") else None
         self.act_quant_func = self.orig_layer.act_quant_func
-        self.enable_torch_compile = enable_torch_compile
         if self.enable_torch_compile:
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
