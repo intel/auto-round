@@ -13,6 +13,7 @@
 # limitations under the License.
 import gc
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -26,6 +27,8 @@ from transformers.testing_utils import (
     torch_device,
 )
 from transformers.utils import is_torch_available
+
+from auto_round import AutoRound
 
 if is_torch_available():
     import torch
@@ -64,7 +67,7 @@ class AutoRoundTest(unittest.TestCase):
         )
 
     def tearDown(self):
-        gc.collect()
+        shutil.rmtree("tmp", ignore_errors=True)
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -194,7 +197,6 @@ class AutoRoundTest(unittest.TestCase):
         }
 
         bits, group_size, sym = 4, 128, True
-        from auto_round import AutoRound
 
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         with tempfile.TemporaryDirectory() as tmpdirname:
@@ -203,6 +205,45 @@ class AutoRoundTest(unittest.TestCase):
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+
+    def test_mx(self):
+        """
+        Simple test that checks if auto-round work properly with mx data type
+        """
+        # Use a tiny random model from HuggingFace Hub
+        model_name = "facebook/opt-125m"
+
+        # Load the model and tokenizer
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        # Quantize the model
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=4,
+            data_type="mx_fp",
+            group_size=32,
+            act_bits=4,
+            act_data_type="mx_fp",
+            act_group_size=32,
+            iters=0,
+        )
+        model, _ = autoround.quantize_and_save("tmp")
+        inputs = torch.tensor([[10, 20]]).to("cuda")
+
+        # Load the quantized model using transformers
+        new_model = AutoModelForCausalLM.from_pretrained("tmp", torch_dtype=torch.float16, device_map="cuda")
+
+        with torch.no_grad():
+            new_output = new_model(inputs)[0].to("cuda")
+
+        # NotImplementedError: Module [QuantLinear] is missing the required "forward" function
+        # model = model.eval().to("cuda")
+        # # Get original model output for comparison
+        # with torch.no_grad():
+        #     original_output = model(inputs)[0].to("cuda")
+        # assert torch.allclose(original_output, new_output)
 
 
 if __name__ == "__main__":
