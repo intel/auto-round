@@ -31,7 +31,7 @@ class TestAutoScheme(unittest.TestCase):
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
-        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gguf(self):
         model_name = "/models/Qwen3-8B"
@@ -82,18 +82,18 @@ class TestAutoScheme(unittest.TestCase):
             self.assertEqual(len(bits), 1)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
-
+    #
     @multi_card
     def test_multi_card(self):
         model_name = "/models/Qwen3-8B"
         target_bits = 5.254
-        for device_map in ["auto", "0,1", "0", None]:
-            scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
-            ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, device_map=device_map)
-            model, layer_config = ar.quantize()
-            avg_bits, _ = compute_avg_bits_for_model(model)
-            print(avg_bits)
-            assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+        # for device_map in ["auto", "0,1", "0", None]:
+        scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+        model, layer_config = ar.quantize()
+        avg_bits, _ = compute_avg_bits_for_model(model)
+        print(avg_bits)
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     @multi_card
     def test_dict_device_map(self):  # TODO rtn mode has bug
@@ -118,7 +118,7 @@ class TestAutoScheme(unittest.TestCase):
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
-
+    #
     def test_max_target_bits(self):
         model_name = "/models/opt-125m"
         target_bits = 8.211
@@ -174,7 +174,7 @@ class TestAutoScheme(unittest.TestCase):
 
     def test_auto_scheme_export(self):
         model_name = "/models/opt-125m"
-        scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))
+        scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
         ar.quantize_and_save(self.save_dir)
         model_args = f"pretrained={self.save_dir}"

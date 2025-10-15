@@ -19,8 +19,10 @@ import torch
 from auto_round import AutoScheme
 from auto_round.auto_schemes import AUTO_SCHEMES_METHODS
 from auto_round.auto_schemes.utils import compute_avg_bits_for_scheme
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-
+from auto_round.utils import get_layer_features, get_module, _gguf_type_fallback
+import math
 
 class GenScheme:
     """Generate and validate quantization schemes for model layers."""
@@ -68,7 +70,7 @@ class GenScheme:
                 f"Target avg_bits={target:.3f} is outside the valid range " f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}]."
             )
 
-    def get_layer_config(self):
+    def get_layer_config(self) -> dict[str, dict]:
         method_name = self.auto_scheme.method
         method_func = AUTO_SCHEMES_METHODS[method_name]
         layer_config = method_func(
@@ -80,6 +82,47 @@ class GenScheme:
             self.tokenizer,
             device_map=self.device_map,
         )
+        layer_config = self.fallback_gguf_layer_config(layer_config)
+        return layer_config
+
+    def fallback_gguf_layer_config(self, layer_config: dict[str, dict]) -> dict[str, dict]:
+        """
+        Apply fallback configurations for GGUF quantized layers when the current
+        layer configuration is incompatible with input feature alignment.
+
+        Args:
+            layer_config (dict[str, dict]): Mapping from layer name to its quantization scheme.
+
+        Returns:
+            dict[str, dict]: Updated layer configuration with applied fallbacks if necessary.
+        """
+        for name, scheme in layer_config.items():  # TODO: add unit test (wenhua), the code is a little tricky
+            if scheme.get("super_bits") is None:
+                continue  # Skip non-GGUF k-quant layers
+
+            layer = get_module(self.model, name)
+            input_features = get_layer_features(layer)
+
+            # Determine fallback quantization type
+            if input_features % 256 != 0 and input_features % 32 != 0:
+                new_type = "gguf:bf16"
+            else:
+                bits = scheme["bits"]
+                new_type = f"gguf:q{bits}_0"
+
+                if new_type not in GGUF_INNER_CONFIG:
+                    new_type = f"gguf:q{bits}_1"
+
+                    if new_type not in GGUF_INNER_CONFIG:
+                        current_type = f"gguf:q{bits}_k"
+                        new_type = _gguf_type_fallback(current_type)
+
+            # Apply fallback configuration
+            target_config = GGUF_INNER_CONFIG[new_type]
+            scheme.update(target_config)
+
+            logger.warning(f"Fallback applied: {name} → {new_type}")
+
         return layer_config
 
     def compute_avg_bit_range(self) -> tuple[float, float]:
