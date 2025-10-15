@@ -1676,40 +1676,21 @@ class BaseCompressor(object):
 
         # TODO check scale_dtype
         if not self.is_auto_scheme:
-            self.layer_config, self.has_qlayer_outside_block = set_layer_config(
-                self.model,
-                self.layer_config,
-                self.scheme,
-                self.scale_dtype,
-                self.supported_types,
-                self.inner_supported_types,
-                self.quant_block_list,
-                self.fp_layers,
-                self.quant_lm_head,
-                enable_gguf_official_mixed=True,
-                is_mllm=self.mllm,
-            )
+            enable_gguf_official_mixed = True
         else:
-            # for n, scheme in self.layer_config.items():
-            #     module = get_module(self.model, n)
-            #     if not isinstance(scheme, dict):
-            #         raise ValueError("scheme return by scheme should be dict")
-            #     for key, item in scheme.items():
-            #         setattr(module, key, item)
-            #     # set_extra scale_dtype
-            #     module.scale_dtype = self.scale_dtype
-            self.layer_config, self.has_qlayer_outside_block = set_layer_config(
-                self.model,
-                self.layer_config,
-                self.scheme,
-                self.scale_dtype,
-                self.supported_types,
-                self.inner_supported_types,
-                self.quant_block_list,
-                self.fp_layers,
-                self.quant_lm_head,
-                enable_gguf_official_mixed=False,
-                is_mllm=self.mllm,
+            enable_gguf_official_mixed = False
+        self.layer_config, self.has_qlayer_outside_block = set_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=enable_gguf_official_mixed,
+            is_mllm=self.mllm,
             )
 
         if not hasattr(self, "formats"):

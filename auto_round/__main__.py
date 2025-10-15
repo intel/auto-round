@@ -72,14 +72,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action="store_true",
             help="for auto scheme whether ignore scale zp bits calculation ",
         )
-        self.add_argument("--bits", default=None, type=int, help="number of weight bits")
-        self.add_argument("--group_size", default=None, type=int, help="group size")
-        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
-        self.add_argument("--data_type", "--dtype", default=None, help="data type for tuning, 'int', 'mx_fp' and etc")
-        self.add_argument("--act_bits", default=None, type=int, help="activation bits")
-        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
-        self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
         basic.add_argument(
             "--iters",
             "--iter",

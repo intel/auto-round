@@ -2855,7 +2855,7 @@ def set_layer_config(
         elif isinstance(item, QuantizationScheme):
             config = asdict(item)
         elif isinstance(item, dict):
-            invalid = set(item) - set(scheme_keys)
+            invalid = set(item) - set(scheme_keys+("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(
                     f"Invalid keys {invalid} in layer_config for '{layer_name}'. " f"Allowed keys: {scheme_keys}"
