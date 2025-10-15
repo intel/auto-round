@@ -1104,7 +1104,7 @@ def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
-
+    logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
     return not_to_quantized_layers
 
 
