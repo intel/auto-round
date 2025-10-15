@@ -361,9 +361,7 @@ class BaseCompressor(object):
         self.infer_bs_coeff = 1
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
-        self.block_forward = block_forward
-        if self.enable_torch_compile:
-            self.block_forward = compile_func(self.block_forward, self.device)
+        self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
