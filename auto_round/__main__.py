@@ -79,7 +79,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--act_bits", default=None, type=int, help="activation bits")
         self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
         self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+        )
         basic.add_argument(
             "--iters",
             "--iter",
