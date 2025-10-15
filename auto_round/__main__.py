@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import logging
 import os
-import re
 import sys
 
 from auto_round.compressors import BaseCompressor
@@ -24,7 +22,6 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
-    set_cuda_visible_devices,
 )
 
 RECIPES = {
@@ -82,7 +79,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--act_bits", default=None, type=int, help="activation bits")
         self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
         self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
         basic.add_argument(
             "--iters",
             "--iter",
@@ -469,8 +466,6 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    # Must set this before import torch
-    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
