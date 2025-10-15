@@ -376,7 +376,7 @@ class BaseCompressor(object):
             }
 
             # mainly using quant_layers and fixed by users
-            from auto_round.auto_schemes.gen_auto_scheme import GenScheme
+            from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
             gen_scheme = GenScheme(
                 scheme,

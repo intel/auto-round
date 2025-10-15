@@ -18,8 +18,8 @@ from typing import Iterable, Union
 import torch
 
 from auto_round import AutoScheme
-from auto_round.auto_schemes import AUTO_SCHEMES_METHODS
-from auto_round.auto_schemes.utils import compute_avg_bits_for_scheme
+from auto_round.auto_scheme import AUTO_SCHEME_METHODS
+from auto_round.auto_scheme.utils import compute_avg_bits_for_scheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
 from auto_round.utils import _gguf_type_fallback, get_layer_features, get_module
@@ -73,7 +73,7 @@ class GenScheme:
 
     def get_layer_config(self) -> dict[str, dict]:
         method_name = self.auto_scheme.method
-        method_func = AUTO_SCHEMES_METHODS[method_name]
+        method_func = AUTO_SCHEME_METHODS[method_name]
         layer_config = method_func(
             self.auto_scheme,
             self.model,

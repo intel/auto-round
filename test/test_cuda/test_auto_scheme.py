@@ -9,7 +9,7 @@ from auto_round.testing_utils import multi_card
 sys.path.insert(0, "../..")
 
 from auto_round import AutoRound, AutoRoundConfig, AutoScheme
-from auto_round.auto_schemes.utils import compute_avg_bits_for_model
+from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import get_module
 
@@ -54,7 +54,7 @@ class TestAutoScheme(unittest.TestCase):
             ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
             ("fc1", "fc2"),
         ]
-        from auto_round.auto_schemes.utils import parse_shared_layers
+        from auto_round.auto_scheme.utils import parse_shared_layers
 
         res = parse_shared_layers(model, shared_layers)
         self.assertEqual(len(res), 24)

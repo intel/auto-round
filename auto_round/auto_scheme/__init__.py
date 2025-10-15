@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-AUTO_SCHEMES_METHODS = {}
+AUTO_SCHEME_METHODS = {}
 
 
 def register_scheme_methods(names):
@@ -30,13 +30,13 @@ def register_scheme_methods(names):
     def register(alg):
         if isinstance(names, (tuple, list)):
             for name in names:
-                AUTO_SCHEMES_METHODS[name] = alg
+                AUTO_SCHEME_METHODS[name] = alg
         else:
-            AUTO_SCHEMES_METHODS[names] = alg
+            AUTO_SCHEME_METHODS[names] = alg
 
         return alg
 
     return register
 
 
-import auto_round.auto_schemes.haha  # pylint: disable=E0611,E0401
+import auto_round.auto_scheme.haha  # pylint: disable=E0611,E0401
