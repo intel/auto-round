@@ -27,25 +27,44 @@ from auto_round.utils import (
     set_cuda_visible_devices,
 )
 
+RECIPES = {
+    "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None},
+    "best": {"batch_size": 8, "iters": 1000, "seqlen": 2048, "nsamples": 512, "lr": None},
+    "light": {"batch_size": 8, "iters": 50, "seqlen": 2048, "nsamples": 128, "lr": 5e-3},
+    "fast": {"batch_size": 4, "iters": 200, "seqlen": 512, "nsamples": 128, "lr": None},
+}
+
 
 class BasicArgumentParser(argparse.ArgumentParser):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.add_argument(
-            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
+        basic = self.add_argument_group("Basic Arguments")
+        basic.add_argument(
+            "--model",
+            "--model_name",
+            "--model_name_or_path",
+            default="facebook/opt-125m",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
-
-        self.add_argument("--mllm", action="store_true", help="whether to quant multi-modal model.")
-
-        self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
-
-        self.add_argument(
+        basic.add_argument(
             "--scheme",
             default="W4A16",
             type=str,
             # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
-            help="quantization scheme",
+            help="Quantization scheme to use. "
+            "W4A16: 4-bit weights with 16-bit activations (default). "
+            "Other options include W2A16, W3A16, W8A16 for different bit widths, "
+            "and MXFP4/MXFP8/NVFP4 for different data type.",
+        )
+        basic.add_argument(
+            "--batch_size",
+            "--train_bs",
+            "--bs",
+            default=None,
+            type=int,
+            help="The batch size for tuning/calibration."
+            "Larger batch sizes may improve stability but require more memory.",
         )
         self.add_argument("--avg_bits", default=None, type=float, help="for auto scheme, number of avg weight bits")
         self.add_argument(
@@ -64,178 +83,225 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
         self.add_argument(
             "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+        basic.add_argument(
+            "--iters",
+            "--iter",
+            default=None,
+            type=int,
+            help="Number of iterations to tune each block. "
+            "More iterations may lead to better quantization quality but take longer.",
         )
-
-        self.add_argument(
-            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
+        basic.add_argument(
+            "--seqlen",
+            "--seq_len",
+            default=None,
+            type=int,
+            help="Sequence length of the calibration samples"
+            "Longer sequences capture more context but use more memory.",
         )
-        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
-
-        self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
-
-        self.add_argument(
+        basic.add_argument(
+            "--nsamples",
+            "--nsample",
+            default=None,
+            type=int,
+            help="Number of calibration samples to use for quantization.",
+        )
+        basic.add_argument(
             "--device_map",
             "--device",
             "--devices",
             default="0",
             type=str,
-            help="the device to be used for tuning. "
+            help="The device to be used for tuning. "
             "Currently, device settings support CPU, GPU, and HPU."
             "The default is set to cuda:0,"
             "allowing for automatic detection and switch to HPU or CPU."
             "set --device 0,1,2 to use multiple cards.",
         )
-
-        self.add_argument(
-            "--dataset", default="NeelNanda/pile-10k", type=str, help="the dataset for quantization training"
+        basic.add_argument(
+            "--dataset",
+            default="NeelNanda/pile-10k",
+            type=str,
+            help="Calibration dataset for quantization. "
+            "Should be a dataset from huggingface datasets or local path. ",
+        )
+        basic.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
+        basic.add_argument("--adam", action="store_true", help="Use Adam optimizer instead of SignSGD.")
+        basic.add_argument(
+            "--low_gpu_mem_usage",
+            action="store_true",
+            help="Enable memory-efficient mode by offloading intermediate features to CPU. "
+            "Useful when working with large models that don't fit in GPU memory.",
+        )
+        basic.add_argument(
+            "--format",
+            default="auto_round",
+            type=str,
+            help="Output format for the quantized model." "'auto_round' is the recommended format",
+        )
+        basic.add_argument(
+            "--output_dir",
+            default="./tmp_autoround",
+            type=str,
+            help="Directory to save the quantized model and related files",
+        )
+        basic.add_argument(
+            "--not_use_best_mse",
+            action="store_true",
+            help="Disable using the iteration with best MSE loss during tuning.",
+        )
+        basic.add_argument(
+            "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
 
-        self.add_argument(
+        tuning = self.add_argument_group("Tuning Arguments")
+        tuning.add_argument(
+            "--lr",
+            default=None,
+            type=float,
+            help="Learning rate for tuning. " "If None, automatically sets to 1.0/iters. ",
+        )
+        tuning.add_argument(
             "--minmax_lr",
             default=None,
             type=float,
-            help="minmax learning rate, if None, it will beset to be the same with lr",
+            help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
         )
-
-        self.add_argument(
+        tuning.add_argument(
             "--mem_per_param_scale",
             default=13,
             type=float,
-            help="Scale factor for memory per parameter, used to adjust memory usage estimation for tuning",
+            help="Memory scaling factor for parameter memory estimation. "
+            "Adjust this if you need to control memory usage during tuning. "
+            "Lower values reduce memory usage but may affect accuracy.",
         )
-
-        self.add_argument("--seed", default=42, type=int, help="random seed")
-
-        self.add_argument("--adam", action="store_true", help="whether to use adam optimizer instead of SignSGD")
-
-        self.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
-
-        self.add_argument("--nblocks", default=1, type=int, help="how many blocks to tune together")
-
-        self.add_argument("--low_gpu_mem_usage", action="store_true", help="offload intermediate features to cpu")
-
-        self.add_argument("--format", default="auto_round", type=str, help="the format to save the model")
-
-        self.add_argument(
+        tuning.add_argument(
+            "--gradient_accumulate_steps",
+            default=1,
+            type=int,
+            help="Number of steps to accumulate gradients before updating weights. "
+            "Effectively increases batch size without requiring more GPU memory. "
+            "Useful for large models with limited memory.",
+        )
+        tuning.add_argument(
+            "--nblocks",
+            default=1,
+            type=int,
+            help="Number of blocks to tune simultaneously. "
+            "Higher values may speed up tuning but require more memory. "
+            "Recommended to keep at 1 for stability with large models.",
+        )
+        tuning.add_argument(
             "--scale_dtype",
             default=None,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
-            help="scale data type to use for quantization",
+            help="Data type for quantization scales. "
+            "fp16/bf16: lower memory, fp32: higher precision. "
+            "Choose based on your hardware support and accuracy requirements.",
         )
-
-        self.add_argument(
-            "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model"
+        tuning.add_argument(
+            "--disable_amp",
+            action="store_true",
+            help="Disable Automatic Mixed Precision (AMP). "
+            "AMP speeds up training but may affect numerical stability in some cases.",
         )
-
-        self.add_argument("--disable_amp", action="store_true", help="disable amp")
-
-        self.add_argument(
-            "--disable_minmax_tuning", action="store_true", help="whether to disable enable weight minmax tuning"
+        tuning.add_argument(
+            "--disable_minmax_tuning",
+            action="store_true",
+            help="Disable weight min-max range tuning. "
+            "Not recommended as it may significantly reduce quantization accuracy.",
         )
-
-        self.add_argument("--enable_norm_bias_tuning", action="store_true", help="whether to enable norm bias tuning")
-
-        self.add_argument(
-            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code"
+        tuning.add_argument(
+            "--enable_norm_bias_tuning", action="store_true", help="Enable normalization layer bias tuning. "
         )
-
-        self.add_argument(
+        tuning.add_argument(
             "--disable_quanted_input",
             action="store_true",
-            help="whether to disuse the output of quantized block to tune the next block",
+            help="Use original (non-quantized) inputs for each block instead of"
+            " quantized outputs from previous blocks. ",
         )
-
-        self.add_argument("--quant_lm_head", action="store_true", help="whether to quant lm_head")
-
-        self.add_argument(
-            "--low_cpu_mem_mode",
-            default=0,
-            type=int,
-            choices=[0, 1, 2],
-            help="choose which low cpu memory mode to use. "
-            "Can significantly reduce cpu memory footprint but cost more time."
-            "1 means choose block-wise mode, load the weights of each block"
-            " from disk when tuning and release the memory of the block after tuning."
-            "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-            " minimum memory consumption and also slowest running speed."
-            "others means not use low cpu memory. Default to 0, not use low cpu memory.",
-        )
-
-        self.add_argument(
-            "--low_cpu_mem_tmp_dir",
-            default=None,
-            type=str,
-            help="temporary work space to store the temporary files "
-            "when using low cpu memory mode. Will remove after tuning.",
-        )
-
-        self.add_argument(
-            "--model_dtype",
-            default=None,
-            type=str,
-            choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
-            help="force to convert the dtype, some backends supports fp16 dtype better",
-        )
-
-        self.add_argument(
-            "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type"
-        )
-
-        self.add_argument(
-            "--not_use_best_mse",
-            action="store_true",
-            help="whether to use the iter of best mes loss in the tuning phase",
-        )
-
-        self.add_argument(
+        tuning.add_argument(
             "--to_quant_block_names",
             default=None,
             type=str,
-            help="Names of quantitative blocks, please use commas to separate them.",
+            help="Specific blocks to quantize, separated by commas. "
+            "Example: 'block1,block2,block3'. "
+            "If None, all blocks will be quantized.",
         )
-
-        self.add_argument("--enable_torch_compile", action="store_true", help="whether to enable torch compile")
-
-        self.add_argument("--enable_alg_ext", action="store_true", help="whether to enable probably better algorithm")
-
-        self.add_argument(
+        tuning.add_argument(
+            "--enable_alg_ext",
+            action="store_true",
+            help="Enable experimental algorithms that may provide better quantization results. "
+            "These are newer methods that might improve accuracy but are less tested.",
+        )
+        tuning.add_argument(
             "--disable_deterministic_algorithms",
             action="store_true",
             help="deprecated, disable torch deterministic algorithms.",
         )
-        self.add_argument(
-            "--enable_deterministic_algorithms", action="store_true", help="enable torch deterministic algorithms."
+        tuning.add_argument(
+            "--enable_deterministic_algorithms",
+            action="store_true",
+            help="Enable PyTorch deterministic algorithms for reproducible results. ",
         )
-
-        self.add_argument(
+        tuning.add_argument(
             "--disable_opt_rtn",
             action="store_true",
-            help="whether to disable optimization of the RTN mode(iters=0) (default is False).",
+            help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
+            "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
 
-        ## ======================= MLLM =======================
-        self.add_argument(
-            "--quant_nontext_module",
+        scheme = self.add_argument_group("Scheme Arguments")
+        scheme.add_argument("--bits", default=None, type=int, help="Number of bits for weight quantization. ")
+        scheme.add_argument("--group_size", default=None, type=int, help="Group size for weight quantization.")
+        scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
+        scheme.add_argument(
+            "--data_type",
+            "--dtype",
+            default=None,
+            help="Data type for quantization. Options: 'int' for integer, 'mx_fp' for mixed floating-point, etc.",
+        )
+        scheme.add_argument(
+            "--act_bits",
+            default=None,
+            type=int,
+            help="Number of bits for activation quantization. "
+            "Activation quantization significantly impacts performance and accuracy.",
+        )
+        scheme.add_argument(
+            "--act_group_size",
+            default=None,
+            type=int,
+            help="Group size for activation quantization. " "Similar to weight group size but for activations.",
+        )
+        scheme.add_argument(
+            "--act_data_type", "--act_dtype", default=None, type=str, help="Data type for activation quantization. "
+        )
+        scheme.add_argument(
+            "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--quant_lm_head",
             action="store_true",
-            help="whether to quantize non-text module, e.g. vision component",
+            help="Quantize the lm_head. " "Usually kept in higher precision for better output quality.",
+        )
+        scheme.add_argument(
+            "--fp_layers",
+            default="",
+            type=str,
+            help="List of layer names to keep in original precision (not quantized). "
+            "Useful for preserving critical layers. Separate multiple names with commas.",
         )
 
-        self.add_argument(
-            "--extra_data_dir",
-            default=None,
-            type=str,
-            help="dataset dir for storing images/audio/videos. "
-            "Can be a dir path or multiple dir path with format as "
-            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-            "By default, it will search in the relative path, "
-            "and if not find, will automatic download.",
+        gguf = self.add_argument_group("Double Quant Arguments")
+        gguf.add_argument(
+            "--super_group_size", default=None, type=int, help="Super group size for double quantization."
         )
-
-        self.add_argument(
-            "--template",
+        gguf.add_argument(
+            "--super_bits",
             default=None,
-            type=str,
-            help="the template for building training dataset. It can be a custom one.",
+            type=int,
+            help="Number of bits for scale and zero-point quantization in double quantization. ",
         )
 
         ## ===================== diffusion model ==================
@@ -243,157 +309,137 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--guidance_scale",
             default=7.5,
             type=float,
+            help="Classifier-free guidance scale for diffusion models. "
+            "Higher values (7-20) make the model follow the prompt more closely. "
+            "Lower values give more creative/random results.",
         )
 
         self.add_argument(
             "--num_inference_steps",
             default=50,
             type=int,
+            help="Number of denoising steps in the diffusion process. "
+            "More steps (50-100) usually give better quality but take longer. "
+            "Fewer steps (10-30) are faster but lower quality.",
         )
 
         self.add_argument(
             "--generator_seed",
             default=None,
             type=int,
+            help="Random seed for image generation reproducibility. "
+            "Using the same seed produces identical results across runs.",
         )
 
         ## ======================= eval =======================
-        self.add_argument(
+        eval_args = self.add_argument_group("eval arguments")
+        eval_args.add_argument(
+            "--disable_trust_remote_code",
+            action="store_true",
+            help="Disable trusting remote code when loading models. "
+            "Use for security if you don't trust the model source.",
+        )
+        eval_args.add_argument(
             "--tasks",
             "--task",
             nargs="?",
             const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
             "openbookqa,boolq,arc_easy,arc_challenge",
             default=None,
-            help="lm-eval tasks",
+            help="LM-Evaluation-Harness tasks to run. "
+            "Specify specific tasks like 'mmlu,wikitext' for custom evaluation.",
         )
-
-        self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
-
-        self.add_argument(
+        eval_args.add_argument("--eval_bs", default=None, type=int, help="Batch size for evaluation.")
+        eval_args.add_argument(
             "--limit",
             type=float,
             default=None,
             metavar="N|0<N<1",
             help="Limit the number of examples per task. "
-            "If <1, limit is a percentage of the total number of examples.",
+            "Integer: exact number of examples (e.g., 1000). "
+            "Float between 0-1: fraction of total examples.",
+        )
+        eval_args.add_argument(
+            "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "
+        )
+        eval_args.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="Torch data type for model loading during evaluation. "
+            "Options: 'float16', 'bfloat16', 'float32'. "
+            "Should match your hardware capabilities for best performance.",
         )
 
-        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
-
-        self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+        ## ======================= MLLM =======================
+        mllm_args = self.add_argument_group("Multimodal Large Language Model(MLLM) arguments")
+        mllm_args.add_argument(
+            "--mllm",
+            action="store_true",
+            help="[Deprecated] AutoRound now automatically detects and uses MLLM mode when needed.",
+        )
+        mllm_args.add_argument(
+            "--quant_nontext_module",
+            action="store_true",
+            help="Quantize non-text modules (vision/audio/video components). "
+            "Enables full multimodal model quantization but may affect visual quality.",
+        )
+        mllm_args.add_argument(
+            "--extra_data_dir",
+            default=None,
+            type=str,
+            help="Directory containing multimodal data (images/audio/videos). "
+            "Can be a single directory or specify types: "
+            "'image=/path/to/images,video=/path/to/videos,audio=/path/to/audio'. "
+            "If not found locally, will attempt to download standard datasets.",
+        )
+        mllm_args.add_argument(
+            "--template",
+            default=None,
+            type=str,
+            help="Custom template for building training datasets. "
+            "Useful for specialized multimodal tasks or custom data formats.",
         )
 
         ## ======================= diffusion model eval =======================
-        self.add_argument("--prompt_file", default=None, type=str, help="the prompt file to load prmpt.")
-
-        self.add_argument("--prompt", default=None, type=str, help="the prompt for test.")
-
-        self.add_argument(
+        diffusion_args = self.add_argument_group("diffusion model arguments")
+        diffusion_args.add_argument(
+            "--prompt_file",
+            default=None,
+            type=str,
+            help="File containing prompts for evaluation, one per line. "
+            "Use this for batch evaluation with multiple prompts.",
+        )
+        diffusion_args.add_argument(
+            "--prompt",
+            default=None,
+            type=str,
+            help="Single prompt for quick testing. " "Overrides prompt_file if both are specified.",
+        )
+        diffusion_args.add_argument(
             "--metrics",
             "--metric",
             default="clip",
-            help="support clip, clip-iqa, imagereward",
+            help="Evaluation metrics for generated images. "
+            "'clip': CLIP score measuring text-image alignment. "
+            "'clip-iqa': CLIP-based image quality assessment. "
+            "'imagereward': Learned metric for image quality.",
+        )
+        diffusion_args.add_argument(
+            "--image_save_dir",
+            default="./tmp_image_save",
+            type=str,
+            help="Directory to save generated images during evaluation. " "Useful for visual inspection of results.",
         )
 
-        self.add_argument(
-            "--image_save_dir", default="./tmp_image_save", type=str, help="path to save generated images"
-        )
 
-
-def setup_parser():
+def setup_parser(recipe="default"):
+    recipe = RECIPES[recipe]
     parser = BasicArgumentParser()
-
-    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
-
-    parser.add_argument("--iters", "--iter", default=200, type=int, help="iteration to tune each block")
-
-    parser.add_argument(
-        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
-    )
-
-    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
-
-    parser.add_argument(
-        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
-    )
-
     args = parser.parse_args()
-    return args
-
-
-def setup_best_parser():
-    parser = BasicArgumentParser()
-
-    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
-
-    parser.add_argument("--iters", "--iter", default=1000, type=int, help="iterations to tune each block")
-
-    parser.add_argument(
-        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
-    )
-
-    parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
-
-    parser.add_argument(
-        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
-    )
-
-    args = parser.parse_args()
-    args.low_gpu_mem_usage = True
-
-    return args
-
-
-def setup_light_parser():
-    parser = BasicArgumentParser()
-
-    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
-
-    parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
-
-    parser.add_argument(
-        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
-    )
-
-    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
-
-    parser.add_argument(
-        "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
-    )
-
-    args = parser.parse_args()
-
-    return args
-
-
-def setup_fast_parser():
-    parser = BasicArgumentParser()
-
-    parser.add_argument("--batch_size", "--train_bs", "--bs", default=4, type=int, help="train batch size")
-
-    parser.add_argument("--iters", default=200, type=int, help="iterations to tune each block")
-
-    parser.add_argument(
-        "--seqlen", "--seq_len", default=512, type=int, help="sequence length of the calibration samples"
-    )
-
-    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
-
-    parser.add_argument(
-        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
-    )
-
-    args = parser.parse_args()
-
-    return args
-
-
-def setup_eval_parser():
-
-    parser = EvalArgumentParser()
-    args = parser.parse_args()
+    for k, v in recipe.items():
+        if getattr(args, k) is None:
+            setattr(args, k, v)
     return args
 
 
@@ -582,11 +628,6 @@ def tune(args):
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
-    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
-        import shutil
-
-        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
-
     model.eval()
     clear_memory()
 
@@ -755,6 +796,12 @@ def tune(args):
             print("evaluation running time=%ds" % (time.time() - st))
 
 
+def setup_eval_parser():
+    parser = EvalArgumentParser()
+    args = parser.parse_args()
+    return args
+
+
 def run_eval():
     args = setup_eval_parser()
     if args.eval_task_by_task:
@@ -779,23 +826,18 @@ def run():
         tune(args)
 
 
-def run_mllm():
-    sys.argv.append("--mllm")
-    run()
-
-
 def run_best():
-    args = setup_best_parser()
+    args = setup_parser("best")
     tune(args)
 
 
 def run_light():
-    args = setup_light_parser()
+    args = setup_parser("light")
     tune(args)
 
 
 def run_fast():
-    args = setup_fast_parser()
+    args = setup_parser("fast")
     tune(args)
 
 
