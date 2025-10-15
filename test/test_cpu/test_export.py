@@ -532,8 +532,9 @@ class TestAutoRound(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
+
     def test_nvfp4_moe_actmax_rtn(self):
-        model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+        model_name = "/tf_dataset/auto_round/models/allenai/OLMoE-1B-7B-0125-Instruct"
         scheme = "nvfp4"
         autoround = AutoRound(
             model_name,
@@ -543,12 +544,11 @@ class TestAutoRound(unittest.TestCase):
             nsamples=2,
             dataset=self.llm_dataloader,
         )
-        autoround.quantize()
-        quantized_model_path = self.save_dir
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+    
 
     def test_nvfp4_moe_actmax_ar(self):
-        model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+        model_name = "/tf_dataset/auto_round/models/allenai/OLMoE-1B-7B-0125-Instruct"
         scheme = "nvfp4"
         autoround = AutoRound(
             model_name,
@@ -558,9 +558,7 @@ class TestAutoRound(unittest.TestCase):
             nsamples=2,
             dataset=self.llm_dataloader,
         )
-        autoround.quantize()
-        quantized_model_path = self.save_dir
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
 
 
 if __name__ == "__main__":
