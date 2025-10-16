@@ -173,7 +173,7 @@ class BaseCompressor(object):
             act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
             act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
-            enable_torch_compile (bool, optional): Enable compile_func for quant blocks/layers. Defaults to False.
+            enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
             device_map (str | dict, optional): Device placement map. Defaults to None.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
