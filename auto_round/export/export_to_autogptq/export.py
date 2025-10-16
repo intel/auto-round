@@ -103,6 +103,28 @@ def convert_to_autogptq_dynamic(regex_config: Dict[str, Dict[str, Any]]) -> Dict
     return converted
 
 
+def convert_from_autogptq_dynamic(dynamic_config: dict) -> dict:
+    """
+    Convert AutoGPTQ-style QuantizerConfig.dynamic into AutoRound-style extra_config.
+
+    Rules:
+    - '+:regex' => quantize => keep bits and other quantization keys
+    - '-:regex' => skip quantize => set bits to 16 (FP16 passthrough)
+    """
+    converted = {}
+    for name, cfg in dynamic_config.items():
+        # Strip the +: or -:
+        if name.startswith("+:"):
+            regex = name[2:]
+            # keep all config fields (bits, group_size, sym, etc.)
+            converted[regex] = dict(cfg)
+        elif name.startswith("-:"):
+            regex = name[2:]
+            # mark skipped layers with bits=16
+            converted[regex] = {"bits": 16, "act_bits": 16}
+    return converted
+
+
 def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  ##dese not support lm-head
         return
@@ -255,3 +277,4 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         model, output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
     )
     return model
+
