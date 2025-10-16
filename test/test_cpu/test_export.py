@@ -554,8 +554,10 @@ class TestAutoRound(unittest.TestCase):
     def test_nvfp4_moe_actmax_ar(self):
         model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
         layer_config = {
-            "self_attn": {"bits": 16, "act_bits": 16},
+            "q_proj": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
+            "experts.*2": {"bits": 16, "act_bits": 16},
+            "experts.*5": {"bits": 16, "act_bits": 16},
         }
         scheme = "nvfp4"
         autoround = AutoRound(

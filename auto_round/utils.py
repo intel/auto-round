@@ -2481,7 +2481,7 @@ def set_nested_attr(module, attr_name: str, value):
     attrs = attr_name.split(".")
     for attr in attrs[:-1]:
         if not hasattr(module, attr):
-            raise AttributeError(f"{module} has no attribute '{attr}'")
+            return None # No need to set act_max for fp layers
         module = getattr(module, attr)
     setattr(module, attrs[-1], value)
 
@@ -2546,7 +2546,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                 # For other MoE models (like Mixtral) with iterable experts
                 try:
                     set_amax_for_uncalibrated_experts(
-                        [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
+                        [getattr(expert, linear_name, None) for expert in sub_module.experts], attr_name=attr_name
                     )
                 except AttributeError as e:
                     # Provide more helpful debugging information
@@ -2838,3 +2838,4 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
