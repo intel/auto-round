@@ -196,9 +196,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
     for layer_name in layer_config:
-        if (
-            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
-        ):  ##lm head
+        if not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8:  ##lm head
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
@@ -258,4 +256,3 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-
