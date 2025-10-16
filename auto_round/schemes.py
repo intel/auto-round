@@ -15,6 +15,7 @@ import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
 from typing import Iterable, Optional, Union
+import torch
 
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
 
@@ -295,6 +296,7 @@ class AutoScheme:
     nsamples: Optional[int] = None
     seqlen: Optional[int] = None
     dataset: Optional[str] = None  # Import Notice no comma for each item
+    device_map: Optional[Union[str, torch.device, int, dict]] = None
 
     def __post_init__(self):
         if isinstance(self.options, str):

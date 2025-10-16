@@ -29,14 +29,15 @@ class GenScheme:
     """Generate and validate quantization schemes for model layers."""
 
     def __init__(
-        self,
-        auto_scheme: AutoScheme,  # TODO support shared layer
-        model: torch.nn.Module,
-        quant_layer_names: Iterable[str],
-        fixed_layer_scheme: dict[str, dict],
-        dataset: str = "pile-10k",  # TODO use auto-round dataset
-        device_map: Union[str, torch.device, int, dict, None] = None,
-        tokenizer=None,
+            self,
+            auto_scheme: AutoScheme,  # TODO support shared layer
+            model: torch.nn.Module,
+            quant_layer_names: Iterable[str],
+            fixed_layer_scheme: dict[str, dict],
+            dataset: str = "pile-10k",  # TODO use auto-round dataset
+            device_map: Union[str, torch.device, int, dict, None] = None,
+            tokenizer=None,
+            enable_torch_compile=False,
     ):
         self.auto_scheme = auto_scheme
         self.model = model
@@ -44,7 +45,7 @@ class GenScheme:
         self.quant_layer_names = quant_layer_names
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
-        self.device_map = device_map
+        self.device_map = device_map if self.auto_scheme.device_map is None else self.auto_scheme.device_map
         self._check_configs()
 
     def _check_configs(self) -> None:
@@ -105,23 +106,27 @@ class GenScheme:
             input_features, out_features = get_layer_features(layer)
             if input_features is None:
                 continue
+            if input_features % 256 == 0 or isinstance(layer, torch.nn.Embedding):
+                continue
 
             # Determine fallback quantization type
             if input_features % 256 != 0 and input_features % 32 != 0:
                 new_type = "gguf:bf16"
-            else:
+            elif input_features % 256 != 0:
                 bits = scheme["bits"]
                 prefix_idx = 0 if scheme["sym"] else 1
                 new_type = f"gguf:q{bits}_" + f"{prefix_idx}"
                 if new_type not in GGUF_INNER_CONFIG:
-                    new_type = f"gguf:q{bits}_" + f"{1-prefix_idx}"
+                    new_type = f"gguf:q{bits}_" + f"{1 - prefix_idx}"
                     if new_type not in GGUF_INNER_CONFIG:
                         current_type = f"gguf:q{bits}_k"
                         new_type = _gguf_type_fallback(current_type)
 
             # Apply fallback configuration
             target_config = GGUF_INNER_CONFIG[new_type]
-            scheme.update(target_config)
+            for key in scheme.keys():
+                if key in target_config:
+                    scheme[key] = target_config[key]
 
             logger.warning(f"Fallback applied: {name} → {new_type}")
 

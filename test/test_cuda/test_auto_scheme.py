@@ -37,7 +37,6 @@ class TestAutoScheme(unittest.TestCase):
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, disable_opt_rtn=True)
         model, layer_config = ar.quantize()
-        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
         avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -95,7 +94,7 @@ class TestAutoScheme(unittest.TestCase):
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     @multi_card
-    def test_dict_device_map(self):  # TODO rtn mode has bug
+    def test_dict_device_map(self):
         model_name = "/models/Qwen3-8B"
         target_bits = 8.755
         device_map = {"up_proj": 0, "down_proj": 1}
@@ -113,7 +112,6 @@ class TestAutoScheme(unittest.TestCase):
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()
-        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -125,7 +123,6 @@ class TestAutoScheme(unittest.TestCase):
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()
-        # self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -164,7 +161,7 @@ class TestAutoScheme(unittest.TestCase):
     def test_lm_head_and_mix_dtype(self):
         model_name = "/models/Qwen3-8B"
         target_bits = 6
-        scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
+        scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "MXFP8"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, quant_lm_head=True)
         model, layer_config = ar.quantize()
         self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
