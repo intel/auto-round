@@ -1651,9 +1651,7 @@ class BaseCompressor(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if (
-                    is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
-                ) or is_static_wfp8afp8(self):
+                if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -2911,11 +2909,7 @@ class BaseCompressor(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
-        if (
-            is_nv_fp(self.act_data_type)
-            and hasattr(self, "formats")
-            and any("nv_fp" in format_ for format_ in self.formats)
-        ):
+        if is_nv_fp(self.act_data_type):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
