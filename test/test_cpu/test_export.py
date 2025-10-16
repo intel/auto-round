@@ -532,9 +532,12 @@ class TestAutoRound(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_nvfp4_moe_actmax_rtn(self):
-        model_name = "/tf_dataset/auto_round/models/allenai/OLMoE-1B-7B-0125-Instruct"
+        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        layer_config = {
+            "self_attn": {"bits": 16, "act_bits": 16},
+            "mlp.shared_experts": {"bits": 16, "act_bits": 16},
+        }
         scheme = "nvfp4"
         autoround = AutoRound(
             model_name,
@@ -543,12 +546,17 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             nsamples=2,
             dataset=self.llm_dataloader,
+            layer_config=layer_config,
         )
-        autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
-    
+        compressed_model, _ = autoround.quantize()
+        assert hasattr(compressed_model.model.layers[1].mlp.experts[0].gate_proj.orig_layer, "act_max")
 
     def test_nvfp4_moe_actmax_ar(self):
-        model_name = "/tf_dataset/auto_round/models/allenai/OLMoE-1B-7B-0125-Instruct"
+        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        layer_config = {
+            "self_attn": {"bits": 16, "act_bits": 16},
+            "mlp.shared_experts": {"bits": 16, "act_bits": 16},
+        }
         scheme = "nvfp4"
         autoround = AutoRound(
             model_name,
@@ -557,6 +565,7 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             nsamples=2,
             dataset=self.llm_dataloader,
+            layer_config=layer_config,
         )
         autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
 
