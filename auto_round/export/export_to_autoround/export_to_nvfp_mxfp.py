@@ -174,7 +174,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
-                if layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
+                if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")
                     from auto_round.data_type.nvfp import calculate_gparam
 
