@@ -1,10 +1,10 @@
-
 import shutil
 import sys
 import unittest
 
 sys.path.insert(0, "../..")
 from auto_round import AutoRound, AutoRoundConfig, AutoScheme
+
 
 class TestAutoScheme(unittest.TestCase):
     @classmethod
