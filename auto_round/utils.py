@@ -2481,7 +2481,7 @@ def set_nested_attr(module, attr_name: str, value):
     attrs = attr_name.split(".")
     for attr in attrs[:-1]:
         if not hasattr(module, attr):
-            return None # No need to set act_max for fp layers
+            return None  # No need to set act_max for fp layers
         module = getattr(module, attr)
     setattr(module, attrs[-1], value)
 
@@ -2838,4 +2838,3 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
-
