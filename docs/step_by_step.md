@@ -309,6 +309,8 @@ ar.quantize_and_save()
 
 `shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
 
+`device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
+
 In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
 
 
