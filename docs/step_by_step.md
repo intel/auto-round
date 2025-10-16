@@ -314,11 +314,12 @@ In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accel
 
 ```python
 from auto_round import AutoRound, AutoScheme
+
 shared_layers = [
-            ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
-            ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
-            ("fc1", "fc2"),
-        ]
+    ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
+    ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
+    ("fc1", "fc2"),
+]
 target_bits = 5.0
 model_name = "facebook/opt-125m"
 scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
