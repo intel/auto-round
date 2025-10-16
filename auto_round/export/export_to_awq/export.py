@@ -165,4 +165,3 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model
-

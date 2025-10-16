@@ -598,4 +598,3 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             process_requirement(requirements, target_device, "warning")
 
     return model, used_backends
-
