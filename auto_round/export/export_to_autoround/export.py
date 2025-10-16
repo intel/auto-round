@@ -327,12 +327,17 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     for layer_name in layer_config:
         if (
             not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
-        ):  ##lm head ##TODO fix act and so on
+        ):  
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
+            extra_config[layer_name]["act_bits"] = layer_config[layer_name]["act_bits"]
+            extra_config[layer_name]["act_data_type"] = layer_config[layer_name]["act_data_type"]
+            extra_config[layer_name]["act_group_size"] = layer_config[layer_name]["act_group_size"]
+            extra_config[layer_name]["act_sym"] = layer_config[layer_name]["act_sym"]
+
         elif layer_config[layer_name]["in_blocks"] or (
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
@@ -388,3 +393,4 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+
