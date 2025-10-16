@@ -102,18 +102,19 @@ class GenScheme:
                 continue  # Skip non-GGUF k-quant layers
 
             layer = get_module(self.model, name)
-            input_features = get_layer_features(layer)
+            input_features, out_features = get_layer_features(layer)
+            if input_features is None:
+                continue
 
             # Determine fallback quantization type
             if input_features % 256 != 0 and input_features % 32 != 0:
                 new_type = "gguf:bf16"
             else:
                 bits = scheme["bits"]
-                new_type = f"gguf:q{bits}_0"
-
+                prefix_idx = 0 if scheme["sym"] else 1
+                new_type = f"gguf:q{bits}_" + f"{prefix_idx}"
                 if new_type not in GGUF_INNER_CONFIG:
-                    new_type = f"gguf:q{bits}_1"
-
+                    new_type = f"gguf:q{bits}_" + f"{1-prefix_idx}"
                     if new_type not in GGUF_INNER_CONFIG:
                         current_type = f"gguf:q{bits}_k"
                         new_type = _gguf_type_fallback(current_type)

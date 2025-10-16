@@ -1997,14 +1997,10 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                     if config.get("super_group_size", None) is not None:
                         new_type = new_type[:bits_index] + str(config["bits"]) + "_k"
                     if config.get("super_group_size", None) is None or new_type not in GGUF_INNER_CONFIG:
-                        if config.get("sym", True):
-                            new_type = new_type[:bits_index] + str(config["bits"]) + "_0"
-                            if new_type not in GGUF_INNER_CONFIG:
-                                new_type = new_type[:bits_index] + str(config["bits"]) + "_1"
-                        if not config.get("sym", True):
-                            new_type = new_type[:bits_index] + str(config["bits"]) + "_1"
-                            if new_type not in GGUF_INNER_CONFIG:
-                                new_type = new_type[:bits_index] + str(config["bits"]) + "_0"
+                        prefix_idx = 0 if config.get("sym", True) else 1
+                        new_type = new_type[:bits_index] + str(config["bits"]) + f"{prefix_idx}"
+                        if new_type not in GGUF_INNER_CONFIG:
+                            new_type = new_type[:bits_index] + str(config["bits"]) + f"{1-prefix_idx}"
                     if new_type not in GGUF_INNER_CONFIG:
                         raise ValueError(
                             f"the setting in layer_config {layer_name} "

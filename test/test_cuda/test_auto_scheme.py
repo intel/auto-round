@@ -3,11 +3,8 @@ import re
 import shutil
 import sys
 import unittest
-
-from auto_round.testing_utils import multi_card
-
 sys.path.insert(0, "../..")
-
+from auto_round.testing_utils import multi_card
 from auto_round import AutoRound, AutoRoundConfig, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.eval.evaluation import simple_evaluate
