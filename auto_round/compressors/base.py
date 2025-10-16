@@ -334,7 +334,8 @@ class BaseCompressor(object):
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
-        self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
+        self.is_packing_immediate = True  # whether to pack the layer immediately after tuning
+        self.save_block_immediate = True
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -2972,6 +2973,7 @@ class BaseCompressor(object):
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+        import torch
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         input_ids = to_dtype(input_ids, tmp_dtype)
 
@@ -3071,6 +3073,227 @@ class BaseCompressor(object):
                         PACKING_LAYER_WITH_FORMAT[target_backend](
                             tmp_m.tmp_name, self.model, self.formats[0], device=self.device
                         )
+
+            # ---- Save the (just packed) block in a HF-like sharded way (per block) ----
+            if self.save_block_immediate:
+                # -------------------------------------------------------------
+                # Incremental (cross‑block) sharded saving aligned with
+                # HuggingFace model.save_pretrained style.
+                # Tensors from consecutive blocks are coalesced into shards
+                # not exceeding max_shard_size; a shard may contain tensors
+                # from multiple blocks. Final shard file names are only
+                # normalized when the last block group is processed.
+                # -------------------------------------------------------------
+                import os, json, torch
+                from collections import OrderedDict
+
+                # User configurable (can be preset on self)
+                max_shard_size = getattr(self, "max_shard_size", "5GB")
+                safe_serialization = getattr(self, "safe_serialization", True)
+
+                def _parse_size(size_str: str) -> int:
+                    s = size_str.strip().upper()
+                    if s.endswith("GB"):
+                        return int(s[:-2]) * (1024 ** 3)
+                    if s.endswith("MB"):
+                        return int(s[:-2]) * (1024 ** 2)
+                    if s.endswith("KB"):
+                        return int(s[:-2]) * 1024
+                    return int(s)
+
+                # Init global accumulators (once)
+                if not hasattr(self, "_shard_init_done"):
+                    self._shard_init_done = True
+                    self._max_shard_bytes = _parse_size(str(max_shard_size))
+                    self._use_safetensors = False
+                    if safe_serialization:
+                        try:
+                            from safetensors.torch import save_file as _sf  # noqa
+                            self._use_safetensors = True
+                        except ImportError:
+                            logger.warning("safe_serialization=True but safetensors not installed; fallback to torch.save.")
+                    self._current_shard_tensors = OrderedDict()
+                    self._current_shard_size = 0
+                    self._shard_meta = []         # list of dicts: {file, params}
+                    self._global_weight_map = {}  # param_name -> final shard file (filled after finalize)
+                    self._shard_counter = 0
+                    self._shard_suffix = "safetensors" if self._use_safetensors else "bin"
+                    # new global counters
+                    self._total_param_elems = 0
+                    self._total_param_size_bytes = 0
+                    # Directory
+                    self._packed_blocks_root = os.path.join(
+                        self._get_save_folder_name(self.formats[0]), "packed_blocks"
+                    )
+                    os.makedirs(self._packed_blocks_root, exist_ok=True)
+
+                # Collect tensors directly from current (multi)block `m`
+                flat_tensors = OrderedDict()
+                for k, v in m.state_dict().items():
+                    if isinstance(v, torch.Tensor):
+                        flat_tensors[f"{m.tmp_name}.{k}"] = v.detach().cpu()
+                # Append tensors into the running shard(s)
+                def _flush_current_shard():
+                    if len(self._current_shard_tensors) == 0:
+                        return
+                    self._shard_counter += 1
+                    tmp_name = f"model-shard-{self._shard_counter:05d}.{self._shard_suffix}"  # temporary name
+                    tmp_path = os.path.join(self._packed_blocks_root, tmp_name)
+                    if self._use_safetensors:
+                        from safetensors.torch import save_file
+                        save_file(self._current_shard_tensors, tmp_path)
+                    else:
+                        torch.save(self._current_shard_tensors, tmp_path)
+                    params = list(self._current_shard_tensors.keys())
+                    self._shard_meta.append({"tmp_file": tmp_name, "params": params})
+                    self._current_shard_tensors = OrderedDict()
+                    self._current_shard_size = 0
+                    clear_memory()
+
+                for pname, tensor in flat_tensors.items():
+                    t_elems = tensor.numel()
+                    t_size = t_elems * tensor.element_size()
+                    # accumulate global stats
+                    self._total_param_elems += t_elems
+                    self._total_param_size_bytes += t_size
+                    if t_size > self._max_shard_bytes:
+                        _flush_current_shard()
+                        self._current_shard_tensors[pname] = tensor
+                        self._current_shard_size = t_size
+                        _flush_current_shard()
+                        continue
+                    if self._current_shard_size + t_size > self._max_shard_bytes and self._current_shard_size > 0:
+                        _flush_current_shard()
+                    self._current_shard_tensors[pname] = tensor
+                    self._current_shard_size += t_size
+
+                _flush_current_shard()
+                del flat_tensors
+                clear_memory()
+
+                # Move packed layers to meta to free GPU memory
+                mv_module_from_gpu(m, low_cpu_mem_usage=True)
+                breakpoint()
+                last_group = (i + nblocks) >= len(block_names)
+                if last_group:
+                    # 1) Flush any pending tensors from the last processed (multi)block
+                    _flush_current_shard()
+
+                    # 2) Collect already saved parameter names
+                    already_saved = set()
+                    for meta in self._shard_meta:
+                        for p in meta["params"]:
+                            already_saved.add(p)
+
+                    # 3) Add the remaining (unsaved) model weights into new shard(s),
+                    # do not overwrite the already saved weights.
+                    try:
+                        full_sd = self.model.state_dict()
+                    except Exception as e:
+                        logger.warning(f"failed to obtain full state_dict for remaining weights: {e}")
+                        full_sd = {}
+
+                    for pname, tensor in full_sd.items():
+                        if "lm_head" in pname:
+                            continue
+                        if not isinstance(tensor, torch.Tensor):
+                            continue
+                        if pname in already_saved:
+                            continue  # skip weights already saved
+
+                        # Size accounting
+                        t_elems = tensor.numel()
+                        t_size = t_elems * tensor.element_size()
+
+                        # Update global stats (these counters may already include earlier packed weights)
+                        self._total_param_elems += t_elems
+                        self._total_param_size_bytes += t_size
+
+                        # If this tensor alone exceeds shard size -> dedicated shard
+                        if t_size > self._max_shard_bytes:
+                            _flush_current_shard()
+                            self._current_shard_tensors[pname] = tensor.detach().cpu()
+                            self._current_shard_size = t_size
+                            _flush_current_shard()
+                            continue
+
+                        # If adding this tensor would overflow current shard -> flush current first
+                        if (
+                            self._current_shard_size + t_size > self._max_shard_bytes
+                            and self._current_shard_size > 0
+                        ):
+                            _flush_current_shard()
+
+                        # Add to current shard
+                        self._current_shard_tensors[pname] = tensor.detach().cpu()
+                        self._current_shard_size += t_size
+
+                    # Flush any remaining unsaved leftover tensors
+                    _flush_current_shard()
+
+                    # 4) Finalize: rename temp shard files to HF-style names and build index
+                    total_shards = self._shard_counter
+                    if total_shards == 0:
+                        logger.warning("no tensors saved across all blocks")
+                    else:
+                        final_names = []
+                        for idx, meta in enumerate(self._shard_meta, start=1):
+                            old_tmp = meta["tmp_file"]
+                            old_path = os.path.join(self._packed_blocks_root, old_tmp)
+                            if total_shards == 1:
+                                new_name = f"model.{self._shard_suffix}"
+                            else:
+                                new_name = f"model-{idx:05d}-of-{total_shards:05d}.{self._shard_suffix}"
+                            new_path = os.path.join(self._packed_blocks_root, new_name)
+                            os.rename(old_path, new_path)
+                            final_names.append(new_name)
+                            for p in meta["params"]:
+                                self._global_weight_map[p] = new_name
+
+                        index_fname = (
+                            "model.safetensors.index.json"
+                            if self._use_safetensors
+                            else "model.bin.index.json"
+                        )
+                        index_path = os.path.join(self._packed_blocks_root, index_fname)
+                        index_data = {
+                            "metadata": {
+                                "format": "safetensors" if self._use_safetensors else "pytorch",
+                                "total_shards": total_shards,
+                                "total_parameters": int(getattr(self, "_total_param_elems", 0)),
+                                "total_size": int(getattr(self, "_total_param_size_bytes", 0)),
+                            },
+                            "weight_map": self._global_weight_map,
+                        }
+                        with open(index_path, "w", encoding="utf-8") as f:
+                            json.dump(index_data, f, indent=2)
+                        logger.info(
+                            f"saved {total_shards} shard(s) (HF-style, including remaining unsaved weights) to "
+                            f"{self._packed_blocks_root} (index: {index_fname})"
+                        )
+                    
+                    # Cleanup attributes to release memory after final shard is written
+                    try:
+                        attrs_to_cleanup = [
+                            "_current_shard_tensors",
+                            "_current_shard_size",
+                            "_shard_counter",
+                            "_max_shard_bytes",
+                            "_use_safetensors",
+                            "_shard_suffix",
+                            "_packed_blocks_root",
+                            "_total_param_elems",
+                            "_total_param_size_bytes",
+                            "_shard_init_done",
+                            "_shard_meta",
+                            "_global_weight_map",
+                        ]
+                        for _attr in attrs_to_cleanup:
+                            if hasattr(self, _attr):
+                                delattr(self, _attr)
+                        clear_memory()
+                    except Exception as _cleanup_err:
+                        logger.warning(f"shard cleanup warning: {_cleanup_err}")
         if pbar is not None:
             pbar.update(1)
 
