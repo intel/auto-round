@@ -13,6 +13,7 @@
 # limitations under the License.
 import argparse
 import os
+import time
 
 from auto_round.utils import (
     clear_memory,
@@ -27,7 +28,12 @@ class EvalArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
+            "--model",
+            "--model_name",
+            "--model_name_or_path",
+            default="facebook/opt-125m",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
         self.add_argument("--mllm", action="store_true", help="whether to eval multi-modal model.")
         self.add_argument(
@@ -48,15 +54,29 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--task",
             default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
             "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
-            help="lm-eval tasks",
+            help="LM-Evaluation-Harness tasks to run. "
+            "Specify specific tasks like 'mmlu,wikitext' for custom evaluation.",
         )
         self.add_argument(
-            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code"
+            "--disable_trust_remote_code",
+            action="store_true",
+            help="Disable trusting remote code when loading models. "
+            "Use for security if you don't trust the model source.",
         )
-        self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
-        self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
+        self.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+            "--eval_bs", "--bs", "--batch_size", default=None, type=int, help="The batch size for evaluation"
+        )
+        self.add_argument(
+            "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "
+        )
+        self.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="Torch data type for model loading during evaluation. "
+            "Options: 'float16', 'bfloat16', 'float32'. "
+            "Should match your hardware capabilities for best performance.",
         )
         self.add_argument(
             "--limit",
@@ -64,29 +84,39 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default=None,
             metavar="N|0<N<1",
             help="Limit the number of examples per task. "
-            "If <1, limit is a percentage of the total number of examples.",
+            "Integer: exact number of examples (e.g., 1000). "
+            "Float between 0-1: fraction of total examples.",
         )
-        # vllm related arguments
-        self.add_argument("--revision", default=None, type=str, help="model revision for vllm")
-        self.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
         self.add_argument(
+            "--eval_backend",
+            default="hf",
+            type=str,
+            choices=["hf", "vllm"],
+            help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
+        )
+
+        # vllm related arguments
+        vllm_args = self.add_argument_group("vllm backend arguments")
+        vllm_args.add_argument("--revision", default=None, type=str, help="model revision for vllm")
+        vllm_args.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
+        vllm_args.add_argument(
             "--tokenizer_mode", default="auto", type=str, help="tokenizer mode for vllm (e.g. auto/fast/slow)"
         )
-        self.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
-        self.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
-        self.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
-        self.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
-        self.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
-        self.add_argument("--quantization", default=None, type=str, help="quantization setting for vllm")
-        self.add_argument("--max_gen_toks", default=256, type=int, help="max generation tokens for vllm")
-        self.add_argument("--swap_space", default=4, type=float, help="swap space (GB) for vllm")
-        self.add_argument("--max_batch_size", default=None, type=int, help="max batch size for vllm")
-        self.add_argument("--max_length", default=None, type=int, help="max generation length for vllm")
-        self.add_argument("--max_model_len", default=None, type=int, help="maximum model sequence length for vllm")
-        self.add_argument(
+        vllm_args.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
+        vllm_args.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
+        vllm_args.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
+        vllm_args.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
+        vllm_args.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
+        vllm_args.add_argument("--quantization", default=None, type=str, help="quantization setting for vllm")
+        vllm_args.add_argument("--max_gen_toks", default=256, type=int, help="max generation tokens for vllm")
+        vllm_args.add_argument("--swap_space", default=4, type=float, help="swap space (GB) for vllm")
+        vllm_args.add_argument("--max_batch_size", default=None, type=int, help="max batch size for vllm")
+        vllm_args.add_argument("--max_length", default=None, type=int, help="max generation length for vllm")
+        vllm_args.add_argument("--max_model_len", default=None, type=int, help="maximum model sequence length for vllm")
+        vllm_args.add_argument(
             "--gpu_memory_utilization", default=0.9, type=float, help="target GPU memory utilization for vllm"
         )
-        self.add_argument("--lora_local_path", default=None, type=str, help="local LoRA path for vllm")
+        vllm_args.add_argument("--lora_local_path", default=None, type=str, help="local LoRA path for vllm")
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -104,8 +134,10 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
-    import time
-
+    if args.eval_backend == "vllm":
+        assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
+        eval_with_vllm(args)
+        return
     tasks, model_args, device_str = _eval_init(
         args.tasks, args.model, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
     )
@@ -292,7 +324,7 @@ def eval_with_vllm(args):
 
     st = time.time()
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    device_str, _ = get_device_and_parallelism(args.device)
+    device_str, _ = get_device_and_parallelism(args.device_map)
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if (batch_size := args.eval_bs) is None:
         batch_size = "auto:8"

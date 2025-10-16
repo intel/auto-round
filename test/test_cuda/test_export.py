@@ -9,7 +9,7 @@ import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_awq, require_optimum
+from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
 
 class LLMDataLoader:
@@ -185,6 +185,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -218,6 +219,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_optimum
     @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format_fp_qsave_layers(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         layer_config = {

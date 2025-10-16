@@ -11,14 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from auto_round.compressors.base import *
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
-from auto_round.compressors.config import (
-    DiffusionExtraConfig,
-    ExtraConfig,
-    MLLMExtraConfig,
-    SchemeExtraConfig,
-    TuningExtraConfig,
-)
