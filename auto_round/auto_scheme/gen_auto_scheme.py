@@ -46,6 +46,7 @@ class GenScheme:
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
         self.device_map = device_map if self.auto_scheme.device_map is None else self.auto_scheme.device_map
+        self.enable_torch_compile = enable_torch_compile
         self._check_configs()
 
     def _check_configs(self) -> None:
@@ -83,6 +84,7 @@ class GenScheme:
             self.dataset,
             self.tokenizer,
             device_map=self.device_map,
+            enable_torch_compile=self.enable_torch_compile,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config

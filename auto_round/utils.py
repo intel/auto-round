@@ -996,7 +996,7 @@ def compile_func_on_cuda_or_cpu(func):
 
 
 def compile_func(
-    fun: Union[torch.nn.Module, Callable], device: Union[torch.nn.Module, Callable]
+    fun: Union[torch.nn.Module, Callable], device: Union[str,torch.device,int]
 ) -> Union[torch.nn.Module, Callable]:
     """Compile function on the specified device."""
     if "hpu" in str(device):

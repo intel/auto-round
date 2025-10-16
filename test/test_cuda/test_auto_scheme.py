@@ -179,3 +179,14 @@ class TestAutoScheme(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_enable_torch_compile(self):
+        model_name = "/models/opt-125m"
+        scheme = AutoScheme(avg_bits=2, options=("W2A16"),ignore_scale_zp_bits=True)
+        ar = AutoRound(model=model_name, scheme=scheme,enable_torch_compile=True)
+        ar.quantize_and_save(self.save_dir)
+        model_args = f"pretrained={self.save_dir}"
+        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
+        shutil.rmtree(self.save_dir, ignore_errors=True)

@@ -201,6 +201,9 @@ class BaseCompressor(object):
             ...         "act_group_size": None,
             ...         "act_sym": None,
             ...     },
+            ...     "layer2": {
+            ...         "W8A16"
+            ...      }
             ...     # ...
             ... }
         """
@@ -318,76 +321,11 @@ class BaseCompressor(object):
         if device_map is None:
             device_map = 0
 
+        self.enable_torch_compile = enable_torch_compile
+        self._adjust_torch_compile(enable_torch_compile)
+
         if isinstance(scheme, AutoScheme):
-            if self.mllm:
-                logger.info("AutoScheme is not yet supported for multimodal LLMs.")
-                sys.exit(-1)
-
-            if getattr(model, "is_fp8", False):
-                logger.info("AutoScheme does not currently support FP8 models.")
-                sys.exit(-1)
-
-            all_dtypes = []
-            for option in scheme.options:
-                # Skip pure BF16 option
-                if option == "BF16":
-                    continue
-
-                # Resolve the quantization scheme or data type
-                dtype = "int"
-                if isinstance(option, str):
-                    option = preset_name_to_scheme(option)
-
-                if isinstance(option, QuantizationScheme):
-                    dtype = option.data_type
-                elif isinstance(option, dict):
-                    dtype = option.get("data_type", "int")
-
-                all_dtypes.append(dtype)
-
-            # Check for mixed data types
-            unique_dtypes = set(all_dtypes)
-            if len(unique_dtypes) > 1:
-                logger.warning(
-                    "Models with mixed data_types "
-                    "cannot yet be exported to real formats except GGUF. "
-                    "Please save the model using the `fake` format for now."
-                )
-
-            layer_config, self.has_qlayer_outside_block = set_layer_config(
-                self.model,
-                self.layer_config,
-                self.scheme,
-                self.scale_dtype,
-                self.supported_types,
-                self.inner_supported_types,
-                self.quant_block_list,
-                self.fp_layers,
-                self.quant_lm_head,
-                enable_gguf_official_mixed=False,
-                is_mllm=self.mllm,
-            )
-            quant_layer_names = layer_config.keys()
-            scheme_keys = {f.name for f in fields(QuantizationScheme)}
-            fixed_layer_scheme_new = {
-                k: {key: v[key] for key in scheme_keys & v.keys()}
-                for k, v in layer_config.items()
-                if v.get("fixed_by_user", False)
-            }
-
-            # mainly using quant_layers and fixed by users
-            from auto_round.auto_scheme.gen_auto_scheme import GenScheme
-
-            gen_scheme = GenScheme(
-                scheme,
-                self.model,
-                quant_layer_names,
-                fixed_layer_scheme_new,
-                dataset,
-                device_map=device_map,
-                tokenizer=self.tokenizer,
-            )
-            self.layer_config = gen_scheme.get_layer_config()
+            self.layer_config = self._gen_auto_scheme(model,scheme,dataset,device_map)
 
         # Set device, must place after model loading
         self._set_device(device_map)
@@ -453,8 +391,7 @@ class BaseCompressor(object):
             self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
         self.batch_dim = None
         self.infer_bs_coeff = 1
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
+
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
@@ -463,6 +400,81 @@ class BaseCompressor(object):
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
+
+    def _gen_auto_scheme(self,model:torch.nn.Module,scheme:AutoScheme,dataset:str,device_map:Union[str,int,dict,torch.device])->dict[str,dict]:
+        if self.mllm:
+            logger.info("AutoScheme is not yet supported for multimodal LLMs.")
+            sys.exit(-1)
+
+        if getattr(model, "is_fp8", False):
+            logger.info("AutoScheme does not currently support FP8 models.")
+            sys.exit(-1)
+
+        all_dtypes = []
+        for option in scheme.options:
+            # Skip pure BF16 option
+            if option == "BF16":
+                continue
+
+            # Resolve the quantization scheme or data type
+            dtype = "int"
+            if isinstance(option, str):
+                option = preset_name_to_scheme(option)
+
+            if isinstance(option, QuantizationScheme):
+                dtype = option.data_type
+            elif isinstance(option, dict):
+                dtype = option.get("data_type", "int")
+
+            all_dtypes.append(dtype)
+
+        # Check for mixed data types
+        unique_dtypes = set(all_dtypes)
+        if len(unique_dtypes) > 1:
+            logger.warning(
+                "Models with mixed data_types "
+                "cannot yet be exported to real formats except GGUF. "
+                "Please save the model using the `fake` format for now."
+            )
+
+        layer_config, self.has_qlayer_outside_block = set_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=False,
+            is_mllm=self.mllm,
+        )
+        quant_layer_names = layer_config.keys()
+        scheme_keys = {f.name for f in fields(QuantizationScheme)}
+        fixed_layer_scheme_new = {
+            k: {key: v[key] for key in scheme_keys & v.keys()}
+            for k, v in layer_config.items()
+            if v.get("fixed_by_user", False)
+        }
+
+        # mainly using quant_layers and fixed by users
+        from auto_round.auto_scheme.gen_auto_scheme import GenScheme
+
+        gen_scheme = GenScheme(
+            scheme,
+            self.model,
+            quant_layer_names,
+            fixed_layer_scheme_new,
+            dataset,
+            device_map=device_map,
+            tokenizer=self.tokenizer,
+            enable_torch_compile=self.enable_torch_compile,
+        )
+        layer_config = gen_scheme.get_layer_config()
+        return layer_config
+
 
     def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
         if hasattr(self, "device") and self.device is not None:
