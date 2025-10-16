@@ -49,6 +49,22 @@ class TestAutoRound(unittest.TestCase):
         if module.bits != 8:
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
+    def test_layer_config(self):
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}
+        autoround = AutoRound(
+            model_name,
+            self.tokenizer,
+            scheme="NVFP4",
+            iters=0,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config,
+            amp=False,
+        )
+        autoround.quantize_and_save(self.save_folder, inplace=False, format="fake")
+        shutil.rmtree(self.save_folder)
+
     def test_remove_whole_block(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         layer_config = {
@@ -72,7 +88,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_consective_quant(self):
+    def test_consecutive_quant(self):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
             self.model,
@@ -332,6 +348,37 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
+    def test_device_map_dict(self):
+        bits, group_size, sym = 4, 128, False
+        device_map = {".*": "cpu"}
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            device_map=device_map,
+        )
+        autoround.quantize()
+
+        # test model_name
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        autoround = AutoRound(
+            model_name,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            device_map=device_map,
         )
         autoround.quantize()
 
@@ -689,6 +736,7 @@ class TestAutoRound(unittest.TestCase):
                 iters=1,
                 layer_config=layer_config,
             )
+            ar.quantize()
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"

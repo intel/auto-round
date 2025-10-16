@@ -97,9 +97,9 @@ class QuantLinear(nn.Module):
         self.scales = scales_t.clone().half()
 
         W = linear.weight.data.to(device).clone()
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
@@ -132,7 +132,7 @@ class QuantLinear(nn.Module):
             i = 0
             col = 0
             while col < qzeros.shape[1]:
-                packed_zeros = torch.tensor(zeros[:, i : i + (32 // self.bits)]).to(dtype=torch.int32)
+                packed_zeros = zeros[:, i : i + (32 // self.bits)].clone().to(dtype=torch.int32)
                 shifts = torch.arange(0, (32 // self.bits)) * self.bits
                 shifted = packed_zeros << shifts
                 qzeros[:, col] |= shifted.sum(dim=-1)
@@ -156,9 +156,9 @@ class QuantLinear(nn.Module):
         self.scales = scales_t.clone().half()
 
         W = linear.weight.data.to(device).clone()
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)

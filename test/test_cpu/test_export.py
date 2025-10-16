@@ -504,6 +504,73 @@ class TestAutoRound(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
+    def test_nvfp4_autoround_save_quantized(self):
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        from transformers import AutoConfig
+
+        scheme = "NVFP4"
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            scheme="NVFP4",
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize()
+        compressed_model = autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
+        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        assert (
+            hasattr(tmp_layer, "weight_scale")
+            and hasattr(tmp_layer, "weight_global_scale")
+            and hasattr(tmp_layer, "input_global_scale")
+            and tmp_layer.weight_packed.dtype is torch.uint8
+            and tmp_layer.weight_scale.dtype is torch.float8_e4m3fn
+            and tmp_layer.weight_scale.shape[0] == 768
+        ), "Illegal NVFP4 packing name or data_type or shape"
+        shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_nvfp4_moe_actmax_rtn(self):
+        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        layer_config = {
+            "self_attn": {"bits": 16, "act_bits": 16},
+            "mlp.shared_experts": {"bits": 16, "act_bits": 16},
+        }
+        scheme = "nvfp4"
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=0,
+            seqlen=2,
+            nsamples=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config,
+        )
+        compressed_model, _ = autoround.quantize()
+        assert hasattr(compressed_model.model.layers[1].mlp.experts[0].gate_proj.orig_layer, "act_max")
+
+    def test_nvfp4_moe_actmax_ar(self):
+        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        layer_config = {
+            "q_proj": {"bits": 16, "act_bits": 16},
+            "mlp.shared_experts": {"bits": 16, "act_bits": 16},
+            "experts.*2": {"bits": 16, "act_bits": 16},
+            "experts.*5": {"bits": 16, "act_bits": 16},
+        }
+        scheme = "nvfp4"
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=1,
+            seqlen=2,
+            nsamples=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config,
+        )
+        autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+
 
 if __name__ == "__main__":
     unittest.main()

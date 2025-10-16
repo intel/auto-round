@@ -241,7 +241,7 @@ def get_layer_config(model, quantization_config):
     # Get layer names that will be quantized
     layer_names = []
     for n, m in model.named_modules():
-        if not isinstance(m, SUPPORTED_LAYER_TYPES):
+        if type(m) not in SUPPORTED_LAYER_TYPES:
             continue
         if check_start_with_block_name(n, quant_block_list):
             layer_names.append(n)
@@ -350,9 +350,9 @@ def _replace_by_quant_layers(
 
 def _get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         return layer.in_features, layer.out_features
-    elif isinstance(layer, Conv1D):  # TODO: Verify correctness
+    elif type(layer) == Conv1D:  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
     return None, None  # Unsupported layer type
 
@@ -397,6 +397,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         AutoRoundFormat.FP8_STATIC.value in layer_backend
         or AutoRoundFormat.MXFP8.value in layer_backend
         or AutoRoundFormat.MXFP4.value in layer_backend
+        or AutoRoundFormat.NVFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 
@@ -493,7 +494,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         _import_exllamav2_kernels()
 
     # Determine common data type across backends
-    data_types = [set(BackendInfos[b].dtype) for b in used_backends]
+    data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
     common_dtypes = set.intersection(*data_types) if data_types else set()
 
     # Force model dtype if needed
@@ -568,10 +569,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     # Suggest a better backend if available
     if backend == "auto":
-        best_backend = get_highest_priority_backend(  # TODO add activation scheme
-            quantization_config.bits,
-            quantization_config.sym,
-            quantization_config.group_size,
+        best_backend = get_highest_priority_backend(
+            quantization_config,
             target_device,
             packing_format,
         )

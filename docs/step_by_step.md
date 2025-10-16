@@ -19,6 +19,10 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [AutoRoundBest recipe](#autoroundbest-recipe)
     - [AutoRoundLight recipe](#autoroundlight-recipe)
     - [Recipe recommendation](#recipe-recommendation)
+  + [AutoScheme](#autoscheme)
+    - [CLI Usage](#cli-usage)
+    - [API Usage](#api-usage-1)
+    - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [RTN mode](#rtn-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
@@ -116,10 +120,10 @@ AutoRound supports several Schemes:
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
 - **Mixed bits Weight only**
-- **NVFP4**(data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
+- **NVFP4**(Experimental feature, recommend exporting to llm-compressor format. data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
 - **FPW8A16**(**Research feature,no real kernel**, data_type:fp8,act_data_type 16:,group_size 0->per tensor )
-- **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tenosr)
+- **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tensor)
 
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
 
@@ -271,6 +275,61 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 </details>
 
+### AutoScheme
+
+AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
+
+**Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
+### CLI Usage
+use `iters=200`for tuning.
+~~~bash
+auto_round \
+  --model_name  $model_name \
+  --avg_bits 6 \
+  --options "mxfp4,mxfp8" \
+  --ignore_scale_zp_bits \
+  --iters 0 \
+  --format fake 
+~~~
+
+### API Usage
+~~~
+avg_bits= 3.0
+scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64“, "W4A16","W8A16"))
+ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar.quantize_and_save()
+~~~
+
+### Hyperparameters in AutoScheme
+`avg_bits(float)`: Target average bits for the whole model, only to be quantized layer will be counted in the average bits calculation.
+
+`options(Union[str, list[Union[QuantizationScheme, str]])`: the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
+
+`ignore_scale_zp_bits(bool)`: Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
+
+`shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
+
+`device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
+
+In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+
+
+```python
+from auto_round import AutoRound, AutoScheme
+
+shared_layers = [
+    ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
+    ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
+    ("fc1", "fc2"),
+]
+target_bits = 5.0
+model_name = "facebook/opt-125m"
+scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
+ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+model, layer_config = ar.quantize()
+```
+
+
 ### RTN mode
 AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting `iters=0` and use `group_size=32` for better results.
 
@@ -382,7 +441,7 @@ block = model.model.layers
 device_map = {}
 
 for n, m in block.named_modules():
-    if isinstance(m, (torch.nn.Linear)):
+    if type(m) == torch.nn.Linear:
         if "experts" in n and ("shared_experts" not in n) and int(n.split(".")[-2]) < 63:
             device = "cuda:1"
         elif (

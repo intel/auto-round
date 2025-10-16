@@ -136,15 +136,16 @@ class QuantLinear(nn.Module):
             self.bias = linear.bias.detach().to(torch.float16)
 
         W = linear.weight.data.detach().to(device)
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
         scales = scales.to(device)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
+            global_scale = global_scale.reshape([1])
             global_scale = global_scale.to(device)
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
                 scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
@@ -173,7 +174,8 @@ class QuantLinear(nn.Module):
             self.weight_global_scale = global_scale.to(torch.float32).to(device)
 
         if input_global_scale is not None:
-            self.input_global_scale = input_global_scale.to(torch.float32).to(device)
+            # TODO: the shape of `input_global_scale` is [] in some cases — need to investigate why.
+            self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
         return
 
 

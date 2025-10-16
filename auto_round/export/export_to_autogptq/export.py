@@ -108,7 +108,7 @@ def pack_layer(name, model, backend, device=None):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  # already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES:  # already packed
         return
 
     orig_device = layer.weight.device  # must place after 74
@@ -121,13 +121,13 @@ def pack_layer(name, model, backend, device=None):
 
     QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
 
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
+    elif type(layer) == nn.Conv2d:
         in_features = layer.in_channels
         out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
 

@@ -6,7 +6,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.7.0-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.7.1-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -27,6 +27,8 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
 
 
 ## 🆕 What's New
+[2025/10] AutoRound team proposed a fast algorithm to generate mixed bits/datatypes schemes in minutes. Please
+refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and [this guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for usage instructions.
 
 [2025/09] AutoRound now includes experimental support for the mxfp4 and nvfp4 dtypes. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
 . We currently recommend exporting to the LLM-Compressor format.
@@ -38,7 +40,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
   all bits other than 3 bits. Example
   models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound)
   and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound). **A more advanced algorithm** tailored for specific configurations may be available in
-  v0.7.1.
+  v0.8.1.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
   vLLM versions later than v0.85.post1.
@@ -64,6 +66,9 @@ Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. De
 
 ✅ **Affordable Quantization Cost**
 Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [quantization costs](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
+
+✅ **Fast mixed bits/data-types scheme generation**
+Automatically configure in minutes, with about 2X-4X the model’s BF16 VRAM size as overhead.
 
 ✅ **10+ VLMs Support**
 Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
@@ -111,7 +116,7 @@ pip install auto-round-lib
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
 ### CLI Usage
-Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
+The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \

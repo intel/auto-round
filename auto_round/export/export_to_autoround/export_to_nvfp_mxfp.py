@@ -55,7 +55,7 @@ def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
     layer = get_module(model, name)
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
     if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
@@ -84,13 +84,13 @@ def pack_layer(name, model, backend, device=None):
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
+    elif type(layer) == nn.Conv2d:
         in_features = layer.in_channels
         out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
 
@@ -173,9 +173,9 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
         # generate static input_global_scale
         for n, m in model.named_modules():
-            if isinstance(m, SUPPORTED_LAYER_TYPES):
+            if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
-                if layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
+                if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")
                     from auto_round.data_type.nvfp import calculate_gparam
 
@@ -199,7 +199,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     for layer_name in layer_config:
         if (
             not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
-        ):  ##lm head ##TODO fix act and so on
+        ):  ##lm head # TODO fix act and so on
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]

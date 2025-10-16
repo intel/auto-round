@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import traceback
+from collections import defaultdict
 from dataclasses import asdict, fields
 from enum import Enum
 from typing import Any, Callable, Union
@@ -25,6 +26,7 @@ from typing import Any, Callable, Union
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
+from accelerate.utils import get_balanced_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -35,7 +37,7 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
 from auto_round.low_cpu_mem.utils import get_layers_before_block
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+from auto_round.schemes import AutoScheme, QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -75,7 +77,6 @@ from auto_round.utils import (
     get_lm_head_name,
     get_max_vram,
     get_module,
-    get_quant_keys,
     get_shared_keys,
     htcore,
     infer_bits_by_data_type,
@@ -91,10 +92,11 @@ from auto_round.utils import (
     mv_module_from_gpu,
     reset_params,
     set_amax_for_all_moe_layers,
+    set_layer_config,
     set_module,
     to_device,
     to_dtype,
-    unsupport_meta_device,
+    unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -110,7 +112,7 @@ class BaseCompressor(object):
         sym (bool): Whether to use symmetric weight quantization.
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
-        enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
+        enable_torch_compile (bool): Whether to enable compile_func for quant blocks/layers.
     """
 
     bits: int | None
@@ -129,7 +131,7 @@ class BaseCompressor(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -199,12 +201,46 @@ class BaseCompressor(object):
             ...         "act_group_size": None,
             ...         "act_sym": None,
             ...     },
+            ...     "layer2": {
+            ...         "W8A16"
+            ...      }
             ...     # ...
             ... }
         """
-        self.scheme = None
-        self._parse_and_set_scheme(scheme, kwargs)
 
+        if isinstance(scheme, AutoScheme):
+            if len(scheme.options) <= 0:
+                raise ValueError("options of AutoScheme must not be empty")
+            options = []
+            for option in scheme.options:
+                new_option = self._parse_and_set_scheme(option, kwargs)
+                options.append(new_option)
+            scheme.options = options
+            for opt in options:
+                if isinstance(opt, str) and opt == "BF16":
+                    continue
+                if isinstance(opt, QuantizationScheme):
+                    if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
+                        continue
+                self.scheme = opt  # Choose the first one that not 16 bits
+                break
+
+            # apply scheme to set default bits
+            self._parse_and_set_scheme(self.scheme, kwargs)
+
+            self.is_auto_scheme = True
+
+        else:
+            self.scheme = self._parse_and_set_scheme(scheme, kwargs)
+            self.is_auto_scheme = False
+
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        for key in scheme_keys:
+            kwargs.pop(key, None)
+
+        gguf_scheme_name = get_gguf_scheme(self.scheme)
+        # GGUF uses fp32 scale dtype as default
+        scale_dtype = kwargs.pop("scale_dtype", "fp32") if gguf_scheme_name else kwargs.pop("scale_dtype", "fp16")
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
@@ -217,7 +253,6 @@ class BaseCompressor(object):
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
-        scale_dtype = kwargs.pop("scale_dtype", "fp16")
         nblocks = kwargs.pop("nblocks", 1)
         low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
@@ -229,15 +264,20 @@ class BaseCompressor(object):
         device = kwargs.pop("device", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         # Scale factor for RAM usage per parameter.
         self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
-        fp_layers = kwargs.pop("fp_layers", None)
+        self.fp_layers = kwargs.pop("fp_layers", "")
+        self.layer_config = layer_config
+        self.supported_types = SUPPORTED_LAYER_TYPES
+        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        self.scale_dtype = convert_dtype_str2torch(scale_dtype)
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        # deprecated, default not to use torch.use_deterministic_algorithms
+        # Deprecated, default not to use torch.use_deterministic_algorithms
         if not disable_deterministic_algorithms or enable_deterministic_algorithms:
             if not disable_deterministic_algorithms:
                 logger.warning(
@@ -249,11 +289,43 @@ class BaseCompressor(object):
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
 
+        # Model related
+        self.quantized = False
+        if isinstance(model, str):
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(
+                model,
+                device="cpu",  # always load cpu first
+                low_cpu_mem_mode=low_cpu_mem_usage,
+            )
+        elif tokenizer is None and not self.diffusion and iters > 0:
+            raise ValueError("A tokenizer must be set for non-str model input")
+        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
+        if unsupported_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        check_and_mark_fp8_model(model)
+        self.model = model.eval()
+        self.tokenizer = tokenizer
+        self.shared_cache_keys = get_shared_keys(self.model)
+
+        self.to_quant_block_names = to_quant_block_names
+        if not hasattr(self, "quant_block_list"):
+            all_blocks = get_block_names(model)
+            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
+
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
         if device_map is None:
             device_map = 0
+
+        self.enable_torch_compile = enable_torch_compile
+        self._adjust_torch_compile(enable_torch_compile)
+
+        if isinstance(scheme, AutoScheme):
+            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, device_map)
 
         # Set device, must place after model loading
         self._set_device(device_map)
@@ -267,38 +339,6 @@ class BaseCompressor(object):
         else:
             self.device_map = None
         self._set_device_map_in_blocks(self.device_map)
-
-        # Model related
-        self.quantized = False
-        if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(
-                model,
-                device="cpu",
-                low_cpu_mem_mode=low_cpu_mem_usage,  # always load cpu first
-            )
-        elif tokenizer is None and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupport_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
-            )
-        check_and_mark_fp8_model(model)
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
-
-        not_quantize_layer_names = get_fp_layer_names(self.model, fp_layers)
-        if len(not_quantize_layer_names) > 0:
-            logger.info(f"{not_quantize_layer_names} will not be quantized.")
-        if layer_config is None:
-            layer_config = {}
-        for name in not_quantize_layer_names:
-            layer_config[name] = {"bits": 16, "act_bits": 16, "data_type": "float", "act_data_type": "float"}
-        self._parse_layer_config(layer_config)  # must place after model init
-
-        self.to_quant_block_names = to_quant_block_names
 
         # Tuning hyperparameters
         self.seed = seed
@@ -336,28 +376,6 @@ class BaseCompressor(object):
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
 
-        # Model related
-        self.quantized = False
-        if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(
-                model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
-            )
-        elif tokenizer is None and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
-        if unsupport_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device_map 0,1,2,3` or just place the model on CPU."
-            )
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(model)
-            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
-
-        self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
@@ -369,14 +387,12 @@ class BaseCompressor(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         # Some helpers
-        self.supported_types = SUPPORTED_LAYER_TYPES
-        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         if "hpu" in str(self.device):
             self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
         self.batch_dim = None
         self.infer_bs_coeff = 1
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
+
+        self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
@@ -385,7 +401,82 @@ class BaseCompressor(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-    def _set_device(self, device_map):
+    def _gen_auto_scheme(
+        self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
+    ) -> dict[str, dict]:
+        if self.mllm:
+            logger.info("AutoScheme is not yet supported for multimodal LLMs.")
+            sys.exit(-1)
+
+        if getattr(model, "is_fp8", False):
+            logger.info("AutoScheme does not currently support FP8 models.")
+            sys.exit(-1)
+
+        all_dtypes = []
+        for option in scheme.options:
+            # Skip pure BF16 option
+            if option == "BF16":
+                continue
+
+            # Resolve the quantization scheme or data type
+            dtype = "int"
+            if isinstance(option, str):
+                option = preset_name_to_scheme(option)
+
+            if isinstance(option, QuantizationScheme):
+                dtype = option.data_type
+            elif isinstance(option, dict):
+                dtype = option.get("data_type", "int")
+
+            all_dtypes.append(dtype)
+
+        # Check for mixed data types
+        unique_dtypes = set(all_dtypes)
+        if len(unique_dtypes) > 1:
+            logger.warning(
+                "Models with mixed data_types "
+                "cannot yet be exported to real formats except GGUF. "
+                "Please save the model using the `fake` format for now."
+            )
+
+        layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=False,
+            is_mllm=self.mllm,
+        )
+        quant_layer_names = layer_config.keys()
+        scheme_keys = {f.name for f in fields(QuantizationScheme)}
+        fixed_layer_scheme_new = {
+            k: {key: v[key] for key in scheme_keys & v.keys()}
+            for k, v in layer_config.items()
+            if v.get("fixed_by_user", False)
+        }
+
+        # mainly using quant_layers and fixed by users
+        from auto_round.auto_scheme.gen_auto_scheme import GenScheme
+
+        gen_scheme = GenScheme(
+            scheme,
+            self.model,
+            quant_layer_names,
+            fixed_layer_scheme_new,
+            dataset,
+            device_map=device_map,
+            tokenizer=self.tokenizer,
+            enable_torch_compile=self.enable_torch_compile,
+        )
+        layer_config = gen_scheme.get_layer_config()
+        return layer_config
+
+    def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
         if hasattr(self, "device") and self.device is not None:
             return
         if isinstance(device_map, (str, torch.device, int)):
@@ -409,68 +500,16 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _parse_layer_config(self, layer_config: dict[str, Union[str, dict, QuantizationScheme]]) -> None:
-        """Parse and set the layer-wise quantization configuration."""
-        # Some other quantization configs
-        self.layer_config = {} if layer_config is None else layer_config
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key, item in self.layer_config.items():
-            if isinstance(item, str):
-                item = asdict(preset_name_to_scheme(item.upper()))
-                self.layer_config[key] = item
-
-            if isinstance(item, QuantizationScheme):
-                config = asdict(item)
-                tmp_keys = copy.deepcopy(list(config.keys()))
-                for tmp_key in tmp_keys:  ## Pop None value to be overridden
-                    if config[tmp_key] is None:
-                        config.pop(tmp_key)
-                self.layer_config[key] = config
-            elif isinstance(item, dict):
-                item_keys = item.keys()
-                if item_keys not in scheme_keys:
-                    for item_key in item_keys:
-                        if item_key not in scheme_keys:
-                            raise ValueError(
-                                f"the key {item_key} in layer_config for layer {key} is invalid,"
-                                f" only {scheme_keys} are supported"
-                            )
-
-        if not self.quant_lm_head or (isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf")):
-            return
-        for n, _ in self.model.named_modules():
-            lm_head_layer_name = n
-
-        if (
-            hasattr(self.model, "config")
-            and self.model.config.tie_word_embeddings
-            and hasattr(self.model, "_tied_weights_keys")
-        ):
-            tied_keys = self.model._tied_weights_keys
-            for item in tied_keys:
-                if lm_head_layer_name in item:  # TODO extend to encoder-decoder layer, seq classification model
-                    self.quant_lm_head = False
-                    logger.warning(
-                        "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
-                        "supported currently"
-                    )
-                    break
-
-        lm_head_layer_config = self.layer_config[lm_head_layer_name] if lm_head_layer_name in self.layer_config else {}
-
-        for key in scheme_keys:
-            if key not in lm_head_layer_config:
-                lm_head_layer_config[key] = getattr(self, key)
-
-    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> None:
+    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
         """Parse and set the quantization scheme."""
+        res = ""
         if isinstance(scheme, QuantizationScheme):
             scheme = asdict(scheme)
         elif isinstance(scheme, dict):
             scheme = scheme
         elif isinstance(scheme, str):
+            res = scheme  # gguf:q4_k_s and gguf_q4_k_m has the same dict scheme, but the result is different
             scheme = scheme.upper()
-            self.scheme = scheme
             scheme = asdict(preset_name_to_scheme(scheme))
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
         for key in scheme_keys:
@@ -478,7 +517,7 @@ class BaseCompressor(object):
                 setattr(self, key, kwargs[key])
             else:
                 setattr(self, key, scheme.get(key, None))
-            kwargs.pop(key, None)
+            # kwargs.pop(key, None)
         if self.act_dynamic is None:
             self.act_dynamic = True
 
@@ -511,11 +550,17 @@ class BaseCompressor(object):
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
         if tmp_act_bits is not None and tmp_act_bits < 16:
-            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+            for supported_dtype in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
                 if self.act_data_type.startswith(supported_dtype):
-                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # could not replace FP8_e4m3
+                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # Could not replace FP8_e4m3
                         self.act_data_type = supported_dtype
                     break
+        for key in scheme_keys:
+            scheme[key] = getattr(self, key)
+        if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
+            return res
+        else:
+            return QuantizationScheme.from_dict(scheme)
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
@@ -542,7 +587,7 @@ class BaseCompressor(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
 
-        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile:
+        if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
@@ -624,20 +669,20 @@ class BaseCompressor(object):
         device_0_memory = get_device_memory(
             self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
         )
-        block_memory, input_ouput_memory = estimate_tuning_block_mem(block, input_ids)
+        block_memory, input_output_memory = estimate_tuning_block_mem(block, input_ids)
         if self.low_gpu_mem_usage:
-            input_ouput_memory = 0
+            input_output_memory = 0
 
         mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
         if self.iters == 0:
             mem_per_param_scale = 1  # for rtn
 
-        if (block_memory * mem_per_param_scale + input_ouput_memory) < device_0_memory:
+        if (block_memory * mem_per_param_scale + input_output_memory) < device_0_memory:
             return  # fit in one GPU
 
         device_map = {}
         device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
-        device_memory[device_0] = device_0_memory - input_ouput_memory
+        device_memory[device_0] = device_0_memory - input_output_memory
 
         device_idx = 0
         # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
@@ -759,20 +804,20 @@ class BaseCompressor(object):
                     " We are likely to release new algorithm for certain configurations in the future."
                 )
 
-        # Check group_size 32 for auto_round
-        if (
-            self.data_type == "int"
-            and hasattr(self, "formats")
-            and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
-        ):
-            for n, m in self.model.named_modules():
-                if isinstance(m, self.supported_types):
-                    if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                        self.layer_config[n] = {"bits": 16}
-                        logger.info(
-                            f"{n} will not be quantized due to its shape not being divisible by 32,"
-                            " resulting in an exporting issue to autogptq"
-                        )
+        # # Check group_size 32 for auto_round
+        # if (
+        #     self.data_type == "int"
+        #     and hasattr(self, "formats")
+        #     and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
+        # ):
+        #     for n, m in self.model.named_modules():
+        #         if type(m) in self.supported_types:
+        #             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+        #                 self.layer_config[n] = {"bits": 16}
+        #                 logger.info(
+        #                     f"{n} will not be quantized due to its shape not being divisible by 32,"
+        #                     " resulting in an exporting issue to autogptq"
+        #                 )
 
         if (
             self.seqlen is not None
@@ -821,18 +866,25 @@ class BaseCompressor(object):
         formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
         formats = remove_duplicates(formats)  # need the keep origin order
 
-        if isinstance(self.scheme, str) and self.scheme.lower().startswith("gguf"):
+        gguf_format_name = get_gguf_scheme(self.scheme)
+
+        if gguf_format_name:
             for i in range(len(formats)):
-                if formats[i] != "fake" and formats[i] != self.scheme.lower():
+                if formats[i] != "fake" and formats[i] != gguf_format_name.lower():
                     logger.warning(
-                        f"reset format {formats[i]} to {self.scheme.lower()} "
-                        f"since scheme {self.scheme} can only be exported to format {self.scheme.lower()}"
+                        f"reset format {formats[i]} to {gguf_format_name.lower()} "
+                        f"since scheme {gguf_format_name} can only be exported to format {gguf_format_name.lower()}"
                     )
-                    formats[i] = self.scheme.lower()
+                    formats[i] = gguf_format_name.lower()
 
         _gguf_args_check(self, formats, model_type=ModelType.TEXT)
         if self.mllm:
             _gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
+
+        for f in formats:
+            if f.startswith("gguf"):
+                self.scheme = f.upper()
+                break
 
         for format_ in formats:
             if format_ not in SUPPORTED_FORMATS:
@@ -864,9 +916,9 @@ class BaseCompressor(object):
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
                     format = f"auto_round:{self.data_type}"
-                elif is_static_wfp8afp8(self):  # staic wfp8afp8
+                elif is_static_wfp8afp8(self):  # static wfp8afp8
                     format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
-                elif self.data_type == "fp" and self.bits == 8 and self.act_bits >= 16:  # woq fp8
+                elif self.data_type.startswith("fp") and self.bits == 8 and self.act_bits >= 16:  # woq fp8
                     format = f"auto_round:{AutoRoundFormat.FP8.value}"
                 elif self.act_bits < 16:
                     raise ValueError(
@@ -937,8 +989,8 @@ class BaseCompressor(object):
         format = format.replace("q*_", f"q{self.bits}_")
 
         # format check for fp8
-        w_fp8 = self.data_type == "fp" and self.bits == 8
-        act_fp8 = self.act_data_type == "fp" and self.act_bits == 8
+        w_fp8 = self.data_type.startswith("fp") and self.bits == 8
+        act_fp8 = self.act_data_type.startswith("fp") and self.act_bits == 8
         if (w_fp8 or act_fp8) and re.search("^auto_round|^llm_compressor", format) is None:
             error_msg = (
                 f"is only supported to export auto_round or llm_compressor format," f" but got {format}, please check."
@@ -970,7 +1022,7 @@ class BaseCompressor(object):
                         f" act_bits={self.act_bits}"
                     )
                 elif "auto_round" in format and (
-                    is_mx_fp(self.act_data_type) or (is_nv_fp(format) and "static_gs" in self.act_data_type)
+                    is_mx_fp(self.act_data_type) or (is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type)
                 ):
                     pass
                 elif format != "fake":
@@ -1236,172 +1288,39 @@ class BaseCompressor(object):
         hooks = register_act_hook(model)
 
         try:
-            # Move model to target device
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                dispatch_model(self.model, self.model.hf_device_map)
-            else:
-                model = model.to(self.device)
-            if _is_fp8_model(self.model):
-                convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
-            cnt = 0
-
-            # Run forward pass to accumulate imatrix
-            for data in self.dataloader:
-                cnt += data["input_ids"].shape[0]
-                data = to_device(data, self.device)
-                model(**data)
-                if cnt >= self.nsamples:
-                    break
-
-            # Remove hooks after data collection
-            for hook in hooks:
-                hook.remove()
-
-            # Normalize imatrix by count
-            for _, module in model.named_modules():
-                if hasattr(module, "imatrix"):
-                    module.imatrix /= module.imatrix_cnt
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
-            # Perform quantization using RTN
-            pbar = tqdm(all_to_quantized_module_names)
-            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            if clear_mem_freq == 0:
-                clear_mem_freq = 1
-            cnt = 1
-            for name in pbar:
-                pbar.set_description(f"Quantizing {name}")
-                self._quantize_layer_via_rtn(name)
-                if cnt % clear_mem_freq == 0:
-                    clear_memory()
-                    cnt = 1
-                cnt += 1
+            model = model.to("cpu")
+            clear_memory()
+            self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         except RuntimeError as e:
+            cuda_error_msg = traceback.format_exc()
             try:
+                logger.error(cuda_error_msg)
+                # Final fallback: warn and use CPU-only quantization
+                logger.warning(
+                    "Fallback to CPU. "
+                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
+                )
+                model = model.to("cpu")
+                clear_memory()
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
 
                     accelerate.hooks.remove_hook_from_submodules(model)
-                # Fallback: out-of-memory → try CPU blockwise quantization
-                logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
-                model = model.to("cpu")
-                clear_memory()
+
+                orig_device = self.device
+                self.device = "cpu"
                 self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-            except RuntimeError as e:
-                cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.error(cuda_error_msg)
-                    # Final fallback: warn and use CPU-only quantization
-                    logger.warning(
-                        "Fallback to CPU. "
-                        "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
-                    )
-                    model = model.to("cpu")
-                    clear_memory()
-                    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                        import accelerate
-
-                        accelerate.hooks.remove_hook_from_submodules(model)
-
-                    orig_device = self.device
-                    self.device = "cpu"
-                    self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                    self.device = orig_device
-                except Exception as e:
-                    raise
+                self.device = orig_device
+            except Exception as e:
+                raise
         finally:
             # Always remove hooks
             for hook in hooks:
                 hook.remove()
-
-    def _check_need_to_quantize_lm_head_embedding(self) -> bool:
-        """Checks if LM head and embedding layers need quantization for GGUF format.
-
-        This function inspects the current model's formats and determines whether
-        it needs to apply quantization settings to the embedding and LM head layers.
-        The function modifies `self.layer_config` in-place and updates the model modules.
-
-        Returns:
-            bool: True if the LM head needs quantization, otherwise False.
-
-        Raises:
-            NotImplementedError: If multiple non-fake GGUF formats are specified.
-        """
-        gguf_scheme = False
-        if isinstance(self.scheme, str) and "gguf" in self.scheme.lower():
-            gguf_scheme = True
-
-        if not hasattr(self, "formats") and not gguf_scheme:
-            return False
-
-        has_gguf: bool = gguf_scheme or any("gguf" in fmt for fmt in self.formats)
-        if not has_gguf:
-            return False
-        if hasattr(self, "formats"):
-            formats: list[str] = [fmt for fmt in self.formats if "fake" not in fmt]
-            if not (len(formats) == 1 and "gguf" in formats[0]):
-                raise NotImplementedError("Only one GGUF format can be set at a time.")
-            target_format: str = formats[0]
-
-        else:
-            target_format = self.scheme.lower()
-
-        tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
-        for name, module in self.model.named_modules():
-            if isinstance(module, torch.nn.Embedding):
-                key: str = "lm_head" if tie_word_embeddings else "embedding"
-                config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format][key]]
-                self._apply_config_to_layer(name, config, True)
-
-        if not tie_word_embeddings:
-            lm_head_name: str = get_lm_head_name(self.model)
-            config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            check_fixed_by_user = (
-                self.layer_config[lm_head_name].get("fixed_by_user", False)
-                if lm_head_name in self.layer_config
-                else None
-            )
-            self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
-            return True
-
-        return False
-
-    def _apply_config_to_layer(
-        self,
-        layer_name: str,
-        config: dict[str, Any],
-        check_fixed_by_user: bool = False,
-    ) -> None:
-        """Applies GGUF quantization configuration to a given layer.
-
-        Args:
-            layer_name (str): Name of the layer to configure.
-            config (dict[str, Any]): GGUF layer configuration.
-            check_fixed_by_user (bool): If True, preserve user-defined settings.
-        """
-        act_bits: int = 16
-        scale_dtype: Any = self.scale_dtype
-        keys: list[str] = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
-
-        self.layer_config[layer_name] = self.layer_config.get(layer_name, {})
-
-        for key in keys:
-            if (
-                key in self.layer_config[layer_name]
-                and check_fixed_by_user
-                # and self.layer_config[layer_name].get("fixed_by_user", False)
-            ):
-                continue
-            self.layer_config[layer_name][key] = config.get(key)
-            setattr(get_module(self.model, layer_name), key, config.get(key))
-
-        self.layer_config[layer_name]["act_bits"] = act_bits
-        self.layer_config[layer_name]["scale_dtype"] = scale_dtype
-        setattr(get_module(self.model, layer_name), "act_bits", act_bits)
-        setattr(get_module(self.model, layer_name), "scale_dtype", scale_dtype)
 
     def _quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
@@ -1441,12 +1360,13 @@ class BaseCompressor(object):
             m.zp = None
         else:
             try:
-                m.to(self.device)
+                m = m.to(m.tuning_device if hasattr(m, "tuning_device") else self.device)
                 m = WrapperLinear(
                     m,
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
+                    enable_torch_compile=self.enable_torch_compile,
                 )
                 m = m.unwrapper({})
                 m.to("cpu")
@@ -1462,6 +1382,7 @@ class BaseCompressor(object):
                         enable_minmax_tuning=False,
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
+                        enable_torch_compile=self.enable_torch_compile,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1667,9 +1588,7 @@ class BaseCompressor(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if (
-                    is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats)
-                ) or is_static_wfp8afp8(self):
+                if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -1697,37 +1616,54 @@ class BaseCompressor(object):
                 cnt = 1
             cnt += 1
 
+    def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
+        keys = inputs.keys()
+        input_id_str = [key for key in keys if key.startswith("hidden_state")]
+        if len(input_id_str) != 1:
+            raise RuntimeError(
+                "hidden_states arg mismatch error,"
+                "please raise an issue in https://github.com/intel/auto-round/issues"
+            )
+        inputs["input_ids"] = inputs.pop(input_id_str[0], None)
+        if q_inputs is not None:
+            q_inputs = q_inputs.pop(input_id_str[0], None)
+        return inputs, q_inputs
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
         The quantized model and layer configurations.
         """
-        for n, m in self.model.named_modules():
+        for n, m in self.model.named_modules():  # TODO check if could removed
             m.tmp_name = n
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
-        self.has_qlayer_outside_block = self._set_layerwise_config(self.layer_config)
+
+        # TODO check scale_dtype
+        if not self.is_auto_scheme:
+            enable_gguf_official_mixed = True
+        else:
+            enable_gguf_official_mixed = False
+        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=enable_gguf_official_mixed,
+            is_mllm=self.mllm,
+        )
+
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
-            only_gguf = True
-            for format_ in self.formats:
-                if not ("gguf" in format_ or "fake" in format_):
-                    only_gguf = False
-                    break
-            if len(self.formats) == 1 and self.formats[0] == "fake":
-                only_gguf = False
-            if only_gguf:
-                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
-                    self.layer_config, self.formats, self.model, model_type=ModelType.TEXT
-                )
-                if self.mllm:
-                    self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
-                        self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ
-                    )
             # Determine if immediate packing is required
             formats = self.formats
             if (
@@ -1784,7 +1720,7 @@ class BaseCompressor(object):
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
-            pbar = None  # move the alg warning outside pbar
+            pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -1793,16 +1729,8 @@ class BaseCompressor(object):
             if all_q_inputs is not None:
                 q_inputs = all_q_inputs[block_names[0]]
                 all_q_inputs.pop(block_names[0])
-            keys = inputs.keys()
-            input_id_str = [key for key in keys if key.startswith("hidden_state")]
-            if len(input_id_str) != 1:
-                raise RuntimeError(
-                    "hidden_states arg mismatch error,"
-                    "please raise an issue in https://github.com/intel/auto-round/issues"
-                )
-            inputs["input_ids"] = inputs.pop(input_id_str[0], None)
-            if q_inputs is not None:
-                q_inputs["input_ids"] = q_inputs.pop(input_id_str[0], None)
+
+            inputs, q_inputs = self._update_inputs(inputs, q_inputs)
 
             clear_memory(self.inputs)
 
@@ -1816,7 +1744,7 @@ class BaseCompressor(object):
                 self.model,
                 inputs,
                 block_names,
-                q_input=q_inputs["input_ids"] if q_inputs is not None else None,
+                q_input=q_inputs if q_inputs is not None else None,
                 nblocks=self.nblocks,
                 device=self.device,
                 pbar=pbar,
@@ -1826,6 +1754,8 @@ class BaseCompressor(object):
                     f"Expected exactly one packing format when 'is_packing_immediate' is True, "
                     f"but got {len(self.formats)} formats."
                 )
+        pbar.set_description("Quantizing done")
+        pbar.close()
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -1839,7 +1769,7 @@ class BaseCompressor(object):
         cost_time = end_time - self.start_time
         logger.info(f"quantization tuning time {cost_time}")
 
-        ## dump a summary
+        # Dump a summary
         quantized_layers = []
         unquantized_layers = []
         for n, m in self.model.named_modules():
@@ -1879,6 +1809,7 @@ class BaseCompressor(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
+                layer = layer.to(self.device)
                 if _is_fp8_model(self.model):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
@@ -1893,6 +1824,7 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
+                    enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                 )
                 new_layer = wrapper_layer.unwrapper({})
@@ -1922,10 +1854,7 @@ class BaseCompressor(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
-        if self.enable_torch_compile:
-            quant_layer = compile_func(self._quantize_layer, self.device)
-        else:
-            quant_layer = self._quantize_layer
+        quant_layer = self._quantize_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -1934,144 +1863,6 @@ class BaseCompressor(object):
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             del layer_input
             clear_memory(q_layer_input)
-
-    def _set_layerwise_config(self, layer_config: dict) -> bool:
-        """
-        Sets the layer-wise configuration based on the provided `layer_config`.
-        By default, only quantize layers in blocks.
-
-        Args:
-            layer_config (dict): The configuration dictionary for each layer containing various configuration options.
-
-        Returns:
-            bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head),
-                  otherwise returns False.
-        """
-        # Get the names of layers in quantization blocks
-        supported_types = self.supported_types
-        regex_config = {}
-        layers_in_blocks = get_layer_names_in_block(
-            self.model, supported_types, self.quant_block_list, self.inner_supported_types
-        )
-        ##process regex in layer_config
-        all_supported_layer_names = []
-        # List of configuration keys
-        keys = get_quant_keys()
-
-        for n, m in self.model.named_modules():
-            # Delete previous configuration to avoid conflicts with prior tuning
-            for key in keys:
-                if hasattr(m, key):
-                    delattr(m, key)
-
-            if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                continue
-            all_supported_layer_names.append(n)
-
-        names_in_layer_config = list(layer_config.keys())
-        for name in names_in_layer_config:
-            if name in all_supported_layer_names:
-                continue
-            matched_names = []
-            for layer_name in all_supported_layer_names:
-                if re.search(re.compile(name), layer_name) is not None:
-                    matched_names.append(layer_name)
-            if len(matched_names) > 0:
-                val = layer_config[name]
-                regex_config[name] = val  # keep regex config
-                layer_config.pop(name)
-                for match_name in matched_names:
-                    layer_config[match_name] = val
-            else:
-                tmp_m = get_module(self.model, name)
-                if not isinstance(tmp_m, torch.nn.Embedding):  # TODO not good code style
-                    raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
-
-        has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
-
-        # Iterate through all modules in the model
-        is_gguf = hasattr(self, "formats") and any("gguf" in format_ for format_ in self.formats)
-        for n, m in self.model.named_modules():
-            # Skip unsupported types
-            if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
-                if n in self.layer_config:
-                    if not isinstance(m, torch.nn.Embedding):
-                        logger.warning(f"{n} is not supported, layer_config {n}: {layer_config[n]} will be ignored.")
-                        self.layer_config.pop(n)
-                        continue
-                    if not is_gguf:
-                        if not check_to_quantized(layer_config[n]):
-                            self.layer_config.pop(n)
-                            continue
-                else:
-                    continue
-
-            # If the layer is not in the config and is part of a quantization block, use default configuration
-            if n not in layer_config.keys() and n in layers_in_blocks:
-                layer_config[n] = {}
-                for key in keys:
-                    layer_config[n][key] = getattr(self, key)
-
-            # If the layer is partially configured, fill in missing values
-            elif n in layer_config.keys():
-                if "data_type" in layer_config[n] and "bits" not in layer_config[n]:
-                    tmp_bits = infer_bits_by_data_type(layer_config[n]["data_type"])
-                    if tmp_bits is not None and tmp_bits != self.bits:
-                        logger.warning(
-                            f"'data_type' do not match the specified 'bits' setting for {n}."
-                            f" Resetting 'bits' to {tmp_bits}."
-                        )
-                        layer_config[n]["bits"] = tmp_bits
-                if "act_data_type" in layer_config[n] and "act_bits" not in layer_config[n]:
-                    tmp_bits = infer_bits_by_data_type(layer_config[n]["act_data_type"])
-                    if tmp_bits is not None and tmp_bits != self.act_bits:
-                        logger.warning(
-                            f"'act_data_type' do not match the specified 'act_bits' setting for {n}."
-                            f" Resetting 'act_bits' to {tmp_bits}."
-                        )
-                        layer_config[n]["act_bits"] = tmp_bits
-
-                for key in keys:
-                    if key not in layer_config[n].keys():
-                        layer_config[n][key] = getattr(self, key)
-                layer_config[n]["fixed_by_user"] = True
-
-            # If the layer is not in the config and not part of a quantization block,
-            # use default configuration and set specific values
-            else:
-                layer_config[n] = {}
-                for key in keys:
-                    layer_config[n][key] = getattr(self, key)
-                layer_config[n]["bits"] = 16
-                layer_config[n]["act_bits"] = 16
-
-            if n in layers_in_blocks:
-                layer_config[n]["in_blocks"] = True
-            else:
-                layer_config[n]["in_blocks"] = False
-
-            # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
-            if (
-                n not in layers_in_blocks
-                and check_to_quantized(layer_config[n])
-                and not isinstance(m, torch.nn.Embedding)
-            ):
-                has_qlayer_outside_block = True
-
-            in_features, out_features = get_layer_features(m)
-            if in_features <= layer_config[n]["group_size"]:
-                layer_config[n]["group_size"] = -1
-
-            # Apply the configuration to the corresponding layer in the model
-            for key in keys:
-                setattr(m, key, layer_config[n][key])
-        need_to_quantize_lm_head = self._check_need_to_quantize_lm_head_embedding()
-        if need_to_quantize_lm_head:
-            has_qlayer_outside_block = True
-
-        self.regex_config = regex_config
-        # Return whether there are quantized layers outside the blocks
-        return has_qlayer_outside_block
 
     @torch.no_grad()
     def _get_block_outputs(
@@ -2107,9 +1898,9 @@ class BaseCompressor(object):
             tmp_input_ids, tmp_input_others = self._sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
-            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
-                cache_device
-            )
+            tmp_output = self.block_forward(
+                block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device
+            ).to(cache_device)
             if save_output:
                 if self.batch_size == 1:
                     output.append(tmp_output)
@@ -2250,6 +2041,7 @@ class BaseCompressor(object):
             and len(layer_names) == 0
             and not self.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
+            and getattr(self, "mllm", False) is False
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
@@ -2263,8 +2055,12 @@ class BaseCompressor(object):
                         if str(self.model.device) == "cpu" and (
                             self.device.startswith("xpu") or self.device.startswith("cuda")
                         ):
-                            max_memory = get_max_vram()  # TODO model is not evenly split
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
+                            max_memory = get_balanced_memory(
+                                self.model,
+                                max_memory=None,
+                                no_split_module_classes=no_split_modules,
+                            )
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=max_memory, no_split_module_classes=no_split_modules
                             )
@@ -2498,7 +2294,7 @@ class BaseCompressor(object):
         from functools import partial
 
         for n, m in self.model.named_modules():
-            if n in self.to_cached_layers and not isinstance(m, tuple(self.supported_types)):  ##block
+            if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
                 m.orig_forward = m.forward
                 m.forward = partial(self._get_block_forward_func(n), m)
             elif n in self.to_cached_layers:  ##linear layer or conv1d layer
@@ -2531,7 +2327,12 @@ class BaseCompressor(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(device)
+        wrapper_linear = WrapperLinear(
+            layer,
+            enable_minmax_tuning=self.enable_minmax_tuning,
+            enable_torch_compile=self.enable_torch_compile,
+            device=device,
+        ).to(device)
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -2585,10 +2386,9 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
-                        current_input = [q_inputs[i] for i in whole_indices]
+                        num_elm = self._get_current_num_elm(q_inputs, whole_indices)
                     else:
-                        current_input = [inputs[i] for i in whole_indices]
-                    num_elm = sum(id.numel() for id in current_input)
+                        num_elm = self._get_current_num_elm(inputs, whole_indices)
             for tmp_step in range(gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
@@ -2678,7 +2478,7 @@ class BaseCompressor(object):
                 config = self.layer_config[n]
                 act_dynamic = config.get("act_dynamic", True)
                 act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_data_type", 16)
+                act_bits = config.get("act_bits", 16)
                 if (
                     config["bits"] <= 8
                     and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
@@ -2688,6 +2488,38 @@ class BaseCompressor(object):
                     hook_handles.append(hook)
                     continue
         return hook_handles
+
+    def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
+        current_output = [output[x] for x in indices]
+        current_output = torch.cat(current_output, dim=self.batch_dim)
+        return current_output
+
+    def _get_current_q_output(
+        self,
+        block: torch.nn.Module,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        indices: list[int],
+        device: str,
+    ) -> torch.Tensor:
+        current_input_ids, current_input_others = self._sampling_inputs(
+            input_ids,
+            input_others,
+            indices,
+            seqlen=self.seqlen,
+            batch_dim=self.batch_dim,
+            share_cache_keys=self.shared_cache_keys,
+        )
+        output_q = self.block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
+        return output_q
+
+    def _get_current_num_elm(
+        self,
+        input_ids: list[torch.Tensor],
+        indices: list[int],
+    ) -> int:
+        current_input_ids = [input_ids[i] for i in indices]
+        return sum(id.numel() for id in current_input_ids)
 
     def _quantize_block(
         self,
@@ -2763,7 +2595,11 @@ class BaseCompressor(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device
+            block,
+            self.enable_minmax_tuning,
+            self.enable_norm_bias_tuning,
+            enable_torch_compile=self.enable_torch_compile,
+            device=self.device,
         )
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -2829,27 +2665,16 @@ class BaseCompressor(object):
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 # We assume the block input and output shape is same
                 if self.gradient_accumulate_steps != 1:
-                    current_input_ids = [input_ids[i] for i in whole_indices]
-                    num_elm = sum(id.numel() for id in current_input_ids)
+                    num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-                current_input_ids, current_input_others = self._sampling_inputs(
-                    input_ids,
-                    input_others,
-                    indices,
-                    seqlen=self.seqlen,
-                    batch_dim=self.batch_dim,
-                    share_cache_keys=self.shared_cache_keys,
-                )
 
-                current_output = [output[x] for x in indices]
-                current_output = torch.cat(current_output, dim=self.batch_dim)
+                current_output = self._get_current_output(output, indices)
+
                 current_output = to_device(current_output, device)
 
-                output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
-                )
+                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
@@ -2894,11 +2719,7 @@ class BaseCompressor(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
-        if (
-            is_nv_fp(self.act_data_type)
-            and hasattr(self, "formats")
-            and any("nv_fp" in format_ for format_ in self.formats)
-        ):
+        if is_nv_fp(self.act_data_type):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
@@ -2928,6 +2749,12 @@ class BaseCompressor(object):
             clear_memory(input_ids)
             return None, output
 
+    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
+        input_ids = inputs["input_ids"]
+        inputs.pop("input_ids", None)
+        input_others = inputs
+        return input_ids, input_others
+
     def _quantize_blocks(
         self,
         model: torch.nn.Module,
@@ -2953,16 +2780,14 @@ class BaseCompressor(object):
         clear_memory()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
-        input_ids = inputs["input_ids"]
-        inputs.pop("input_ids", None)
-        input_others = inputs
+
+        input_ids, input_others = self._split_inputs(inputs)
         clear_memory()
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        for i in range(len(input_ids)):
-            input_ids[i] = input_ids[i].to(tmp_dtype)
+        input_ids = to_dtype(input_ids, tmp_dtype)
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
@@ -2997,14 +2822,8 @@ class BaseCompressor(object):
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
                 quantize_block = self._quantize_block
-                if self.enable_torch_compile:
-                    quantize_block = compile_func(quantize_block, device)
-                else:
-                    quantize_block = quantize_block
         else:
             quantize_block = self._quantize_block
-            if self.enable_torch_compile:
-                quantize_block = compile_func(quantize_block, device)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
@@ -3060,9 +2879,9 @@ class BaseCompressor(object):
                         PACKING_LAYER_WITH_FORMAT[target_backend](
                             tmp_m.tmp_name, self.model, self.formats[0], device=self.device
                         )
-        pbar.set_description("Quantizing done")
-        pbar.update(1)
-        pbar.close()
+        if pbar is not None:
+            pbar.update(1)
+
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
@@ -3115,6 +2934,8 @@ class BaseCompressor(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
+        # if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+        #     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
         if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
             format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
         if format == "llm_compressor" and is_static_wfp8afp8(self):
@@ -3223,7 +3044,7 @@ class BaseCompressor(object):
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit(-1)
-            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.layer_config[key]):
+            if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
         return layer_names
@@ -3303,7 +3124,7 @@ class BaseCompressor(object):
     @torch.no_grad()
     def _sampling_inputs(
         cls,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
         indices: list[int],
         seqlen: int,
@@ -3322,9 +3143,14 @@ class BaseCompressor(object):
         current_input_ids: The sampled input IDs.
         current_input_others: The sampled other input data.
         """
-        current_input_ids = [input_ids[i] for i in indices]
-
-        current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+        if isinstance(input_ids, list):
+            current_input_ids = [input_ids[i] for i in indices]
+            current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+        elif isinstance(input_ids, dict):
+            current_input_ids = defaultdict(list)
+            for k in input_ids.keys():
+                current_input_ids[k].extend([input_ids[k][i] for i in indices])
+                current_input_ids[k] = torch.cat(current_input_ids[k], dim=batch_dim)
 
         current_input_others = {"positional_inputs": input_others["positional_inputs"]}
         for key in input_others.keys():

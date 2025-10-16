@@ -14,7 +14,9 @@
 
 from auto_round.compressors.base import *
 from auto_round.compressors.mllm.compressor import MLLMCompressor
+from auto_round.compressors.diffusion.compressor import DiffusionCompressor
 from auto_round.compressors.config import (
+    DiffusionExtraConfig,
     ExtraConfig,
     MLLMExtraConfig,
     SchemeExtraConfig,

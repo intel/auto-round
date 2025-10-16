@@ -67,9 +67,10 @@ def test_vllm_lm_eval(model):
         "lambada_openai",
         "--eval_bs",
         "8",
+        "--eval_backend",
+        "vllm",
         "--limit",
         "10",
-        "--vllm",
     ]
 
     proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

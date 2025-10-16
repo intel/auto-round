@@ -92,7 +92,7 @@ def pack_layer(layer_name, model, data_type, device=None):
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
     if not check_to_quantized(layer):
@@ -109,23 +109,21 @@ def pack_layer(layer_name, model, data_type, device=None):
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        q_weight = (
-            weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp.to(packing_device)
-            if isinstance(zp, torch.Tensor)
-            else zp
-        )
+        if isinstance(zp, torch.Tensor):
+            zp = zp.to(packing_device)
+        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
     q_weight = torch.clamp(q_weight, info.min, info.max)
     q_weight = q_weight.to(torch_dtype)
-    if isinstance(layer, torch.nn.Linear):
+    if type(layer) == torch.nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
     # elif isinstance(layer, nn.Conv2d):
     #     in_features = layer.in_channels
     #     out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias

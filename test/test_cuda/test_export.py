@@ -9,7 +9,7 @@ import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_awq, require_optimum
+from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
 
 class LLMDataLoader:
@@ -185,6 +185,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -218,6 +219,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_optimum
     @require_awq
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format_fp_qsave_layers(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         layer_config = {
@@ -399,6 +401,36 @@ class TestAutoRound(unittest.TestCase):
         #     generated_text = output.outputs[0].text
         #     if "France" in prompt:
         #         assert "Paris" in generated_text
+
+    def test_nvfp4_moe_actmax_rtn(self):
+        model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+        scheme = "nvfp4"
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=0,
+            seqlen=2,
+            nsamples=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+        quantized_model_path = self.save_dir
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+
+    def test_nvfp4_moe_actmax_ar(self):
+        model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+        scheme = "nvfp4"
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=1,
+            seqlen=2,
+            nsamples=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+        quantized_model_path = self.save_dir
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
 
 if __name__ == "__main__":

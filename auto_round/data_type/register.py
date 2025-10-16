@@ -22,8 +22,7 @@ def register_dtype(names):
     Decorator function used before a Pattern subclass.
 
     Args:
-        cls (class): The subclass of register.
-        name: A string. Define the export type.
+        names: A string. Define the export type.
 
     Returns:
         cls: The class of register.
