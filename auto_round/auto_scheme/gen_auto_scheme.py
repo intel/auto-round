@@ -29,15 +29,15 @@ class GenScheme:
     """Generate and validate quantization schemes for model layers."""
 
     def __init__(
-            self,
-            auto_scheme: AutoScheme,  # TODO support shared layer
-            model: torch.nn.Module,
-            quant_layer_names: Iterable[str],
-            fixed_layer_scheme: dict[str, dict],
-            dataset: str = "pile-10k",  # TODO use auto-round dataset
-            device_map: Union[str, torch.device, int, dict, None] = None,
-            tokenizer=None,
-            enable_torch_compile=False,
+        self,
+        auto_scheme: AutoScheme,  # TODO support shared layer
+        model: torch.nn.Module,
+        quant_layer_names: Iterable[str],
+        fixed_layer_scheme: dict[str, dict],
+        dataset: str = "pile-10k",  # TODO use auto-round dataset
+        device_map: Union[str, torch.device, int, dict, None] = None,
+        tokenizer=None,
+        enable_torch_compile=False,
     ):
         self.auto_scheme = auto_scheme
         self.model = model
