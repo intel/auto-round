@@ -12,19 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import logging
 import os
-import re
 import sys
 
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
-from auto_round.schemes import PRESET_SCHEMES
+from auto_round.schemes import PRESET_SCHEMES, AutoScheme
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
-    set_cuda_visible_devices,
 )
 
 RECIPES = {
@@ -66,6 +63,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="The batch size for tuning/calibration."
             "Larger batch sizes may improve stability but require more memory.",
         )
+        basic.add_argument("--avg_bits", default=None, type=float, help="for auto scheme, number of avg weight bits")
+        basic.add_argument(
+            "--options", default=None, type=str, help="for auto scheme, options for auto scheme, e.g. 'W4A16,W8A16'"
+        )
+
         basic.add_argument(
             "--iters",
             "--iter",
@@ -139,6 +141,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
+            "--ignore_scale_zp_bits",
+            action="store_true",
+            help="for auto scheme whether ignore scale zp bits calculation ",
+        )
+        tuning.add_argument(
             "--lr",
             default=None,
             type=float,
@@ -176,7 +183,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         tuning.add_argument(
             "--scale_dtype",
-            default="fp16",
+            default=None,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="Data type for quantization scales. "
             "fp16/bf16: lower memory, fp32: higher precision. "
@@ -452,8 +459,6 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    # Must set this before import torch
-    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
@@ -549,6 +554,15 @@ def tune(args):
     extra_config.mllm_config = mllm_config
     extra_config.diffusion_config = diffusion_config
 
+    layer_config = {}
+
+    if args.avg_bits is not None:
+        if args.options is None:
+            raise ValueError("please set --options for auto scheme")
+        scheme = AutoScheme(
+            options=args.options, avg_bits=args.avg_bits, ignore_scale_zp_bits=args.ignore_scale_zp_bits
+        )
+
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         scheme=scheme,
@@ -565,6 +579,7 @@ def tune(args):
         not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
+        layer_config=layer_config,
     )
 
     model_name = args.model.rstrip("/")

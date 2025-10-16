@@ -158,7 +158,7 @@ class WrapperLinear(torch.nn.Module):
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
 
-        ## bias tuning
+        # Bias tuning
         if self.enable_norm_bias_tuning:
             self._init_params("bias_v", p_dtype, self.orig_layer.bias.shape, 0, True)
             from auto_round.data_type.int import quant_tensor_asym_wo_round
