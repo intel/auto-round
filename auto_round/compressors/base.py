@@ -325,7 +325,7 @@ class BaseCompressor(object):
         self._adjust_torch_compile(enable_torch_compile)
 
         if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model,scheme,dataset,device_map)
+            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, device_map)
 
         # Set device, must place after model loading
         self._set_device(device_map)
@@ -401,8 +401,9 @@ class BaseCompressor(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
-
-    def _gen_auto_scheme(self,model:torch.nn.Module,scheme:AutoScheme,dataset:str,device_map:Union[str,int,dict,torch.device])->dict[str,dict]:
+    def _gen_auto_scheme(
+        self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
+    ) -> dict[str, dict]:
         if self.mllm:
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
@@ -474,7 +475,6 @@ class BaseCompressor(object):
         )
         layer_config = gen_scheme.get_layer_config()
         return layer_config
-
 
     def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
         if hasattr(self, "device") and self.device is not None:
