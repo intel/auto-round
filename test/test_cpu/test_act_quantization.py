@@ -139,7 +139,6 @@ class TestAutoRoundAct(unittest.TestCase):
             int(3 * 10 * 768 / 128),
         )
 
-	
     def test_act_config_saving(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "MXFP4"
@@ -158,7 +157,7 @@ class TestAutoRoundAct(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         lmhead_config = model.config.quantization_config.extra_config["lm_head"]
-        assert "act_data_type" in lmhead_config.keys() and lmhead_config["act_data_type"] == 'mx_fp_rceil'
+        assert "act_data_type" in lmhead_config.keys() and lmhead_config["act_data_type"] == "mx_fp_rceil"
         assert "act_bits" in lmhead_config.keys() and lmhead_config["act_bits"] == 8
         assert "act_group_size" in lmhead_config.keys() and lmhead_config["act_group_size"] == 32
 
