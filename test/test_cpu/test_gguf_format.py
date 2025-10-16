@@ -341,7 +341,6 @@ class TestGGUF(unittest.TestCase):
         from auto_round.utils import get_layer_config_by_gguf_format
 
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
-        model_name = "/models/Qwen2.5-0.5B-Instruct"
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
         ar._set_layerwise_config(ar.layer_config)
