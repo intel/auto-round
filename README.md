@@ -27,8 +27,8 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
 
 
 ## 🆕 What's New
-[2025/10] AutoRound now includes experimental support for a fast algorithm developed by the AutoRound team to generate mixed-bit and mixed-datatype schemes.
-Refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and [this guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for usage instructions.
+[2025/10] AutoRound team proposed a fast algorithm to generate mixed bits/datatypes schemes in minutes. Please
+refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and [this guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for usage instructions.
 
 [2025/09] AutoRound now includes experimental support for the mxfp4 and nvfp4 dtypes. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
 . We currently recommend exporting to the LLM-Compressor format.
