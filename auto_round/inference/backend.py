@@ -239,7 +239,7 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     act_data_type=["mx_fp_rceil"],
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_32],
+    checkers=[],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -259,7 +259,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     act_data_type=["mx_fp_rceil"],
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_32],
+    checkers=[],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -280,7 +280,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     act_data_type=["nv_fp4_with_static_gs"],
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_16],
+    checkers=[],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -1025,3 +1025,4 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         log(joined_cmds)
         if logger_level == "error":
             exit(-1)
+
