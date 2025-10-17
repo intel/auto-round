@@ -351,6 +351,12 @@ ar.quantize_and_save()
 The tuning cost of AutoScheme is approximately 2 to 4 times that of model's bf16 size, depending on the options.
 We tested it on Nvidia A100 80G using torch v2.8.
 
+| Models   | Scheme            | VRAM Cost <br /> (torch compile) | Time Cost <br /> (torch compile) | VRAM Cost <br /> (w/o torch compile) | Time Cost <br /> (w/o torch compile) |
+| -------- | ----------------- | ---------------------------- | ----------------------------- | --------------------------------- | --------------------------------- |
+| Qwen3-8B | W2A16 / W4A16 / W8A16 | 34G | 30s × len of options | 61G | 40s × len of options |
+| Qwen3-8B | MXFP4 / MXFP8 | 36G | 60s × len of options | 54G | 120s × len of options |
+| Qwen3-8B | GGUF* | 54G | 30s × len of options | 50G | 23s × len of options |
+
 
 #### Limitations
 Embedding layer is supported in AutoScheme, it will use the best scheme in options.
