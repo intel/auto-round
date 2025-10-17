@@ -16,6 +16,7 @@ py-cpuinfo
 torch
 torchvision
 tqdm
+numba
 transformers
 vllm>=0.8.5.post1
 compressed-tensors

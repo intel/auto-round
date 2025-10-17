@@ -154,7 +154,7 @@ if __name__ == "__main__":
         packages=include_packages,
         install_requires=install_requires,
         extras_require=extras_require,
-        python_requires=">=3.7.0",
+        python_requires=">=3.10.0",
         classifiers=[
             "Intended Audience :: Science/Research",
             "Programming Language :: Python :: 3",
