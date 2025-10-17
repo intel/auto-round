@@ -2028,7 +2028,8 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
-            pass
+            # new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
+            continue
         elif isinstance(layer, torch.nn.Embedding):
             if "embedding" in GGUF_CONFIG[target_gguf_format]:
                 new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
@@ -2946,7 +2947,7 @@ def set_layer_config(
     if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
         tie_word_embeddings = model.config.tie_word_embeddings
 
-    if quant_lm_head and tie_word_embeddings:
+    if quant_lm_head and tie_word_embeddings and not gguf_name:
         quant_lm_head = False
         logger.warning(
             "reset `quant_lm_head` to false as quantizing " "lm_head with tied weights has not been supported currently"
@@ -2986,6 +2987,7 @@ def set_layer_config(
         return layer_config, has_qlayer_outside_block
 
     # embed + lm_head defaults for gguf
+    tie_word_embeddings &= is_separate_lm_head(model)
     if lm_head_name not in layer_config and not tie_word_embeddings:
         cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
         cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
@@ -3042,3 +3044,27 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
+
+def is_separate_lm_head(model: torch.nn.Module) -> bool:
+    dir_path = model.name_or_path
+    if not os.path.isdir(dir_path):
+        dir_path = download_hf_model(dir_path)
+    lm_head_name: str = get_lm_head_name(model)
+    lm_head_name += ".weight"
+
+    if "model.safetensors.index.json" in os.listdir(dir_path):
+        with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
+            index_mapping = json.load(f)
+            if lm_head_name in index_mapping["weight_map"]:
+                return True
+            else:
+                return False
+    else:
+        from safetensors import safe_open
+
+        f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
+        if lm_head_name in f.keys():
+            return True
+        else:
+            return False
