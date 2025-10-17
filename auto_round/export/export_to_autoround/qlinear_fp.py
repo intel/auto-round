@@ -72,8 +72,6 @@ class QuantLinear(nn.Module):
         super().__init__()
         if bits not in [4, 8]:
             raise NotImplementedError("Only 4,8 bits are supported.")
-        if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
         if self.is_mx and group_size != 32:
