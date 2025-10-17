@@ -11,13 +11,13 @@ from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 from auto_round.testing_utils import has_module
+
 testing_schemes = [AutoRoundFormat.MXFP8.value, AutoRoundFormat.MXFP4.value, AutoRoundFormat.NVFP4.value]
 QMODULE_MAPPING = {
     AutoRoundFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
     AutoRoundFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
     AutoRoundFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
-
 
 
 @pytest.mark.parametrize("scheme", testing_schemes)

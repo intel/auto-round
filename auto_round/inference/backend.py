@@ -112,6 +112,7 @@ MX_TENSOR_DATA_TYPES = [
     "mx_fp_rceil",
 ]
 
+
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
