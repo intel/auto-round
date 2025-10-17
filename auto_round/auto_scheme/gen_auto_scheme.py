@@ -30,11 +30,11 @@ class GenScheme:
 
     def __init__(
         self,
-        auto_scheme: AutoScheme,  # TODO support shared layer
+        auto_scheme: AutoScheme,
         model: torch.nn.Module,
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
-        dataset: str = "pile-10k",  # TODO use auto-round dataset
+        dataset: str = "pile-10k",
         device_map: Union[str, torch.device, int, dict, None] = None,
         tokenizer=None,
         enable_torch_compile=False,
@@ -46,7 +46,11 @@ class GenScheme:
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
         self.device_map = device_map if self.auto_scheme.device_map is None else self.auto_scheme.device_map
-        self.enable_torch_compile = enable_torch_compile
+        self.enable_torch_compile = (
+            enable_torch_compile
+            if self.auto_scheme.enable_torch_compile is None
+            else self.auto_scheme.enable_torch_compile
+        )
         self._check_configs()
 
     def _check_configs(self) -> None:
