@@ -11,6 +11,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum
 
+
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1
@@ -31,7 +32,6 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-
 
     def test_fp8input_mxfp4_llmcompressor_format(self):
         model_name = "/models/Qwen3-0.6B-FP8"
@@ -110,7 +110,6 @@ class TestAutoRound(unittest.TestCase):
         #     if "France" in prompt:
         #         assert "Paris" in generated_text
 
-
     def test_nvfp4_moe_actmax_rtn(self):
         model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
         scheme = "nvfp4"
@@ -141,7 +140,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-
     def test_qwen_moe_quant_infer(self):
         model_name = "/models/Qwen1.5-MoE-A2.7B"
         layer_config = {
@@ -162,6 +160,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
+
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa")
         print(result["results"]["piqa"]["acc,none"])
         self.assertGreater(result["results"]["piqa"]["acc,none"], 0.7)
@@ -170,4 +169,3 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-    

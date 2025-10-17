@@ -35,7 +35,7 @@ class LLMDataLoader:
 class TestAutoRoundFP(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        model_name = "facebook/opt-125m" #/tf_dataset/auto_round/models/
+        model_name = "facebook/opt-125m"  # /tf_dataset/auto_round/models/
         self.save_dir = "./saved"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -45,7 +45,6 @@ class TestAutoRoundFP(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    
 
     def test_nvfp4_moe_actmax_rtn(self):
         model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
@@ -86,7 +85,6 @@ class TestAutoRoundFP(unittest.TestCase):
         )
         autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
 
-    
     def test_mxfp4_llmcompressor_format(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from transformers import AutoConfig
@@ -134,10 +132,10 @@ class TestAutoRoundFP(unittest.TestCase):
 
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_rtn_mxfp4_llmcompressor_format(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from transformers import AutoConfig
+
         scheme = "MXFP4"
         layer_config = {}
         fp_layers_str = "k_proj"
@@ -180,10 +178,10 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_mxfp8_llmcompressor_format(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from transformers import AutoConfig
+
         scheme = "MXFP8"
         autoround = AutoRound(
             model_name,
@@ -217,10 +215,10 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.2 GB)"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_nvfp4_llmcompressor_format(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from transformers import AutoConfig
+
         scheme = "NVFP4"
         autoround = AutoRound(
             model_name,
@@ -254,7 +252,6 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.15 GB)"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_nvfp4_autoround_format(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from transformers import AutoConfig
@@ -280,10 +277,10 @@ class TestAutoRoundFP(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_nvfp4_autoround_save_quantized(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from transformers import AutoConfig
+
         scheme = "NVFP4"
         autoround = AutoRound(
             model_name,
@@ -306,7 +303,6 @@ class TestAutoRoundFP(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_qwen_moe_quant_infer(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
         layer_config = {
@@ -327,6 +323,7 @@ class TestAutoRoundFP(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="cpu")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
+
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa", limit=10)
         print(result["results"]["piqa"]["acc,none"])
         self.assertGreater(result["results"]["piqa"]["acc,none"], 0.60)
@@ -335,4 +332,3 @@ class TestAutoRoundFP(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-    
