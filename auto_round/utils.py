@@ -2947,7 +2947,7 @@ def set_layer_config(
     if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
         tie_word_embeddings = model.config.tie_word_embeddings
 
-    if quant_lm_head and tie_word_embeddings:
+    if quant_lm_head and tie_word_embeddings and not gguf_name:
         quant_lm_head = False
         logger.warning(
             "reset `quant_lm_head` to false as quantizing " "lm_head with tied weights has not been supported currently"
@@ -2987,6 +2987,7 @@ def set_layer_config(
         return layer_config, has_qlayer_outside_block
 
     # embed + lm_head defaults for gguf
+    tie_word_embeddings &= is_separate_lm_head(model)
     if lm_head_name not in layer_config and not tie_word_embeddings:
         cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
         cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
