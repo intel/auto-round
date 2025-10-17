@@ -462,6 +462,7 @@ class BaseCompressor(object):
 
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
+
         if self.enable_torch_compile is False:
             logger.warning("we strongly recommend to enable torch compile for AutoScheme to save VRAM")
         gen_scheme = GenScheme(
