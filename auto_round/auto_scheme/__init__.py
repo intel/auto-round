@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+AUTO_SCHEME_METHODS = {}
 
-QUANT_FUNC_WITH_DTYPE = {}
 
-
-def register_dtype(names):
-    """Class decorator to register a EXPORT subclass to the registry.
+def register_scheme_methods(names):
+    """Class decorator to register a mixed precision algorithm to the registry.
 
     Decorator function used before a Pattern subclass.
 
@@ -28,13 +27,16 @@ def register_dtype(names):
         cls: The class of register.
     """
 
-    def register(dtype):
+    def register(alg):
         if isinstance(names, (tuple, list)):
             for name in names:
-                QUANT_FUNC_WITH_DTYPE[name] = dtype
+                AUTO_SCHEME_METHODS[name] = alg
         else:
-            QUANT_FUNC_WITH_DTYPE[names] = dtype
+            AUTO_SCHEME_METHODS[names] = alg
 
-        return dtype
+        return alg
 
     return register
+
+
+import auto_round.auto_scheme.default_alg

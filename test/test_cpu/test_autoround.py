@@ -736,6 +736,7 @@ class TestAutoRound(unittest.TestCase):
                 iters=1,
                 layer_config=layer_config,
             )
+            ar.quantize()
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
