@@ -46,8 +46,11 @@ class GenScheme:
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
         self.device_map = device_map if self.auto_scheme.device_map is None else self.auto_scheme.device_map
-        self.enable_torch_compile = (enable_torch_compile if self.auto_scheme.enable_torch_compile
-                                                             is None else self.auto_scheme.enable_torch_compile)
+        self.enable_torch_compile = (
+            enable_torch_compile
+            if self.auto_scheme.enable_torch_compile is None
+            else self.auto_scheme.enable_torch_compile
+        )
         self._check_configs()
 
     def _check_configs(self) -> None:
