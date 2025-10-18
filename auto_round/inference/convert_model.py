@@ -28,6 +28,7 @@ from auto_round.inference.backend import (
     get_layer_backend,
     process_requirement,
 )
+from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -258,21 +259,39 @@ def get_layer_config(model, quantization_config):
             if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
-    # Process AWQ format: exclude specified modules from quantization
+    # Expand GPTQ 'dynamic' config (regex-based)
+    dynamic_config = getattr(quantization_config, "dynamic", None)
+    from auto_round.export.export_to_autogptq.export import convert_from_autogptq_dynamic
+
+    if dynamic_config and isinstance(dynamic_config, dict):
+        extra_config = _expand_regex_config(
+            regex_config=convert_from_autogptq_dynamic(dynamic_config),
+            base_config=extra_config,
+            layer_names=layer_names,
+            model=model,
+        )
+
+    # AWQ format: exclude specified modules
     extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
 
-    # Merge and deduplicate layer names
+    # Expand auto_round regex configs (regex-based)
+    extra_config = _expand_regex_config(
+        regex_config=extra_config, base_config=extra_config, layer_names=layer_names, model=model
+    )
+
+    # Merge and deduplicate
     layer_names = list(set(layer_names).union(extra_config.keys()))
 
-    # Construct final layer configuration
+    # Build final layer configs
     layer_configs = {}
     quant_scheme_attrs = QuantizationScheme.get_attributes()
     for layer_name in layer_names:
-        layer_config = {}
-        layer_extra_config = extra_config.get(layer_name, {})
-        for scheme_attr in quant_scheme_attrs:
-            layer_config[scheme_attr] = layer_extra_config.get(scheme_attr, getattr(default_quant_scheme, scheme_attr))
-        layer_configs[layer_name] = QuantizationScheme.from_dict(layer_config)
+        layer_cfg_dict = {}
+        layer_extra = extra_config.get(layer_name, {})
+        for attr in quant_scheme_attrs:
+            layer_cfg_dict[attr] = layer_extra.get(attr, getattr(default_quant_scheme, attr))
+        layer_configs[layer_name] = QuantizationScheme.from_dict(layer_cfg_dict)
+
     return layer_configs
 
 

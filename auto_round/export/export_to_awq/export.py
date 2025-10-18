@@ -137,6 +137,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         return model
 
     quantization_config = kwargs["serialization_dict"]
+    regex_config = quantization_config.pop("regex_config", {})  # awq do not support mixed bits config saving
 
     if output_dir is None:
         return compressed_model
@@ -145,11 +146,16 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
+    for key, cfg in regex_config.items():
+        bits = cfg.get("bits")
+        if bits > 8:  # save fp_layer regexs
+            modules_to_not_convert.append(key)
+
     quantization_config["provider"] = "auto-round"
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
-    quantization_config["modules_to_not_convert"] = modules_to_not_convert
+    quantization_config["modules_to_not_convert"] = list(dict.fromkeys(modules_to_not_convert))
     ##check module quantized in block, this may have bug for mixed precision quantization
     filter_quantization_config(quantization_config)
     if hasattr(compressed_model, "config"):

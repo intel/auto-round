@@ -17,6 +17,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict
 
 import threadpoolctl as tctl
 
@@ -48,6 +49,13 @@ from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.export.utils import save_model
+
+GPTQ_REQUIRED_CONFIG_KEYS = (
+    "bits",
+    "group_size",
+    "sym",
+)
+
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -57,7 +65,9 @@ from auto_round.utils import (
     get_autogptq_packing_qlinear,
     get_block_names,
     get_module,
+    json_serialize,
     set_module,
+    to_standard_regex,
 )
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
@@ -66,6 +76,53 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
     "gpt_neox.layers",
     "model.layers",
 ]
+
+
+def convert_to_autogptq_dynamic(regex_config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Convert AutoRound-style regex_config into AutoGPTQ-style QuantizerConfig.dynamic.
+
+    Rules:
+    - bits < 16 -> quantize -> positive match `+:regex`
+    - bits == 16 -> skip quantize -> negative match `-:regex`
+    """
+    converted = {}
+    for name, cfg in regex_config.items():
+        bits = cfg.get("bits")
+        regex = to_standard_regex(name)
+
+        if bits is None:
+            continue  # ignore invalid entries
+        elif bits < 16:
+            converted[f"+:{regex}"] = {"bits": bits}
+            for key in GPTQ_REQUIRED_CONFIG_KEYS:  # only save keys gptq supported
+                converted[f"+:{regex}"][key] = regex_config[name][key]
+        else:
+            # skip quantization
+            converted[f"-:{regex}"] = {}
+    return converted
+
+
+def convert_from_autogptq_dynamic(dynamic_config: dict) -> dict:
+    """
+    Convert AutoGPTQ-style QuantizerConfig.dynamic into AutoRound-style extra_config.
+
+    Rules:
+    - '+:regex' => quantize => keep bits and other quantization keys
+    - '-:regex' => skip quantize => set bits to 16 (FP16 passthrough)
+    """
+    converted = {}
+    for name, cfg in dynamic_config.items():
+        # Strip the +: or -:
+        if name.startswith("+:"):
+            regex = name[2:]
+            # keep all config fields (bits, group_size, sym, etc.)
+            converted[regex] = dict(cfg)
+        elif name.startswith("-:"):
+            regex = name[2:]
+            # mark skipped layers with bits=16
+            converted[regex] = {"bits": 16, "act_bits": 16}
+    return converted
 
 
 def pack_layer(name, model, backend, device=None):
@@ -156,7 +213,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         logger.error("auto-gptq format may not support loading this quantized model")
         quantization_config["block_name_to_quantize"] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
-
+    regex_config = quantization_config.pop("regex_config")
+    quantization_config["dynamic"] = convert_to_autogptq_dynamic(regex_config)
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
     for n, m in model.named_modules():
