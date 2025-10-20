@@ -21,7 +21,7 @@ pr:
 
 jobs:
 - job: Test
-  displayName: 'Python Import Test'
+  displayName: 'Compatibility Test'
   strategy:
     matrix:
       Python310_Linux:
@@ -60,6 +60,9 @@ jobs:
     displayName: 'Use Python $(python_version)'
 
   - script: |
+      export PYTHONUNBUFFERED=1
+      export UV_NO_PROGRESS=1
+      export UV_SYSTEM_PYTHON=1
       python -m pip install --upgrade pip uv
       uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
       uv pip install .
