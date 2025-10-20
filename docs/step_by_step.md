@@ -365,7 +365,7 @@ We will try to optimize the VRAM usage in the future.
 
 
 #### Limitations
-Embedding layer is supported in AutoScheme, it will use the best scheme in options.
+Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
 
 ### RTN mode
