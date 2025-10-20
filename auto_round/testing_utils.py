@@ -268,11 +268,3 @@ def require_package_version_ut(package: str, version_spec: str) -> Callable:
         return unittest.skipUnless(require_package_version(package, version_spec, on_fail="skip"), reason)(test_func)
 
     return decorator
-
-
-def has_module(model: torch.nn.Module, target_module_type: torch.nn.Module) -> bool:
-    """Check if the model contains a specific module type."""
-    for _, module in model.named_modules():
-        if isinstance(module, target_module_type):
-            return True
-    return False
