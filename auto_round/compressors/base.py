@@ -463,6 +463,8 @@ class BaseCompressor(object):
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
+        if self.enable_torch_compile is False:
+            logger.warning("we strongly recommend to enable torch compile for AutoScheme to save VRAM")
         gen_scheme = GenScheme(
             scheme,
             self.model,
@@ -583,9 +585,9 @@ class BaseCompressor(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
-        if is_debug_mode() and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+        # if is_debug_mode() and self.enable_torch_compile:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
 
         if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
