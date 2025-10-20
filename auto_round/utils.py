@@ -3054,4 +3054,3 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
-
