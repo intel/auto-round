@@ -13,9 +13,10 @@
 # limitations under the License.
 
 from typing import List
-from auto_round.schemes import QuantizationScheme as Scheme
-REQUIRED_CONFIG_KEYS = {key for key in Scheme.__dataclass_fields__.keys()}
 
+from auto_round.schemes.quantization import QuantizationScheme
+
+REQUIRED_CONFIG_KEYS = {key for key in QuantizationScheme.__dataclass_fields__.keys()}
 
 def check_neq_config(config: dict, **expected) -> List[str]:
     """
