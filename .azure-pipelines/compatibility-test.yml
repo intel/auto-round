@@ -1,0 +1,70 @@
+trigger: none
+
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round
+      - auto_round_extension
+      - setup.py
+      - setup.cfg
+      - requirements.txt
+      - requirements-cpu.txt
+      - .azure-pipelines/compatibility-test.yml
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
+jobs:
+- job: Test
+  displayName: 'Python Import Test'
+  strategy:
+    matrix:
+      Python310_Linux:
+        python_version: '3.10'
+        vmImage: 'ubuntu-latest'
+      Python311_Linux:
+        python_version: '3.11'
+        vmImage: 'ubuntu-latest'
+      Python312_Linux:
+        python_version: '3.12'
+        vmImage: 'ubuntu-latest'
+      Python313_Linux:
+        python_version: '3.13'
+        vmImage: 'ubuntu-latest'
+
+      Python310_Windows:
+        python_version: '3.10'
+        vmImage: 'windows-latest'
+      Python311_Windows:
+        python_version: '3.11'
+        vmImage: 'windows-latest'
+      Python312_Windows:
+        python_version: '3.12'
+        vmImage: 'windows-latest'
+      Python313_Windows:
+        python_version: '3.13'
+        vmImage: 'windows-latest'
+        
+  pool:
+    vmImage: $(vmImage)
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(python_version)'
+    displayName: 'Use Python $(python_version)'
+
+  - script: |
+      python -m pip install --upgrade pip uv
+      uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+      uv pip install .
+    displayName: 'Install dependencies'
+
+  - script: |
+      python -c "import auto_round"
+    displayName: 'Run compatibility test'
