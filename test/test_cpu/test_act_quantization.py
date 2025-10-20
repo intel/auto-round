@@ -143,10 +143,7 @@ class TestAutoRoundAct(unittest.TestCase):
     def test_act_config_MXFP4_saving(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "MXFP4"
-        layer_config = {
-            "lm_head": {"act_bits": 8, "bits": 8},
-            "k_proj": {"act_bits": 8, "bits": 8}
-        }
+        layer_config = {"lm_head": {"act_bits": 8, "bits": 8}, "k_proj": {"act_bits": 8, "bits": 8}}
         autoround = AutoRound(
             model=model_name,
             scheme=scheme,
@@ -162,32 +159,29 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "act_data_type" in lmhead_config.keys() and lmhead_config["act_data_type"] == "mx_fp_rceil"
         assert "act_bits" in lmhead_config.keys() and lmhead_config["act_bits"] == 8
         assert "act_group_size" in lmhead_config.keys() and lmhead_config["act_group_size"] == 32
-        assert "act_sym" in lmhead_config.keys() and lmhead_config["act_sym"] == True
+        assert "act_sym" in lmhead_config.keys() and lmhead_config["act_sym"]
         assert "data_type" in lmhead_config.keys() and lmhead_config["data_type"] == "mx_fp"
         assert "bits" in lmhead_config.keys() and lmhead_config["bits"] == 8
         assert "group_size" in lmhead_config.keys() and lmhead_config["group_size"] == 32
-        assert "sym" in lmhead_config.keys() and lmhead_config["sym"] == True
-        assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] == None
-        assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] == None
+        assert "sym" in lmhead_config.keys() and lmhead_config["sym"]
+        assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] is None
+        assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] is None
         # check inblock layer config values
         kproj_config = model.config.quantization_config.extra_config["model.decoder.layers.1.self_attn.k_proj"]
         assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "mx_fp_rceil"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 8
         assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 32
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"] == True
+        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
         assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "mx_fp"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
         assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 32
-        assert "sym" in kproj_config.keys() and kproj_config["sym"] == True
+        assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_act_config_NVFP4_saving(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "NVFP4"
-        layer_config = {
-            "k_proj": {"act_bits": 16, "bits": 16}
-        }
+        layer_config = {"k_proj": {"act_bits": 16, "bits": 16}}
         autoround = AutoRound(
             model=model_name,
             scheme=scheme,
@@ -203,21 +197,17 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "nv_fp4_with_static_gs"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
         assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 16
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"] == True
+        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
         assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "nv_fp"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 16
         assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 16
-        assert "sym" in kproj_config.keys() and kproj_config["sym"] == True
+        assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_WOQ_config_INT_saving(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "W4A16"
-        layer_config = {
-            "lm_head": {"act_bits": 16, "bits": 4},
-            "k_proj": {"act_bits": 16, "bits": 8}
-        }
+        layer_config = {"lm_head": {"act_bits": 16, "bits": 4}, "k_proj": {"act_bits": 16, "bits": 8}}
         autoround = AutoRound(
             model=model_name,
             scheme=scheme,
@@ -235,35 +225,40 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "act_data_type" in lmhead_config.keys() and lmhead_config["act_data_type"] == "float"
         assert "act_bits" in lmhead_config.keys() and lmhead_config["act_bits"] == 16
         assert "act_group_size" in lmhead_config.keys() and lmhead_config["act_group_size"] == 128
-        assert "act_sym" in lmhead_config.keys() and lmhead_config["act_sym"] == False
+        assert "act_sym" in lmhead_config.keys() and not lmhead_config["act_sym"]
         assert "data_type" in lmhead_config.keys() and lmhead_config["data_type"] == "int"
         assert "bits" in lmhead_config.keys() and lmhead_config["bits"] == 4
         assert "group_size" in lmhead_config.keys() and lmhead_config["group_size"] == 128
-        assert "sym" in lmhead_config.keys() and lmhead_config["sym"] == False
-        assert "act_dynamic" in lmhead_config.keys() and lmhead_config["act_dynamic"] == True
-        assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] == None
-        assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] == None
+        assert "sym" in lmhead_config.keys() and not lmhead_config["sym"]
+        assert "act_dynamic" in lmhead_config.keys() and lmhead_config["act_dynamic"]
+        assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] is None
+        assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] is None
         # check inblock layer config values
         kproj_config = extra_config["model.decoder.layers.1.self_attn.k_proj"]
         assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "float"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
         assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 128
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"] == False
+        assert "act_sym" in kproj_config.keys() and not kproj_config["act_sym"]
         assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "int"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
         assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 128
-        assert "sym" in kproj_config.keys() and kproj_config["sym"] == False
-        assert "act_dynamic" in kproj_config.keys() and kproj_config["act_dynamic"] == True
+        assert "sym" in kproj_config.keys() and not kproj_config["sym"]
+        assert "act_dynamic" in kproj_config.keys() and kproj_config["act_dynamic"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    
     def test_act_config_FP8_saving(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "FP8_STATIC"
         layer_config = {
             "lm_head": {"act_bits": 8, "bits": 8},
             # check fp8 woq config
-            "k_proj": {"bits": 8, "group_size": 0, "data_type": "fp", "act_bits": 16, "act_data_type": "fp",}
+            "k_proj": {
+                "bits": 8,
+                "group_size": 0,
+                "data_type": "fp",
+                "act_bits": 16,
+                "act_data_type": "fp",
+            },
         }
         autoround = AutoRound(
             model=model_name,
@@ -276,31 +271,32 @@ class TestAutoRoundAct(unittest.TestCase):
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         from transformers import AutoConfig
+
         extra_config = AutoConfig.from_pretrained(quantized_model_path).quantization_config["extra_config"]
         lmhead_config = extra_config["lm_head"]
         assert "act_data_type" in lmhead_config.keys() and lmhead_config["act_data_type"] == "fp"
         assert "act_bits" in lmhead_config.keys() and lmhead_config["act_bits"] == 8
         assert "act_group_size" in lmhead_config.keys() and lmhead_config["act_group_size"] == 0
-        assert "act_sym" in lmhead_config.keys() and lmhead_config["act_sym"] == True
+        assert "act_sym" in lmhead_config.keys() and lmhead_config["act_sym"]
         assert "data_type" in lmhead_config.keys() and lmhead_config["data_type"] == "fp"
         assert "bits" in lmhead_config.keys() and lmhead_config["bits"] == 8
         assert "group_size" in lmhead_config.keys() and lmhead_config["group_size"] == -1
-        assert "sym" in lmhead_config.keys() and lmhead_config["sym"] == True
-        assert "act_dynamic" in lmhead_config.keys() and lmhead_config["act_dynamic"] == False
-        assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] == None
-        assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] == None
+        assert "sym" in lmhead_config.keys() and lmhead_config["sym"]
+        assert "act_dynamic" in lmhead_config.keys() and not lmhead_config["act_dynamic"]
+        assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] is None
+        assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] is None
         # check inblock layer config values
         kproj_config = extra_config["model.decoder.layers.0.self_attn.k_proj"]
         assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "fp"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
         assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 0
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"] == True
+        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
         assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "fp"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
         assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 0
-        assert "sym" in kproj_config.keys() and kproj_config["sym"] == True
+        assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-        
+
 
 if __name__ == "__main__":
     unittest.main()
