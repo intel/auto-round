@@ -284,8 +284,9 @@ def quant_tensor_asym_dq(
 
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
+
 @torch.no_grad()
-def search_gguf_scale_min_asym(tensor, bits=4,scale_dtype=torch.float16, imatrix=None):
+def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
     group_size = 16 if bits == 2 else 32
@@ -399,8 +400,8 @@ def search_gguf_scale_min_asym(tensor, bits=4,scale_dtype=torch.float16, imatrix
 
 @register_dtype("rtn_int_asym_dq")
 def quant_tensor_gguf_asym_dq(
-    tensor:torch.Tensor,
-    bits:int=4,
+    tensor: torch.Tensor,
+    bits: int = 4,
     v=0,
     scale_dtype=torch.float16,
     imatrix=None,
@@ -515,8 +516,10 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 
 
 @torch.no_grad()
-def search_gguf_scale_min_sym(tensor, bits, imatrix,scale_dtype):
 
+def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
+    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
+    group_size = 16
 
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
@@ -526,17 +529,6 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix,scale_dtype):
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
     else:
         imatrix = imatrix.to(tensor.device)
-
-        # if bits == 3:
-        #     # sigma2 = 2 * torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
-        #     # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-        #     # quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
-        #     # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
-        #     weights = imatrix.reshape(1, -1)
-        #     weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        #     quant_weights = weights.reshape(tensor.shape)
-        # elif bits == 6:
-
         weights = imatrix.reshape(1, -1)
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
@@ -563,12 +555,6 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix,scale_dtype):
                 quant_weights[mean_replace_index] = tmp_quant_weights[mean_replace_index]
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
-    # scale = scale.to(scale_dtype)
-    # scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
-    # # conduct double quant
-    # scale, d_scale = double_quant_tensor_sym(scale, super_bits)
-    #
-    # scale = scale.unsqueeze(-1)
     return scale
 #
 @register_dtype("rtn_int_sym_dq")
@@ -598,6 +584,7 @@ def quant_tensor_gguf_sym_dq(
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
+
     from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
 
     if bits not in [3, 6]:
@@ -611,8 +598,6 @@ def quant_tensor_gguf_sym_dq(
     super_group_size = 16
     ggml_type = f"q{bits}_k"
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
-
-
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
     # (nb, 16, 16)
