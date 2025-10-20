@@ -60,12 +60,14 @@ jobs:
     displayName: 'Use Python $(python_version)'
 
   - script: |
-      export PYTHONUNBUFFERED=1
-      export UV_NO_PROGRESS=1
-      export UV_SYSTEM_PYTHON=1
       python -m pip install --upgrade pip uv
       uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
       uv pip install .
+      pip list
+    env:
+      PYTHONUNBUFFERED: '1'
+      UV_NO_PROGRESS: '1'
+      UV_SYSTEM_PYTHON: '1'
     displayName: 'Install dependencies'
 
   - script: |
