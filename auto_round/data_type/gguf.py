@@ -516,9 +516,9 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 
 
 @torch.no_grad()
-
 def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
-    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
+    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
+
     group_size = 16
 
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
@@ -556,6 +556,8 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
     return scale
+
+
 #
 @register_dtype("rtn_int_sym_dq")
 def quant_tensor_gguf_sym_dq(
@@ -585,7 +587,7 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
+    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
@@ -618,4 +620,3 @@ def quant_tensor_gguf_sym_dq(
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
 
     return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
-
