@@ -2970,8 +2970,11 @@ def set_layer_config(
                 if m.weight.shape[1] % default_dict["group_size"]:
                     layer_config.setdefault(n, copy.deepcopy(default_dict))
                     layer_config[n].update(
-                        {"bits": 16, "data_type": "fp", "act_bits": 16, "act_data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by {default_dict['group_size']}).")
+                        {"bits": 16, "data_type": "fp", "act_bits": 16, "act_data_type": "fp", "fixed_by_user": True}
+                    )
+                    logger.warning_once(
+                        f"{n} skipped quantization (shape not divisible by {default_dict['group_size']})."
+                    )
 
     # 9. block layers: mark as in_blocks=True
     for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
@@ -3051,3 +3054,4 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
