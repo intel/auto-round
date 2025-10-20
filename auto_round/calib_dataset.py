@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import json
+import logging
 import random
 import sys
+
+logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
 from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset

@@ -7,7 +7,6 @@ numpy < 2.0
 tqdm
 packaging
 pillow
-numba
 tbb
 torch
 transformers>=4.38
