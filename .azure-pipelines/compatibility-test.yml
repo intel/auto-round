@@ -19,57 +19,60 @@ pr:
       - "*.md"
       - "**/*.md"
 
-jobs:
-- job: Test
-  displayName: 'Compatibility Test'
-  strategy:
-    matrix:
-      Python310_Linux:
-        python_version: '3.10'
-        vmImage: 'ubuntu-latest'
-      Python311_Linux:
-        python_version: '3.11'
-        vmImage: 'ubuntu-latest'
-      Python312_Linux:
-        python_version: '3.12'
-        vmImage: 'ubuntu-latest'
-      Python313_Linux:
-        python_version: '3.13'
-        vmImage: 'ubuntu-latest'
+stages:
+  - stage: Compatibility Test
+    dependsOn: []
+    jobs:
+    - job:
+      timeoutInMinutes: 20
+      strategy:
+        matrix:
+          Python310_Linux:
+            python_version: '3.10'
+            vmImage: 'ubuntu-latest'
+          Python311_Linux:
+            python_version: '3.11'
+            vmImage: 'ubuntu-latest'
+          Python312_Linux:
+            python_version: '3.12'
+            vmImage: 'ubuntu-latest'
+          Python313_Linux:
+            python_version: '3.13'
+            vmImage: 'ubuntu-latest'
 
-      Python310_Windows:
-        python_version: '3.10'
-        vmImage: 'windows-latest'
-      Python311_Windows:
-        python_version: '3.11'
-        vmImage: 'windows-latest'
-      Python312_Windows:
-        python_version: '3.12'
-        vmImage: 'windows-latest'
-      Python313_Windows:
-        python_version: '3.13'
-        vmImage: 'windows-latest'
-        
-  pool:
-    vmImage: $(vmImage)
+          Python310_Windows:
+            python_version: '3.10'
+            vmImage: 'windows-latest'
+          Python311_Windows:
+            python_version: '3.11'
+            vmImage: 'windows-latest'
+          Python312_Windows:
+            python_version: '3.12'
+            vmImage: 'windows-latest'
+          Python313_Windows:
+            python_version: '3.13'
+            vmImage: 'windows-latest'
+            
+      pool:
+        vmImage: $(vmImage)
 
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '$(python_version)'
-    displayName: 'Use Python $(python_version)'
+      steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '$(python_version)'
+        displayName: 'Use Python $(python_version)'
 
-  - script: |
-      python -m pip install --upgrade pip uv
-      uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-      uv pip install .
-      pip list
-    env:
-      PYTHONUNBUFFERED: '1'
-      UV_NO_PROGRESS: '1'
-      UV_SYSTEM_PYTHON: '1'
-    displayName: 'Install dependencies'
+      - script: |
+          python -m pip install --upgrade pip uv
+          uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          uv pip install .
+          pip list
+        env:
+          PYTHONUNBUFFERED: '1'
+          UV_NO_PROGRESS: '1'
+          UV_SYSTEM_PYTHON: '1'
+        displayName: 'Install dependencies'
 
-  - script: |
-      python -c "import auto_round"
-    displayName: 'Run compatibility test'
+      - script: |
+          python -c "import auto_round"
+        displayName: 'Run compatibility test'
