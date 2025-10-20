@@ -18,6 +18,7 @@ from auto_round.schemes.quantization import QuantizationScheme
 
 REQUIRED_CONFIG_KEYS = {key for key in QuantizationScheme.__dataclass_fields__.keys()}
 
+
 def check_neq_config(config: dict, **expected) -> List[str]:
     """
     Compare a config dict against expected values.
@@ -38,4 +39,3 @@ def check_neq_config(config: dict, **expected) -> List[str]:
 
     # 3. Collect mismatches
     return [key for key in REQUIRED_CONFIG_KEYS if config[key] != expected[key] and config[key] is not None]
-

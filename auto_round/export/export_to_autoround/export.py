@@ -326,16 +326,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     for layer_name, cfg in layer_config.items():
         if not cfg["in_blocks"] and cfg["bits"] <= 8:  # lm head
-            extra_config[layer_name] = {
-                key: cfg.get(key)
-                for key in REQUIRED_CONFIG_KEYS
-            }
+            extra_config[layer_name] = {key: cfg.get(key) for key in REQUIRED_CONFIG_KEYS}
         elif cfg["in_blocks"] or (
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
-            neq_keys = check_neq_config(
-                cfg, **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
-            )
+            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS})
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
                 for key in REQUIRED_CONFIG_KEYS:
@@ -386,4 +381,3 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-
