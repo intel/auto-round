@@ -195,28 +195,24 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         for i in range(len(block_name_to_quantize)):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
-    for layer_name in layer_config:
-        if not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8:  ##lm head
-            extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-            extra_config[layer_name]["act_bits"] = layer_config[layer_name]["act_bits"]
-            extra_config[layer_name]["act_data_type"] = layer_config[layer_name]["act_data_type"]
-            extra_config[layer_name]["act_group_size"] = layer_config[layer_name]["act_group_size"]
-            extra_config[layer_name]["act_sym"] = layer_config[layer_name]["act_sym"]
-        elif layer_config[layer_name]["in_blocks"] or (
+    for layer_name, cfg in layer_config.items():
+        if not cfg["in_blocks"] and cfg["bits"] <= 8:  # lm head
+            extra_config[layer_name] = {
+                key: cfg.get(key)
+                for key in REQUIRED_CONFIG_KEYS
+            }
+        elif cfg["in_blocks"] or (
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
             neq_keys = check_neq_config(
-                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
+                cfg, **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
             )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
-            for key in neq_keys:
-                if layer_config[layer_name][key] is not None:
-                    extra_config[layer_name][key] = layer_config[layer_name][key]
+                for key in REQUIRED_CONFIG_KEYS:
+                    if cfg[key] is not None:
+                        extra_config[layer_name][key] = cfg[key]
+                        
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
@@ -256,3 +252,4 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+
