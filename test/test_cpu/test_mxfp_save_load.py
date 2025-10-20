@@ -38,6 +38,8 @@ def test_e2e_quant_and_load(scheme_name, weight_data_type, act_data_type):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
         config = AutoConfig.from_pretrained(model_name)
         config.num_hidden_layers = 2  # Use a smaller model for testing
+        # Fix configuration validation issues
+        config.layer_types = config.layer_types[: config.num_hidden_layers]
 
         # Load the tokenizer and model
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
