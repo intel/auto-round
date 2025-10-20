@@ -282,49 +282,11 @@ def quant_tensor_asym_dq(
 
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
-
-@register_dtype("rtn_int_asym_dq")
-def quant_tensor_gguf_asym_dq(
-    tensor,
-    bits=4,
-    v=0,
-    min_scale=1.0,
-    max_scale=1.0,
-    scale_dtype=torch.float16,
-    tensor_min=None,
-    tensor_max=None,
-    q_scale_thresh=1e-5,
-    imatrix=None,
-    **kwargs,
-):
-    """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
-    Only fit for iters 0
-
-    Args:
-        tensor (torch.Tensor): Input tensor to quantize.
-        bits (int): Number of bits for quantization.
-        group_size (int): Group size for per-group quantization.
-        v (float): Perturbation added before rounding.
-        min_scale (float): Minimum allowed scale value.
-        max_scale (float): Maximum allowed scale value.
-        scale_dtype (torch.dtype): Data type for quantized scale.
-        tensor_min (torch.Tensor, optional): Minimum values for the tensor groups.
-        tensor_max (torch.Tensor, optional): Maximum values for the tensor groups.
-        q_scale_thresh (float): Threshold to clamp the quantized scale.
-        super_group_size (int): Number of groups to bundle for secondary quantization.
-        super_bits (int): Number of bits used in secondary quantization.
-        imatrix (torch.Tensor, optional): Importance matrix for weighted quantization.
-
-    Returns:
-        Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
-    """
-    orig_dtype = tensor.dtype
-    maxq = 2**bits - 1
-    group_size = 16 if bits == 2 else 32
+@torch.no_grad()
+def search_gguf_scale_min_asym(tensor, bits=4,scale_dtype=torch.float16, imatrix=None):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    tensor = tensor.to(torch.float32)
+    group_size = 16 if bits == 2 else 32
     if bits not in [2, 4, 5]:
         raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     quant_weights = None
@@ -430,8 +392,52 @@ def quant_tensor_gguf_asym_dq(
         d_wmin = d_wmin.unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
         wmin = (d_wmin * q_wmin).view(-1, 1)
-    inverse_scale = get_reciprocal(scale)
+    return scale, wmin, d_scale, d_wmin
 
+
+@register_dtype("rtn_int_asym_dq")
+def quant_tensor_gguf_asym_dq(
+    tensor:torch.Tensor,
+    bits:int=4,
+    v=0,
+    scale_dtype=torch.float16,
+    imatrix=None,
+    scale=None,
+    wmin=None,
+    d_scale=None,
+    d_wmin=None,
+    **kwargs,
+):
+    """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
+    Only fit for iters 0
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        bits (int): Number of bits for quantization.
+        group_size (int): Group size for per-group quantization.
+        v (float): Perturbation added before rounding.
+        min_scale (float): Minimum allowed scale value.
+        max_scale (float): Maximum allowed scale value.
+        scale_dtype (torch.dtype): Data type for quantized scale.
+        tensor_min (torch.Tensor, optional): Minimum values for the tensor groups.
+        tensor_max (torch.Tensor, optional): Maximum values for the tensor groups.
+        q_scale_thresh (float): Threshold to clamp the quantized scale.
+        super_group_size (int): Number of groups to bundle for secondary quantization.
+        super_bits (int): Number of bits used in secondary quantization.
+        imatrix (torch.Tensor, optional): Importance matrix for weighted quantization.
+
+    Returns:
+        Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
+    """
+    orig_dtype = tensor.dtype
+    maxq = 2**bits - 1
+    group_size = 16 if bits == 2 else 32
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    tensor = tensor.to(torch.float32)
+    if scale is None:
+        scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(tensor, bits, scale_dtype, imatrix)
+
+    inverse_scale = get_reciprocal(scale)
     int_w = torch.clamp(round_ste((tensor + wmin) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
@@ -506,52 +512,18 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     return scale.to(torch.float32), -rmin.to(torch.float32)
 
 
-@register_dtype("rtn_int_sym_dq")
-def quant_tensor_gguf_sym_dq(
-    tensor,
-    bits=3,
-    v=0,
-    min_scale=1.0,
-    max_scale=1.0,
-    scale_dtype=torch.float16,
-    tensor_min=None,
-    tensor_max=None,
-    q_scale_thresh=1e-5,
-    imatrix=None,
-    **kwargs,
-):
-    """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
-
-    Args:
-        tensor: Tensor containing the tensor to be quantized
-        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        group_size: Number of elements to share scale for quantization
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for tensor
-        max_scale: Maximum scale coefficient for tensor
-        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
-        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
-        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
-        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
-
-    Returns:
-        Quantized and de-quantized tensor, scale, zero-point
-    """
+@torch.no_grad()
+def search_gguf_scale_min_sym(tensor, bits, imatrix,scale_dtype):
     from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
     from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants
-
-    if bits not in [3, 6]:
-        raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
-
-    maxq = 2 ** (bits - 1)
+    if bits not in [3,6]:
+        raise ValueError("bits must be 3 or 6")
     group_size = 16
     super_bits = 6 if bits == 3 else 8
     super_group_size = 16
-
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     ggml_type = f"q{bits}_k"
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
-    orig_dtype = tensor.dtype
+
 
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
@@ -603,14 +575,56 @@ def quant_tensor_gguf_sym_dq(
                 quant_weights[mean_replace_index] = tmp_quant_weights[mean_replace_index]
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+    scale = scale.to(scale_dtype)
     scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
     # conduct double quant
     scale, d_scale = double_quant_tensor_sym(scale, super_bits)
 
     scale = scale.unsqueeze(-1)
+    return scale, d_scale
+
+
+@register_dtype("rtn_int_sym_dq")
+def quant_tensor_gguf_sym_dq(
+    tensor,
+    bits=3,
+    imatrix=None,
+    scale=None,
+    d_scale=None,
+    scale_dtype=torch.float16,
+    **kwargs,
+):
+    """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
+
+    Args:
+        tensor: Tensor containing the tensor to be quantized
+        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for tensor
+        max_scale: Maximum scale coefficient for tensor
+        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
+        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
+        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+
+    Returns:
+        Quantized and de-quantized tensor, scale, zero-point
+    """
+
+
+    if bits not in [3, 6]:
+        raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
+
+    maxq = 2 ** (bits - 1)
+    group_size = 16
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    orig_dtype = tensor.dtype
+    if scale is None and d_scale is None:
+        scale,d_scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     inverse_scale = get_reciprocal(scale)
-    int_w = torch.round(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
+    int_w = round_ste(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
     qdq_result = (scale * (int_w - zp)).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
 
