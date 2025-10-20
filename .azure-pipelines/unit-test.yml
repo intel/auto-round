@@ -50,6 +50,8 @@ stages:
               PART: 3
             part4:
               PART: 4
+            part5:
+              PART: 5
         steps:
           - template: template/ut-template.yml
             parameters:

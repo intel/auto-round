@@ -26,10 +26,10 @@ LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
-# Split test files into 4 parts
+# Split test files into 5 parts
 find . -name "test*.py" | sort > all_tests.txt
 total_lines=$(wc -l < all_tests.txt)
-NUM_CHUNKS=4
+NUM_CHUNKS=5
 q=$(( total_lines / NUM_CHUNKS ))
 r=$(( total_lines % NUM_CHUNKS ))
 if [ "$test_part" -le "$r" ]; then
