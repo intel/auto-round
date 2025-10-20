@@ -23,7 +23,7 @@ class TestAutoRoundAct(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        self.save_dir = "/home/weiweiz1/autoround_newest/saved"
+        self.save_dir = "./saved"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
