@@ -20,7 +20,8 @@ pr:
       - "**/*.md"
 
 stages:
-  - stage: Compatibility Test
+  - stage:
+    displayName: Compatibility Test
     dependsOn: []
     jobs:
     - job:
