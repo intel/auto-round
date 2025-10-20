@@ -282,8 +282,9 @@ def quant_tensor_asym_dq(
 
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
+
 @torch.no_grad()
-def search_gguf_scale_min_asym(tensor, bits=4,scale_dtype=torch.float16, imatrix=None):
+def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
     group_size = 16 if bits == 2 else 32
@@ -397,8 +398,8 @@ def search_gguf_scale_min_asym(tensor, bits=4,scale_dtype=torch.float16, imatrix
 
 @register_dtype("rtn_int_asym_dq")
 def quant_tensor_gguf_asym_dq(
-    tensor:torch.Tensor,
-    bits:int=4,
+    tensor: torch.Tensor,
+    bits: int = 4,
     v=0,
     scale_dtype=torch.float16,
     imatrix=None,
@@ -513,17 +514,17 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 
 
 @torch.no_grad()
-def search_gguf_scale_min_sym(tensor, bits, imatrix,scale_dtype):
+def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
     from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
     from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants
-    if bits not in [3,6]:
+
+    if bits not in [3, 6]:
         raise ValueError("bits must be 3 or 6")
     group_size = 16
     super_bits = 6 if bits == 3 else 8
     super_group_size = 16
     ggml_type = f"q{bits}_k"
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
-
 
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
@@ -612,7 +613,6 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
 
@@ -621,7 +621,7 @@ def quant_tensor_gguf_sym_dq(
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype
     if scale is None and d_scale is None:
-        scale,d_scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype)
+        scale, d_scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     inverse_scale = get_reciprocal(scale)
     int_w = round_ste(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq

@@ -1450,7 +1450,9 @@ class BaseCompressor(object):
             for module in tqdm(modules, desc="Update weight global scale for fuse module"):
                 update_fused_layer_global_scales(module)
 
-        has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
+        has_gguf_k = (
+            any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
+        )
 
         self._quantize_embedding_layer()
 
