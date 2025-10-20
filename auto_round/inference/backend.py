@@ -107,11 +107,6 @@ BACKEND_ACT_ATTRS = [
     "act_dynamic",
 ]
 
-MX_TENSOR_DATA_TYPES = [
-    "mx_fp",
-    "mx_fp_rceil",
-]
-
 
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
     if out_feature_multiplier is None:
@@ -235,13 +230,13 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
-    data_type=MX_TENSOR_DATA_TYPES,
+    data_type=["mx_fp", "max_fp_rceil"],
     group_size=[32],
     bits=[8],
     act_bits=[8],
     act_group_size=[32],
     act_sym=[True],
-    act_data_type=MX_TENSOR_DATA_TYPES,
+    act_data_type=["mx_fp_rceil"],
     act_dynamic=[True],
     priority=0,
     checkers=[feature_multiply_checker_32],
@@ -255,13 +250,13 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
-    data_type=MX_TENSOR_DATA_TYPES,
+    data_type=["mx_fp"],
     group_size=[32],
     bits=[4],
     act_bits=[4],
     act_group_size=[32],
     act_sym=[True],
-    act_data_type=MX_TENSOR_DATA_TYPES,
+    act_data_type=["mx_fp_rceil"],
     act_dynamic=[True],
     priority=0,
     checkers=[feature_multiply_checker_32],
