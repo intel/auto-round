@@ -39,4 +39,3 @@ def check_neq_config(config: dict, **expected) -> List[str]:
 
     # 3. Collect mismatches
     return [key for key in scheme_keys if config[key] != expected[key] and config[key] is not None]
-

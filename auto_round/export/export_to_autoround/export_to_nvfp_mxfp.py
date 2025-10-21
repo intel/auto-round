@@ -250,4 +250,3 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-
