@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Union
 
 import torch
 
@@ -19,7 +20,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 from auto_round.utils import get_reciprocal
 
 
-def search_scales(data, bits, qw=None):
+def search_scales(data:torch.Tensor, bits:int, qw:Union[None,torch.Tensor,float]=None)->torch.Tensor:
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
