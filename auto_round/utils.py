@@ -2929,6 +2929,7 @@ def set_layer_config(
         if name in all_module_names:
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
+                layer_config.pop(name)
                 logger.warning(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
                 continue
 

@@ -77,10 +77,13 @@ def quant_tensor_sym(
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
-    imatrix = imatrix.reshape(1, -1)
+    if imatrix is None:
+        imatrix = 1.0
+    else:
+        imatrix = imatrix.reshape(1, -1)
 
-    imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
-    imatrix = imatrix.reshape(tensor.shape)
+        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
+        imatrix = imatrix.reshape(tensor.shape)
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
