@@ -16,7 +16,7 @@ from typing import List
 
 from auto_round.schemes import QuantizationScheme
 
-REQUIRED_CONFIG_KEYS = {key for key in QuantizationScheme.__dataclass_fields__.keys()} # pylint: disable=no-member
+REQUIRED_CONFIG_KEYS = {key for key in QuantizationScheme.__dataclass_fields__.keys()}  # pylint: disable=no-member
 
 
 def check_neq_config(config: dict, **expected) -> List[str]:
