@@ -141,11 +141,10 @@ class TestAutoRoundAct(unittest.TestCase):
         )
 
     def test_act_config_MXFP4_saving(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "MXFP4"
         layer_config = {"lm_head": {"act_bits": 8, "bits": 8}, "k_proj": {"act_bits": 8, "bits": 8}}
         autoround = AutoRound(
-            model=model_name,
+            self.model_name,
             scheme=scheme,
             iters=2,
             seqlen=2,
@@ -179,11 +178,10 @@ class TestAutoRoundAct(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_act_config_NVFP4_saving(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "NVFP4"
         layer_config = {"k_proj": {"act_bits": 16, "bits": 16}}
         autoround = AutoRound(
-            model=model_name,
+            self.model_name,
             scheme=scheme,
             iters=2,
             seqlen=2,
@@ -205,11 +203,10 @@ class TestAutoRoundAct(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_WOQ_config_INT_saving(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "W4A16"
         layer_config = {"lm_head": {"act_bits": 16, "bits": 4}, "k_proj": {"act_bits": 16, "bits": 8}}
         autoround = AutoRound(
-            model=model_name,
+            self.model_name,
             scheme=scheme,
             iters=2,
             seqlen=2,
@@ -247,7 +244,6 @@ class TestAutoRoundAct(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_act_config_FP8_saving(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         scheme = "FP8_STATIC"
         layer_config = {
             "lm_head": {"act_bits": 8, "bits": 8},
@@ -261,7 +257,7 @@ class TestAutoRoundAct(unittest.TestCase):
             },
         }
         autoround = AutoRound(
-            model=model_name,
+            self.model_name,
             scheme=scheme,
             iters=2,
             seqlen=2,
@@ -300,3 +296,4 @@ class TestAutoRoundAct(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
