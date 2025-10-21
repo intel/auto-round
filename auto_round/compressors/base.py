@@ -261,6 +261,7 @@ class BaseCompressor(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         device = kwargs.pop("device", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
@@ -375,6 +376,11 @@ class BaseCompressor(object):
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
+
+        # Attention static dtype
+        self.static_attention_dtype = static_attention_dtype
+        if self.static_attention_dtype is not None:
+            logger.warning("The static attention dtype is experimental and currently has limited support.")
 
         self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
@@ -1106,7 +1112,12 @@ class BaseCompressor(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
-        if self.static_kv_dtype is not None:
+        if self.static_attention_dtype is not None:
+            from auto_round.experimental.attention import attention_quant_ctx
+
+            with attention_quant_ctx(self.model, static_kv_dtype=self.static_kv_dtype):
+                model, _ = self.quantize()
+        elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
 
             with kvcache_quant_context(self.model, static_kv_dtype=self.static_kv_dtype):
