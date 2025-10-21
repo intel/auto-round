@@ -43,16 +43,11 @@ def search_scales(data, bits, qw=None):
 
 
 @register_dtype("rtn_int_sym")
-def quant_tensor_sym(
+def quant_tensor_rnt_sym(
     tensor,
     bits=4,
     group_size=-1,
     v=0,
-    min_scale=1.0,
-    max_scale=1.0,
-    scale_dtype=torch.float16,
-    tensor_min=None,
-    tensor_max=None,
     q_scale_thresh=1e-5,
     imatrix=None,
     **kwargs
