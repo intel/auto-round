@@ -51,6 +51,7 @@ class GenScheme:
             if self.auto_scheme.enable_torch_compile is None
             else self.auto_scheme.enable_torch_compile
         )
+        self.disable_opt_rtn = self.auto_scheme.disable_opt_rtn
         self._check_configs()
 
     def _check_configs(self) -> None:
@@ -89,6 +90,7 @@ class GenScheme:
             self.tokenizer,
             device_map=self.device_map,
             enable_torch_compile=self.enable_torch_compile,
+            disable_opt_rtn=self.disable_opt_rtn,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config
