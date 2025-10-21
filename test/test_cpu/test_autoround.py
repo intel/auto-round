@@ -452,6 +452,7 @@ class TestAutoRound(unittest.TestCase):
             layer_config=layer_config,
         )
         autoround.quantize()
+
     #
     # def test_fallback_layers(self):
     #     bits, group_size, sym = 4, 128, True
