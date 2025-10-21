@@ -17,7 +17,9 @@ model_name = "black-forest-labs/FLUX.1-dev"
 pipe = AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.bfloat16)
 
 ## quantize the model
-autoround = AutoRoundDiffusion(pipe, scheme="MXFP8", dataset="coco2014", num_inference_steps=10, guidance_scale=7.5, generator_seed=None)
+autoround = AutoRoundDiffusion(
+    pipe, scheme="MXFP8", dataset="coco2014", num_inference_steps=10, guidance_scale=7.5, generator_seed=None
+)
 autoround.quantize()
 
 # save the quantized model
@@ -71,7 +73,7 @@ id      caption
 1       YOUR_PROMPT
 ...     ...
 ```
-- `id`: The id used to map generaed images and prompts.
+- `id`: The id used to map generated images and prompts.
 - `caption`: The text prompt used to generate the images.
 
 
