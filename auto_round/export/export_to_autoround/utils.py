@@ -14,7 +14,7 @@
 
 from typing import List
 
-from auto_round.schemes.quantization import QuantizationScheme
+from auto_round.schemes import QuantizationScheme
 
 REQUIRED_CONFIG_KEYS = {key for key in QuantizationScheme.__dataclass_fields__.keys()}
 
