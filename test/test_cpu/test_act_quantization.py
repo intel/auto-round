@@ -204,7 +204,7 @@ class TestAutoRoundAct(unittest.TestCase):
 
     def test_WOQ_config_INT_saving(self):
         scheme = "W4A16"
-        layer_config = {"lm_head": {"act_bits": 16, "bits": 4}, "k_proj": {"act_bits": 16, "bits": 8}}
+        layer_config = {"lm_head": {"bits": 4}, "k_proj": {"bits": 8}}
         autoround = AutoRound(
             self.model_name,
             scheme=scheme,
@@ -296,3 +296,4 @@ class TestAutoRoundAct(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
