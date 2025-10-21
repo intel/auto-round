@@ -344,7 +344,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             for key in neq_keys:
                 if layer_config[layer_name][key] is not None:
                     extra_config[layer_name][key] = layer_config[layer_name][key]
-            if not extra_config[layer_name]: # Pop empty dict
+            if not extra_config[layer_name]:  # Pop empty dict
                 extra_config.pop(layer_name)
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
