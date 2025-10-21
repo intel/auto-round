@@ -204,7 +204,7 @@ class TestAutoRoundAct(unittest.TestCase):
 
     def test_WOQ_config_INT_saving(self):
         scheme = "W4A16"
-        layer_config = {"k_proj": {"bits": 8}} # "lm_head": {"bits": 4}, 
+        layer_config = {"k_proj": {"bits": 8}}  # "lm_head": {"bits": 4},
         autoround = AutoRound(
             self.model_name,
             scheme=scheme,
@@ -230,7 +230,7 @@ class TestAutoRoundAct(unittest.TestCase):
         # assert "act_dynamic" in lmhead_config.keys() and lmhead_config["act_dynamic"]
         # assert "super_bits" in lmhead_config.keys() and lmhead_config["super_bits"] is None
         # assert "super_group_size" in lmhead_config.keys() and lmhead_config["super_group_size"] is None
-        
+
         # check inblock layer config values
         kproj_config = extra_config["model.decoder.layers.1.self_attn.k_proj"]
         assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "float"
