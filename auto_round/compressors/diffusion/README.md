@@ -18,7 +18,7 @@ pipe = AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.b
 
 ## quantize the model
 autoround = AutoRoundDiffusion(
-    pipe, scheme="MXFP8", dataset="coco2014", num_inference_steps=10, guidance_scale=7.5, generator_seed=None
+    pipe, scheme="MXFP8", dataset="coco2014", num_inference_steps=10, guidance_scale=7.5, generator_seed=None, batch_size=1
 )
 autoround.quantize()
 
@@ -48,6 +48,7 @@ auto-round \
     --model black-forest-labs/FLUX.1-dev \
     --scheme MXFP8 \
     --format fake \
+    --batch_size 1 \
     --output_dir ./tmp_autoround
 ```
 
