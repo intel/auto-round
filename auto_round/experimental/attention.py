@@ -29,6 +29,7 @@ from torch.utils.hooks import RemovableHandle
 from transformers import AttentionInterface, PretrainedConfig, PreTrainedModel
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
+from auto_round.experimental.attn_patches.llama import RuntimeStats
 from auto_round.experimental.kv_cache import kvcache_quant_context
 from auto_round.experimental.utils import (
     fp8_per_tensor_qdq,
@@ -87,10 +88,11 @@ class QuantizedAttentionImpl(torch.nn.Module):
         # quant_args_attr = "quantization_scheme.input_activations"
         # quant_args = getattr_chain(module, quant_args_attr, None)
         # quant_enabled = getattr(module, "quantization_enabled", True)
-        # breakpoint()
+        RuntimeStats.cur_layer_idx = self.attn_module().layer_idx
+        logger.trace(f"Starting quantized attention forward for layer {RuntimeStats.cur_layer_idx}")
+        # FIXME: Below qdq is incorrect, as query will be further processed in RoPE
         query, query_scale = fp8_per_tensor_qdq(query)
         update_parameter_data(module, query_scale, QUERY_SCALE_NAME)
-
         # original attention
         return ALL_ATTENTION_FUNCTIONS[_original_impl](
             module,
