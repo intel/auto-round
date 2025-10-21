@@ -12,6 +12,7 @@ from auto_round import AutoRound
 
 
 class LLMDataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
@@ -21,9 +22,11 @@ class LLMDataLoader:
 
 
 class TestGGUF(unittest.TestCase):
+
     @classmethod
     def setUpClass(self):
         self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
+        self.model_name = "/models/Qwen2.5-0.5B-Instruct"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -338,24 +341,47 @@ class TestGGUF(unittest.TestCase):
         # Qwen3-8B output q6_k, token_embed q4_0 4.5G
         # Llama-3.2-1B-Instruct o output, token_embed q6_k 736M
         from auto_round.export.export_to_gguf.config import ModelType
-        from auto_round.utils import get_layer_config_by_gguf_format
+        from auto_round.utils import get_layer_config_by_gguf_format, set_layer_config
 
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
+        model_name = "/models/Qwen2.5-0.5B-Instruct"
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
-        ar._set_layerwise_config(ar.layer_config)
-        ar.layer_config, _ = get_layer_config_by_gguf_format(
-            ar.layer_config, ar.formats, ar.model, model_type=ModelType.TEXT
+        ar.layer_config, _ = set_layer_config(
+            ar.model,
+            ar.layer_config,
+            ar.scheme,
+            ar.scale_dtype,
+            ar.supported_types,
+            ar.inner_supported_types,
+            ar.quant_block_list,
+            ar.fp_layers,
+            ar.quant_lm_head,
+            enable_gguf_official_mixed=True,
+            is_mllm=ar.mllm,
         )
+        # ar.layer_config, _ = get_layer_config_by_gguf_format(
+        #     ar.layer_config, ar.formats[0], ar.model, model_type=ModelType.TEXT)
+        print(ar.layer_config["model.embed_tokens"]["bits"])
         self.assertTrue(ar.layer_config["model.embed_tokens"]["bits"] == 8)
-        self.assertTrue(ar.layer_config["lm_head"]["bits"] == 16)
+        # self.assertTrue(ar.layer_config["lm_head"]["bits"] == 16)
+        self.assertTrue("lm_head" not in ar.layer_config)
 
         model_name = "Qwen/Qwen3-0.6B"
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
-        ar._set_layerwise_config(ar.layer_config)
-        ar.layer_config, _ = get_layer_config_by_gguf_format(
-            ar.layer_config, ar.formats, ar.model, model_type=ModelType.TEXT
+        ar.layer_config, _ = set_layer_config(
+            ar.model,
+            ar.layer_config,
+            ar.scheme,
+            ar.scale_dtype,
+            ar.supported_types,
+            ar.inner_supported_types,
+            ar.quant_block_list,
+            ar.fp_layers,
+            ar.quant_lm_head,
+            enable_gguf_official_mixed=True,
+            is_mllm=ar.mllm,
         )
         self.assertTrue(ar.layer_config["model.embed_tokens"]["bits"] == 4)
         self.assertTrue(ar.layer_config["lm_head"]["bits"] == 6 and ar.layer_config["lm_head"]["super_bits"] == 8)
@@ -366,9 +392,18 @@ class TestGGUF(unittest.TestCase):
         }
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0, layer_config=layer_config)
         ar.formats = ["gguf:q4_0"]
-        ar._set_layerwise_config(ar.layer_config)
-        ar.layer_config, _ = get_layer_config_by_gguf_format(
-            ar.layer_config, ar.formats, ar.model, model_type=ModelType.TEXT
+        ar.layer_config, _ = set_layer_config(
+            ar.model,
+            ar.layer_config,
+            ar.scheme,
+            ar.scale_dtype,
+            ar.supported_types,
+            ar.inner_supported_types,
+            ar.quant_block_list,
+            ar.fp_layers,
+            ar.quant_lm_head,
+            enable_gguf_official_mixed=True,
+            is_mllm=ar.mllm,
         )
         self.assertTrue(ar.layer_config["lm_head"]["bits"] == 4)
         self.assertTrue(

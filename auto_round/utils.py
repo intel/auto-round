@@ -1994,9 +1994,9 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                         config_tmp.pop(key, None)
                 matched_scheme = get_gguf_scheme(QuantizationScheme.from_dict(config_tmp))  # check matched
                 if not matched_scheme:
-                    if config.get("super_group_size", None) is not None:
+                    if config.get("super_group_size", None) is not None or config.get("super_bits", None) is not None:
                         new_type = new_type[:bits_index] + str(config["bits"]) + "_k"
-                    if config.get("super_group_size", None) is None or new_type not in GGUF_INNER_CONFIG:
+                    elif new_type not in GGUF_INNER_CONFIG:
                         prefix_idx = 0 if config.get("sym", True) else 1
                         new_type = new_type[:bits_index] + str(config["bits"]) + f"_{prefix_idx}"
                         if new_type not in GGUF_INNER_CONFIG:
@@ -2987,7 +2987,7 @@ def set_layer_config(
         return layer_config, has_qlayer_outside_block
 
     # embed + lm_head defaults for gguf
-    tie_word_embeddings &= is_separate_lm_head(model)
+    tie_word_embeddings &= not is_separate_lm_head(model)
     if lm_head_name not in layer_config and not tie_word_embeddings:
         cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
         cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
