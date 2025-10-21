@@ -228,7 +228,7 @@ def pack_layer(layer_name, model, backend, device=None):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
+        # Force to float32 to be compatible with torch 2.0
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
@@ -294,7 +294,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
-    ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
+    # IF using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (
         (kwargs.get("sym") is None or kwargs.get("sym"))
         and ("gptq" not in backend and "awq" not in backend)
@@ -327,7 +327,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     for layer_name in layer_config:
         if (
             not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
-        ):  ##lm head ##TODO fix act and so on
+        ):  # lm head ##TODO fix act and so on
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
@@ -344,6 +344,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             for key in neq_keys:
                 if layer_config[layer_name][key] is not None:
                     extra_config[layer_name][key] = layer_config[layer_name][key]
+            if not extra_config[layer_name]: # Pop empty dict
+                extra_config.pop(layer_name)
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
