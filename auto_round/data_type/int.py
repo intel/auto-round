@@ -20,7 +20,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 from auto_round.utils import get_reciprocal
 
 
-def search_scales(data:torch.Tensor, bits:int, qw:Union[None,torch.Tensor,float]=None)->torch.Tensor:
+def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
