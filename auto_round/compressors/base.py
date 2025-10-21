@@ -1796,32 +1796,6 @@ class BaseCompressor(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def _check_rtn_dytpe(self, data_type, bit, sym):
-        """Check if the given data type is an RTN (Round-To-Nearest) type.
-
-        Args:
-            data_type (str): The data type to check.
-        """
-
-        def pad_sym(dtype):
-            if sym:
-                data_sym = dtype + "_sym"
-            else:
-                data_sym = dtype + "_asym"
-            return data_sym
-
-        def pad_bits(dtype):
-            return dtype + str(bit)
-
-        data_type = "rtn_" + data_type
-        data_types = [data_type, pad_bits(data_type), pad_sym(data_type), pad_sym(pad_bits(data_type))]
-        for data_type in data_types:
-            from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-
-            if data_type in QUANT_FUNC_WITH_DTYPE:
-                return data_type
-        return None
-
     def _quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
