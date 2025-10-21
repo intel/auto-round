@@ -77,17 +77,6 @@ def quant_tensor_sym(
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
-    # if tensor_min is None or tensor_max is None:
-    #     wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
-    #     wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
-    # else:
-    #     wmin_tmp = tensor_min
-    #     wmax_tmp = tensor_max
-    #
-    # wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
-    # wmax_abs = wmax_tmp * max_scale
-    # max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
-    # scale = (max_v / maxq).to(scale_dtype)
     imatrix = imatrix.reshape(1, -1)
 
     imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)

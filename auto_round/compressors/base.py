@@ -1351,7 +1351,6 @@ class BaseCompressor(object):
         #         m.data_type = rtn_data_type
         #         self.layer_config[name]["data_type"] = m.data_type
 
-
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
         if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
@@ -1366,7 +1365,7 @@ class BaseCompressor(object):
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
-                    disable_opt_rtn=self.disable_opt_rtn
+                    disable_opt_rtn=self.disable_opt_rtn,
                 )
                 m = m.unwrapper({})
                 m.to("cpu")
@@ -1461,7 +1460,7 @@ class BaseCompressor(object):
         enable_imatrix = False
         if has_gguf_k and not self.disable_opt_rtn:
             enable_imatrix = True
-        if self.data_type=="int" and self.sym:
+        if self.data_type == "int" and self.sym:
             enable_imatrix = True
 
         if enable_imatrix:
@@ -1797,29 +1796,31 @@ class BaseCompressor(object):
         self.quantized = True
         return self.model, self.layer_config
 
-
-    def _check_rtn_dytpe(self,data_type,bit, sym):
+    def _check_rtn_dytpe(self, data_type, bit, sym):
         """Check if the given data type is an RTN (Round-To-Nearest) type.
 
         Args:
             data_type (str): The data type to check.
         """
+
         def pad_sym(dtype):
             if sym:
                 data_sym = dtype + "_sym"
             else:
-                data_sym = dtype+ "_asym"
+                data_sym = dtype + "_asym"
             return data_sym
+
         def pad_bits(dtype):
-            return dtype+str(bit)
-        data_type = "rtn_"+data_type
-        data_types=[data_type, pad_bits(data_type), pad_sym(data_type), pad_sym(pad_bits(data_type))]
+            return dtype + str(bit)
+
+        data_type = "rtn_" + data_type
+        data_types = [data_type, pad_bits(data_type), pad_sym(data_type), pad_sym(pad_bits(data_type))]
         for data_type in data_types:
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+
             if data_type in QUANT_FUNC_WITH_DTYPE:
                 return data_type
         return None
-
 
     def _quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
