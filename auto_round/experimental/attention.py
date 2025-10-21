@@ -171,12 +171,12 @@ def clean_up_hooked_attention(module, model):
 
 
 @contextlib.contextmanager
-def attention_quant_ctx(model: PreTrainedModel, static_kv_dtype=torch.float8_e4m3fn):
+def attention_quant_ctx(model: PreTrainedModel, static_attention_dtype=torch.float8_e4m3fn):
     try:
         # Setup phase: Initialize hooked attention
         prepare_fn = partial(prep_attention_module_for_calibration, config=model.config)
         model.apply(prepare_fn)
-        with kvcache_quant_context(model, static_kv_dtype=static_kv_dtype):
+        with kvcache_quant_context(model, static_kv_dtype=static_attention_dtype):
             yield model
     finally:
         clean_fn = partial(clean_up_hooked_attention, model=model)

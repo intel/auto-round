@@ -1115,7 +1115,7 @@ class BaseCompressor(object):
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 
-            with attention_quant_ctx(self.model, static_kv_dtype=self.static_kv_dtype):
+            with attention_quant_ctx(self.model, static_attention_dtype=self.static_attention_dtype):
                 model, _ = self.quantize()
         elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
