@@ -16,7 +16,10 @@
 
 from typing import Callable, Dict, Tuple
 
-import numba
+try:
+    import numba
+except ImportError:
+    raise ImportError("Numba is required to use bit_packer module. Please install numba with `pip install numba`.")
 import numpy as np
 
 #  key: (bits, compress_bits), value: pack function

@@ -298,6 +298,8 @@ class AutoScheme:
     seqlen: Optional[int] = None
     dataset: Optional[str] = None  # Import Notice no comma for each item
     device_map: Optional[Union[str, torch.device, int, dict]] = None
+    enable_torch_compile: Optional[bool] = None
+    disable_opt_rtn: bool = True
 
     def __post_init__(self):
         if isinstance(self.options, str):

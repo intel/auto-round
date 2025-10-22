@@ -463,6 +463,8 @@ class BaseCompressor(object):
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
+        if not self.enable_torch_compile and self.super_bits is None:
+            logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         gen_scheme = GenScheme(
             scheme,
             self.model,
@@ -583,9 +585,9 @@ class BaseCompressor(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
-        if is_debug_mode() and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+        # if is_debug_mode() and self.enable_torch_compile:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
 
         if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
@@ -1273,14 +1275,12 @@ class BaseCompressor(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
-                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared.to(module.imatrix.device)
-                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
-                if isinstance(module, self.supported_types) and check_to_quantized(module):
+                if type(module) in self.supported_types and check_to_quantized(module):
                     hook = module.register_forward_hook(get_imatrix_hook)
                     hook_handles.append(hook)
             return hook_handles
@@ -1450,7 +1450,9 @@ class BaseCompressor(object):
             for module in tqdm(modules, desc="Update weight global scale for fuse module"):
                 update_fused_layer_global_scales(module)
 
-        has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", []))
+        has_gguf_k = (
+            any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
+        )
 
         self._quantize_embedding_layer()
 
@@ -1593,8 +1595,6 @@ class BaseCompressor(object):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
-                    if hasattr(m, "imatrix"):
-                        m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
