@@ -1,17 +1,19 @@
+import json
 import os
 import shutil
 import sys
 import unittest
 from pathlib import Path
-import json
+
 from parameterized import parameterized
 
 sys.path.insert(0, "../..")
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
-from auto_round.testing_utils import require_gptqmodel
 
 from auto_round import AutoRound
+from auto_round.testing_utils import require_gptqmodel
+
 
 def _get_folder_size(path: str) -> float:
     """Return folder size in GB."""
@@ -46,15 +48,15 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    
+
     @require_gptqmodel
     def test_mixed_gptqmodel(self):
         layer_config = {
-            "k_proj": {"bits": 8}, # part name
-            "lm_head": {"bits": 4}, # set lm_head quant
+            "k_proj": {"bits": 8},  # part name
+            "lm_head": {"bits": 4},  # set lm_head quant
             "fc1": {"bits": 16},
             "model.decoder.layers.0.self_attn.v_proj": {"bits": 16},
-            "model.decoder.layers.0.self_attn.q_proj": {"bits": 8}, # full name
+            "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name
         }
         autoround = AutoRound(
             model=self.model_name,
@@ -68,22 +70,22 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
         # test original GPTQModel inference
         from gptqmodel import GPTQModel
-        model = GPTQModel.load(quantized_model_path)
-        assert (model.model.model.decoder.layers[0].self_attn.k_proj.bits == 8)
-        assert (model.model.model.decoder.layers[0].self_attn.q_proj.bits == 8)
-        assert (model.model.model.decoder.layers[1].self_attn.v_proj.bits == 4)
-        result = model.generate("Uncovering deep insights begins with")[0] # tokens
-        assert("!!!" not in model.tokenizer.decode(result)) # string output
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+        model = GPTQModel.load(quantized_model_path)
+        assert model.model.model.decoder.layers[0].self_attn.k_proj.bits == 8
+        assert model.model.model.decoder.layers[0].self_attn.q_proj.bits == 8
+        assert model.model.model.decoder.layers[1].self_attn.v_proj.bits == 4
+        result = model.generate("Uncovering deep insights begins with")[0]  # tokens
+        assert "!!!" not in model.tokenizer.decode(result)  # string output
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_gptqmodel_convert_to_ar(self):
         layer_config = {
-            "k_proj": {"bits": 8}, # part name
-            "lm_head": {"bits": 4}, # set lm_head quant
+            "k_proj": {"bits": 8},  # part name
+            "lm_head": {"bits": 4},  # set lm_head quant
             "fc1": {"bits": 16},
             "model.decoder.layers.0.self_attn.v_proj": {"bits": 16},
-            "model.decoder.layers.0.self_attn.q_proj": {"bits": 8}, # full name
+            "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name
         }
         autoround = AutoRound(
             model=self.model_name,
@@ -106,7 +108,6 @@ class TestAutoRound(unittest.TestCase):
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_mixed_autoround_format(self):
         layer_config = {
             "k_proj": {"bits": 8},
@@ -125,14 +126,13 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
         compressed_model = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
-        assert (model.model.decoder.layers[0].self_attn.k_proj.bits == 8)
-        assert (model.model.decoder.layers[0].self_attn.q_proj.bits == 3)
+        assert model.model.decoder.layers[0].self_attn.k_proj.bits == 8
+        assert model.model.decoder.layers[0].self_attn.q_proj.bits == 3
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_fallback_regex_for_awq_format(self):
         layer_config = {
@@ -158,13 +158,12 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-    
 
     def test_mixed_ar_format_part_name_hf_loading(self):
         layer_config = {
-            "k_proj": {"bits": 8}, # part name
-            "lm_head": {"bits": 16}, # full name
-            ".*fc1.*": {"bits": 16}, # standard regex
+            "k_proj": {"bits": 8},  # part name
+            "lm_head": {"bits": 16},  # full name
+            ".*fc1.*": {"bits": 16},  # standard regex
         }
         autoround = AutoRound(
             model=self.model_name,
@@ -179,7 +178,7 @@ class TestAutoRound(unittest.TestCase):
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
         # remove old extra_config(which contains full name layer configs), only test regex config loading
         new_extra_config = {
-            ".*fc1.*": { # standard regex
+            ".*fc1.*": {  # standard regex
                 "act_bits": 16,
                 "act_data_type": "float",
                 "act_dynamic": True,
@@ -188,9 +187,9 @@ class TestAutoRound(unittest.TestCase):
                 "bits": 16,
                 "data_type": "int",
                 "group_size": 128,
-                "sym": True
+                "sym": True,
             },
-            "k_proj": { # part name
+            "k_proj": {  # part name
                 "act_bits": 16,
                 "act_data_type": "float",
                 "act_dynamic": True,
@@ -199,8 +198,8 @@ class TestAutoRound(unittest.TestCase):
                 "bits": 8,
                 "data_type": "int",
                 "group_size": 128,
-                "sym": True
-            }
+                "sym": True,
+            },
         }
         config_file = Path(quantized_model_path) / "config.json"
         with open(config_file, "r", encoding="utf-8") as f:
@@ -211,17 +210,16 @@ class TestAutoRound(unittest.TestCase):
         config["quantization_config"] = quant_config
         with open(config_file, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
-        
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
-        assert (model.model.decoder.layers[0].self_attn.k_proj.bits == 8)
-        assert (model.model.decoder.layers[0].self_attn.q_proj.bits == 4)
+        assert model.model.decoder.layers[0].self_attn.k_proj.bits == 8
+        assert model.model.decoder.layers[0].self_attn.q_proj.bits == 4
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    
     def test_mixed_MXFP_autoround_format_loading(self):
         layer_config = {
             "k_proj": {"bits": 8, "act_bits": 8},
@@ -245,12 +243,12 @@ class TestAutoRound(unittest.TestCase):
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
+
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.14)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-        
+
 if __name__ == "__main__":
     unittest.main()
-

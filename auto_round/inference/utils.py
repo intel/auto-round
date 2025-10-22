@@ -11,8 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from auto_round.utils import SUPPORTED_LAYER_TYPES
 import re
+
+from auto_round.utils import SUPPORTED_LAYER_TYPES
+
+
 def _expand_regex_config(regex_config, base_config, layer_names, model):
     """
     Expand regex-based layer configs to full layer names.
@@ -30,9 +33,7 @@ def _expand_regex_config(regex_config, base_config, layer_names, model):
         return base_config
 
     # Collect all supported layer names in model
-    all_supported_layer_names = [
-        n for n, m in model.named_modules() if isinstance(m, SUPPORTED_LAYER_TYPES)
-    ]
+    all_supported_layer_names = [n for n, m in model.named_modules() if isinstance(m, SUPPORTED_LAYER_TYPES)]
 
     # Identify which keys are regex patterns (not exact layer names)
     regex_keys = [k for k in regex_config.keys() if k not in all_supported_layer_names]
