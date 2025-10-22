@@ -26,7 +26,6 @@ class TestGGUF(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
-        self.model_name = "/models/Qwen2.5-0.5B-Instruct"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -344,7 +343,6 @@ class TestGGUF(unittest.TestCase):
         from auto_round.utils import get_layer_config_by_gguf_format, set_layer_config
 
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
-        model_name = "/models/Qwen2.5-0.5B-Instruct"
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
         ar.layer_config, _ = set_layer_config(
