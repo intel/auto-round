@@ -1244,7 +1244,7 @@ class BaseCompressor(object):
         Returns:
             None
         """
-        logger.info("start to compute imatrix for GGUF quantization")
+        logger.info("start to compute imatrix")
 
         # Load dataset
         from auto_round.calib_dataset import get_dataloader
@@ -1343,15 +1343,13 @@ class BaseCompressor(object):
         if _is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
-
-        # Step 1: Use optimized RTN data type if available
-        if not self.disable_opt_rtn and not m.data_type.startswith("rtn_"):
-            from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-
-            rtn_dtype = "rtn_" + m.data_type
-            if rtn_dtype in QUANT_FUNC_WITH_DTYPE:
-                m.data_type = rtn_dtype
-                self.layer_config[name]["data_type"] = m.data_type
+        #
+        # # Step 1: Use optimized RTN data type if available
+        # if not self.disable_opt_rtn:
+        #     rtn_data_type = self._check_rtn_dytpe(m.data_type, m.bits, m.sym)
+        #     if rtn_data_type is not None:
+        #         m.data_type = rtn_data_type
+        #         self.layer_config[name]["data_type"] = m.data_type
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
@@ -1367,6 +1365,7 @@ class BaseCompressor(object):
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
+                    disable_opt_rtn=self.disable_opt_rtn,
                 )
                 m = m.unwrapper({})
                 m.to("cpu")
@@ -1457,7 +1456,14 @@ class BaseCompressor(object):
         self._quantize_embedding_layer()
 
         self.model.to("cpu")
+
+        enable_imatrix = False
         if has_gguf_k and not self.disable_opt_rtn:
+            enable_imatrix = True
+        if self.data_type == "int" and self.sym:
+            enable_imatrix = True
+
+        if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic, self.act_data_type, self.act_bits
@@ -1800,8 +1806,8 @@ class BaseCompressor(object):
         Returns:
             None
         """
-        ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
-        ## if there is no input for layer, we use rtn
+        # TODO currently we take all the layers outside blocks as post block layers which is not optimal
+        # if there is no input for layer, we use rtn
 
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
@@ -1815,10 +1821,6 @@ class BaseCompressor(object):
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
 
-                if not self.disable_opt_rtn and "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
-                    layer.data_type = "rtn_" + layer.data_type
-                    logger.info("using optimized rtn method for quantizing %s", layer_name)
-                    self.layer_config[layer_name]["data_type"] = layer.data_type
                 wrapper_layer = WrapperLinear(
                     layer,
                     enable_round_tuning=False,
@@ -1826,6 +1828,7 @@ class BaseCompressor(object):
                     enable_norm_bias_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
+                    disable_opt_rtn=self.disable_opt_rtn,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)

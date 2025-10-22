@@ -23,7 +23,7 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [CLI Usage](#cli-usage)
     - [API Usage](#api-usage-1)
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
-  + [RTN mode](#rtn-mode)
+  + [OPT RTN mode](#opt-rtn-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#device-multi-gpu-setting-in-quantization)
@@ -368,8 +368,8 @@ We will try to optimize the VRAM usage in the future.
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
 
-### RTN mode
-AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting `iters=0` and use `group_size=32` for better results.
+### OPT RTN Mode
+AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 ```python

@@ -230,7 +230,7 @@ def pack_layer(layer_name, model, backend, device=None):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
+        # Force to float32 to be compatible with torch 2.0
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
@@ -296,7 +296,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
-    ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
+    # IF using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (
         (kwargs.get("sym") is None or kwargs.get("sym"))
         and ("gptq" not in backend and "awq" not in backend)
