@@ -107,6 +107,11 @@ BACKEND_ACT_ATTRS = [
     "act_dynamic",
 ]
 
+MX_TENSOR_DATA_TYPES = [
+    "mx_fp",
+    "mx_fp_rceil",
+]
+
 
 def feature_multiply_checker(in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None):
     if out_feature_multiplier is None:
@@ -127,12 +132,19 @@ def feature_multiply_checker_group_size(
     )
 
 
+def in_feature_checker_group_size(in_feature, out_feature, config):
+    group_size = config["group_size"]
+    return in_feature % group_size == 0
+
+
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
 feature_multiply_checker_16 = functools.partial(feature_multiply_checker, in_feature_multiplier=16)
 in_output_feature_multiply_checker_32 = functools.partial(
     feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
-
+in_feature_multiply_checker_32 = functools.partial(
+    feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=None
+)
 exllamav2_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=32
 )
@@ -140,6 +152,8 @@ exllamav2_feature_checker = functools.partial(
 gptqmodel_marlin_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=1, out_feature_multiplier=64
 )
+
+mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
 
 
 def fp8_static_scheme_checker(
@@ -230,16 +244,16 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
-    data_type=["mx_fp", "max_fp_rceil"],
+    data_type=MX_TENSOR_DATA_TYPES,
     group_size=[32],
     bits=[8],
     act_bits=[8],
     act_group_size=[32],
     act_sym=[True],
-    act_data_type=["mx_fp_rceil"],
+    act_data_type=MX_TENSOR_DATA_TYPES,
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_32],
+    checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -250,16 +264,16 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     packing_format=LLM_COMPRESSOR_FORMAT,
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
-    data_type=["mx_fp"],
+    data_type=MX_TENSOR_DATA_TYPES,
     group_size=[32],
     bits=[4],
     act_bits=[4],
     act_group_size=[32],
     act_sym=[True],
-    act_data_type=["mx_fp_rceil"],
+    act_data_type=MX_TENSOR_DATA_TYPES,
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_32],
+    checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -280,7 +294,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     act_data_type=["nv_fp4_with_static_gs"],
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_16],
+    checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
