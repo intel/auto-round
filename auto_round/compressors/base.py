@@ -2419,7 +2419,7 @@ class BaseCompressor(object):
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss( # pylint: disable=not-callable
+                        loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
                 else:
@@ -2699,7 +2699,7 @@ class BaseCompressor(object):
                     tmp_attention_mask = 1.0
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss( # pylint: disable=not-callable
+                        loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
                 else:
