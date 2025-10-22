@@ -1953,11 +1953,9 @@ class BaseCompressor(object):
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
-                need_attention_mask = True
             elif isinstance(data, tuple) or isinstance(data, list):
                 data_new = to_device(data)
                 input_ids = data_new[0]
-                need_attention_mask = True
             else:
                 data_new = {}
                 for key in data.keys():
@@ -2421,9 +2419,9 @@ class BaseCompressor(object):
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(
+                        loss = mse_loss( # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
-                        )  # pylint: disable=not-callable
+                        )
                 else:
                     output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
@@ -2701,9 +2699,9 @@ class BaseCompressor(object):
                     tmp_attention_mask = 1.0
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss(
+                        loss = mse_loss( # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
-                        )  # pylint: disable=not-callable
+                        )
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32) * tmp_attention_mask,
