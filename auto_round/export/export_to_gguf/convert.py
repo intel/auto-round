@@ -109,7 +109,7 @@ def get_moe_name(cls, name, new_name):
         "FFN_DOWN_EXP": ["down_proj", "w2", "linear_1"],
         "FFN_UP_EXP": ["up_proj", "w3", "linear_v"],
     }
-    nums = re.findall(r"\d+", name)
+    nums = re.findall(r"\.(\d+)\.", name)
     if len(nums) != 2:
         return name
     name_tmp = name[: -len(".weight")].replace(f".{nums[1]}", "")
