@@ -757,6 +757,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
+
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
         # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -768,11 +769,13 @@ class TestAutoRound(unittest.TestCase):
         res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
         data.append(res.data)
         from auto_round import AutoRound
+
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
     def test_attention_mask_via_tokenize_in_dataset(self):
         from transformers import AutoTokenizer
+
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
         # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -786,9 +789,9 @@ class TestAutoRound(unittest.TestCase):
         res.data.pop("attention_mask")
         data.append(res.data)
         from auto_round import AutoRound
+
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
-
 
 
 if __name__ == "__main__":

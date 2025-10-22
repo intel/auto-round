@@ -181,6 +181,7 @@ class TestMainFunc(unittest.TestCase):
 
     def test_attention_mask_lm_head(self):
         from transformers import AutoTokenizer
+
         model_name = "/models/Qwen3-8B"
         # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -194,7 +195,8 @@ class TestMainFunc(unittest.TestCase):
         res.data.pop("attention_mask")
         data.append(res.data)
         from auto_round import AutoRound
-        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8,quant_lm_head=True)
+
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8, quant_lm_head=True)
         ar.quantize()
 
 

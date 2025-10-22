@@ -1179,7 +1179,7 @@ class BaseCompressor(object):
                     module.weight.to(self.device),
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
-            except  torch.OutOfMemoryError:
+            except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.error(cuda_error_msg)
@@ -1913,9 +1913,10 @@ class BaseCompressor(object):
             bs (int): The number of samples to use for calibration
         """
         from auto_round.calib_dataset import get_dataloader
-        need_attention_mask= True
+
+        need_attention_mask = True
         if isinstance(self.dataset, str):
-            need_attention_mask = False # all supportted datasets does not use pad
+            need_attention_mask = False  # all supported datasets does not use pad
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
 
             # slow here
@@ -1956,7 +1957,7 @@ class BaseCompressor(object):
             elif isinstance(data, tuple) or isinstance(data, list):
                 data_new = to_device(data)
                 input_ids = data_new[0]
-                need_attention_mask=True
+                need_attention_mask = True
             else:
                 data_new = {}
                 for key in data.keys():
@@ -1987,13 +1988,17 @@ class BaseCompressor(object):
             except Exception as error:
                 raise error
             if not hasattr(self, "attention_mask") or self.attention_mask is None:
-                self.attention_mask=[]
+                self.attention_mask = []
             if need_attention_mask:
                 new_attention_mask = []
-                if isinstance(data_new, dict) and "attention_mask" in data_new and data_new["attention_mask"] is not None:
-                    new_attention_mask= data_new["attention_mask"]
-                elif self.tokenizer is not None and hasattr(self.tokenizer,"pad_token"):
-                    new_attention_mask=(input_ids != self.tokenizer.pad_token_id).to(torch.long)
+                if (
+                    isinstance(data_new, dict)
+                    and "attention_mask" in data_new
+                    and data_new["attention_mask"] is not None
+                ):
+                    new_attention_mask = data_new["attention_mask"]
+                elif self.tokenizer is not None and hasattr(self.tokenizer, "pad_token"):
+                    new_attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
                 else:
                     new_attention_mask = torch.ones_like(input_ids).to(torch.long)
 
@@ -2416,11 +2421,14 @@ class BaseCompressor(object):
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(output_q * tmp_attention_mask, current_output*tmp_attention_mask)  # pylint: disable=not-callable
+                        loss = mse_loss(
+                            output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                        )  # pylint: disable=not-callable
                 else:
                     output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32)*tmp_attention_mask, current_output.to(torch.float32)*tmp_attention_mask
+                        output_q.to(torch.float32) * tmp_attention_mask,
+                        current_output.to(torch.float32) * tmp_attention_mask,
                     )
                 total_loss += loss.item() / num_elm
 
@@ -2690,13 +2698,16 @@ class BaseCompressor(object):
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                     tmp_attention_mask.unsqueeze_(-1)
                 else:
-                    tmp_attention_mask=1.0
+                    tmp_attention_mask = 1.0
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss(output_q *tmp_attention_mask, current_output *tmp_attention_mask)  # pylint: disable=not-callable
+                        loss = mse_loss(
+                            output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                        )  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32)*tmp_attention_mask, current_output.to(torch.float32)*tmp_attention_mask
+                        output_q.to(torch.float32) * tmp_attention_mask,
+                        current_output.to(torch.float32) * tmp_attention_mask,
                     )
 
                 total_loss += loss.item() / num_elm
