@@ -25,7 +25,7 @@ from dataclasses import asdict, fields
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 import cpuinfo
 import torch
@@ -3117,15 +3117,29 @@ def to_standard_regex(pattern: str) -> str:
     return regex
 
 
-def matches_any_regex(layer_name: str, regex_list: List[str], prefix="re:") -> bool:
+def matches_any_regex(layer_name: str, regex_config: Dict[str, dict]) -> bool:
     """
-    Check if layer_name matches any regex pattern in regex_list.
+    Check whether `layer_name` matches any regex pattern key in `regex_config`.
+    Args:
+        layer_name (str): The layer name to test.
+        regex_config (Dict[str, dict]): A mapping of regex patterns to configs.
+    Returns:
+        bool: True if any pattern matches `layer_name`, otherwise False.
     """
-    for pattern in regex_list:
-        # Remove 're:' prefix for matching
-        pat = pattern.removeprefix(prefix)
-        if re.fullmatch(pat, layer_name):
-            return True
+    if not regex_config:
+        return False
+
+    for pattern in regex_config:
+        # Strip dynamic prefixes (e.g., "+:" or "-:")
+        raw_pattern = pattern[2:] if pattern.startswith(("+:", "-:")) else pattern
+
+        try:
+            if re.search(raw_pattern, layer_name):
+                return True
+        except re.error as e:
+            logger.warning("Skipping invalid regex pattern %r: %s", pattern, e)
+            continue
+
     return False
 
 
@@ -3134,3 +3148,4 @@ def json_serialize(obj: Any):
     if isinstance(obj, torch.dtype):
         return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
