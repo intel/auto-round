@@ -401,6 +401,8 @@ class BaseCompressor(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
+        self.attention_mask = []
+
     def _gen_auto_scheme(
         self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
     ) -> dict[str, dict]:
@@ -1985,8 +1987,6 @@ class BaseCompressor(object):
                 raise error
             except Exception as error:
                 raise error
-            if not hasattr(self, "attention_mask") or self.attention_mask is None:
-                self.attention_mask = []
             if need_attention_mask:
                 new_attention_mask = []
                 if (
