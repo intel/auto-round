@@ -50,6 +50,7 @@ __all__ = [
 IMPL_ATTR = "impl"
 HOOKED_ATTENTION_NAME = "ct_hooked_attention"
 QUERY_SCALE_NAME = "q_scale"
+QUERY_MAX_NAME = "q_max"
 
 
 class QuantizedAttentionImpl(torch.nn.Module):
@@ -74,6 +75,10 @@ class QuantizedAttentionImpl(torch.nn.Module):
         super().__init__()
         self.config = config
         self.attn_module = ref(attn_module)  # avoid circular references
+        # register query max
+        device = next(attn_module.parameters()).device
+        initial_max = torch.tensor(0.0, device=device)
+        update_parameter_data(attn_module, initial_max, QUERY_MAX_NAME)
 
     def forward(
         self,
@@ -90,8 +95,13 @@ class QuantizedAttentionImpl(torch.nn.Module):
         # quant_enabled = getattr(module, "quantization_enabled", True)
         RuntimeStats.cur_layer_idx = self.attn_module().layer_idx
         logger.trace(f"Starting quantized attention forward for layer {RuntimeStats.cur_layer_idx}")
-        # FIXME: Below qdq is incorrect, as query will be further processed in RoPE
-        query, query_scale = fp8_per_tensor_qdq(query)
+        cur_query_max = query.abs().max()
+        query_max = torch.max(
+            getattr(module, QUERY_MAX_NAME).data,
+            cur_query_max.detach().to(getattr(module, QUERY_MAX_NAME).data.device),
+        )
+        update_parameter_data(module, query_max, QUERY_MAX_NAME)
+        query, query_scale = fp8_per_tensor_qdq(query, tensor_max=query_max)
         update_parameter_data(module, query_scale, QUERY_SCALE_NAME)
         # original attention
         return ALL_ATTENTION_FUNCTIONS[_original_impl](
@@ -128,7 +138,7 @@ def initialize_hooked_attention(module: Module, config):
             # assumes only one model at a time
             global _original_impl
             _original_impl = config._attn_implementation
-
+            # Add new implementation to AttentionInterface(mapping)
             AttentionInterface.register(HOOKED_ATTENTION_NAME, _ct_hooked_attention)
             config._attn_implementation = HOOKED_ATTENTION_NAME
 

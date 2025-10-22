@@ -34,8 +34,17 @@ def matmul_record_inputs(mat1, mat2):
         RuntimeStats.INPUT_RANGES[RuntimeStats.cur_layer_idx] = {}
     CUR_INPUT_RANGES = RuntimeStats.INPUT_RANGES[RuntimeStats.cur_layer_idx]
     # FIXME: record the max, and Q-DQ inputs
-    CUR_INPUT_RANGES["mat1"] = (mat1.min().item(), mat1.max().item())
-    CUR_INPUT_RANGES["mat2"] = (mat2.min().item(), mat2.max().item())
+    if "mat1" not in CUR_INPUT_RANGES:
+        cur_max = mat1.abs().max().item()
+    else:
+        cur_max = max(CUR_INPUT_RANGES["mat1"], mat1.abs().max().item())
+    CUR_INPUT_RANGES["mat1"] = cur_max
+
+    if "mat2" not in CUR_INPUT_RANGES:
+        cur_max = mat2.abs().max().item()
+    else:
+        cur_max = max(CUR_INPUT_RANGES["mat2"], mat2.abs().max().item())
+    CUR_INPUT_RANGES["mat2"] = cur_max
     return original_matmul(mat1, mat2)
 
 
