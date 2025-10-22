@@ -1,4 +1,5 @@
 ### 🧮 Evaluation Results (LM-Eval)
+For 2/3bit, we strongly recommend not using iter=0 except for GGUF:Q2_K_S which has a different quantization algorithm.
 
 4BIT=W4A16
 3BIT=W3A16
@@ -16,7 +17,7 @@ OPT RTN mode
 auto-round --model xxx  --iters 0 
 ~~~
 
-For 2/3bit, we strongly recommend not using iter=0.
+
 
 | Model                          | RNT/OPT  | AVG     | HellaSwag | LAMBADA | MMLU   | PIQA   | WinoGrande |
 |--------------------------------|----------|---------|-----------|---------|--------|--------|------------|
