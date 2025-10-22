@@ -806,21 +806,6 @@ class BaseCompressor(object):
                     " We are likely to release new algorithm for certain configurations in the future."
                 )
 
-        # # Check group_size 32 for auto_round
-        # if (
-        #     self.data_type == "int"
-        #     and hasattr(self, "formats")
-        #     and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
-        # ):
-        #     for n, m in self.model.named_modules():
-        #         if type(m) in self.supported_types:
-        #             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-        #                 self.layer_config[n] = {"bits": 16}
-        #                 logger.info(
-        #                     f"{n} will not be quantized due to its shape not being divisible by 32,"
-        #                     " resulting in an exporting issue to autogptq"
-        #                 )
-
         if (
             self.seqlen is not None
             and hasattr(self.model, "config")
@@ -1194,7 +1179,7 @@ class BaseCompressor(object):
                     module.weight.to(self.device),
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
-            except RuntimeError as e:
+            except  torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.error(cuda_error_msg)
@@ -1295,7 +1280,7 @@ class BaseCompressor(object):
             model = model.to("cpu")
             clear_memory()
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-        except RuntimeError as e:
+        except torch.OutOfMemoryError:
             cuda_error_msg = traceback.format_exc()
             try:
                 logger.error(cuda_error_msg)
@@ -1369,7 +1354,7 @@ class BaseCompressor(object):
                 )
                 m = m.unwrapper({})
                 m.to("cpu")
-            except RuntimeError as e:
+            except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
                 try:
@@ -1471,7 +1456,7 @@ class BaseCompressor(object):
             hook_handles = self._register_act_max_hook(self.model)
             try:
                 self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-            except RuntimeError as e:
+            except torch.OutOfMemoryError:
                 logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
                 self.model = self.model.to("cpu")
                 clear_memory()
@@ -1928,8 +1913,9 @@ class BaseCompressor(object):
             bs (int): The number of samples to use for calibration
         """
         from auto_round.calib_dataset import get_dataloader
-
+        need_attention_mask= True
         if isinstance(self.dataset, str):
+            need_attention_mask = False # all supportted datasets does not use pad
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
 
             # slow here
@@ -1966,9 +1952,11 @@ class BaseCompressor(object):
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
+                need_attention_mask = True
             elif isinstance(data, tuple) or isinstance(data, list):
                 data_new = to_device(data)
                 input_ids = data_new[0]
+                need_attention_mask=True
             else:
                 data_new = {}
                 for key in data.keys():
@@ -1998,6 +1986,19 @@ class BaseCompressor(object):
                 raise error
             except Exception as error:
                 raise error
+            if not hasattr(self, "attention_mask") or self.attention_mask is None:
+                self.attention_mask=[]
+            if need_attention_mask:
+                new_attention_mask = []
+                if isinstance(data_new, dict) and "attention_mask" in data_new and data_new["attention_mask"] is not None:
+                    new_attention_mask= data_new["attention_mask"]
+                elif self.tokenizer is not None and hasattr(self.tokenizer,"pad_token"):
+                    new_attention_mask=(input_ids != self.tokenizer.pad_token_id).to(torch.long)
+                else:
+                    new_attention_mask = torch.ones_like(input_ids).to(torch.long)
+
+                self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
+
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
                 break
@@ -2078,7 +2079,7 @@ class BaseCompressor(object):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     accelerate.hooks.remove_hook_from_submodules(self.model)
 
-            except RuntimeError as e:
+            except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
@@ -2090,10 +2091,10 @@ class BaseCompressor(object):
                     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                         accelerate.hooks.remove_hook_from_submodules(
                             self.model
-                        )  ##self.model.hf_device_map has not been changed
+                        )  # self.model.hf_device_map has not been changed
                     self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                     clear_memory()
-                    ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
+                    # Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
                     all_inputs = self.cache_inter_data(
                         block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
                     )
@@ -2405,15 +2406,21 @@ class BaseCompressor(object):
                     org_input = current_input
                 with torch.no_grad():
                     current_output = layer(org_input)
+                if self.attention_mask:
+                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
+                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+                    tmp_attention_mask.unsqueeze_(-1)
+                else:
+                    tmp_attention_mask = 1.0
 
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                        loss = mse_loss(output_q * tmp_attention_mask, current_output*tmp_attention_mask)  # pylint: disable=not-callable
                 else:
                     output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32), current_output.to(torch.float32)
+                        output_q.to(torch.float32)*tmp_attention_mask, current_output.to(torch.float32)*tmp_attention_mask
                     )
                 total_loss += loss.item() / num_elm
 
@@ -2678,12 +2685,18 @@ class BaseCompressor(object):
                 current_output = to_device(current_output, device)
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
+                if self.attention_mask:
+                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
+                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+                    tmp_attention_mask.unsqueeze_(-1)
+                else:
+                    tmp_attention_mask=1.0
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                        loss = mse_loss(output_q *tmp_attention_mask, current_output *tmp_attention_mask)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32), current_output.to(torch.float32)
+                        output_q.to(torch.float32)*tmp_attention_mask, current_output.to(torch.float32)*tmp_attention_mask
                     )
 
                 total_loss += loss.item() / num_elm

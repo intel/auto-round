@@ -179,6 +179,24 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
+    def test_attention_mask_lm_head(self):
+        from transformers import AutoTokenizer
+        model_name = "/models/Qwen3-8B"
+        # model_name = "/models/Qwen3-0.6B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        text = ["haha", "hello world"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data = [res.data]
+
+        text = ["qudd", "hfd"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data.append(res.data)
+        from auto_round import AutoRound
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8,quant_lm_head=True)
+        ar.quantize()
+
 
 if __name__ == "__main__":
     unittest.main()
