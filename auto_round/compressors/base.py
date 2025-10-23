@@ -2370,10 +2370,10 @@ class BaseCompressor(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        if isinstance(input_ids, dict):
-            nsamples = len(input_ids["hidden_states"])
+        if isinstance(inputs, dict):
+            nsamples = len(inputs["hidden_states"])
         else:
-            nsamples = len(input_ids)
+            nsamples = len(inputs)
 
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
