@@ -1994,7 +1994,11 @@ class BaseCompressor(object):
                     and data_new["attention_mask"] is not None
                 ):
                     new_attention_mask = data_new["attention_mask"]
-                elif self.tokenizer is not None and hasattr(self.tokenizer, "pad_token") and self.tokenizer.pad_token is not None:
+                elif (
+                    self.tokenizer is not None
+                    and hasattr(self.tokenizer, "pad_token")
+                    and self.tokenizer.pad_token is not None
+                ):
                     new_attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
                 else:
                     # Default all ones
