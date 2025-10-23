@@ -2646,7 +2646,7 @@ class BaseCompressor(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        if isinstance(input_ids, dict): # input_ids of Flux is dict
+        if isinstance(input_ids, dict):  # input_ids of Flux is dict
             nsamples = len(input_ids["hidden_states"])
         else:
             nsamples = len(input_ids)
