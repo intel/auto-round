@@ -2710,9 +2710,9 @@ class BaseCompressor(object):
     def _quantize_block(
         self,
         block: torch.nn.Module,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
-        q_input: Union[None, torch.Tensor] = None,
+        q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
     ):
         """Quantize the weights of a given block of the model.
@@ -2825,7 +2825,11 @@ class BaseCompressor(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        nsamples = len(input_ids)
+        if isinstance(input_ids, dict):  # input_ids of Flux is dict
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
+
         pick_samples = self.batch_size * self.gradient_accumulate_steps
         pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
