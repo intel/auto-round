@@ -2306,14 +2306,18 @@ class BaseCompressor(object):
                 self.hook_handles.append(hook_handle)
 
     def _quantize_layer(
-        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
+        self,
+        layer_name: str,
+        inputs: Union[torch.Tensor, dict],
+        q_inputs: Union[torch.Tensor, dict] = None,
+        device: str = "cpu",
     ):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
             layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor): Input data for quantization.
-            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
+            inputs (torch.Tensor | dict ): Input data for quantization.
+            q_inputs (torch.Tensor | dict, optional): Quantized input data. Defaults to None.
             device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
 
         Returns:
@@ -2365,7 +2369,12 @@ class BaseCompressor(object):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-        nsamples = len(inputs)
+
+        if isinstance(input_ids, dict):
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
+
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
@@ -2527,9 +2536,9 @@ class BaseCompressor(object):
     def _quantize_block(
         self,
         block: torch.nn.Module,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
-        q_input: Union[None, torch.Tensor] = None,
+        q_input: Union[torch.Tensor, dict] = None,
         device: Union[str, torch.device] = "cpu",
     ):
         """Quantize the weights of a given block of the model.
@@ -2646,7 +2655,11 @@ class BaseCompressor(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        nsamples = len(input_ids)
+        if isinstance(input_ids, dict):
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
+
         pick_samples = self.batch_size * self.gradient_accumulate_steps
         pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
