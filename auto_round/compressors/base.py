@@ -2305,19 +2305,13 @@ class BaseCompressor(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
-    def _quantize_layer(
-        self,
-        layer_name: str,
-        inputs: Union[torch.Tensor, dict],
-        q_inputs: Union[torch.Tensor, dict] = None,
-        device: str = "cpu",
-    ):
+    def _quantize_layer(self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
             layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor | dict ): Input data for quantization.
-            q_inputs (torch.Tensor | dict, optional): Quantized input data. Defaults to None.
+            inputs (torch.Tensor): Input data for quantization.
+            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
             device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
 
         Returns:
@@ -2369,12 +2363,7 @@ class BaseCompressor(object):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-
-        if isinstance(inputs, dict):
-            nsamples = len(inputs["hidden_states"])
-        else:
-            nsamples = len(inputs)
-
+        nsamples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
