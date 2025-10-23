@@ -15,13 +15,12 @@
 from typing import Any
 
 import torch
+from quant_method_moe import AutoRoundMoEMethod
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
-
-from .quant_method_moe import AutoRoundMoEMethod
 
 logger = init_logger(__name__)
 

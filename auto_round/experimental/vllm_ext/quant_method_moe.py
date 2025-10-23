@@ -69,7 +69,7 @@ class AutoRoundMoEMethod(FusedMoEMethodBase):
                 return UnquantizedFusedMoEMethod(layer.moe_config)
 
             elif _is_mxfp4_w4a4(scheme):
-                from .moe_impl_mxfp4 import AutoRoundMoEMethodMXFp4Impl
+                from moe_impl_mxfp4 import AutoRoundMoEMethodMXFp4Impl
 
                 return AutoRoundMoEMethodMXFp4Impl(quant_config, layer.moe_config)
 

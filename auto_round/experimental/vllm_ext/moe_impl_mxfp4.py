@@ -28,7 +28,7 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.utils import set_weight_attrs
 
 logger = init_logger(__name__)
-from .quant_method_moe import AutoRoundMoEMethod
+from quant_method_moe import AutoRoundMoEMethod
 
 
 def apply_act(local_w1_out: torch.Tensor, local_w3_out: torch.Tensor, activation: str) -> torch.Tensor:
@@ -248,7 +248,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             layer.w13_bias.data.copy_(w13_bias_swapped)
 
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
-                import vllm.model_executor.layers.quantization.auto_round_vllm_extension.mxfp4_qdq_utils as mxfp4_utils
+                import mxfp4_qdq_utils as mxfp4_utils
 
                 w1 = layer.w13_weight_packed
                 w1_scale = layer.w13_weight_scale

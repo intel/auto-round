@@ -24,9 +24,15 @@ if VLLM_ENABLE_AR_EXT:
     print("*****************************************************************************")
     print(f"* !!! VLLM_ENABLE_AR_EXT is set to {VLLM_ENABLE_AR_EXT}, applying auto_round_vllm_extension *")
     print("*****************************************************************************")
-    from .auto_round_vllm_extension import apply as auto_round_ext_apply
 
-    auto_round_ext_apply()
+    import vllm.model_executor.layers.quantization.auto_round as auto_round_module
+
+    from auto_round.experimental.vllm_ext.auto_round_ext import AutoRoundExtensionConfig
+
+    auto_round_module.AutoRoundConfig = AutoRoundExtensionConfig
+    from auto_round.experimental.vllm_ext.envs_ext import extra_environment_variables
+
+
 else:
     print("*****************************************************************************")
     print(
