@@ -2305,7 +2305,9 @@ class BaseCompressor(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
-    def _quantize_layer(self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"):
+    def _quantize_layer(
+        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
+    ):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
