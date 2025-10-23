@@ -75,6 +75,7 @@ def create_model_class(
     model_type=convert_hf_to_gguf.ModelType.TEXT,
 ):
     tmp_work_dir = model.name_or_path
+    os.makedirs(output_dir, exist_ok=True)
     if not os.path.isdir(tmp_work_dir):
         tmp_work_dir = download_hf_model(tmp_work_dir)
     with torch.inference_mode():
