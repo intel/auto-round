@@ -1988,17 +1988,33 @@ class BaseCompressor(object):
             except Exception as error:
                 raise error
             if need_attention_mask:
-                new_attention_mask = []
                 if (
                     isinstance(data_new, dict)
                     and "attention_mask" in data_new
                     and data_new["attention_mask"] is not None
                 ):
                     new_attention_mask = data_new["attention_mask"]
-                elif self.tokenizer is not None and hasattr(self.tokenizer, "pad_token"):
+                elif self.tokenizer is not None and hasattr(self.tokenizer, "pad_token") and self.tokenizer.pad_token is not None:
                     new_attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
                 else:
-                    new_attention_mask = torch.ones_like(input_ids).to(torch.long)
+                    # Default all ones
+                    new_attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+
+                    # For each sample, check if there are trailing repeated tokens
+                    # If so, set the mask of the last token to 0
+                    batch_size, seq_len = input_ids.shape
+                    for i in range(batch_size):
+                        last_token = input_ids[i, -1]
+                        # Check for trailing repeats
+                        j = seq_len - 2
+                        repeated = False
+                        while j >= 0 and input_ids[i, j] == last_token:
+                            repeated = True
+                            new_attention_mask[i, j] = 0
+                            j -= 1
+                        # If there was at least one repeat, set last token mask to 0
+                        if repeated:
+                            new_attention_mask[i, -1] = 0
 
                 self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
 
