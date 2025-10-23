@@ -22,7 +22,6 @@ from tqdm import tqdm
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 from auto_round.logger import logger
-from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
@@ -299,11 +298,6 @@ class DiffusionCompressor(BaseCompressor):
             self.dataloader = self.dataset
         total_cnt = 0
 
-        if self.low_cpu_mem_usage:
-            embed_layers = get_layers_before_block(self.model)
-            for n, m in embed_layers:
-                m = m.to(self.device)
-
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
@@ -355,10 +349,6 @@ class DiffusionCompressor(BaseCompressor):
                     if isinstance(v[key], list) and len(v[key]) == total_cnt:
                         self.inputs[k][key] = v[key][:max_len]
 
-        # clean embed weight to save memory
-        if self.low_cpu_mem_usage:
-            for n, m in embed_layers:
-                m = m.to("meta")
         # torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):

@@ -36,7 +36,6 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
-from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import AutoScheme, QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
@@ -181,7 +180,7 @@ class BaseCompressor(object):
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                  nblocks, low_cpu_mem_usage, to_quant_block_names,
+                  nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
                   disable_deterministic_algorithms, mllm, static_kv_dtype
         Raises:
@@ -226,7 +225,6 @@ class BaseCompressor(object):
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
         nblocks = kwargs.pop("nblocks", 1)
-        low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
@@ -264,14 +262,12 @@ class BaseCompressor(object):
         # Model related
         self.quantized = False
         if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(
+            model, tokenizer = llm_load_model(
                 model,
                 device="cpu",  # always load cpu first
-                low_cpu_mem_mode=low_cpu_mem_usage,
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
-        self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupported_meta_device(model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
@@ -579,7 +575,6 @@ class BaseCompressor(object):
             and TORCH_VERSION_AT_LEAST_2_6
             and self.act_bits > 8
             and not is_debug_mode()
-            and not self.low_cpu_mem_usage
             and "fp8" not in self.data_type
             and "fp8" not in self.act_data_type
         ):
@@ -587,10 +582,6 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
-
-        if self.low_cpu_mem_usage and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
         if is_debug_mode() and self.enable_torch_compile:
             self.enable_torch_compile = False
@@ -1608,7 +1599,7 @@ class BaseCompressor(object):
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
 
-                mv_module_from_gpu(block, self.low_cpu_mem_usage)
+                mv_module_from_gpu(block)
                 pbar.update(1)
 
         pbar.close()
@@ -1720,11 +1711,11 @@ class BaseCompressor(object):
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 all_first_block_names, self.nsamples, layer_names=layer_names
             )
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        self.model = mv_module_from_gpu(self.model)
         clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        self.model = mv_module_from_gpu(self.model)
         logger.info("caching done")
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
@@ -1861,7 +1852,7 @@ class BaseCompressor(object):
                     self.model
                 )  ##self.model.hf_device_map has not been changed
 
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        self.model = mv_module_from_gpu(self.model)
         clear_memory()
         quant_layer = self._quantize_layer
         for layer_name in layer_names:
@@ -1951,12 +1942,6 @@ class BaseCompressor(object):
             self.dataloader = self.dataset
         total_cnt = 0
 
-        # load embed weight if use low_cpu_mem_usage
-        if self.low_cpu_mem_usage:
-            embed_layers = get_layers_before_block(self.model)
-            for n, m in embed_layers:
-                m = m.to(self.device)
-
         for data in self.dataloader:
             if data is None:
                 continue
@@ -2018,11 +2003,6 @@ class BaseCompressor(object):
                 f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
                 f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
-
-        # clean embed weight to save memory
-        if self.low_cpu_mem_usage:
-            for n, m in embed_layers:
-                m = m.to("meta")
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
@@ -2097,7 +2077,7 @@ class BaseCompressor(object):
                         accelerate.hooks.remove_hook_from_submodules(
                             self.model
                         )  ##self.model.hf_device_map has not been changed
-                    self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+                    self.model = mv_module_from_gpu(self.model)
                     clear_memory()
                     ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
                     all_inputs = self.cache_inter_data(
@@ -2354,7 +2334,7 @@ class BaseCompressor(object):
             logger.info(dump_info)
             with torch.no_grad():
                 unwrapper_layer(self.model, wrapper_linear, layer_name, {})
-            mv_module_from_gpu(layer, self.low_cpu_mem_usage)
+            mv_module_from_gpu(layer)
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
@@ -2447,7 +2427,7 @@ class BaseCompressor(object):
             best_iter = last_best_iter
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
-        mv_module_from_gpu(layer, self.low_cpu_mem_usage)
+        mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
@@ -2642,7 +2622,7 @@ class BaseCompressor(object):
             )
             logger.info(dump_info)
             unwrapper_block(block, {})  # TODO Quant layer should change
-            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            mv_module_from_gpu(block)
             return output, output
 
         if self.lr_scheduler is None:
@@ -2733,8 +2713,6 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
-            if self.low_cpu_mem_usage:
-                block = block.to(device)
             clear_memory()
             q_outputs = self._get_block_outputs(
                 block,
@@ -2746,7 +2724,7 @@ class BaseCompressor(object):
             )
             if self.device_map is not None:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            mv_module_from_gpu(block)
             clear_memory(input_ids)
 
             return q_outputs, output
@@ -2754,7 +2732,7 @@ class BaseCompressor(object):
         else:
             if self.device_map is not None:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            mv_module_from_gpu(block)
             clear_memory(input_ids)
             return None, output
 
@@ -2850,9 +2828,6 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
-                m = m.to(device)
-
             q_input, input_ids = quantize_block(
                 m,
                 input_ids,
@@ -2891,7 +2866,7 @@ class BaseCompressor(object):
         if pbar is not None:
             pbar.update(1)
 
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
                 delattr(m, "name")
@@ -2918,9 +2893,6 @@ class BaseCompressor(object):
             object: The compressed model object.
         """
         format = self._check_supported_format(format)
-
-        if self.low_cpu_mem_usage:
-            self.model = self.model.to("cpu")
 
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
@@ -3206,7 +3178,6 @@ class AdamCompressor(BaseCompressor):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
