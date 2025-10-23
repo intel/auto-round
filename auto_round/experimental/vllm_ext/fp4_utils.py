@@ -16,18 +16,7 @@ from typing import Optional
 
 import torch
 
-FLOAT_TO_E2M1 = [
-    0.0,
-    0.5,
-    1.0,
-    1.5,
-    2.0,
-    3.0,
-    4.0,
-    6.0,
-]
-
-# Module-level device tensor cache
+# Module-level device tensor cache to fix cuda graph issue
 _DEVICE_E2M1_TENSORS = {}
 
 # Constants for FP4 values (E2M1 format)
