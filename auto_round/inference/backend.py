@@ -132,12 +132,19 @@ def feature_multiply_checker_group_size(
     )
 
 
+def in_feature_checker_group_size(in_feature, out_feature, config):
+    group_size = config["group_size"]
+    return in_feature % group_size == 0
+
+
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
 feature_multiply_checker_16 = functools.partial(feature_multiply_checker, in_feature_multiplier=16)
 in_output_feature_multiply_checker_32 = functools.partial(
     feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
-
+in_feature_multiply_checker_32 = functools.partial(
+    feature_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=None
+)
 exllamav2_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=32
 )
@@ -145,6 +152,8 @@ exllamav2_feature_checker = functools.partial(
 gptqmodel_marlin_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=1, out_feature_multiplier=64
 )
+
+mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
 
 
 def fp8_static_scheme_checker(
@@ -244,7 +253,7 @@ BackendInfos["auto_round:torch_mxfp8"] = BackendInfo(
     act_data_type=MX_TENSOR_DATA_TYPES,
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_32],
+    checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -264,7 +273,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     act_data_type=MX_TENSOR_DATA_TYPES,
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_32],
+    checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )
@@ -285,7 +294,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     act_data_type=["nv_fp4_with_static_gs"],
     act_dynamic=[True],
     priority=0,
-    checkers=[feature_multiply_checker_16],
+    checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.7.0"],
 )

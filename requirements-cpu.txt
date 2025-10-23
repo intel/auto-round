@@ -1,1 +1,3 @@
+numba
+tbb
 intel-extension-for-pytorch
