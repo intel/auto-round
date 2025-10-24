@@ -138,12 +138,12 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             orig_weight = orig_weight.t()
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
-        if  self.enable_round_tuning:
+        if self.enable_round_tuning:
             self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
             self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
         else:
-            self.weight_min=None
-            self.weight_max=None
+            self.weight_min = None
+            self.weight_max = None
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
