@@ -15,7 +15,11 @@
 import pytest
 from vllm.platforms import current_platform
 
-MODELS = ["/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/"]
+MODELS = [
+    # "/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/"
+    # "/data5/yliu7/HF_HOME/Qwen2.5-0.5B-Instruct-test-FP8_STATIC-fp8kv/"
+    "/data6/yiliu4/Qwen3-15B-A2B-Base-MXFP4-fp8attention"
+]
 
 
 @pytest.mark.skipif(
@@ -27,4 +31,4 @@ def test_auto_round(vllm_runner, model):
     with vllm_runner(model, enforce_eager=True) as llm:
         output = llm.generate_greedy(["The capital of France is"], max_tokens=8)
     assert output
-    print(f"{output[0][1]}")
+    print(f"output is: {output[0][1]}")

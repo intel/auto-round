@@ -27,10 +27,10 @@ if VLLM_ENABLE_AR_EXT:
 
     import vllm.model_executor.layers.quantization.auto_round as auto_round_module
 
-    from auto_round.experimental.vllm_ext.auto_round_ext import AutoRoundExtensionConfig
+    from auto_round_extension.vllm_ext.auto_round_ext import AutoRoundExtensionConfig
 
     auto_round_module.AutoRoundConfig = AutoRoundExtensionConfig
-    from auto_round.experimental.vllm_ext.envs_ext import extra_environment_variables
+    from auto_round_extension.vllm_ext.envs_ext import extra_environment_variables
 
 
 else:

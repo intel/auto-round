@@ -173,7 +173,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
         if envs.VLLM_ENABLE_STATIC_MOE:
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
                 weight_name_lst = ["w13_weight", "w2_weight"]
-                from .mxfp4_qdq_utils import dequant_mxfp4_to_fp8
+                from mxfp4_qdq_utils import dequant_mxfp4_to_fp8
 
                 for weight_name_prefix in weight_name_lst:
                     weight_name = f"{weight_name_prefix}_packed"
@@ -436,7 +436,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                 local_w3_packed = local_w13_packed[intermediate_size_per_partition:, ...]
                 local_w3_scale = local_w13_scale[intermediate_size_per_partition:, ...]
 
-                from .mxfp4_qdq_utils import run_mxfp4_emulations
+                from mxfp4_qdq_utils import run_mxfp4_emulations
 
                 local_w1_bias = None
                 local_w2_bias = None
@@ -504,7 +504,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                     local_w3_bias = local_w13_bias[intermediate_size_per_partition:]
                     local_w2_bias = layer.w2_bias[expert_index]
 
-                from .mxfp4_qdq_utils import mxfp4_gemm_with_unpacked_weight
+                from mxfp4_qdq_utils import mxfp4_gemm_with_unpacked_weight
 
                 local_w1_out = mxfp4_gemm_with_unpacked_weight(
                     x=current_state_static,

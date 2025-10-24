@@ -18,6 +18,7 @@ import torch
 from quant_method_moe import AutoRoundMoEMethod
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import FusedMoE
+from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
@@ -34,8 +35,8 @@ class AutoRoundExtensionConfig(AutoRoundConfig):
         if isinstance(layer, FusedMoE):
             quant_method = AutoRoundMoEMethod.get_moe_method(self, layer, prefix)
             return quant_method
-
-        return super().get_quant_method(layer, prefix)
+        elif isinstance(layer, LinearBase):
+            return UnquantizedLinearMethod()
 
     @staticmethod
     def _parse_quant_scheme(config: dict):
