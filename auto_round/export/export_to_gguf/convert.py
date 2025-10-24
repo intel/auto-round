@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, _get_packing_device, _is_fp8_model, clean_module_parameter, get_module, logger
+from auto_round.utils import LazyImport, _get_packing_device, clean_module_parameter, get_module, is_fp8_model, logger
 
 gguf = LazyImport("gguf")
 
@@ -145,7 +145,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         yield name, tensor
 
     def is_extra_tensor(tensor_name):
-        if _is_fp8_model(cls.model) and "scale" in tensor_name.split(".")[-1]:
+        if is_fp8_model(cls.model) and "scale" in tensor_name.split(".")[-1]:
             return False
         if tensor_name not in cls.model.tensor_name_list:
             return True

@@ -33,7 +33,6 @@ from auto_round.special_model_handler import (
     _handle_special_model,
 )
 from auto_round.utils import (
-    _is_fp8_model,
     check_to_quantized,
     clear_memory,
     detect_device,
@@ -41,6 +40,7 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_max_vram,
+    is_fp8_model,
     mllm_load_model,
     mv_module_from_gpu,
     to_device,
