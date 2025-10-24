@@ -271,9 +271,6 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
 
-        # for alg_ext, will remove later
-        self.low_cpu_mem_usage = False
-
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:

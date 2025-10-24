@@ -277,7 +277,7 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
-def mv_module_from_gpu(module, *args, **kwargs):
+def mv_module_from_gpu(module):
     """Moves module from gpu to cpu.
 
     Args:
