@@ -3084,7 +3084,8 @@ def is_separate_lm_head(model: torch.nn.Module) -> bool:
             return True
         else:
             return False
-          
+
+
 def to_standard_regex(pattern: str) -> str:
     """
     Convert a user-specified string into a standardized regex for layer matching.
