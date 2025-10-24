@@ -2826,6 +2826,7 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
+            m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
                 input_ids,
