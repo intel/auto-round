@@ -19,13 +19,13 @@ import torch
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 
-from auto_round.low_cpu_mem import get_module
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     get_block_names,
     get_layer_features,
+    get_module,
     is_hpex_available,
 )
 

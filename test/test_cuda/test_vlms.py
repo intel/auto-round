@@ -154,7 +154,7 @@ class TestAutoRound(unittest.TestCase):
 
         for model_name in ["/models/glm-4-9b-chat", "/models/Qwen2.5-1.5B-Instruct/"]:
             self.assertFalse(is_mllm_model(model_name))
-            model, _, _ = llm_load_model(model_name)
+            model, _ = llm_load_model(model_name)
             self.assertFalse(is_mllm_model(model))
 
 
