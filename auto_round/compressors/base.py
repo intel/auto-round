@@ -3074,16 +3074,7 @@ class BaseCompressor(object):
                             tmp_m.tmp_name, self.model, self.formats[0], device=self.device
                         )
 
-            # ---- Save the (just packed) block in a HF-like sharded way (per block) ----
             if self.save_block_immediate:
-                # -------------------------------------------------------------
-                # Incremental (cross‑block) sharded saving aligned with
-                # HuggingFace model.save_pretrained style.
-                # Tensors from consecutive blocks are coalesced into shards
-                # not exceeding max_shard_size; a shard may contain tensors
-                # from multiple blocks. Final shard file names are only
-                # normalized when the last block group is processed.
-                # -------------------------------------------------------------
                 import os, json, torch
                 from collections import OrderedDict
 
@@ -3146,6 +3137,19 @@ class BaseCompressor(object):
                         torch.save(self._current_shard_tensors, tmp_path)
                     params = list(self._current_shard_tensors.keys())
                     self._shard_meta.append({"tmp_file": tmp_name, "params": params})
+                    for param in params:
+                        free_module_name = param.rsplit(".", 1)[0]
+                        free_module = get_module(self.model, free_module_name)
+                        
+                        # free module only when all its parameters have been saved
+                        free_flag = True
+                        free_module_state_dict = free_module.state_dict()
+                        for free_module_key in free_module_state_dict:
+                            free_module_key_full_name = f"{free_module_name}.{free_module_key}"
+                            if free_module_key_full_name not in params:
+                                free_flag = False
+                        if free_flag:
+                            mv_module_from_gpu(free_module, low_cpu_mem_usage=True)
                     self._current_shard_tensors = OrderedDict()
                     self._current_shard_size = 0
                     clear_memory()
@@ -3167,40 +3171,29 @@ class BaseCompressor(object):
                     self._current_shard_tensors[pname] = tensor
                     self._current_shard_size += t_size
 
-                _flush_current_shard()
-                del flat_tensors
-                clear_memory()
-
-                # Move packed layers to meta to free GPU memory
-                mv_module_from_gpu(m, low_cpu_mem_usage=True)
-                breakpoint()
                 last_group = (i + nblocks) >= len(block_names)
                 if last_group:
-                    # 1) Flush any pending tensors from the last processed (multi)block
-                    _flush_current_shard()
 
-                    # 2) Collect already saved parameter names
-                    already_saved = set()
-                    for meta in self._shard_meta:
-                        for p in meta["params"]:
-                            already_saved.add(p)
-
-                    # 3) Add the remaining (unsaved) model weights into new shard(s),
+                    # 1) Add the remaining (unsaved) model weights into new shard(s),
                     # do not overwrite the already saved weights.
                     try:
                         full_sd = self.model.state_dict()
                     except Exception as e:
                         logger.warning(f"failed to obtain full state_dict for remaining weights: {e}")
                         full_sd = {}
-
                     for pname, tensor in full_sd.items():
                         if "lm_head" in pname:
                             continue
                         if not isinstance(tensor, torch.Tensor):
                             continue
-                        if pname in already_saved:
+                        # Check whether pname already stored in previous shards via _shard_meta
+                        already_saved = False
+                        for _meta in self._shard_meta:
+                            if pname in _meta.get("params", []):
+                                already_saved = True
+                                break
+                        if already_saved:
                             continue  # skip weights already saved
-
                         # Size accounting
                         t_elems = tensor.numel()
                         t_size = t_elems * tensor.element_size()
@@ -3228,10 +3221,10 @@ class BaseCompressor(object):
                         self._current_shard_tensors[pname] = tensor.detach().cpu()
                         self._current_shard_size += t_size
 
-                    # Flush any remaining unsaved leftover tensors
+                    # 2) Flush any remaining unsaved leftover tensors
                     _flush_current_shard()
 
-                    # 4) Finalize: rename temp shard files to HF-style names and build index
+                    # 3) Finalize: rename temp shard files to HF-style names and build index
                     total_shards = self._shard_counter
                     if total_shards == 0:
                         logger.warning("no tensors saved across all blocks")
@@ -3265,14 +3258,20 @@ class BaseCompressor(object):
                             },
                             "weight_map": self._global_weight_map,
                         }
-                        with open(index_path, "w", encoding="utf-8") as f:
-                            json.dump(index_data, f, indent=2)
+                        if total_shards > 1:
+                            with open(index_path, "w", encoding="utf-8") as f:
+                                json.dump(index_data, f, indent=2)
                         logger.info(
                             f"saved {total_shards} shard(s) (HF-style, including remaining unsaved weights) to "
                             f"{self._packed_blocks_root} (index: {index_fname})"
                         )
+                        
+                        try:
+                            copy_python_files_from_model_cache(model, output_dir)
+                        except Exception as e:
+                            logger.warning("Skipping source model Python file copy due to error: %s", e)
                     
-                    # Cleanup attributes to release memory after final shard is written
+                    # 4) Cleanup attributes to release memory after final shard is written
                     try:
                         attrs_to_cleanup = [
                             "_current_shard_tensors",
@@ -3297,7 +3296,8 @@ class BaseCompressor(object):
         if pbar is not None:
             pbar.update(1)
 
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        if not self.save_block_immediate:
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
                 delattr(m, "name")
