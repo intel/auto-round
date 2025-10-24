@@ -47,9 +47,6 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    _gguf_args_check,
-    _is_fp8_linear,
-    _is_fp8_model,
     block_forward,
     check_and_mark_fp8_model,
     check_is_cpu,
@@ -78,10 +75,13 @@ from auto_round.utils import (
     get_max_vram,
     get_module,
     get_shared_keys,
+    gguf_args_check,
     htcore,
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_fp8_linear,
+    is_fp8_model,
     is_hpex_available,
     is_mx_fp,
     is_nv_fp,
@@ -879,9 +879,9 @@ class BaseCompressor(object):
                     )
                     formats[i] = gguf_format_name.lower()
 
-        _gguf_args_check(self, formats, model_type=ModelType.TEXT)
+        gguf_args_check(self, formats, model_type=ModelType.TEXT)
         if self.mllm:
-            _gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
+            gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
 
         for f in formats:
             if f.startswith("gguf"):
@@ -1340,7 +1340,7 @@ class BaseCompressor(object):
         """
         m = get_module(self.model, name)
 
-        if _is_fp8_linear(m):
+        if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
         #
@@ -1500,7 +1500,7 @@ class BaseCompressor(object):
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
         return self.model, self.layer_config
@@ -1568,7 +1568,7 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 block = block.to(self.device)
-                if _is_fp8_model(self.model):
+                if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
                 if self.device_map == "auto":
@@ -1765,9 +1765,9 @@ class BaseCompressor(object):
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             for n, m in self.model.named_modules():
-                if _is_fp8_linear(m):
+                if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
                     set_module(self.model, n, new_layer)
 
@@ -1816,7 +1816,7 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                if _is_fp8_model(self.model):
+                if is_fp8_model(self.model):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
@@ -2034,7 +2034,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -2446,6 +2446,7 @@ class BaseCompressor(object):
         logger.info(dump_info)
 
     def _register_act_max_hook(self, model):
+
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -2544,9 +2545,9 @@ class BaseCompressor(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             for n, m in block.named_modules():
-                if _is_fp8_linear(m):
+                if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
