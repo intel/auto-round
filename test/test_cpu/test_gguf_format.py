@@ -345,7 +345,7 @@ class TestGGUF(unittest.TestCase):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
-        ar.layer_config, _ = set_layer_config(
+        ar.layer_config, _, _ = set_layer_config(
             ar.model,
             ar.layer_config,
             ar.scheme,
@@ -358,17 +358,13 @@ class TestGGUF(unittest.TestCase):
             enable_gguf_official_mixed=True,
             is_mllm=ar.mllm,
         )
-        # ar.layer_config, _ = get_layer_config_by_gguf_format(
-        #     ar.layer_config, ar.formats[0], ar.model, model_type=ModelType.TEXT)
-        print(ar.layer_config["model.embed_tokens"]["bits"])
         self.assertTrue(ar.layer_config["model.embed_tokens"]["bits"] == 8)
-        # self.assertTrue(ar.layer_config["lm_head"]["bits"] == 16)
         self.assertTrue("lm_head" not in ar.layer_config)
 
         model_name = "Qwen/Qwen3-0.6B"
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
-        ar.layer_config, _ = set_layer_config(
+        ar.layer_config, _, _ = set_layer_config(
             ar.model,
             ar.layer_config,
             ar.scheme,
@@ -390,7 +386,7 @@ class TestGGUF(unittest.TestCase):
         }
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0, layer_config=layer_config)
         ar.formats = ["gguf:q4_0"]
-        ar.layer_config, _ = set_layer_config(
+        ar.layer_config, _, _ = set_layer_config(
             ar.model,
             ar.layer_config,
             ar.scheme,
