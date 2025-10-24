@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # Define the relative path for the `auto-round` installation
-AUTO_ROUND_PATH="auto_round/experimental/vllm_ext/sitecustomize.py"
+AUTO_ROUND_PATH="auto_round/../auto_round_extension/vllm_ext/sitecustomize.py"
 
 # Try to find the pip installation location
 PIP_LOCATION=$(pip show auto-round 2>/dev/null | grep "Location:" | awk '{print $2}')
