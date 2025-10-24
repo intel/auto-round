@@ -80,6 +80,7 @@ class WrapperLinear(torch.nn.Module):
         device="cpu",
         enable_round_tuning=True,
         enable_torch_compile=False,
+        disable_opt_rtn=True,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -92,6 +93,7 @@ class WrapperLinear(torch.nn.Module):
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
+        self.disable_opt_rtn = disable_opt_rtn
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -146,13 +148,15 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("min_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
-        self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits, orig_layer.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(
+            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn
+        )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(
-                orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym
+                orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, self.disable_opt_rtn
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
