@@ -37,6 +37,8 @@ class AutoRoundExtensionConfig(AutoRoundConfig):
             return quant_method
         elif isinstance(layer, LinearBase):
             return UnquantizedLinearMethod()
+        else:
+            return None
 
     @staticmethod
     def _parse_quant_scheme(config: dict):
