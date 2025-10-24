@@ -44,6 +44,7 @@ from auto_round.utils import (
     is_nv_fp,
     is_standard_fp,
     set_module,
+    to_standard_regex,
 )
 
 
@@ -340,8 +341,15 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
                     if cfg[key] is not None:
                         extra_config[layer_name][key] = cfg[key]
 
+    regex_config = quantization_config.pop("regex_config")
+    if regex_config is not None:
+        for name in regex_config.keys():
+            regex_name = to_standard_regex(name)
+            extra_config[regex_name] = {**{k: regex_config[name][k] for k in scheme_keys}}
+
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
+
     names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():

@@ -438,7 +438,7 @@ class BaseCompressor(object):
                 "Please save the model using the `fake` format for now."
             )
 
-        layer_config, self.has_qlayer_outside_block = set_layer_config(
+        layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model,
             self.layer_config,
             self.scheme,
@@ -1647,7 +1647,7 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = True
         else:
             enable_gguf_official_mixed = False
-        self.layer_config, self.has_qlayer_outside_block = set_layer_config(
+        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model,
             self.layer_config,
             self.scheme,
@@ -2510,9 +2510,9 @@ class BaseCompressor(object):
     def _quantize_block(
         self,
         block: torch.nn.Module,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
-        q_input: Union[None, torch.Tensor] = None,
+        q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
     ):
         """Quantize the weights of a given block of the model.
@@ -2629,7 +2629,11 @@ class BaseCompressor(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        nsamples = len(input_ids)
+        if isinstance(input_ids, dict):  # input_ids of Flux is dict
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
+
         pick_samples = self.batch_size * self.gradient_accumulate_steps
         pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
@@ -2912,6 +2916,8 @@ class BaseCompressor(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
+        # if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+        #     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
         if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
             format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
         if format == "llm_compressor" and is_static_wfp8afp8(self):
@@ -2960,6 +2966,7 @@ class BaseCompressor(object):
             "act_data_type",
             "super_bits",
             "super_group_size",
+            "regex_config",
         ]
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
