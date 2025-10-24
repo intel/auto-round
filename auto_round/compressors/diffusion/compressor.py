@@ -209,7 +209,7 @@ class DiffusionCompressor(BaseCompressor):
     def _get_block_outputs(
         self,
         block: torch.nn.Module,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, dict],
         input_others: torch.Tensor,
         bs: int,
         device: Union[str, torch.device],
@@ -232,8 +232,11 @@ class DiffusionCompressor(BaseCompressor):
         """
 
         output = defaultdict(list)
-        nsamples = len(input_ids)
         output_config = output_configs.get(block.__class__.__name__, [])
+        if isinstance(input_ids, dict):
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
 
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
