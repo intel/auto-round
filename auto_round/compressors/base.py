@@ -207,35 +207,7 @@ class BaseCompressor(object):
             ... }
         """
 
-        if isinstance(scheme, AutoScheme):
-            if len(scheme.options) <= 0:
-                raise ValueError("options of AutoScheme must not be empty")
-            options = []
-            for option in scheme.options:
-                new_option = self._parse_and_set_scheme(option, kwargs)
-                options.append(new_option)
-            scheme.options = options
-            for opt in options:
-                if isinstance(opt, str) and opt == "BF16":
-                    continue
-                if isinstance(opt, QuantizationScheme):
-                    if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
-                        continue
-                self.scheme = opt  # Choose the first one that not 16 bits
-                break
-
-            # apply scheme to set default bits
-            self._parse_and_set_scheme(self.scheme, kwargs)
-
-            self.is_auto_scheme = True
-
-        else:
-            self.scheme = self._parse_and_set_scheme(scheme, kwargs)
-            self.is_auto_scheme = False
-
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key in scheme_keys:
-            kwargs.pop(key, None)
+        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -500,65 +472,105 @@ class BaseCompressor(object):
 
     def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
         """Parse and set the quantization scheme."""
-        res = ""
-        if isinstance(scheme, QuantizationScheme):
-            scheme = asdict(scheme)
-        elif isinstance(scheme, dict):
-            scheme = scheme
-        elif isinstance(scheme, str):
-            res = scheme  # gguf:q4_k_s and gguf_q4_k_m has the same dict scheme, but the result is different
-            scheme = scheme.upper()
-            scheme = asdict(preset_name_to_scheme(scheme))
+
+        def _parse_and_set(scheme, kwargs):
+            res = ""
+            if isinstance(scheme, QuantizationScheme):
+                scheme = asdict(scheme)
+            elif isinstance(scheme, dict):
+                scheme = scheme
+            elif isinstance(scheme, str):
+                # We’d better keep the string scheme instead of the dict config,
+                # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
+                # even though they share the same scheme dict.
+                res = scheme
+                scheme = scheme.upper()
+                scheme = asdict(preset_name_to_scheme(scheme))
+            scheme_keys = [f.name for f in fields(QuantizationScheme)]
+            for key in scheme_keys:
+                if key in kwargs and kwargs[key] is not None:
+                    setattr(self, key, kwargs[key])
+                else:
+                    setattr(self, key, scheme.get(key, None))
+                # kwargs.pop(key, None)
+            if self.act_dynamic is None:
+                self.act_dynamic = True
+
+            tmp_bits = infer_bits_by_data_type(self.data_type)
+            if tmp_bits is not None and tmp_bits < 16 and tmp_bits != self.bits:
+                logger.warning(
+                    f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
+                )
+                self.bits = tmp_bits
+            if tmp_bits is not None and tmp_bits < 16:
+                for (
+                    supported_dtype
+                ) in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                    if self.data_type.startswith(supported_dtype):
+                        if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
+                            self.data_type = supported_dtype
+                        break
+
+            self.act_group_size = self.act_group_size if self.act_group_size is not None else self.group_size
+            self.act_bits = self.act_bits if self.act_bits is not None else 16
+            self.act_sym = self.act_sym if self.act_sym is not None else self.sym
+
+            if self.act_data_type is None:
+                if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
+                    self.act_data_type = self.data_type
+                    logger.info(f"activation adopts {self.data_type}")
+                else:
+                    self.act_data_type = "float"
+            tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
+            if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
+                self.act_bits = tmp_act_bits
+                logger.warning(
+                    f"`act_data_type` do not"
+                    f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
+                )
+            if tmp_act_bits is not None and tmp_act_bits < 16:
+                for (
+                    supported_dtype
+                ) in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
+                    if self.act_data_type.startswith(supported_dtype):
+                        if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # Could not replace FP8_e4m3
+                            self.act_data_type = supported_dtype
+                        break
+            for key in scheme_keys:
+                scheme[key] = getattr(self, key)
+            if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
+                return res
+            else:
+                return QuantizationScheme.from_dict(scheme)
+
+        if isinstance(scheme, AutoScheme):
+            if len(scheme.options) <= 0:
+                raise ValueError("options of AutoScheme must not be empty")
+            options = []
+            for option in scheme.options:
+                new_option = _parse_and_set(option, kwargs)
+                options.append(new_option)
+            scheme.options = options
+            for opt in options:
+                if isinstance(opt, str) and opt == "BF16":
+                    continue
+                if isinstance(opt, QuantizationScheme):
+                    if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
+                        continue
+                self.scheme = opt  # Choose the first one that not 16 bits
+                break
+            # apply scheme to set default bits
+            scheme = _parse_and_set(self.scheme, kwargs)
+            is_auto_scheme = True
+        else:
+            scheme = _parse_and_set(scheme, kwargs)
+            is_auto_scheme = False
+
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
         for key in scheme_keys:
-            if key in kwargs and kwargs[key] is not None:
-                setattr(self, key, kwargs[key])
-            else:
-                setattr(self, key, scheme.get(key, None))
-            # kwargs.pop(key, None)
-        if self.act_dynamic is None:
-            self.act_dynamic = True
+            kwargs.pop(key, None)
 
-        tmp_bits = infer_bits_by_data_type(self.data_type)
-        if tmp_bits is not None and tmp_bits < 16 and tmp_bits != self.bits:
-            logger.warning(f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
-            self.bits = tmp_bits
-        if tmp_bits is not None and tmp_bits < 16:
-            for supported_dtype in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                if self.data_type.startswith(supported_dtype):
-                    if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
-                        self.data_type = supported_dtype
-                    break
-
-        self.act_group_size = self.act_group_size if self.act_group_size is not None else self.group_size
-        self.act_bits = self.act_bits if self.act_bits is not None else 16
-        self.act_sym = self.act_sym if self.act_sym is not None else self.sym
-
-        if self.act_data_type is None:
-            if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
-                self.act_data_type = self.data_type
-                logger.info(f"activation adopts {self.data_type}")
-            else:
-                self.act_data_type = "float"
-        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
-            self.act_bits = tmp_act_bits
-            logger.warning(
-                f"`act_data_type` do not"
-                f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
-            )
-        if tmp_act_bits is not None and tmp_act_bits < 16:
-            for supported_dtype in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                if self.act_data_type.startswith(supported_dtype):
-                    if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # Could not replace FP8_e4m3
-                        self.act_data_type = supported_dtype
-                    break
-        for key in scheme_keys:
-            scheme[key] = getattr(self, key)
-        if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
-            return res
-        else:
-            return QuantizationScheme.from_dict(scheme)
+        return scheme, is_auto_scheme
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
