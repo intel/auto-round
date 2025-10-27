@@ -1,11 +1,24 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import re
 from typing import Union
 
 import torch
 
 from auto_round.logger import logger
-
-from auto_round.utils import detect_device, get_module, get_device_memory, estimate_tuning_block_mem, check_to_quantized
-import re
+from auto_round.utils import check_to_quantized, detect_device, estimate_tuning_block_mem, get_device_memory, get_module
 
 
 def get_major_device(device_map: Union[str, torch.device, int, dict]) -> str:
@@ -64,13 +77,15 @@ def set_non_auto_device_map(model: torch.nn.Module, device_map, quant_layer_name
         for info in infos:
             index = info.find(":")
             key = info[:index]
-            value = info[index + 1:]
+            value = info[index + 1 :]
             device_map_dict[key] = value
         device_map = device_map_dict
     if quant_layer_names is not None:
         names = quant_layer_names
     else:
-        names = [n for n, m in model.model.named_modules() if len(list(m.children())) == 0] # if it's a block, it will be incorrect
+        names = [
+            n for n, m in model.model.named_modules() if len(list(m.children())) == 0
+        ]  # if it's a block, it will be incorrect
     for key, device in device_map.items():
         if isinstance(device, str) and device.isdigit():
             device = int(device)
@@ -86,9 +101,9 @@ def set_non_auto_device_map(model: torch.nn.Module, device_map, quant_layer_name
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
 
-
-def set_auto_device_map_for_block(block: torch.nn.Module, device_map, input_ids: list[torch.Tensor],
-                                  low_gpu_mem_usage=False,mem_per_param_scale=13.0) -> None:
+def set_auto_device_map_for_block(
+    block: torch.nn.Module, device_map, input_ids: list[torch.Tensor], low_gpu_mem_usage=False, mem_per_param_scale=13.0
+) -> None:
     """Automatically sets the device map for the block based on available GPUs and memory constraints."""
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
@@ -108,13 +123,10 @@ def set_auto_device_map_for_block(block: torch.nn.Module, device_map, input_ids:
         cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
         device_0 = "cuda:0"
 
-    device_0_memory = get_device_memory(
-    device_list[0] if device_list else 0
-    )
+    device_0_memory = get_device_memory(device_list[0] if device_list else 0)
     block_memory, input_output_memory = estimate_tuning_block_mem(block, input_ids)
     if low_gpu_mem_usage:
         input_output_memory = 0
-
 
     if (block_memory * mem_per_param_scale + input_output_memory) < device_0_memory:
         return  # fit in one GPU
@@ -150,4 +162,4 @@ def set_auto_device_map_for_block(block: torch.nn.Module, device_map, input_ids:
                         f"Block {block.tmp_name} not fit in available GPU memory. "
                         "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
                     )
-    set_non_auto_device_map(block,device_map,names)
+    set_non_auto_device_map(block, device_map, names)
