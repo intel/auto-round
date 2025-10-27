@@ -187,7 +187,6 @@ def set_auto_device_map_for_block_with_tuning(
 #         set_non_auto_device_map(model, device_map)
 
 
-
 def partition_dict_numbers(number_dict, n):
     """
     Partition a dictionary of numbers into N groups with approximately equal sums
@@ -214,7 +213,7 @@ def partition_dict_numbers(number_dict, n):
     def find_optimal_subset(arr, target):
         """Find subset with sum closest to target"""
         best_subset = []
-        best_diff = float('inf')
+        best_diff = float("inf")
 
         # Try all possible subset sizes
         for r in range(1, len(arr) + 1):
@@ -253,6 +252,7 @@ def partition_dict_numbers(number_dict, n):
 
     return result
 
+
 def set_avg_auto_device_map(model, device_map):
     block_name_list = get_block_names(model)
     device_list = None
@@ -276,18 +276,17 @@ def set_avg_auto_device_map(model, device_map):
     for block_names in block_name_list:
         for block_name in block_names:
             params_dict = {}
-            block_module = get_module(model,block_name)
-            for n,m in block_module.named_modules():
-                in_features,out_features = get_layer_features(m)
-                params_dict[n] = in_features*out_features
+            block_module = get_module(model, block_name)
+            for n, m in block_module.named_modules():
+                in_features, out_features = get_layer_features(m)
+                params_dict[n] = in_features * out_features
 
             res_list = partition_dict_numbers(params_dict, num_devices)
             device_index = 0
             for res in res_list:
                 for key in res.keys():
-                    tmp_m = get_module(model,key)
-                    set_tuning_device_for_layer(block_module,tmp_m, cuda_devices[device_index])
-
+                    tmp_m = get_module(model, key)
+                    set_tuning_device_for_layer(block_module, tmp_m, cuda_devices[device_index])
 
 
 if __name__ == "__main__":
