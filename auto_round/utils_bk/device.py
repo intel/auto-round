@@ -101,7 +101,6 @@ def set_non_auto_device_map(model: torch.nn.Module, device_map, quant_layer_name
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
 
-
 def set_auto_device_map_for_block_with_tuning(
     block: torch.nn.Module, device_map, input_ids: list[torch.Tensor], low_gpu_mem_usage=False, mem_per_param_scale=13.0
 ):

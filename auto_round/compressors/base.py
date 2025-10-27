@@ -88,9 +88,11 @@ from auto_round.utils import (
     to_dtype,
     unsupported_meta_device,
 )
-
-from auto_round.utils_bk.device import get_major_device, set_auto_device_map_for_block_with_tuning, set_non_auto_device_map
-
+from auto_round.utils_bk.device import (
+    get_major_device,
+    set_auto_device_map_for_block_with_tuning,
+    set_non_auto_device_map,
+)
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
