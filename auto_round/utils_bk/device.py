@@ -13,14 +13,22 @@
 # limitations under the License.
 
 import re
+from itertools import combinations
 from typing import Union
 
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import check_to_quantized, detect_device, estimate_tuning_block_mem, get_device_memory, \
-    get_module, get_block_names, get_layer_features
-from itertools import combinations
+from auto_round.utils import (
+    check_to_quantized,
+    detect_device,
+    estimate_tuning_block_mem,
+    get_block_names,
+    get_device_memory,
+    get_layer_features,
+    get_module,
+)
+
 
 def get_major_device(device_map: Union[str, torch.device, int, dict]) -> str:
     if isinstance(device_map, (str, torch.device, int)):
@@ -62,9 +70,9 @@ def set_tuning_device_for_layer(model, name: str, device: str) -> None:
         module.tuning_device = device
 
 
-def set_non_auto_device_map(model: torch.nn.Module,
-                            device_map:Union[str,int,dict],
-                            quant_layer_names:Union[None,list,tuple]=None)->None:
+def set_non_auto_device_map(
+    model: torch.nn.Module, device_map: Union[str, int, dict], quant_layer_names: Union[None, list, tuple] = None
+) -> None:
     if not device_map:
         return
     if device_map == "auto":
@@ -172,13 +180,10 @@ def set_auto_device_map_for_block_with_tuning(
 def set_device_map_for_auto_scheme(model, device_map):
     if not device_map:
         return
-    if device_map=="auto" or (isinstance(device_map, str) and "," in device_map):  # auto device map
+    if device_map == "auto" or (isinstance(device_map, str) and "," in device_map):  # auto device map
         set_avg_auto_device_map(model)
     else:
-        set_non_auto_device_map(model,device_map)
-
-
-
+        set_non_auto_device_map(model, device_map)
 
 
 def partition_dict_numbers(number_dict, n):
@@ -222,8 +227,6 @@ def partition_dict_numbers(number_dict, n):
     return result
 
 
-
-
 def set_avg_auto_device_map(model, device_map):
     block_name_list = get_block_names(model)
     params_dict = {}
@@ -241,27 +244,17 @@ def set_avg_auto_device_map(model, device_map):
 
     for block_names in block_name_list:
         for block_name in block_names:
-            block_module = get_module(model,block_name)
-            for n,m in block_module.named_modules():
-                in_features,out_features = get_layer_features(m)
-                params_dict[n] = in_features*out_features
+            block_module = get_module(model, block_name)
+            for n, m in block_module.named_modules():
+                in_features, out_features = get_layer_features(m)
+                params_dict[n] = in_features * out_features
             res = partition_dict_numbers(params_dict, num_devices)
-
 
 
 if __name__ == "__main__":
     # Example usage
-    number_dict = {
-        "item1": 90,
-        "item2": 20,
-        "item3": 30,
-        "item4": 40,
-        "item5": 50,
-        "item6": 60
-    }
+    number_dict = {"item1": 90, "item2": 20, "item3": 30, "item4": 40, "item5": 50, "item6": 60}
 
     groups = partition_dict_numbers(number_dict, 3)
     for i, group in enumerate(groups):
         print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
-
-
