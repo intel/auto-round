@@ -25,7 +25,7 @@ from dataclasses import asdict, fields
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 import cpuinfo
 import torch
@@ -277,27 +277,23 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
-def mv_module_from_gpu(module, low_cpu_mem_usage=False):
-    """Moves module from gpu to cpu or meta if low_cpu_mem_usage is true.
+def mv_module_from_gpu(module):
+    """Moves module from gpu to cpu.
 
     Args:
     module: The module to be moved.
-    low_cpu_mem_usage: Whether to use low CPU memory. If true, move module to meta.
 
     Returns:
     The module on the specified device.
     """
     if hasattr(module, "device"):
-        target_device = "meta" if low_cpu_mem_usage else "cpu"
+        target_device = "cpu"
         if module.device.type == target_device:
             return module
         else:
             return module.to(target_device)
     else:
-        if low_cpu_mem_usage:
-            return module.to("meta")
-        else:
-            return module.to("cpu")
+        return module.to("cpu")
 
 
 def to_dtype(input, dtype=torch.float32):
@@ -1420,8 +1416,6 @@ def llm_load_model(
     trust_remote_code=True,
     model_dtype=None,
     device="cpu",
-    low_cpu_mem_mode=0,
-    low_cpu_mem_tmp_dir=None,
     **kwargs,
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
@@ -1432,7 +1426,6 @@ def llm_load_model(
         torch_dtype = torch.bfloat16
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
-    low_cpu_mem_usage = False
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
@@ -1440,79 +1433,50 @@ def llm_load_model(
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
-    if low_cpu_mem_tmp_dir is None:
-        low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
-    if low_cpu_mem_mode == 2:
-        from auto_round.low_cpu_mem.utils import load_model_with_hooks
-
-        model = load_model_with_hooks(
+    if _use_hpu_compile_mode():
+        model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
-            model_cls,
-            device=device,
-            clean_weight=True,
-            saved_path=low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
+            attn_implementation="eager",
             trust_remote_code=trust_remote_code,
-        )
-    elif low_cpu_mem_mode == 1:
-        from auto_round.low_cpu_mem.utils import load_empty_model
-
-        low_cpu_mem_usage = True
-        model = load_empty_model(
-            pretrained_model_name_or_path,
-            model_cls,
-            device=device,
-            saved_path=low_cpu_mem_tmp_dir,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
+            device_map="auto" if use_auto_mapping else None,
         )
     else:
-        if _use_hpu_compile_mode():
+        try:
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path,
                 torch_dtype=torch_dtype,
-                attn_implementation="eager",
                 trust_remote_code=trust_remote_code,
                 device_map="auto" if use_auto_mapping else None,
             )
-        else:
-            try:
+        except ValueError as e:
+            if "FP8 quantized" in str(e):
+                orig_func = set_fake_cuda_device_capability()
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
                     trust_remote_code=trust_remote_code,
                     device_map="auto" if use_auto_mapping else None,
                 )
-            except ValueError as e:
-                if "FP8 quantized" in str(e):
-                    orig_func = set_fake_cuda_device_capability()
-                    model = model_cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
-                    torch.cuda.get_device_capability = orig_func
-                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
-                else:
-                    raise
+                torch.cuda.get_device_capability = orig_func
+                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+            else:
+                raise
 
-            except OSError as e:
-                logger.warning(
-                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry."
-                )
-                model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=False,
-                    device_map="auto" if use_auto_mapping else None,
-                )
+        except OSError as e:
+            logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=False,
+                device_map="auto" if use_auto_mapping else None,
+            )
 
     model = model.eval()
     check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
-    return model, tokenizer, low_cpu_mem_usage
+    return model, tokenizer
 
 
 def mllm_load_model(
@@ -2828,7 +2792,7 @@ def set_layer_config(
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
-) -> tuple[dict, bool]:
+) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
     Returns (final_layer_config, has_quant_layer_outside_block)
@@ -2923,6 +2887,7 @@ def set_layer_config(
             embedding_layer_names.append(n)
 
     # 6. expand regex configs
+    regex_config = {}
     for name in list(layer_config.keys()):
         if name in all_supported_layer_names:
             continue
@@ -2938,8 +2903,10 @@ def set_layer_config(
         if not matched:
             raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
         val = layer_config.pop(name)
+        regex_config[name] = val  # keep regex config
         for match in matched:
             layer_config[match] = val
+    # regex_config = None if len(regex_config)==0 else regex_config
 
     # 7. lm_head
     lm_head_name = get_lm_head_name(model)
@@ -2996,7 +2963,7 @@ def set_layer_config(
     # 10. GGUF handling
     if not gguf_name:
         dispatch_layer_config(layer_config)
-        return layer_config, has_qlayer_outside_block
+        return layer_config, has_qlayer_outside_block, regex_config
 
     # embed + lm_head defaults for gguf
     if lm_head_name not in layer_config and not tie_word_embeddings:
@@ -3019,7 +2986,7 @@ def set_layer_config(
         layer_config, _ = get_layer_config_by_gguf_format(layer_config, gguf_name.lower(), model, model_type)
 
     dispatch_layer_config(layer_config)
-    return layer_config, has_qlayer_outside_block
+    return layer_config, has_qlayer_outside_block, regex_config
 
 
 def check_diffusers_installed():  # pragma: no cover
@@ -3055,3 +3022,93 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
+
+def to_standard_regex(pattern: str) -> str:
+    """
+    Convert a user-specified string into a standardized regex for layer matching.
+
+    Rules:
+    - If the pattern already contains regex tokens ('.*', '^', '$', etc.),
+      keep them as-is.
+    - Otherwise, wrap the pattern with `.*` on both sides to allow substring matching.
+    - Always ensure the returned regex is valid (compilable by re).
+
+    Examples:
+    >>> to_standard_regex("model.embed_tokens")
+    '.*model\\.embed_tokens.*'
+    >>> to_standard_regex("mlp.gate")
+    '.*mlp\\.gate.*'
+    >>> to_standard_regex("mlp.gate$")
+    '.*mlp\\.gate$'
+    >>> to_standard_regex("mlp.*gate")
+    '.*mlp.*gate.*'
+    """
+    # Heuristic: if pattern contains regex meta characters, assume partial regex
+    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+"}
+    has_regex = any(tok in pattern for tok in meta_chars)
+    if not has_regex:
+        # Escape literal dots, etc., and wrap with .* for substring matching
+        pattern = re.escape(pattern)
+        regex = f".*{pattern}.*"
+    else:
+        # Only escape bare dots that are not already part of regex constructs
+        # Avoid double escaping .* sequences
+        tmp = []
+        i = 0
+        while i < len(pattern):
+            if pattern[i] == ".":
+                if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                    tmp.append(".*")  # keep regex token
+                    i += 2
+                    continue
+                else:
+                    tmp.append("\\.")  # escape bare dot
+            else:
+                tmp.append(pattern[i])
+            i += 1
+        regex = "".join(tmp)
+        # If no anchors are provided, allow substring matching
+        if not regex.startswith("^") and not regex.startswith(".*"):
+            regex = ".*" + regex
+        if not regex.endswith("$") and not regex.endswith(".*"):
+            regex = regex + ".*"
+    # Validate regex
+    try:
+        re.compile(regex)
+    except re.error as e:
+        raise ValueError(f"Invalid regex generated from pattern '{pattern}': {e}")
+    return regex
+
+
+def matches_any_regex(layer_name: str, regex_config: Dict[str, dict]) -> bool:
+    """
+    Check whether `layer_name` matches any regex pattern key in `regex_config`.
+    Args:
+        layer_name (str): The layer name to test.
+        regex_config (Dict[str, dict]): A mapping of regex patterns to configs.
+    Returns:
+        bool: True if any pattern matches `layer_name`, otherwise False.
+    """
+    if not regex_config:
+        return False
+
+    for pattern in regex_config:
+        # Strip dynamic prefixes (e.g., "+:" or "-:")
+        raw_pattern = pattern[2:] if pattern.startswith(("+:", "-:")) else pattern
+
+        try:
+            if re.search(raw_pattern, layer_name):
+                return True
+        except re.error as e:
+            logger.warning("Skipping invalid regex pattern %r: %s", pattern, e)
+            continue
+
+    return False
+
+
+def json_serialize(obj: Any):
+    """Convert non-JSON-serializable objects into JSON-friendly formats."""
+    if isinstance(obj, torch.dtype):
+        return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
