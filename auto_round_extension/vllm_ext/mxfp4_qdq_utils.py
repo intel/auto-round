@@ -82,7 +82,7 @@ def to_dtype(
     last_dim = orig_shape[-1]
     data_lp = data_lp.reshape(-1, last_dim)
     result_shape = orig_shape[:-1] + (last_dim * 2,)
-    assert data_lp.is_contiguous, f"Data must be contiguous, got {data_lp.stride()}"
+    assert data_lp.is_contiguous(), f"Data must be contiguous, got {data_lp.stride()}"
 
     assert elem_dtype == "fp4_e2m1", f"Expected 'fp4_e2m1', got {elem_dtype}"
 
