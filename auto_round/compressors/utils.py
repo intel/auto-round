@@ -252,7 +252,6 @@ def set_layer_config(
     """
 
     from auto_round.schemes import get_gguf_scheme
-    from auto_round.utils.check_utils import is_mx_fp, is_nv_fp
     from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name, get_module
 
     # ---- helpers -------------------------------------------------

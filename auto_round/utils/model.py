@@ -885,7 +885,7 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
     """
-    from auto_round.utils.memory_utils import clear_memory
+    from auto_round.utils.device import clear_memory
 
     cnt = 0
     for n, m in model.named_modules():

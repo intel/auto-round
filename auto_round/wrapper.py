@@ -16,16 +16,14 @@ import torch
 import transformers
 from torch.functional import F
 
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func
 from auto_round.logger import logger
-
-from .utils import (
+from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compile_func,
     deepspeed_exists,
-    is_mx_fp,
-    is_nv_fp,
     set_module,
 )
 

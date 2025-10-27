@@ -24,6 +24,7 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
 from auto_round.export.utils import filter_quantization_config, save_model
@@ -35,8 +36,6 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_block_names,
     get_module,
-    is_mx_fp,
-    is_nv_fp,
     set_amax_for_all_moe_layers,
     set_module,
 )

@@ -470,7 +470,7 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: list[torch.Tens
                 tensors of the block.
     """
     # Calculate all block parameters memory
-    from auto_round.utils.quantization_utils import check_to_quantized
+    from auto_round.utils.model import check_to_quantized
 
     total_param_mem = 0
     for name, module in block.named_modules():
