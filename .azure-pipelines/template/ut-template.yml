@@ -55,7 +55,7 @@ steps:
     displayName: "Run UT"
 
   - task: PublishPipelineArtifact@1
-    condition: succeededOrFailed()
+    condition: succeeded()
     inputs:
       targetPath: ${{ parameters.uploadPath }}
       artifact: ${{ parameters.utArtifact }}_coverage
