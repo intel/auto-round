@@ -50,7 +50,6 @@ from auto_round.utils import (
     _is_fp8_model,
     block_forward,
     check_and_mark_fp8_model,
-    check_is_cpu,
     check_need_act_calibration,
     check_seqlen_compatible,
     check_skippable_keywords,
@@ -89,7 +88,9 @@ from auto_round.utils import (
     to_dtype,
     unsupported_meta_device,
 )
-from auto_round.utils_bk.device import get_major_device, set_non_auto_device_map, set_auto_device_map_for_block_with_tuning
+
+from auto_round.utils_bk.device import get_major_device, set_auto_device_map_for_block_with_tuning, set_non_auto_device_map
+
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
@@ -231,13 +232,11 @@ class BaseCompressor(object):
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
 
-
         self.fp_layers = kwargs.pop("fp_layers", "")
         self.layer_config = layer_config
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
-
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -330,7 +329,7 @@ class BaseCompressor(object):
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
         self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
-        if mem_per_param_scale is None :
+        if mem_per_param_scale is None:
             self.mem_per_param_scale = 13 if self.iters != 0 else 1
         else:
             self.mem_per_param_scale = mem_per_param_scale
@@ -586,11 +585,9 @@ class BaseCompressor(object):
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
 
-
         if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
-
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -1436,8 +1433,9 @@ class BaseCompressor(object):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-                    set_auto_device_map_for_block_with_tuning(block, self.devcie_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale)
-
+                    set_auto_device_map_for_block_with_tuning(
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+                    )
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -2450,7 +2448,9 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
 
         if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-            set_auto_device_map_for_block_with_tuning(block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale)
+            set_auto_device_map_for_block_with_tuning(
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+            )
 
         if self.device_map is not None:
             for n, m in block.named_modules():
@@ -3085,5 +3085,3 @@ class BaseCompressor(object):
 
 class LLMCompressor(BaseCompressor):
     pass
-
-
