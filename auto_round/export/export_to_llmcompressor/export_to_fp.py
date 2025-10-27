@@ -26,14 +26,13 @@ from tqdm import tqdm
 
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
-from auto_round.export.utils import save_model
+from auto_round.export.utils import filter_quantization_config, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
     get_block_names,
     get_module,
     is_mx_fp,

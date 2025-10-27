@@ -50,12 +50,23 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, clean_module_parameter, get_module, get_packing_device, is_fp8_model, logger
+from auto_round.utils import LazyImport, get_module, get_packing_device, is_fp8_model, logger
 
 gguf = LazyImport("gguf")
 
 if TYPE_CHECKING:
     from torch import Tensor
+
+
+def clean_module_parameter(submodule, parameter):
+    if submodule is None:
+        return
+    is_buffer = parameter in submodule._buffers
+    with torch.no_grad():
+        if is_buffer:
+            submodule._buffers[parameter] = None
+        else:
+            submodule._parameters[parameter] = None
 
 
 def download_convert_file(redownload=False):

@@ -25,17 +25,87 @@ import transformers
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
-def clean_module_parameter(submodule, parameter):
-    if submodule is None:
-        return
-    is_buffer = parameter in submodule._buffers
-    with torch.no_grad():
-        if is_buffer:
-            submodule._buffers[parameter] = None
+def convert_dtype_str2torch(str_dtype):
+    """Converts a string dtype to its corresponding PyTorch dtype.
+
+    Args:
+        str_dtype (str): The string representation of the dtype.
+
+    Returns:
+        torch.dtype: The PyTorch dtype.
+
+    Raises:
+        ValueError: If the input str_dtype is unsupported.
+    """
+    if isinstance(str_dtype, torch.dtype) or str_dtype is None:
+        return str_dtype
+    if str_dtype == "int8":
+        return torch.int8
+    elif str_dtype == "fp32" or str_dtype == "float32" or str_dtype == "auto":
+        return torch.float
+    elif str_dtype == "fp16" or str_dtype == "float16":
+        return torch.float16
+    elif str_dtype == "bf16" or str_dtype == "bfloat16":
+        return torch.bfloat16
+    else:
+        raise ValueError(f"Unsupported string dtype '{str_dtype}' for conversion to torch dtype.")
+
+
+def convert_dtype_torch2str(dtype):
+    """Converts a PyTorch dtype to its corresponding string representation.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+        str: The string representation of the dtype.
+
+    Raises:
+        ValueError: If the input dtype is unsupported.
+    """
+    if isinstance(dtype, str) or dtype is None:
+        return dtype
+    if dtype == torch.int8:
+        return "int8"
+    elif dtype == torch.float:
+        return "fp32"
+    elif dtype == torch.float16:
+        return "fp16"
+    elif dtype == torch.bfloat16:
+        return "bf16"
+    elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
+        return dtype
+    else:
+        raise ValueError(f"Unsupported PyTorch dtype '{dtype}' for conversion to string dtype.")
+
+
+def convert_dtype_torch2str_hf(dtype):
+    """Converts a PyTorch dtype to its corresponding huggingface string dtype, e.g. torch.float32 -> 'float32'.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+         str: The string representation of the dtype.
+
+    Raises:
+        ValueError: If the input str_dtype is unsupported.
+    """
+    if dtype is None:
+        return dtype
+    if isinstance(dtype, str):
+        if "float" not in dtype and "int" not in dtype:
+            dtype = convert_dtype_str2torch(dtype)
         else:
-            submodule._parameters[parameter] = None
+            return dtype
+    str_dtype = str(dtype)
+    if "." not in str_dtype:
+        raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
+    str_dtype = str_dtype.split(".")[1]
+    return str_dtype
 
 
 def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
@@ -120,7 +190,7 @@ def llm_load_model(
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
-    from auto_round.utils.device_utils import (
+    from auto_round.utils.device import (
         _use_hpu_compile_mode,
         get_device_and_parallelism,
         set_fake_cuda_device_capability,
@@ -228,7 +298,7 @@ def mllm_load_model(
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
-    from auto_round.utils.device_utils import get_device_and_parallelism, set_fake_cuda_device_capability
+    from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -352,8 +422,8 @@ def diffusion_load_model(
     model_dtype: str = None,
     **kwargs,
 ):
-    from auto_round.utils.device_utils import get_device_and_parallelism
-    from auto_round.utils.misc_utils import LazyImport
+    from auto_round.utils.common import LazyImport
+    from auto_round.utils.device import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -432,7 +502,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 
 
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
-    from auto_round.utils.misc_utils import LazyImport
+    from auto_round.utils.common import LazyImport
 
     if isinstance(model_or_path, str):
         index_file = None
@@ -694,7 +764,7 @@ def set_nested_attr(module, attr_name: str, value):
     setattr(module, attrs[-1], value)
 
 
-def pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, int, int]:
+def _pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, int, int]:
     """Pads a matrix to make its dimensions multiples of block_size."""
     M, N = weight.shape[-2:]
     block_size_m, block_size_n = block_size
@@ -707,7 +777,7 @@ def pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, in
     return padded_weight, M, N  # Return original dimensions for unpadding
 
 
-def unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
+def _unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
     """Removes padding from the matrix to restore its original shape."""
     if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
         return weight
@@ -725,7 +795,7 @@ def pad_block_fp8_weight_naive(
     block_size_m, block_size_n = block_size
     weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
 
-    weight, orig_M, orig_N = pad_weight(weight, block_size)
+    weight, orig_M, orig_N = _pad_weight(weight, block_size)
     M, N = weight.shape[-2:]
 
     assert weight_scale_m == M // block_size_m
@@ -764,9 +834,61 @@ def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, b
     else:
         raise ValueError("Only support original weight shape is either 2 or 3")
 
-    dequant_weight = unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
+    dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
 
     return dequant_weight
+
+
+def check_to_quantized(config):
+    """Checks if the configuration is valid for quantization.
+
+    Args:
+        config (dict or object): The configuration to check. It can be either a
+            dictionary with a 'bits' key or an object with a 'bits' attribute.
+
+    Returns:
+        bool: True if the configuration is valid for quantization (bits <= 8),
+            False otherwise.
+    """
+
+    if isinstance(config, (dict, QuantizationScheme)):
+        bits = int(config.get("bits", 16))
+        act_bits = int(config.get("act_bits", 16))
+    elif hasattr(config, "orig_layer"):
+        bits = int(config.orig_layer.bits) if hasattr(config.orig_layer, "bits") else 16
+        act_bits = int(config.orig_layer.act_bits) if hasattr(config.orig_layer, "act_bits") else 16
+    else:
+        bits = int(config.bits) if hasattr(config, "bits") else 16
+        act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
+
+    return bits <= 8 or act_bits <= 8
+
+
+def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
+    """
+    Check whether the input sequence length is within the limits defined
+    by the tokenizer and the model configuration.
+
+    Args:
+        input_seqlen (int): The length of the input sequence.
+        tokenizer: Optional, a HuggingFace tokenizer object.
+        model: Optional, a HuggingFace model object.
+
+    Returns:
+        ValueError: if the input length is not valid, riase Error.
+    """
+    if model is not None and hasattr(model, "config"):
+        model_config = model.config
+        if hasattr(model_config, "max_position_embeddings") and input_seqlen > model_config.max_position_embeddings:
+            raise ValueError(
+                f"seqlen({input_seqlen}) exceeds model.config.max_position_embeddings("
+                f"{model_config.max_position_embeddings}). Please lowering '--seqlen'"
+            )
+    if tokenizer is not None and hasattr(tokenizer, "model_max_length") and input_seqlen > tokenizer.model_max_length:
+        raise ValueError(
+            f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). "
+            "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length."
+        )
 
 
 def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
@@ -806,24 +928,6 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
             if cnt % 10 == 0:  # Tricky setting
                 clear_memory()
     return model
-
-
-def get_shared_keys(model):
-    """
-    Retrieves shared keys from the model's state dictionary.
-
-    Args:
-        model (torch.nn.Module): The model to retrieve shared keys from.
-
-    Returns:
-        tuple: tuple of shared keys.
-    """
-    from auto_round.special_model_handler import SPECIAL_SHARED_CACHE_KEYS
-    from auto_round.utils.constants import SHARED_CACHE_KEYS
-
-    shared_keys = SHARED_CACHE_KEYS
-    shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
-    return shared_keys
 
 
 def _to_model_dtype(model, model_dtype):
@@ -872,13 +976,30 @@ def set_module(model, key, new_module):
     setattr(module, name_list[-1], new_module)
 
 
-def _get_digital_in_layer_name(layer_name):
-    pattern = re.compile(r"([a-zA-Z]+\.){1,}(\d+)")
-    res = re.search(pattern, layer_name)
-    if res:
-        return int(res[2])
-    else:
-        return None
+def get_layer_features(layer):
+    """Extracts input and output feature dimensions for supported layers."""
+    from auto_round.utils.constants import LinearAllreduce, LinearLayer, deepspeed_exists
+
+    if type(layer) == torch.nn.Linear:
+        return layer.in_features, layer.out_features
+    elif type(layer) == transformers.pytorch_utils.Conv1D:  # TODO: Verify correctness
+        return layer.weight.shape[0], layer.weight.shape[1]
+    elif isinstance(layer, torch.nn.Embedding):
+        return layer.num_embeddings, layer.embedding_dim
+    elif deepspeed_exists and type(layer) in (LinearLayer, LinearAllreduce):
+        return layer.weight.shape[1], layer.weight.shape[0]  # (input_dim, output_dim)
+    elif "FP8Linear" in layer.__class__.__name__:
+        return layer.in_features, layer.out_features
+    return None, None  # Unsupported layer type
+
+
+def get_common_prefix(paths):
+    # Split each path into components and find the common prefix
+    split_paths = [path.split(".") for path in paths]
+    common_prefix = split_paths[0]
+    for path in split_paths[1:]:
+        common_prefix = [comp for comp, other in zip(common_prefix, path) if comp == other]
+    return ".".join(common_prefix)
 
 
 def unsupported_meta_device(model):
@@ -1102,3 +1223,48 @@ def copy_python_files_from_model_cache(model, save_path: str):
             if file.endswith(".py") and os.path.isfile(full_file_name):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
+
+
+def extract_block_names_to_str(quant_block_list):
+    if not isinstance(quant_block_list, (list, tuple)):
+        return None
+    # Extract common prefix for each list
+    prefixes = [get_common_prefix(blocks) for blocks in quant_block_list]
+    # Join prefixes into a single string
+    return ",".join(prefixes)
+
+
+def find_matching_blocks(model, all_blocks, to_quant_block_names):
+    """
+    Find and return matching blocks in the model based on to_quant_block_names.
+
+    Args:
+        model: The model (not used in this specific function but kept for completeness).
+        all_blocks: List of lists, where each inner list contains full block names in the model.
+        to_quant_block_names: Comma-separated string of target block names to match.
+
+    Returns:
+        target_blocks: List of lists containing full paths of matching blocks in the model.
+    """
+    if not to_quant_block_names:
+        return all_blocks
+    to_quant_block_list = to_quant_block_names
+    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names, tuple):
+        return to_quant_block_names
+    if isinstance(to_quant_block_names, str):
+        to_quant_block_list = [name.strip() for name in to_quant_block_names.split(",")]
+    target_blocks = []
+    for block_list in all_blocks:
+        matched_sublist = []
+        for name in to_quant_block_list:
+            matches = [block for block in block_list if re.search(name, block)]
+            if matches:
+                matched_sublist.extend(matches)
+        if matched_sublist:
+            target_blocks.append(matched_sublist)
+    if not target_blocks:
+        raise ValueError(
+            "No block names matched. Please check the input for to_quant_block_name,"
+            "or set to_quant_block_name to None to automatically match quantizable blocks."
+        )
+    return target_blocks

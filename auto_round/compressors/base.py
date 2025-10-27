@@ -31,6 +31,21 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round.compressors.utils import (
+    block_forward,
+    check_need_act_calibration,
+    check_skippable_keywords,
+    collect_best_params,
+    get_fp_layer_names,
+    get_layer_config_by_gguf_format,
+    get_shared_keys,
+    gguf_args_check,
+    infer_bits_by_data_type,
+    init_cache,
+    is_standard_fp,
+    reset_params,
+    set_layer_config,
+)
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
@@ -47,15 +62,11 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    block_forward,
     check_and_mark_fp8_model,
     check_is_cpu,
-    check_need_act_calibration,
     check_seqlen_compatible,
-    check_skippable_keywords,
     check_to_quantized,
     clear_memory,
-    collect_best_params,
     compile_func,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
@@ -67,32 +78,23 @@ from auto_round.utils import (
     flatten_list,
     get_block_names,
     get_device_memory,
-    get_fp_layer_names,
-    get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
     get_lm_head_name,
     get_max_vram,
     get_module,
-    get_shared_keys,
-    gguf_args_check,
     htcore,
-    infer_bits_by_data_type,
-    init_cache,
     is_debug_mode,
     is_fp8_linear,
     is_fp8_model,
     is_hpex_available,
     is_mx_fp,
     is_nv_fp,
-    is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
     llm_load_model,
     mv_module_from_gpu,
-    reset_params,
     set_amax_for_all_moe_layers,
-    set_layer_config,
     set_module,
     to_device,
     to_dtype,
@@ -956,7 +958,7 @@ class BaseCompressor(object):
                         "Please change format to fake or auto_round etc."
                     )
             elif "auto_awq" in format:
-                from auto_round.utils import check_awq_gemm_compatibility
+                from auto_round.compressors.utils import check_awq_gemm_compatibility
 
                 awq_supported, info = check_awq_gemm_compatibility(
                     self.model, self.bits, self.group_size, self.sym, self.layer_config

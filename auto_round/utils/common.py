@@ -224,3 +224,11 @@ def json_serialize(obj: Any):
     if isinstance(obj, torch.dtype):
         return str(obj).split(".")[-1]  # e.g., torch.float16 -> "float16"
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def get_reciprocal(tensor):
+    if torch.dtype is torch.float16:
+        tensor = torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
+    else:
+        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
+    return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))

@@ -32,7 +32,6 @@ from auto_round.utils import (
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
     get_module,
     get_packing_device,
     logger,

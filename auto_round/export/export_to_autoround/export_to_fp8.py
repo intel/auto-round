@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import save_model
+from auto_round.export.utils import filter_quantization_config, save_model
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -33,7 +33,6 @@ from auto_round.utils import (
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
     get_module,
     get_packing_device,
     set_module,

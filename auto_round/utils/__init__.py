@@ -13,9 +13,6 @@
 # limitations under the License.
 
 from auto_round.utils.constants import *
-from auto_round.utils.device_utils import *
-from auto_round.utils.dtype_utils import *
-from auto_round.utils.memory_utils import *
-from auto_round.utils.misc_utils import *
-from auto_round.utils.model_utils import *
-from auto_round.utils.quantization_utils import *
+from auto_round.utils.device import *
+from auto_round.utils.common import *
+from auto_round.utils.model import *
