@@ -6,8 +6,7 @@ to stabilize accuracy during evaluation. All other settings follow the default c
 We ignore the scale and zp bits in the tables below. The accuracy may change a little as we modified a little of the
 implementation. We will rerun all the experiments.
 
-For mxfp experiment, we use fake model while for weight only model we use real model. **No tuning is applied unless explicit stated.
-**
+For mxfp experiment, we use fake model while for weight only model we use real model. **No tuning is applied unless explicit stated.**
 
 *Average accuracy across `lambada_openai`, `hellaswag`, `piqa`, `winogrande`, and `mmlu`.*
 
