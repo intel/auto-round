@@ -16,8 +16,8 @@ from typing import Union
 
 import torch
 
-from auto_round.schemes import QuantizationScheme
 from auto_round.compressors.base import BaseCompressor
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 
