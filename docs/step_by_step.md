@@ -543,15 +543,6 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
 
-    - (only available for .bin file currently) set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from
-      disk of each block when tuning and
-      release the memory of the block after tuning. (more tuning cost)
-
-    - (only available for .bin file currently) set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of
-      each layer from disk when tuning, minimum
-      memory consumption and also the slowest running speed.
-
-
 - **Speedup the tuning:**
     - set `enable_torch_compile` to True
 

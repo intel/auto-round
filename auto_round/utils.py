@@ -277,27 +277,23 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
-def mv_module_from_gpu(module, low_cpu_mem_usage=False):
-    """Moves module from gpu to cpu or meta if low_cpu_mem_usage is true.
+def mv_module_from_gpu(module):
+    """Moves module from gpu to cpu.
 
     Args:
     module: The module to be moved.
-    low_cpu_mem_usage: Whether to use low CPU memory. If true, move module to meta.
 
     Returns:
     The module on the specified device.
     """
     if hasattr(module, "device"):
-        target_device = "meta" if low_cpu_mem_usage else "cpu"
+        target_device = "cpu"
         if module.device.type == target_device:
             return module
         else:
             return module.to(target_device)
     else:
-        if low_cpu_mem_usage:
-            return module.to("meta")
-        else:
-            return module.to("cpu")
+        return module.to("cpu")
 
 
 def to_dtype(input, dtype=torch.float32):
@@ -1420,8 +1416,6 @@ def llm_load_model(
     trust_remote_code=True,
     model_dtype=None,
     device="cpu",
-    low_cpu_mem_mode=0,
-    low_cpu_mem_tmp_dir=None,
     **kwargs,
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
@@ -1432,7 +1426,6 @@ def llm_load_model(
         torch_dtype = torch.bfloat16
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
-    low_cpu_mem_usage = False
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
@@ -1440,79 +1433,50 @@ def llm_load_model(
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
-    if low_cpu_mem_tmp_dir is None:
-        low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
-    if low_cpu_mem_mode == 2:
-        from auto_round.low_cpu_mem.utils import load_model_with_hooks
-
-        model = load_model_with_hooks(
+    if _use_hpu_compile_mode():
+        model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
-            model_cls,
-            device=device,
-            clean_weight=True,
-            saved_path=low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
+            attn_implementation="eager",
             trust_remote_code=trust_remote_code,
-        )
-    elif low_cpu_mem_mode == 1:
-        from auto_round.low_cpu_mem.utils import load_empty_model
-
-        low_cpu_mem_usage = True
-        model = load_empty_model(
-            pretrained_model_name_or_path,
-            model_cls,
-            device=device,
-            saved_path=low_cpu_mem_tmp_dir,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
+            device_map="auto" if use_auto_mapping else None,
         )
     else:
-        if _use_hpu_compile_mode():
+        try:
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path,
                 torch_dtype=torch_dtype,
-                attn_implementation="eager",
                 trust_remote_code=trust_remote_code,
                 device_map="auto" if use_auto_mapping else None,
             )
-        else:
-            try:
+        except ValueError as e:
+            if "FP8 quantized" in str(e):
+                orig_func = set_fake_cuda_device_capability()
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
                     trust_remote_code=trust_remote_code,
                     device_map="auto" if use_auto_mapping else None,
                 )
-            except ValueError as e:
-                if "FP8 quantized" in str(e):
-                    orig_func = set_fake_cuda_device_capability()
-                    model = model_cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
-                    torch.cuda.get_device_capability = orig_func
-                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
-                else:
-                    raise
+                torch.cuda.get_device_capability = orig_func
+                logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+            else:
+                raise
 
-            except OSError as e:
-                logger.warning(
-                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry."
-                )
-                model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=False,
-                    device_map="auto" if use_auto_mapping else None,
-                )
+        except OSError as e:
+            logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=False,
+                device_map="auto" if use_auto_mapping else None,
+            )
 
     model = model.eval()
     check_and_mark_fp8_model(model)
     model = _to_model_dtype(model, model_dtype)
 
-    return model, tokenizer, low_cpu_mem_usage
+    return model, tokenizer
 
 
 def mllm_load_model(
