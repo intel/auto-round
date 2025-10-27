@@ -169,64 +169,85 @@ def set_auto_device_map_for_block_with_tuning(
     set_non_auto_device_map(block, device_map, names)
 
 
-def set_device_map_for_auto_scheme(model, device_map):
-    if not device_map:
-        return
-    if device_map=="auto" or (isinstance(device_map, str) and "," in device_map):  # auto device map
-        set_avg_auto_device_map(model)
-    else:
-        set_non_auto_device_map(model,device_map)
-
-
-
+# def set_device_map_for_auto_scheme(model, device_map):
+#     if not device_map:
+#         return
+#     if device_map=="auto" or (isinstance(device_map, str) and "," in device_map):  # auto device map
+#         set_avg_auto_device_map(model)
+#     else:
+#         set_non_auto_device_map(model,device_map)
 
 
 def partition_dict_numbers(number_dict, n):
     """
     Partition a dictionary of numbers into N groups with approximately equal sums
-
-    Args:
-        number_dict: dict with string keys and number values
-        n: number of groups to partition into
-
-    Returns:
-        list of dictionaries, each representing a group
     """
+    # Edge cases
+    if n > len(number_dict):
+        groups = []
+        for key, value in number_dict.items():
+            groups.append({key: value})
+        for _ in range(n - len(number_dict)):
+            groups.append({})
+        return groups
+
+    if n == len(number_dict):
+        return [{key: value} for key, value in number_dict.items()]
+
     total_sum = sum(number_dict.values())
-    target = total_sum // n
+    # target = total_sum / n  # Use float for better precision
 
-    def find_subset(items, target):
-        # Find a subset with sum closest to but not exceeding target
-        keys, values = zip(*items) if items else ([], [])
-        for r in range(len(items), 0, -1):
-            for combo in combinations(range(len(items)), r):
-                subset_sum = sum(values[i] for i in combo)
-                if subset_sum <= target:
-                    return {keys[i]: values[i] for i in combo}
-        return {}
-
-    # Convert dict to list of (key, value) tuples for processing
     items = list(number_dict.items())
     result = []
-    remaining_items = items.copy()
+    remaining = items.copy()
 
+    def find_optimal_subset(arr, target):
+        """Find subset with sum closest to target"""
+        best_subset = []
+        best_diff = float('inf')
+
+        # Try all possible subset sizes
+        for r in range(1, len(arr) + 1):
+            for combo in combinations(arr, r):
+                current_sum = sum(value for _, value in combo)
+                current_diff = abs(current_sum - target)
+
+                # If we found a perfect match, return immediately
+                if current_diff == 0:
+                    return list(combo)
+
+                # Update the best subset if this is better
+                if current_diff < best_diff and current_sum <= total_sum:
+                    best_diff = current_diff
+                    best_subset = list(combo)
+
+        return best_subset
+
+    # Distribute items into n-1 groups
     for i in range(n - 1):
-        subset_dict = find_subset(remaining_items, target)
-        result.append(subset_dict)
-        # Remove allocated items from remaining list
-        for key in subset_dict.keys():
-            remaining_items = [(k, v) for k, v in remaining_items if k != key]
+        if not remaining:
+            break
 
-    # Last group contains all remaining items
-    result.append(dict(remaining_items))
+        # Calculate dynamic target based on remaining items
+        remaining_target = sum(value for _, value in remaining) / (n - i)
+        subset = find_optimal_subset(remaining, remaining_target)
+
+        result.append(dict(subset))
+
+        # Remove allocated items
+        for item in subset:
+            remaining.remove(item)
+
+    # Last group gets all remaining items
+    result.append(dict(remaining))
+
     return result
-
 
 
 
 def set_avg_auto_device_map(model, device_map):
     block_name_list = get_block_names(model)
-    params_dict = {}
+    device_list = None
     if isinstance(device_map, str) and "," in device_map:
         device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
         num_devices = len(device_list)
@@ -239,13 +260,29 @@ def set_avg_auto_device_map(model, device_map):
         else:
             return
 
+    if device_list:
+        cuda_devices = [f"cuda:{i}" for i in device_list]
+    else:
+        cuda_devices = [f"cuda:{i}" for i in range(num_devices)]
+
     for block_names in block_name_list:
         for block_name in block_names:
+            params_dict = {}
             block_module = get_module(model,block_name)
             for n,m in block_module.named_modules():
                 in_features,out_features = get_layer_features(m)
                 params_dict[n] = in_features*out_features
-            res = partition_dict_numbers(params_dict, num_devices)
+
+            res_list = partition_dict_numbers(params_dict, num_devices)
+            device_index = 0
+            for res in res_list:
+                for key in res.keys():
+                    tmp_m = get_module(model,key)
+                    set_tuning_device_for_layer(block_module,tmp_m, cuda_devices[device_index])
+
+
+
+
 
 
 
@@ -260,8 +297,25 @@ if __name__ == "__main__":
         "item6": 60
     }
 
+    groups = partition_dict_numbers(number_dict, 10)
+    for i, group in enumerate(groups):
+        print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
+
+    groups = partition_dict_numbers(number_dict, 6)
+    for i, group in enumerate(groups):
+        print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
+
+    groups = partition_dict_numbers(number_dict, 4)
+    for i, group in enumerate(groups):
+        print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
+
     groups = partition_dict_numbers(number_dict, 3)
     for i, group in enumerate(groups):
         print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
+
+    groups = partition_dict_numbers(number_dict, 2)
+    for i, group in enumerate(groups):
+        print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
+
 
 

@@ -298,8 +298,7 @@ class BaseCompressor(object):
 
         # Set device, must place after model loading
         self.device = get_major_device(device_map)
-
-        set_non_auto_device_map(self.device_map)
+        set_non_auto_device_map(self.model, self.device_map)
 
         # Tuning hyperparameters
         self.seed = seed
