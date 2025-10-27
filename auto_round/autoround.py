@@ -118,7 +118,7 @@ class AutoRound:
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                  nblocks, low_cpu_mem_usage, to_quant_block_names,
+                  nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
                   disable_deterministic_algorithms, vlm, static_kv_dtype
         Raises:
@@ -271,7 +271,7 @@ class AutoRoundLLM(LLMCompressor):
         **kwargs: Backward compatible options:
             - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                 super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                nblocks, low_cpu_mem_usage, to_quant_block_names,
+                nblocks, to_quant_block_names,
                 enable_norm_bias_tuning, enable_quanted_input,
                 disable_deterministic_algorithms, mllm, static_kv_dtype
     Raises:
@@ -366,7 +366,6 @@ class AutoRoundAdam(AdamCompressor):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -473,7 +472,6 @@ class AutoRoundMLLM(MLLMCompressor):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).

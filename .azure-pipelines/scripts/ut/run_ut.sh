@@ -27,12 +27,20 @@ mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
 # Split test files into 5 parts
-find . -name "test*.py" ! -name "*hpu_only*.py" | sort > all_tests.txt
+find . -name "test*.py" | sort > all_tests.txt
 total_lines=$(wc -l < all_tests.txt)
 NUM_CHUNKS=5
-chunk_size=$(( (total_lines + NUM_CHUNKS - 1) / NUM_CHUNKS ))
-start_line=$(( (test_part - 1) * chunk_size + 1 ))
-selected_files=$(tail -n +$start_line all_tests.txt | head -n $chunk_size)
+q=$(( total_lines / NUM_CHUNKS ))
+r=$(( total_lines % NUM_CHUNKS ))
+if [ "$test_part" -le "$r" ]; then
+    chunk_size=$(( q + 1 ))
+    start_line=$(( (test_part - 1) * chunk_size + 1 ))
+else
+    chunk_size=$q
+    start_line=$(( r * (q + 1) + (test_part - r - 1) * q + 1 ))
+fi
+end_line=$(( start_line + chunk_size - 1 ))
+selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
 printf '%s\n' "${selected_files}" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
 cat run.sh
 bash run.sh 2>&1 | tee "${ut_log_name}"
