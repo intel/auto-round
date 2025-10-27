@@ -1,4 +1,4 @@
-# AutoRound for Diffusion models
+# AutoRound for Diffusion Models (Experimental)
 
 This feature is experimental and may be subject to changes, including potential bug fixes, API modifications, or adjustments to default parameters.
 
@@ -9,15 +9,16 @@ This feature is experimental and may be subject to changes, including potential 
 By default, AutoRoundDiffusion only quantizes the transformer module of diffusion models and uses `COCO2014 captions` for calibration.
 
 ```python
-from auto_round import AutoRoundDiffusion
+import torch
+from auto_round import AutoRound
 from diffusers import AutoPipelineForText2Image
 
-## load the model
+# Load the model
 model_name = "black-forest-labs/FLUX.1-dev"
 pipe = AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.bfloat16)
 
-## quantize the model
-autoround = AutoRoundDiffusion(
+# Quantize the model
+autoround = AutoRound(
     pipe,
     scheme="MXFP8",
     dataset="coco2014",
@@ -28,9 +29,9 @@ autoround = AutoRoundDiffusion(
 )
 autoround.quantize()
 
-# save the quantized model
+# Save the quantized model
 output_dir = "./tmp_autoround"
-# currently loading the quantized diffusion model is not supported, so use fake format
+# Currently loading the quantized diffusion model is not supported, so use fake format
 autoround.save_quantized(output_dir, format="fake", inplace=True)
 ```
 
@@ -44,7 +45,7 @@ autoround.save_quantized(output_dir, format="fake", inplace=True)
 
 for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
 
-### Basic Usage
+### CLI Usage
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the
 terminal.

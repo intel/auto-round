@@ -1,7 +1,7 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for auto-round llm quantization. For vlms quantization, please refer to [vlms user guide](../auto_round/mllm/README.md)
+This document presents step-by-step instructions for auto-round llm quantization. You can refer to [vlms user guide](../auto_round/compressors/mllm/README.md) for vlms quantization and [diffusions user guide](../auto_round/compressors/diffusion/README.md) for diffusions quantization.
 
 * [1 Prerequisite](#1-prerequisite)
 * [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
