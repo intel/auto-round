@@ -30,12 +30,12 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
-    _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
     filter_quantization_config,
     get_module,
+    get_packing_device,
     set_module,
 )
 
@@ -89,7 +89,7 @@ def pack_layer(layer_name, model, data_type, device=None):
     Returns:
         None: The function modifies the model in place.
     """
-    packing_device = _get_packing_device(device)
+    packing_device = get_packing_device(device)
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer

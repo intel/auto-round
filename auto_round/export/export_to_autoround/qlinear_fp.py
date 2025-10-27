@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # Copyright (c) 2021 - present / Neuralmagic, Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,7 +37,7 @@ import transformers
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import BackendDataType, _get_packing_device, is_mx_fp, is_nv_fp
+from auto_round.utils import BackendDataType, get_packing_device, is_mx_fp, is_nv_fp
 
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
@@ -139,7 +138,7 @@ class QuantLinear(nn.Module):
         pass
 
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         if getattr(linear, "bias", None) is not None:
             self.bias = linear.bias.detach().to(torch.float16)
 

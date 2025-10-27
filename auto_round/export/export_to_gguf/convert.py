@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, _get_packing_device, clean_module_parameter, get_module, is_fp8_model, logger
+from auto_round.utils import LazyImport, clean_module_parameter, get_module, get_packing_device, is_fp8_model, logger
 
 gguf = LazyImport("gguf")
 
@@ -179,7 +179,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
-    device = _get_packing_device()
+    device = get_packing_device()
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
     zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -204,7 +204,7 @@ def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=
 
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
     suffix = ".weight"
-    device = _get_packing_device()
+    device = get_packing_device()
     if suffix in name:
         layer_name = name[: -len(suffix)]
         module = get_module(cls.model, layer_name)

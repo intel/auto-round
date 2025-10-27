@@ -303,7 +303,7 @@ def set_fake_cuda_device_capability(func=None):
     return orig_func
 
 
-def _get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
+def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
     """
     Selects the packing device.
     - "auto": choose best available (CUDA > XPU > CPU).

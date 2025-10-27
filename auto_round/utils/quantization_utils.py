@@ -630,7 +630,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 new_type = "gguf:q5_k"
         new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
         if input_features % new_block_size != 0:
-            new_type = _gguf_type_fallback(new_type)
+            new_type = gguf_type_fallback(new_type)
             new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
             if input_features % new_block_size != 0:
                 new_type = "gguf:bf16"
@@ -654,7 +654,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             ):
                 fallback = True
             if fallback:
-                tmp_type = _gguf_type_fallback(new_type)
+                tmp_type = gguf_type_fallback(new_type)
                 logger.warning_once(
                     f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}"
                 )
@@ -951,7 +951,7 @@ def _search_gguf_type(gguf_type):
     return None
 
 
-def _gguf_type_fallback(gguf_type: str) -> str:
+def gguf_type_fallback(gguf_type: str) -> str:
     gguf_type = gguf_type.lower()
     if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
         gguf_type = "gguf:q5_0"

@@ -22,7 +22,7 @@ from auto_round.auto_scheme import AUTO_SCHEME_METHODS
 from auto_round.auto_scheme.utils import compute_avg_bits_for_scheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-from auto_round.utils import _gguf_type_fallback, get_layer_features, get_module
+from auto_round.utils import get_layer_features, get_module, gguf_type_fallback
 
 
 class GenScheme:
@@ -128,7 +128,7 @@ class GenScheme:
                     new_type = f"gguf:q{bits}_" + f"{1 - prefix_idx}"
                     if new_type not in GGUF_INNER_CONFIG:
                         current_type = f"gguf:q{bits}_k"
-                        new_type = _gguf_type_fallback(current_type)
+                        new_type = gguf_type_fallback(current_type)
 
             # Apply fallback configuration
             target_config = GGUF_INNER_CONFIG[new_type]
