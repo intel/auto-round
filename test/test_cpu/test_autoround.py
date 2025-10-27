@@ -13,7 +13,7 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.low_cpu_mem import get_module
+from auto_round.utils import get_module
 
 
 class LLMDataLoader:
@@ -754,6 +754,44 @@ class TestAutoRound(unittest.TestCase):
 
         ar = AutoRoundMLLM(model_name)
         self.assertTrue(ar.mllm)
+
+    def test_attention_mask_in_dataset(self):
+        from transformers import AutoTokenizer
+
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        # model_name = "/models/Qwen3-0.6B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        text = ["haha", "hello world"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        data = [res.data]
+
+        text = ["qudd", "hfd"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        data.append(res.data)
+        from auto_round import AutoRound
+
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
+        ar.quantize()
+
+    def test_attention_mask_via_tokenize_in_dataset(self):
+        from transformers import AutoTokenizer
+
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        # model_name = "/models/Qwen3-0.6B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        text = ["haha", "hello world"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data = [res.data]
+
+        text = ["qudd", "hfd"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data.append(res.data)
+        from auto_round import AutoRound
+
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
+        ar.quantize()
 
 
 if __name__ == "__main__":

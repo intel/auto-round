@@ -1,7 +1,7 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for auto-round llm quantization. For vlms quantization, please refer to [vlms user guide](../auto_round/mllm/README.md)
+This document presents step-by-step instructions for auto-round llm quantization. You can refer to [vlms user guide](../auto_round/compressors/mllm/README.md) for vlms quantization and [diffusions user guide](../auto_round/compressors/diffusion/README.md) for diffusions quantization.
 
 * [1 Prerequisite](#1-prerequisite)
 * [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
@@ -542,15 +542,6 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
-
-    - (only available for .bin file currently) set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from
-      disk of each block when tuning and
-      release the memory of the block after tuning. (more tuning cost)
-
-    - (only available for .bin file currently) set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of
-      each layer from disk when tuning, minimum
-      memory consumption and also the slowest running speed.
-
 
 - **Speedup the tuning:**
     - set `enable_torch_compile` to True

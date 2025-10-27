@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import sys
 from functools import lru_cache
 from io import open
@@ -15,12 +16,33 @@ try:
 except Exception as error:
     assert False, "Error: Could not open '%s' due %s\n" % (filepath, error)
 
-version = __version__
-
 # All BUILD_* flags are initially set to `False`` and
 # will be updated to `True` if the corresponding environment check passes.
 PYPI_RELEASE = os.environ.get("PYPI_RELEASE", None)
 BUILD_HPU_ONLY = os.environ.get("BUILD_HPU_ONLY", "0") == "1"
+
+
+def is_commit_on_tag():
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--exact-match", "--tags"], capture_output=True, text=True, check=True
+        )
+        tag_name = result.stdout.strip()
+        return tag_name
+    except subprocess.CalledProcessError:
+        return False
+
+
+def get_build_version():
+    if is_commit_on_tag():
+        return __version__
+    try:
+        result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
+        distance = result.stdout.strip().split("-")[-2]
+        commit = result.stdout.strip().split("-")[-1]
+        return f"{__version__}.dev{distance}+{commit}"
+    except subprocess.CalledProcessError:
+        return __version__
 
 
 @lru_cache(None)
@@ -143,7 +165,7 @@ if __name__ == "__main__":
     setup(
         name=package_name,
         author="Intel AIPT Team",
-        version=version,
+        version=get_build_version(),
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com, heng.guo@intel.com",
         description="Repository of AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs",
         long_description=open("README.md", "r", encoding="utf-8").read(),
