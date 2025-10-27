@@ -252,7 +252,7 @@ def set_layer_config(
     """
 
     from auto_round.schemes import get_gguf_scheme
-    from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name, get_module
+    from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name, get_module, is_separate_lm_head
 
     # ---- helpers -------------------------------------------------
     def dispatch_layer_config(layer_config: dict[str, dict]) -> None:
@@ -368,7 +368,7 @@ def set_layer_config(
     if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
         tie_word_embeddings = model.config.tie_word_embeddings
 
-    if quant_lm_head and tie_word_embeddings:
+    if quant_lm_head and tie_word_embeddings and not gguf_name:
         quant_lm_head = False
         logger.warning(
             "reset `quant_lm_head` to false as quantizing " "lm_head with tied weights has not been supported currently"
@@ -420,6 +420,7 @@ def set_layer_config(
         return layer_config, has_qlayer_outside_block, regex_config
 
     # embed + lm_head defaults for gguf
+    tie_word_embeddings &= not is_separate_lm_head(model)
     if lm_head_name not in layer_config and not tie_word_embeddings:
         cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
         cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
@@ -627,10 +628,22 @@ def _get_digital_in_layer_name(layer_name):
         return None
 
 
+def _gguf_type_fallback(gguf_type: str) -> str:
+    gguf_type = gguf_type.lower()
+    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q5_k":
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q6_k":
+        gguf_type = "gguf:q8_0"
+    return gguf_type
+
+
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
 def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model, model_type=ModelType.TEXT):
     # # TODO: support for other format later
     # target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
+
     import gguf  # pylint: disable=E0401
 
     from auto_round.utils.common import LazyImport
@@ -733,9 +746,9 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                         config_tmp.pop(key, None)
                 matched_scheme = get_gguf_scheme(QuantizationScheme.from_dict(config_tmp))  # check matched
                 if not matched_scheme:
-                    if config.get("super_group_size", None) is not None:
+                    if config.get("super_group_size", None) is not None or config.get("super_bits", None) is not None:
                         new_type = new_type[:bits_index] + str(config["bits"]) + "_k"
-                    if config.get("super_group_size", None) is None or new_type not in GGUF_INNER_CONFIG:
+                    if new_type not in GGUF_INNER_CONFIG:
                         prefix_idx = 0 if config.get("sym", True) else 1
                         new_type = new_type[:bits_index] + str(config["bits"]) + f"_{prefix_idx}"
                         if new_type not in GGUF_INNER_CONFIG:
@@ -767,7 +780,8 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
-            pass
+            # new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
+            continue
         elif isinstance(layer, torch.nn.Embedding):
             if "embedding" in GGUF_CONFIG[target_gguf_format]:
                 new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
@@ -883,7 +897,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 new_type = "gguf:q5_k"
         new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
         if input_features % new_block_size != 0:
-            new_type = gguf_type_fallback(new_type)
+            new_type = _gguf_type_fallback(new_type)
             new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
             if input_features % new_block_size != 0:
                 new_type = "gguf:bf16"
@@ -907,7 +921,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             ):
                 fallback = True
             if fallback:
-                tmp_type = gguf_type_fallback(new_type)
+                tmp_type = _gguf_type_fallback(new_type)
                 logger.warning_once(
                     f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}"
                 )
