@@ -89,7 +89,7 @@ from auto_round.utils import (
     to_dtype,
     unsupported_meta_device,
 )
-from auto_round.utils_bk.device import get_major_device, set_non_auto_device_map, set_auto_device_map_for_block
+from auto_round.utils_bk.device import get_major_device, set_non_auto_device_map, set_auto_device_map_for_block_with_tuning
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
@@ -1436,7 +1436,7 @@ class BaseCompressor(object):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-                    set_auto_device_map_for_block(block,self.devcie_map,input_ids,  self.low_gpu_mem_usage,self.mem_per_param_scale)
+                    set_auto_device_map_for_block_with_tuning(block, self.devcie_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale)
 
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -2450,7 +2450,7 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
 
         if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-            set_auto_device_map_for_block(block, self.device_map,input_ids,self.low_gpu_mem_usage,self.mem_per_param_scale)
+            set_auto_device_map_for_block_with_tuning(block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale)
 
         if self.device_map is not None:
             for n, m in block.named_modules():

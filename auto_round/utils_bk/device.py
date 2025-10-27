@@ -87,8 +87,8 @@ def set_non_auto_device_map(model: torch.nn.Module, device_map, quant_layer_name
 
 
 
-def set_auto_device_map_for_block(block: torch.nn.Module, device_map, input_ids: list[torch.Tensor],
-                                  low_gpu_mem_usage=False,mem_per_param_scale=13.0) -> None:
+def set_auto_device_map_for_block_with_tuning(block: torch.nn.Module, device_map, input_ids: list[torch.Tensor],
+                                              low_gpu_mem_usage=False, mem_per_param_scale=13.0) -> None:
     """Automatically sets the device map for the block based on available GPUs and memory constraints."""
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
@@ -151,3 +151,6 @@ def set_auto_device_map_for_block(block: torch.nn.Module, device_map, input_ids:
                         "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
                     )
     set_non_auto_device_map(block,device_map,names)
+
+
+
