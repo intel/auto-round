@@ -6,7 +6,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.7.1-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.8.0-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -27,13 +27,13 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
 
 
 ## 🆕 What's New
-[2025/10] We proposed a fast algorithm to generate mixed bits/datatypes schemes in minutes. Please
+[2025/10] We proposed a fast algorithm to generate **mixed bits/datatypes** schemes in minutes. Please
 refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and [this guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for usage instructions.
 
-[2025/09] AutoRound now includes experimental support for the mxfp4 and nvfp4 dtypes. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
+[2025/09] AutoRound now includes experimental support for the **mxfp4 and nvfp4 dtypes**. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
 . We currently recommend exporting to the LLM-Compressor format.
 
-[2025/08] AutoRound now provides experimental support for an improved INT2 algorithm via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
+[2025/08] AutoRound now provides experimental support for **an improved INT2 algorithm** via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
  for some accuracy results. 
 
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
@@ -67,7 +67,7 @@ Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. De
 ✅ **Affordable Quantization Cost**
 Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [quantization costs](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
-✅ **Fast mixed bits/data-types scheme generation**
+✅ **Fast Mixed Bits/Dtypes Scheme Generation**
 Automatically configure in minutes, with about 2X-4X the model’s BF16 VRAM size as overhead. Accuracy [results](./docs/auto_scheme_acc.md) and [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme).
 
 ✅ **10+ VLMs Support**
@@ -76,8 +76,8 @@ Out-of-the-box quantization for 10+ vision-language models [example models](http
 ✅ **Layerwise Mixed Bits Quantization**
 Assign different bits per layer for fine-grained accuracy/performance trade-offs. Details are shown in [mixed bits quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
 
-✅ **Round-to-Nearest Mode**
-Use `--iters 0` for fast, calibration-free quantization with some accuracy drop. Details are shown in [rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#rtn-mode)
+✅ **Optimized Round-to-Nearest Mode**
+Use `--iters 0` for fast, calibration-free quantization with some accuracy drop for 4 bits. Details are shown in [opt_rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
 
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
