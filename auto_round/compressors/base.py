@@ -484,8 +484,8 @@ class BaseCompressor(object):
             elif isinstance(scheme, dict):
                 scheme = scheme
             elif isinstance(scheme, str):
-                # We’d better keep the string scheme instead of the dict config, 
-                # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m 
+                # We’d better keep the string scheme instead of the dict config,
+                # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
                 # even though they share the same scheme dict.
                 res = scheme
                 scheme = scheme.upper()
