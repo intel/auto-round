@@ -978,7 +978,7 @@ def set_module(model, key, new_module):
 
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    from auto_round.utils.constants import LinearAllreduce, LinearLayer, deepspeed_exists
+    from auto_round.utils.common import LinearAllreduce, LinearLayer, deepspeed_exists
 
     if type(layer) == torch.nn.Linear:
         return layer.in_features, layer.out_features

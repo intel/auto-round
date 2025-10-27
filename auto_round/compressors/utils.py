@@ -218,7 +218,7 @@ def infer_bits_by_data_type(data_type: str):
     Returns:
         int: bits inferred by data_type, None means cannot infer correct bits by data_type
     """
-    from auto_round.utils.constants import SUPPORTED_DTYPES
+    from auto_round.utils import SUPPORTED_DTYPES
 
     if data_type is None:
         return 16
@@ -939,7 +939,7 @@ def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
         list: A list of layer names that match the specified FP layers or are
         subcomponents of those layers.
     """
-    from auto_round.utils.constants import SUPPORTED_LAYER_TYPES
+    from auto_round.utils import SUPPORTED_LAYER_TYPES
 
     if not fp_layers:
         return []
@@ -976,7 +976,7 @@ def get_shared_keys(model):
         tuple: tuple of shared keys.
     """
     from auto_round.special_model_handler import SPECIAL_SHARED_CACHE_KEYS
-    from auto_round.utils.constants import SHARED_CACHE_KEYS
+    from auto_round.utils import SHARED_CACHE_KEYS
 
     shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())

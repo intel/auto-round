@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.utils.constants import *
 from auto_round.utils.device import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *

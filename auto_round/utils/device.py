@@ -63,7 +63,7 @@ def is_hpu_lazy_mode():
 
 
 def _use_hpu_compile_mode():
-    from auto_round.utils.constants import TORCH_VERSION_AT_LEAST_2_4
+    from auto_round.utils.common import TORCH_VERSION_AT_LEAST_2_4
 
     return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
 
