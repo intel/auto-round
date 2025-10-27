@@ -27,8 +27,15 @@ from vllm.model_executor.layers.fused_moe import (
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.utils import set_weight_attrs
 
+import auto_round_extension.vllm_ext.mxfp4_qdq_utils as mxfp4_utils
+from auto_round_extension.vllm_ext.mxfp4_qdq_utils import (
+    dequant_mxfp4_to_fp8,
+    mxfp4_gemm_with_unpacked_weight,
+    run_mxfp4_emulations,
+)
+from auto_round_extension.vllm_ext.quant_method_moe import AutoRoundMoEMethod
+
 logger = init_logger(__name__)
-from quant_method_moe import AutoRoundMoEMethod
 
 
 def apply_act(local_w1_out: torch.Tensor, local_w3_out: torch.Tensor, activation: str) -> torch.Tensor:
@@ -173,7 +180,6 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
         if envs.VLLM_ENABLE_STATIC_MOE:
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
                 weight_name_lst = ["w13_weight", "w2_weight"]
-                from mxfp4_qdq_utils import dequant_mxfp4_to_fp8
 
                 for weight_name_prefix in weight_name_lst:
                     weight_name = f"{weight_name_prefix}_packed"
@@ -248,7 +254,6 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             layer.w13_bias.data.copy_(w13_bias_swapped)
 
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
-                import mxfp4_qdq_utils as mxfp4_utils
 
                 w1 = layer.w13_weight_packed
                 w1_scale = layer.w13_weight_scale
@@ -436,8 +441,6 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                 local_w3_packed = local_w13_packed[intermediate_size_per_partition:, ...]
                 local_w3_scale = local_w13_scale[intermediate_size_per_partition:, ...]
 
-                from mxfp4_qdq_utils import run_mxfp4_emulations
-
                 local_w1_bias = None
                 local_w2_bias = None
                 local_w3_bias = None
@@ -503,8 +506,6 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                     local_w1_bias = local_w13_bias[:intermediate_size_per_partition]
                     local_w3_bias = local_w13_bias[intermediate_size_per_partition:]
                     local_w2_bias = layer.w2_bias[expert_index]
-
-                from mxfp4_qdq_utils import mxfp4_gemm_with_unpacked_weight
 
                 local_w1_out = mxfp4_gemm_with_unpacked_weight(
                     x=current_state_static,

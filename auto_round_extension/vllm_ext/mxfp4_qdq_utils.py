@@ -15,8 +15,9 @@
 from typing import Union
 
 import torch
-from fp4_utils import cast_to_fp4, pack_fp4_to_uint8, unpack_fp4_from_uint8
-from utils import _to_mx_rceil, get_fp_scale
+
+from auto_round_extension.vllm_ext.fp4_utils import cast_to_fp4, pack_fp4_to_uint8, unpack_fp4_from_uint8
+from auto_round_extension.vllm_ext.utils import _to_mx_rceil, get_fp_scale
 
 F4_E2M1_MAX = 6.0
 F32_EXP_BIAS = 127
