@@ -300,6 +300,7 @@ class AutoScheme:
     device_map: Optional[Union[str, torch.device, int, dict]] = None
     enable_torch_compile: Optional[bool] = None
     disable_opt_rtn: bool = True
+    low_gpu_mem_usage: bool = True
 
     def __post_init__(self):
         if isinstance(self.options, str):

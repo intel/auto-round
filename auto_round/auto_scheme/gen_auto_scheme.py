@@ -81,6 +81,8 @@ class GenScheme:
     def get_layer_config(self) -> dict[str, dict]:
         method_name = self.auto_scheme.method
         method_func = AUTO_SCHEME_METHODS[method_name]
+        if self.auto_scheme.low_gpu_mem_usage:
+            self.enable_torch_compile=False
         layer_config = method_func(
             self.auto_scheme,
             self.model,

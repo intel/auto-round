@@ -20,7 +20,6 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
-from enum import Enum
 from typing import Any, Callable, Union
 
 import accelerate
@@ -34,7 +33,7 @@ from transformers import set_seed
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import AutoScheme, QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
@@ -64,17 +63,10 @@ from auto_round.utils import (
     convert_fp8_model_to_16b_model,
     copy_python_files_from_model_cache,
     detect_device,
-    estimate_tuning_block_mem,
     find_matching_blocks,
     flatten_list,
     get_block_names,
-    get_device_memory,
-    get_fp_layer_names,
-    get_layer_config_by_gguf_format,
-    get_layer_features,
     get_layer_names_in_block,
-    get_lm_head_name,
-    get_max_vram,
     get_module,
     get_shared_keys,
     htcore,
@@ -97,6 +89,7 @@ from auto_round.utils import (
     to_dtype,
     unsupported_meta_device,
 )
+from auto_round.utils_bk.device import get_major_device, set_non_auto_device_map, set_auto_device_map_for_block
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
@@ -232,16 +225,19 @@ class BaseCompressor(object):
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
+        # Scale factor for RAM usage per parameter.
+        mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
-        # Scale factor for RAM usage per parameter.
-        self.mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+
+
         self.fp_layers = kwargs.pop("fp_layers", "")
         self.layer_config = layer_config
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
+
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -292,21 +288,17 @@ class BaseCompressor(object):
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
 
+        self.device_map = device_map
+        if isinstance(self.device_map, str):
+            self.device_map = self.device_map.replace(" ", "")
+
         if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, device_map)
+            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         # Set device, must place after model loading
-        self._set_device(device_map)
+        self.device = get_major_device(device_map)
 
-        if (isinstance(device_map, dict) and device_map) or device_map == "auto":
-            self.device_map = device_map
-        elif isinstance(device_map, str) and "," in device_map:
-            device_map = device_map.replace(" ", "")  # Remove any spaces
-            self.device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-            self.device_map = "auto"
-        else:
-            self.device_map = None
-        self._set_device_map_in_blocks(self.device_map)
+        set_non_auto_device_map(self.device_map)
 
         # Tuning hyperparameters
         self.seed = seed
@@ -338,6 +330,10 @@ class BaseCompressor(object):
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
         self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
+        if mem_per_param_scale is None :
+            self.mem_per_param_scale = 13 if self.iters != 0 else 1
+        else:
+            self.mem_per_param_scale = mem_per_param_scale
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -590,133 +586,11 @@ class BaseCompressor(object):
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
 
-        # if is_debug_mode() and self.enable_torch_compile:
-        #     self.enable_torch_compile = False
-        #     logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
 
         if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
-    def _set_device_map_in_blocks(self, device_map: Union[str, dict, None]) -> None:
-        """Sets the device map for specific blocks in the model.
-
-        Args:
-            device_map (Union[str, dict, None]): A mapping of module names to devices.
-                If provided as a string, it should be in the format
-                "module_name:device,module_name:device". Devices can be integers
-                (GPU IDs) or strings (e.g., 'cpu', 'cuda:0').
-        """
-        if self.device_map is None or len(self.device_map) == 0:
-            self.device_map = None
-        if not device_map:
-            return
-        if self.device_map == "auto" and device_map == "auto":
-            return
-        if isinstance(device_map, str):
-            device_map = device_map.replace(" ", "")
-            infos = device_map.split(",")
-            device_map_dict = {}
-            for info in infos:
-                index = info.find(":")
-                key = info[:index]
-                value = info[index + 1 :]
-                device_map_dict[key] = value
-            device_map = device_map_dict
-
-        names = [n for n, m in self.model.named_modules() if len(list(m.children())) == 0]
-
-        for key, device in device_map.items():
-            if isinstance(device, str) and device.isdigit():
-                device = int(device)
-            device = detect_device(device)
-            try:
-                module = get_module(self.model, key)
-                module.tuning_device = device
-            except:
-                matching_names = [name for name in names if re.match(key, name)]
-                if len(matching_names) > 0:
-                    for name in matching_names:
-                        self._set_device_for_matching_module(name, device)
-                else:
-                    for name in names:
-                        if key in name:
-                            self._set_device_for_matching_module(name, device)
-
-    def _set_device_for_matching_module(self, name: str, device: str) -> None:
-        """Sets the device for a module if it matches the given name."""
-        module = get_module(self.model, name)
-        if hasattr(module, "tuning_device") and module.tuning_device != device:
-            logger.warning(
-                f"multiple devices have been set for layer {name}, keeping original device {module.tuning_device}"
-            )
-        else:
-            module.tuning_device = device
-
-    def _set_auto_device_map_in_block(self, block: torch.nn.Module, input_ids: list[torch.Tensor]) -> None:
-        """Automatically sets the device map for the block based on available GPUs and memory constraints."""
-        if torch.cuda.is_available():
-            num_gpus = torch.cuda.device_count()
-        elif torch.xpu.is_available():
-            logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
-            return
-        else:
-            raise RuntimeError("No CUDA or XPU devices found.")
-        if num_gpus <= 1:
-            self.device_map = None
-            return
-
-        if hasattr(self, "device_list") and self.device_list:
-            cuda_devices = [f"cuda:{i}" for i in self.device_list]
-            device_0 = cuda_devices[0]
-        else:
-            cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
-            device_0 = "cuda:0"
-
-        device_0_memory = get_device_memory(
-            self.device_list[0] if hasattr(self, "device_list") and self.device_list else 0
-        )
-        block_memory, input_output_memory = estimate_tuning_block_mem(block, input_ids)
-        if self.low_gpu_mem_usage:
-            input_output_memory = 0
-
-        mem_per_param_scale = 13 if self.mem_per_param_scale is None else self.mem_per_param_scale
-        if self.iters == 0:
-            mem_per_param_scale = 1  # for rtn
-
-        if (block_memory * mem_per_param_scale + input_output_memory) < device_0_memory:
-            return  # fit in one GPU
-
-        device_map = {}
-        device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
-        device_memory[device_0] = device_0_memory - input_output_memory
-
-        device_idx = 0
-        # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
-        for n, m in block.named_modules():
-            if check_to_quantized(m):
-                layer_name = block.tmp_name + "." + n
-                layer_memory = m.weight.nbytes / 1024**3
-                if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
-                    device_map[layer_name] = cuda_devices[device_idx]
-                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
-                elif device_idx == 0:
-                    device_idx += 1  # Move to the next device once device 0 is full
-                    device_map[layer_name] = cuda_devices[device_idx]
-                    device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
-                else:
-                    # Calculate the target device index based on even distribution
-                    sorted_devices = sorted(cuda_devices, key=lambda d: device_memory[d], reverse=True)
-                    device_idx = sorted_devices[0]
-                    if layer_memory * mem_per_param_scale < device_memory[device_idx]:
-                        device_map[layer_name] = device_idx
-                        device_memory[device_idx] -= layer_memory * mem_per_param_scale
-                    else:
-                        logger.warning_once(
-                            f"Block {block.tmp_name} not fit in available GPU memory. "
-                            "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
-                        )
-        self._set_device_map_in_blocks(device_map)
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -1561,8 +1435,8 @@ class BaseCompressor(object):
                 if _is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
-                if self.device_map == "auto":
-                    self._set_auto_device_map_in_block(block, input_ids)
+                if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+                    set_auto_device_map_for_block(block,self.devcie_map,input_ids,  self.low_gpu_mem_usage,self.mem_per_param_scale)
 
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -2575,8 +2449,8 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto":
-            self._set_auto_device_map_in_block(block, input_ids)
+        if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+            set_auto_device_map_for_block(block, self.device_map,input_ids,self.low_gpu_mem_usage,self.mem_per_param_scale)
 
         if self.device_map is not None:
             for n, m in block.named_modules():
@@ -3213,141 +3087,3 @@ class LLMCompressor(BaseCompressor):
     pass
 
 
-class AdamCompressor(BaseCompressor):
-    """Class for quantization with optimizers like adamw of a PyTorch model.
-
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
-        scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
-        bits (int): Number of bits for quantization (default is 4).
-        group_size (int): Size of the quantization group (default is 128).
-        sym (bool): Whether sym to be used (default is True).
-        layer_config (dict): Configuration for weight quantization (default is None).
-        batch_size (int): Batch size for training (default is 8).
-        amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset: The default dataset name (default is "NeelNanda/pile-10k").
-        enable_quanted_input (bool): Whether to use quantized input data (default is True).
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
-        data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 16.
-        act_group_size (int): Group size for activation quantization. Default is None.
-        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
-        act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
-        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of
-                            block's layer names to be quantized.
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
-        **kwargs: Additional keyword arguments.
-
-    Returns:
-        The quantized model.
-    """
-
-    bits: int | None
-    group_size: int | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-
-    def __init__(
-        self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, int, torch.device, dict] = 0,
-        enable_torch_compile: bool = False,
-        seed: int = 42,
-        optimizer="AdamW",
-        **kwargs,
-    ):
-        super(AdamCompressor, self).__init__(
-            model=model,
-            tokenizer=tokenizer,
-            scheme=scheme,
-            layer_config=layer_config,
-            batch_size=batch_size,
-            dataset=dataset,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            seed=seed,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            enable_torch_compile=enable_torch_compile,
-            device_map=device_map,
-            **kwargs,
-        )
-
-        self.optimizer = self._get_optimizer(optimizer)
-
-    def _get_optimizer(self, optimizer):
-        if optimizer is None:
-            optimizer = torch.optim.AdamW
-        elif isinstance(optimizer, str):
-            optimizer = getattr(torch.optim, optimizer)
-        else:
-            optimizer = optimizer
-        return optimizer
-
-    def _get_scaler(self):
-        scaler = None
-        if self.amp and not check_is_cpu(self.device):
-            from torch.cuda.amp import GradScaler
-
-            scaler = GradScaler(init_scale=1024, growth_interval=100000)
-        return scaler
-
-    def _scale_loss_and_backward(self, scaler, loss):
-        if scaler is not None:
-            loss = scaler.scale(loss)
-
-        loss.backward()
-        if is_hpex_available():
-            htcore.mark_step()
-        return loss
-
-    def _step(self, scaler, optimizer, lr_schedule):
-        if scaler is not None:
-            scaler.step(optimizer)
-            optimizer.zero_grad()
-            lr_schedule.step()
-            scaler.update()
-        else:
-            optimizer.step()
-            optimizer.zero_grad()
-            lr_schedule.step()
-        if is_hpex_available():
-            htcore.mark_step()
