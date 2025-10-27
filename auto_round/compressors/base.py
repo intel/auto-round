@@ -2260,8 +2260,8 @@ class BaseCompressor(object):
         best_loss = torch.finfo(torch.float).max
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        gradient_accumulate_steps = self.batch_size  ##Force to low gpu
-        batch_size = 1  ##Force to low gpu
+        gradient_accumulate_steps = self.batch_size  # Force to low gpu
+        batch_size = 1  # Force to low gpu
         pick_samples = batch_size * gradient_accumulate_steps
         pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
