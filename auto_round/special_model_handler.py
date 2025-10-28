@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import torch
+
 import auto_round.modelling as auto_round_modelling
 from auto_round.utils import LazyImport, logger
 
@@ -76,7 +78,8 @@ def _handle_moe_model(model, formats=None, device="cpu"):
         from auto_round.utils import clear_memory
 
         new_moe_class, convert_config, orig_cls_name = _get_moe_converter(model.config)
-        model = model.to(device)
+        if device != torch.device("meta"):
+            model = model.to(device)
         clear_memory()
 
         for name, module in tqdm(model.named_modules(), desc="Converting model"):

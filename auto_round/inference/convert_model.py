@@ -584,7 +584,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     from auto_round.special_model_handler import _handle_moe_model
 
-    model = _handle_moe_model(model, formats=None, device=next(model.parameters()).device.type)
+    model = _handle_moe_model(model, formats=None, device=torch.device("meta"))
 
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
