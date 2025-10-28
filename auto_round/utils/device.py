@@ -22,8 +22,7 @@ import cpuinfo
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils.model import get_block_names,get_module,get_layer_features,check_to_quantized
-
+from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
