@@ -99,7 +99,7 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), "mistral" in model.config.model_type)
-        hparams.pop("quantization_config")
+        hparams.pop("quantization_config", None)
         model_instance = model_class(
             dir_model=Path(tmp_work_dir),
             ftype=output_type,
