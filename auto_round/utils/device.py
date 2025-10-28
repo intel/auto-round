@@ -203,7 +203,7 @@ def detect_device_count():
             return 0
 
 
-def detect_device(device: Union[str, int, torch.device] = None) -> str:
+def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
     """Detects the appropriate computation device.
 
     This function determines the device to use for computations. It can take
@@ -545,8 +545,8 @@ def get_device_memory(i: int = 0) -> int:
     return total_memory
 
 
-def get_major_device(device_map: Union[str, torch.device, int, dict]) -> str:
-    if isinstance(device_map, (str, torch.device, int)):
+def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> str:
+    if device_map is None or isinstance(device_map, (str, torch.device, int)):
         device = detect_device(device_map)
         return device
 
@@ -558,19 +558,21 @@ def get_major_device(device_map: Union[str, torch.device, int, dict]) -> str:
                 tmp_device = tmp_device.split(":")[0]
                 tmp_devices.append(tmp_device)
         tmp_devices = list(set(tmp_devices))
+        device=None
+        for tmp_device in tmp_devices:
+            if device != "cpu":
+                device = tmp_device
+                break
+        if device is None:
+            device = tmp_devices[0]
         if len(tmp_devices) > 1:
-            logger.warning(
+            logger.warning_once(
                 f"there are multiple device types in the device_map, "
-                f"please make sure they are correct,use the first none-cpu device {tmp_devices[0]} as the core device "
+                f"please make sure they are correct,use the first none-cpu device {device} as the core device "
             )
 
-        for device in tmp_devices:
-            if device != "cpu":
-                return device
-
-        device = tmp_devices[0]
         return device
-    logger.warning(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
+    logger.warning_once(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
     return "cpu"
 
 
@@ -622,7 +624,7 @@ def set_non_auto_device_map(
         else:
             matching_names = [name for name in names if re.match(key, name)]
             for name in matching_names:
-                set_non_auto_device_map(model, name, device)
+                set_tuning_device_for_layer(model, name, device)
             if not matching_names:
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
@@ -768,7 +770,7 @@ def partition_dict_numbers(number_dict, n):
     return result
 
 
-def set_avg_auto_device_map(model, device_map):
+def set_avg_auto_device_map(model:torch.nn.Module, device_map):
     block_name_list = get_block_names(model)
     device_list = None
     if isinstance(device_map, str) and "," in device_map:

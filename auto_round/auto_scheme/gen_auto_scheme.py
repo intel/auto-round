@@ -95,6 +95,7 @@ class GenScheme:
             device_map=self.device_map,
             enable_torch_compile=self.enable_torch_compile,
             disable_opt_rtn=self.disable_opt_rtn,
+            low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config
