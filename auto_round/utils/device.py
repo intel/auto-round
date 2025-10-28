@@ -24,6 +24,7 @@ import torch
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
+
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -82,7 +83,7 @@ def compile_func_on_cuda_or_cpu(func):
 
 
 def compile_func(
-    fun: Union[torch.nn.Module, Callable], device: Union[str, torch.device, int]
+        fun: Union[torch.nn.Module, Callable], device: Union[str, torch.device, int]
 ) -> Union[torch.nn.Module, Callable]:
     """Compile function on the specified device."""
     if "hpu" in str(device):
@@ -480,10 +481,10 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: list[torch.Tens
         if check_to_quantized(module):
             param_size = module.weight.nbytes
             total_param_mem += param_size
-    block_memory = total_param_mem / 1024**3  # Convert to GB
+    block_memory = total_param_mem / 1024 ** 3  # Convert to GB
 
     # Assuming bfloat16 or float32, input and output
-    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024 ** 3
 
     return block_memory, input_output_memory
 
@@ -511,13 +512,13 @@ def get_max_vram(ratio: float = 0.9) -> dict:
         num_devices = torch.cuda.device_count()
         for i in range(num_devices):
             total_mem = torch.cuda.get_device_properties(i).total_memory
-            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_mem_gb = int(total_mem / 1024 ** 3 * ratio)
             max_memory[i] = f"{max_mem_gb}GiB"
     elif torch.xpu.is_available():  # TODO need verification
         num_devices = torch.xpu.device_count()
         for i in range(num_devices):
             total_mem = torch.xpu.get_device_properties(i).total_memory
-            max_mem_gb = int(total_mem / 1024**3 * ratio)
+            max_mem_gb = int(total_mem / 1024 ** 3 * ratio)
             max_memory[i] = f"{max_mem_gb}GiB"
 
     else:
@@ -587,7 +588,7 @@ def set_tuning_device_for_layer(model, name: str, device: str) -> None:
 
 
 def set_non_auto_device_map(
-    model: torch.nn.Module, device_map: Union[str, int, dict], quant_layer_names: Union[None, list, tuple] = None
+        model: torch.nn.Module, device_map: Union[str, int, dict], quant_layer_names: Union[None, list, tuple] = None
 ) -> None:
     if not device_map:
         return
@@ -604,7 +605,7 @@ def set_non_auto_device_map(
         for info in infos:
             index = info.find(":")
             key = info[:index]
-            value = info[index + 1 :]
+            value = info[index + 1:]
             device_map_dict[key] = value
         device_map = device_map_dict
     if quant_layer_names is not None:
@@ -629,7 +630,8 @@ def set_non_auto_device_map(
 
 
 def set_auto_device_map_for_block_with_tuning(
-    block: torch.nn.Module, device_map, input_ids: list[torch.Tensor], low_gpu_mem_usage=False, mem_per_param_scale=13.0
+        block: torch.nn.Module, device_map, input_ids: list[torch.Tensor], low_gpu_mem_usage=False,
+        mem_per_param_scale=13.0
 ):
     """Automatically sets the device map for the block based on available GPUs and memory constraints."""
     if torch.cuda.is_available():
@@ -669,7 +671,7 @@ def set_auto_device_map_for_block_with_tuning(
         if check_to_quantized(m):
             layer_name = m.tmp_name
             names.append(layer_name)
-            layer_memory = m.weight.nbytes / 1024**3
+            layer_memory = m.weight.nbytes / 1024 ** 3
             if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
                 device_map[layer_name] = cuda_devices[device_idx]
                 device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
@@ -795,14 +797,16 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
             block_module = get_module(model, block_name)
             for n, m in block_module.named_modules():
                 in_features, out_features = get_layer_features(m)
+                if in_features is None:
+                    continue
                 params_dict[n] = in_features * out_features
 
             res_list = partition_dict_numbers(params_dict, num_devices)
             device_index = 0
             for res in res_list:
                 for key in res.keys():
-                    tmp_m = get_module(model, key)
-                    set_tuning_device_for_layer(block_module, tmp_m, cuda_devices[device_index])
+                    set_tuning_device_for_layer(block_module, key, cuda_devices[device_index])
+                device_index += 1
 
 
 if __name__ == "__main__":

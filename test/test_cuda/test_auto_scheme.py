@@ -116,7 +116,7 @@ class TestAutoScheme(unittest.TestCase):
         model_name = "/models/Qwen3-0.6B"
         target_bits = 5.265
         # for device_map in ["auto", "0,1", "0", None]:
-        scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"),low_gpu_mem_usage=False)
+        scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"),low_gpu_mem_usage=False,device_map="auto")
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
