@@ -49,7 +49,7 @@ import transformers
 from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
-from auto_round.export.utils import save_model
+from auto_round.export.utils import filter_quantization_config, get_autogptq_packing_qlinear, save_model
 from auto_round.schemes import QuantizationScheme
 
 GPTQ_REQUIRED_CONFIG_KEYS = (
@@ -64,8 +64,6 @@ from auto_round.utils import (
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
-    get_autogptq_packing_qlinear,
     get_block_names,
     get_module,
     json_serialize,

@@ -31,6 +31,25 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round.compressors.utils import (
+    block_forward,
+    check_need_act_calibration,
+    check_skippable_keywords,
+    collect_best_params,
+    get_fp_layer_names,
+    get_layer_config_by_gguf_format,
+    get_shared_keys,
+    gguf_args_check,
+    infer_bits_by_data_type,
+    init_cache,
+    is_mx_fp,
+    is_nv_fp,
+    is_standard_fp,
+    is_static_wfp8afp8,
+    is_wfp8afp8,
+    reset_params,
+    set_layer_config,
+)
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
@@ -46,18 +65,11 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    _gguf_args_check,
-    _is_fp8_linear,
-    _is_fp8_model,
-    block_forward,
     check_and_mark_fp8_model,
     check_is_cpu,
-    check_need_act_calibration,
     check_seqlen_compatible,
-    check_skippable_keywords,
     check_to_quantized,
     clear_memory,
-    collect_best_params,
     compile_func,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
@@ -69,29 +81,19 @@ from auto_round.utils import (
     flatten_list,
     get_block_names,
     get_device_memory,
-    get_fp_layer_names,
-    get_layer_config_by_gguf_format,
     get_layer_features,
     get_layer_names_in_block,
     get_lm_head_name,
     get_max_vram,
     get_module,
-    get_shared_keys,
     htcore,
-    infer_bits_by_data_type,
-    init_cache,
     is_debug_mode,
+    is_fp8_linear,
+    is_fp8_model,
     is_hpex_available,
-    is_mx_fp,
-    is_nv_fp,
-    is_standard_fp,
-    is_static_wfp8afp8,
-    is_wfp8afp8,
     llm_load_model,
     mv_module_from_gpu,
-    reset_params,
     set_amax_for_all_moe_layers,
-    set_layer_config,
     set_module,
     to_device,
     to_dtype,
@@ -869,9 +871,9 @@ class BaseCompressor(object):
                     )
                     formats[i] = gguf_format_name.lower()
 
-        _gguf_args_check(self, formats, model_type=ModelType.TEXT)
+        gguf_args_check(self, formats, model_type=ModelType.TEXT)
         if self.mllm:
-            _gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
+            gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
 
         for f in formats:
             if f.startswith("gguf"):
@@ -946,7 +948,7 @@ class BaseCompressor(object):
                         "Please change format to fake or auto_round etc."
                     )
             elif "auto_awq" in format:
-                from auto_round.utils import check_awq_gemm_compatibility
+                from auto_round.compressors.utils import check_awq_gemm_compatibility
 
                 awq_supported, info = check_awq_gemm_compatibility(
                     self.model, self.bits, self.group_size, self.sym, self.layer_config
@@ -1330,7 +1332,7 @@ class BaseCompressor(object):
         """
         m = get_module(self.model, name)
 
-        if _is_fp8_linear(m):
+        if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
         #
@@ -1490,7 +1492,7 @@ class BaseCompressor(object):
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
         return self.model, self.layer_config
@@ -1558,7 +1560,7 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 block = block.to(self.device)
-                if _is_fp8_model(self.model):
+                if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
                 if self.device_map == "auto":
@@ -1755,9 +1757,9 @@ class BaseCompressor(object):
 
         self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             for n, m in self.model.named_modules():
-                if _is_fp8_linear(m):
+                if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
                     set_module(self.model, n, new_layer)
 
@@ -1806,7 +1808,7 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                if _is_fp8_model(self.model):
+                if is_fp8_model(self.model):
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
@@ -2050,7 +2052,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -2471,6 +2473,7 @@ class BaseCompressor(object):
         logger.info(dump_info)
 
     def _register_act_max_hook(self, model):
+
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -2569,9 +2572,9 @@ class BaseCompressor(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        if _is_fp8_model(self.model):
+        if is_fp8_model(self.model):
             for n, m in block.named_modules():
-                if _is_fp8_linear(m):
+                if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 

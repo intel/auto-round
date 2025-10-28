@@ -16,23 +16,40 @@ import torch
 import transformers
 from torch.functional import F
 
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func
 from auto_round.logger import logger
-
-from .utils import (
+from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compile_func,
     deepspeed_exists,
-    get_scale_shape,
-    is_mx_fp,
-    is_nv_fp,
     set_module,
 )
 
 if deepspeed_exists:
     from deepspeed import comm as dist
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
+
+
+def get_scale_shape(weight, group_size):
+    """Computes the shape of the scale tensor for quantization based on the weight tensor and group size.
+
+    Args:
+      weight (torch.Tensor): The weight tensor of the layer.
+      group_size (int): The size of the groups for quantization.
+
+    Returns:
+      The shape of the scale tensor to be used for quantization.
+    """
+    if group_size == 0:
+        return 1
+    elif group_size == -1 or weight.shape[1] < group_size:
+        shape = weight.shape[0]
+    else:
+        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
+
+    return shape
 
 
 def reshape_and_pad_tensor(v, group_size=-1):
