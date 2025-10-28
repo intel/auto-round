@@ -1388,7 +1388,7 @@ class BaseCompressor(object):
                     raise
 
         # Step 3: Optional immediate packing/export
-        if self.is_packing_immediate:
+        if 0 and self.is_packing_immediate:
             from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
             if check_to_quantized(m):
@@ -1472,6 +1472,8 @@ class BaseCompressor(object):
             try:
                 self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
             except RuntimeError as e:
+
+                logger.error(traceback.format_exc())
                 logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
                 self.model = self.model.to("cpu")
                 clear_memory()

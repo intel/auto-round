@@ -37,7 +37,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
-CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
+CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss", "qwen3_vl_moe"]
 
 
 def _get_moe_converter(config):
@@ -45,8 +45,8 @@ def _get_moe_converter(config):
     moe_converters = {
         "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
         "llama4": LazyImport("auto_round.modelling.llama4.get_replacement_info"),
+        "qwen3_vl_moe": LazyImport("auto_round.modelling.qwen3_vl_moe.get_replacement_info"),
     }
-
     # Retrieve the appropriate function based on model_type
     if config.model_type in moe_converters:
         return moe_converters[config.model_type](config)
@@ -57,11 +57,13 @@ def _get_moe_converter(config):
         )
 
 
-def _handle_special_model(model):
+def _handle_special_model(model, formats):
     if model.config.model_type == "deepseek_vl_v2":
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
+    else:
+        return _handle_moe_model(model, formats)
     return model
 
 
@@ -84,8 +86,9 @@ def _handle_moe_model(model, formats=None):
                 parent, child = name.rsplit(".", maxsplit=1)
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
+                logger.trace(f"Converted module {name} from {cls_name} to {new_moe_class.__name__}")
 
-        logger.warning("Llama4 experts are converted, the quantized model can not run on transformers.")
+        logger.warning("All experts are converted, the quantized model can not run on transformers.")
     return model
 
 

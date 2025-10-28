@@ -206,8 +206,8 @@ class MLLMCompressor(BaseCompressor):
                 dataset = self.template.default_dataset if dataset is None else dataset
         else:
             self.template = None
-
-        model = _handle_special_model(model)
+        formats = self.formats if hasattr(self, "formats") else None
+        model = _handle_special_model(model, formats)
 
         from auto_round.calib_dataset import CALIB_DATASETS
 
