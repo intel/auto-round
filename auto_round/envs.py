@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
+    "AR_ENABLE_FP8_CACHE_DEQUANT_WEIGHT": lambda: os.getenv("AR_ENABLE_FP8_CACHE_DEQUANT_WEIGHT", "0").lower()
+    in ("1", "true", "yes"),
 }
 
 

@@ -17,6 +17,7 @@ from typing import Optional, Union
 
 import torch
 
+import auto_round.envs as envs
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.utils import logger
 
@@ -96,6 +97,9 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
     def dequant_weight_online(self):
         if self.pre_dequantized:
             return self.weight
+        if envs.AR_ENABLE_FP8_CACHE_DEQUANT_WEIGHT:
+            self.pre_dequantize()
+            logger.warning_once(f"Using cached dequantized weights for {self.__class__.__name__}")
         qdq_weight = self.weight.to(self.dtype) * self.weight_scale.unsqueeze(1)
         return qdq_weight
 
@@ -113,6 +117,7 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
         qdq_input_bf16 = input_fp8.to(self.dtype) * input_scale
         return qdq_input_bf16
 
+    @torch.compile()
     @torch.no_grad()
     def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
 
