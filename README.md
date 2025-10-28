@@ -27,7 +27,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
 
 
 ## 🆕 What's New
-[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the latest SGLang master branch.
+[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the latest SGLang(at least this commit (caa4819bfcdc1b0e081d2b93500ea3d4d2cb8e00) or later).
 
 [2025/10] We enhanced the RTN mode (--iters 0) to significantly reduce quantization cost compared to the default tuning mode. Check out [this doc](./docs/opt_rtn.md) for some accuracy results. If you don’t have sufficient resources, you can use this mode for 4-bit quantization.
 
@@ -270,7 +270,6 @@ ar.quantize_and_save(output_dir)
 ## Model Inference
 
 ### vLLM (CPU/Intel GPU/CUDA)
-Please note that support for the MoE models and visual language models is currently limited.
 ```python
 from vllm import LLM, SamplingParams
 
