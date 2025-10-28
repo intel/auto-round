@@ -366,7 +366,7 @@ class WrapperLinear(torch.nn.Module):
             assert global_scale.numel() == 1
             self.orig_layer.weight_global_scale = global_scale.to("cpu")
 
-        ##unwrapper bias
+        # Unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
             bias_v = best_params["bias_v"].to(self.device)
             bias = self.orig_layer.bias

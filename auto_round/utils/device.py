@@ -611,7 +611,7 @@ def set_non_auto_device_map(
         names = quant_layer_names
     else:
         names = [
-            n for n, m in model.model.named_modules() if len(list(m.children())) == 0
+            n for n, m in model.named_modules() if len(list(m.children())) == 0
         ]  # if it's a block, it will be incorrect
     for key, device in device_map.items():
         if isinstance(device, str) and device.isdigit():

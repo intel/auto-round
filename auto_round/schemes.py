@@ -294,6 +294,7 @@ class AutoScheme:
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
     ignore_scale_zp_bits: bool = False
+    batch_size: Optional[int] = None
     nsamples: Optional[int] = None
     seqlen: Optional[int] = None
     dataset: Optional[str] = None  # Import Notice no comma for each item
