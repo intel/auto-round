@@ -789,7 +789,7 @@ def run_eval():
     if args.eval_task_by_task:
         eval_task_by_task(
             model=args.model,
-            device=args.device,
+            device=args.device_map,
             tasks=args.tasks,
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,

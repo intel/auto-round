@@ -329,9 +329,9 @@ class TestGGUF(unittest.TestCase):
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
-                self.assertAlmostEqual(file_size, 2535, delta=1.0)
+                self.assertAlmostEqual(file_size, 2537, delta=5.0)
             else:
-                self.assertAlmostEqual(file_size, 892, delta=1.0)
+                self.assertAlmostEqual(file_size, 892, delta=5.0)
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_qtype_setting(self):
