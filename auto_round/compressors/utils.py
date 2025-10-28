@@ -510,7 +510,7 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
             if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
                 logger.warning(
                     f"Current version of gguf export does not support for {model_architecture},"
-                    " will re-download dependency file."
+                    " will re-download dependency file. Please restart the task."
                 )
                 redownload = True
         except ModuleNotFoundError as e:
