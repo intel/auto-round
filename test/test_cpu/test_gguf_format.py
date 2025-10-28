@@ -339,7 +339,7 @@ class TestGGUF(unittest.TestCase):
         # Qwen3-0.6B output q6_k, token_embed q4_0  448M
         # Qwen3-8B output q6_k, token_embed q4_0 4.5G
         # Llama-3.2-1B-Instruct o output, token_embed q6_k 736M
-        from auto_round.compressors.utils import  set_layer_config
+        from auto_round.compressors.utils import set_layer_config
         from auto_round.export.export_to_gguf.config import ModelType
 
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"

@@ -557,7 +557,7 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> s
                 tmp_device = tmp_device.split(":")[0]
                 tmp_devices.append(tmp_device)
         tmp_devices = list(set(tmp_devices))
-        device=None
+        device = None
         for tmp_device in tmp_devices:
             if device != "cpu":
                 device = tmp_device
@@ -769,7 +769,7 @@ def partition_dict_numbers(number_dict, n):
     return result
 
 
-def set_avg_auto_device_map(model:torch.nn.Module, device_map):
+def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     block_name_list = get_block_names(model)
     device_list = None
     if isinstance(device_map, str) and "," in device_map:
