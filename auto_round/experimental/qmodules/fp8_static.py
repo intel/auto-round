@@ -94,19 +94,23 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
             )
             return qdq_linear
 
+    def _dequant_weight(self):
+        qdq_weight = self.weight.to(self.dtype) * self.weight_scale.unsqueeze(1)
+        return qdq_weight
+
     def dequant_weight_online(self):
         if self.pre_dequantized:
             return self.weight
         if envs.AR_ENABLE_FP8_CACHE_DEQUANT_WEIGHT:
             self.pre_dequantize()
             logger.warning_once(f"Using cached dequantized weights for {self.__class__.__name__}")
-        qdq_weight = self.weight.to(self.dtype) * self.weight_scale.unsqueeze(1)
-        return qdq_weight
+            return self.weight
+        return self._dequant_weight()
 
     def pre_dequantize(self):
         if self.pre_dequantized:
             return
-        dequant_weight = self.dequant_weight_online()
+        dequant_weight = self._dequant_weight()
         del self.weight
         del self.weight_scale
         self.weight = torch.nn.Parameter(dequant_weight, requires_grad=False)
@@ -117,7 +121,6 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
         qdq_input_bf16 = input_fp8.to(self.dtype) * input_scale
         return qdq_input_bf16
 
-    @torch.compile()
     @torch.no_grad()
     def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
 
