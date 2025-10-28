@@ -80,7 +80,7 @@ SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 # Changed to str as it relies on triton or others lib to load this
-INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
+INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear", "CompressedLinear")
 # transformers.integrations.finegrained_fp8.FP8Linear
 if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
@@ -1388,7 +1388,7 @@ def _is_fp8_model(model: torch.nn.Module) -> bool:
 def _is_fp8_linear(module: torch.nn.Module) -> bool:
     if hasattr(module, "is_fp8_linear"):
         return module.is_fp8_linear
-    if not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear"):
+    if type(module) != torch.nn.Linear and module.__class__.__name__ not in ["FP8Linear", "CompressedLinear"]:
         return False
     if module.weight is None:
         return False
@@ -2340,7 +2340,7 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     """
     cnt = 0
     for n, m in model.named_modules():
-        if m.__class__.__name__ == "FP8Linear":
+        if m.__class__.__name__ in ["FP8Linear", "CompressedLinear"]:
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
             set_module(model, n, new_module)
             cnt += 1
