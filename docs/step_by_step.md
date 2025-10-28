@@ -318,7 +318,7 @@ ar.quantize_and_save()
 
 `batch_size (Optional[int])` could be set to 1 to reduce VRAM but increase time cost
 
-`low_gpu_mem_usage(bool=True)` whether to reduct gpu memory usage 
+`low_gpu_mem_usage(bool=True)` whether to reduce gpu memory usage at the cost of more time cost
 
 In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
 
@@ -357,6 +357,16 @@ We tested it on Nvidia A100 80G using torch v2.8.
 
 We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-1.5x of the model's BF16 size
 
+| Models        | Scheme                | VRAM Cost | Time Cost             |
+| ------------- | --------------------- | --------- | --------------------- |
+| Qwen3-8B      | W2A16 / W4A16 / W8A16 | 14G       | 60s * len of options  |
+| Qwen3-8B      | MXFP4 / MXFP8         | 18G       | 60s * len of options  |
+| Qwen3-8B      | GGUF*                 | 14G       | 80s * len of options  |
+| Qwen3-32B     | W2A16 / W4A16 / W8A16 | 29G       | 180s*  len of options |
+| Qwen3-32B     | MXFP4 / MXFP8         | 29G       | 180s*  len of options |
+| Qwen3-32B     | GGUF*                 | 18G       | 300s * len of options |
+| Llama-3.3-70B | W2A16 / W4A16 / W8A16 | 32G       | 420s * len of options |
+
 <details>
 <summary>Cost w/o low_gpu_mem_usage </summary>
 
@@ -369,17 +379,6 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 | Qwen3-32B | MXFP4/MXFP8       | 160G                            | 200s * len of options         | 200G                             | 240s * len of options            |
 | Qwen3-32B | GGUF*             | 210G                            | 80s * len of options          | 200G                             | 60s * len of options             |
 </details> 
-
-
-| Models    | Scheme            | VRAM Cost <br />(torch compile) | Time Cost<br /> torch compile | VRAM Cost <br />wo torch compile | Time Cost<br /> wo torch compile |
-| --------- | ----------------- | ------------------------------- | ----------------------------- | -------------------------------- | -------------------------------- |
-| Qwen3-8B  | W2A16/W4A16/W8A16 | 34G                             | 30s * len of options          | 61G                              | 40s * len of options             |
-| Qwen3-8B  | MXFP4/MXFP8       | 36G                             | 60s * len of options          | 54G                              | 120s * len of options            |
-| Qwen3-8B  | GGUF*             | 54G                             | 30s * len of options          | 50G                              | 23S * len of options             |
-| Qwen3-32B | W2A16/W4A16/W8A16 | OOM with 240G                   | ---                           | OOM with 240G                    | ---                              |
-| Qwen3-32B | MXFP4/MXFP8       | 160G                            | 200s * len of options         | 200G                             | 240s * len of options            |
-| Qwen3-32B | GGUF*             | 210G                            | 80s * len of options          | 200G                             | 60s * len of options             |
-
 
 
 #### Limitations
