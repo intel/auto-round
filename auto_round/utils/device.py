@@ -636,9 +636,9 @@ def set_auto_device_map_for_block_with_tuning(
 
     Args:
         block (torch.nn.Module): The model block whose device map is to be set.
-        device_map (str | int | dict): Specifies the device mapping. Can be a string (e.g., "0,1"), integer, or dictionary mapping layer names to devices.
+        device_map (str | int | dict): Specifies the device mapping.
         input_ids (list[torch.Tensor]): List of input tensors used for estimating memory requirements.
-        low_gpu_mem_usage (bool, optional): If True, reduces memory usage estimation by ignoring input/output memory. Defaults to False.
+        low_gpu_mem_usage (bool, optional): If True, ignoring input/output memory. Defaults to False.
         mem_per_param_scale (float, optional): Scaling factor for estimating memory usage per parameter in the block.
             Typical values range from 10.0 to 20.0 depending on model size and GPU memory characteristics.
             Higher values are more conservative and help avoid out-of-memory errors. Defaults to 13.0.
