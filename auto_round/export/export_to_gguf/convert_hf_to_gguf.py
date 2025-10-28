@@ -7784,8 +7784,6 @@ class ChatGLMModel(TextModel):
 
             text = piece.encode("utf-8")
             score = 0.0
-            # Referencing the tokenizer Python implementation(https://huggingface.co/THUDM/chatglm3-6b/blob/main/tokenization_chatglm.py),
-            # it is only valid if it is less than tokenizer.tokenizer.sp_model.vocab_size()
             if len(piece) != 0 and token_id < tokenizer.tokenizer.sp_model.vocab_size():
                 score = tokenizer.tokenizer.sp_model.get_score(token_id)
 
@@ -8722,7 +8720,8 @@ class UltravoxModel(TextModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         raise NotImplementedError(
-            "Ultravox does not have text decoder. Instead, it uses Llama or other models for text. If you want to get the audio encoder, please use --mmproj argument"
+            "Ultravox does not have text decoder. Instead, it uses Llama or other models for text."
+            " If you want to get the audio encoder, please use --mmproj argument"
         )
 
 
