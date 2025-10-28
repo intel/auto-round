@@ -64,6 +64,11 @@ class Qwen3VLSequentialMoeTextExperts(nn.Module):
         dtype = original.gate_up_proj.dtype
         new_module = new_module.to(dtype)
         # Transfer weights from original module
+        device = next(original.parameters()).device
+        # For meta device, only set the experts without copying weights
+        if device == torch.device("meta"):
+            self.experts = new_module
+            return
         for i, expert in enumerate(new_module):
             # Set weights for the new expert module
             expert.gate_up_proj.weight.data.copy_(original.gate_up_proj[i].transpose(0, 1))

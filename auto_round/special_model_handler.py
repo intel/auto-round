@@ -67,7 +67,7 @@ def _handle_special_model(model, formats):
     return model
 
 
-def _handle_moe_model(model, formats=None):
+def _handle_moe_model(model, formats=None, device="cpu"):
     if formats is not None and any(["gguf" in format_ for format_ in formats]):
         return model
     if hasattr(model.config, "model_type") and model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
@@ -76,7 +76,7 @@ def _handle_moe_model(model, formats=None):
         from auto_round.utils import clear_memory
 
         new_moe_class, convert_config, orig_cls_name = _get_moe_converter(model.config)
-        model = model.to("cpu")
+        model = model.to(device)
         clear_memory()
 
         for name, module in tqdm(model.named_modules(), desc="Converting model"):
