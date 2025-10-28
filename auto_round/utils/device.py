@@ -26,15 +26,8 @@ from typing import Union
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import (
-    check_to_quantized,
-    detect_device,
-    estimate_tuning_block_mem,
-    get_block_names,
-    get_device_memory,
-    get_layer_features,
-    get_module,
-)
+from auto_round.utils.model import get_block_names,get_module,get_layer_features,check_to_quantized
+
 
 
 # Note on HPU usage:
