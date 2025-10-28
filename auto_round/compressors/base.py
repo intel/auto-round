@@ -431,7 +431,7 @@ class BaseCompressor(object):
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if not self.enable_torch_compile and self.super_bits is None:
+        if not self.enable_torch_compile and self.super_bits is None and not scheme.low_gpu_mem_usage:
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         gen_scheme = GenScheme(
             scheme,
@@ -1207,24 +1207,19 @@ class BaseCompressor(object):
         if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
-        #
-        # # Step 1: Use optimized RTN data type if available
-        # if not self.disable_opt_rtn:
-        #     rtn_data_type = self._check_rtn_dytpe(m.data_type, m.bits, m.sym)
-        #     if rtn_data_type is not None:
-        #         m.data_type = rtn_data_type
-        #         self.layer_config[name]["data_type"] = m.data_type
 
-        # Step 2: Try quantization on GPU first, fall back to CPU if OOM
+        # Step 1: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
         if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
             try:
-                m = m.to(m.tuning_device if hasattr(m, "tuning_device") else self.device)
+                tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
+                m = m.to(tuning_device)
                 m = WrapperLinear(
                     m,
+                    device=tuning_device,
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
@@ -1251,7 +1246,7 @@ class BaseCompressor(object):
                 except Exception as e:
                     raise
 
-        # Step 3: Optional immediate packing/export
+        # Step 2: Optional immediate packing/export
         if self.is_packing_immediate:
             from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
@@ -1277,9 +1272,6 @@ class BaseCompressor(object):
                     )
                 else:
                     PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
-
-                # if self.low_gpu_mem_usage:
-                #     clear_memory()
         else:
             set_module(self.model, name, m)
 
