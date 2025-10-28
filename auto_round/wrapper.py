@@ -236,7 +236,7 @@ class WrapperLinear(torch.nn.Module):
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
         weight_q, scale, zp = self.weight_quant_func(
-            weight,
+            weight.to(self.device),
             bits=self.orig_layer.bits,
             group_size=self.orig_layer.group_size,
             v=value,

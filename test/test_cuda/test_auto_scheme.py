@@ -84,7 +84,7 @@ class TestAutoScheme(unittest.TestCase):
     @multi_card
     def test_multi_card(self):
         model_name = "/models/Qwen3-0.6B"
-        target_bits = 5.254
+        target_bits = 5.265
         for device_map in ["auto", "0,1", "0", None]:
             scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
             ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1,device_map=device_map)
@@ -96,7 +96,7 @@ class TestAutoScheme(unittest.TestCase):
     @multi_card
     def test_multi_card_1(self):
         model_name = "/models/Qwen3-0.6B"
-        target_bits = 5.254
+        target_bits = 5.265
         from transformers import AutoModelForCausalLM, AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
@@ -114,7 +114,7 @@ class TestAutoScheme(unittest.TestCase):
 
     def test_non_low_gpu_mem_usage(self):
         model_name = "/models/Qwen3-0.6B"
-        target_bits = 5.254
+        target_bits = 5.265
         # for device_map in ["auto", "0,1", "0", None]:
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"),low_gpu_mem_usage=False)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
