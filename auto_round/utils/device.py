@@ -13,16 +13,12 @@
 # limitations under the License.
 import gc
 import os
+import re
 from functools import lru_cache
-from typing import  Callable
+from itertools import combinations
+from typing import Callable, Union
 
 import cpuinfo
-
-
-import re
-from itertools import combinations
-from typing import Union
-
 import torch
 
 from auto_round.logger import logger
@@ -35,7 +31,6 @@ from auto_round.utils import (
     get_layer_features,
     get_module,
 )
-
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
@@ -555,6 +550,7 @@ def get_device_memory(i: int = 0) -> int:
     else:
         raise RuntimeError("No supported device found (CUDA or XPU).")
     return total_memory
+
 
 def get_major_device(device_map: Union[str, torch.device, int, dict]) -> str:
     if isinstance(device_map, (str, torch.device, int)):
