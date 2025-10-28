@@ -27,6 +27,8 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri). For usage instructions,
 
 
 ## 🆕 What's New
+[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the latest SGLang later than v0.5.4.
+
 [2025/10] We enhanced the RTN mode (--iters 0) to significantly reduce quantization cost compared to the default tuning mode. Check out [this doc](./docs/opt_rtn.md) for some accuracy results. If you don’t have sufficient resources, you can use this mode for 4-bit quantization.
 
 [2025/10] We proposed a fast algorithm to generate **mixed bits/datatypes** schemes in minutes. Please
@@ -268,7 +270,6 @@ ar.quantize_and_save(output_dir)
 ## Model Inference
 
 ### vLLM (CPU/Intel GPU/CUDA)
-Please note that support for the MoE models and visual language models is currently limited.
 ```python
 from vllm import LLM, SamplingParams
 
@@ -286,6 +287,26 @@ for output in outputs:
     generated_text = output.outputs[0].text
     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
 ```
+
+
+### SGLang (Intel GPU/CUDA)
+Please note that support for the MoE models and visual language models is currently limited.
+
+```python
+import sglang as sgl
+
+llm = sgl.Engine(model_path="Intel/DeepSeek-R1-0528-Qwen3-8B-int4-AutoRound")
+prompts = [
+    "Hello, my name is",
+]
+sampling_params = {"temperature": 0.6, "top_p": 0.95}
+
+outputs = llm.generate(prompts, sampling_params)
+for prompt, output in zip(prompts, outputs):
+    print("===============================")
+    print(f"Prompt: {prompt}\nGenerated text: {output['text']}")
+```
+
 
 ### Transformers (CPU/Intel GPU/Gaudi/CUDA)
 
@@ -312,6 +333,7 @@ Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ,
 
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
+
 
 
 
