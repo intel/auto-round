@@ -631,7 +631,28 @@ def set_non_auto_device_map(
 def set_auto_device_map_for_block_with_tuning(
     block: torch.nn.Module, device_map, input_ids: list[torch.Tensor], low_gpu_mem_usage=False, mem_per_param_scale=13.0
 ):
-    """Automatically sets the device map for the block based on available GPUs and memory constraints."""
+    """
+    Automatically sets the device map for the block based on available GPUs and memory constraints.
+
+    Args:
+        block (torch.nn.Module): The model block whose device map is to be set.
+        device_map (str | int | dict): Specifies the device mapping. Can be a string (e.g., "0,1"), integer, or dictionary mapping layer names to devices.
+        input_ids (list[torch.Tensor]): List of input tensors used for estimating memory requirements.
+        low_gpu_mem_usage (bool, optional): If True, reduces memory usage estimation by ignoring input/output memory. Defaults to False.
+        mem_per_param_scale (float, optional): Scaling factor for estimating memory usage per parameter in the block. 
+            Typical values range from 10.0 to 20.0 depending on model size and GPU memory characteristics. 
+            Higher values are more conservative and help avoid out-of-memory errors. Defaults to 13.0.
+
+    Returns:
+        None
+
+    Raises:
+        RuntimeError: If no CUDA or XPU devices are found.
+
+    Note:
+        This function is intended for internal use in device memory management and tuning. 
+        The mem_per_param_scale parameter should be adjusted based on empirical memory usage observations.
+    """
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
     elif torch.xpu.is_available():
