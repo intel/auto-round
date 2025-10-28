@@ -360,7 +360,8 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
                 ## use mean values to fill zero values
                 tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
                 tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
-                quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
+                replace_idx = quant_weights == 0
+                quant_weights[replace_idx] = tmp_quant_weights[replace_idx]
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
