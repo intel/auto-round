@@ -121,7 +121,7 @@ class Qwen3VLSequentialMoeTextSparseMoeBlock(nn.Module):
         for i, expert in enumerate(new_module):
             # Set weights for the new expert module
             expert.gate_up_proj.weight.data.copy_(original_experts.gate_up_proj[i].transpose(0, 1))
-            expert.down_proj.weight.data.copy_(original.down_proj[i].transpose(0, 1))
+            expert.down_proj.weight.data.copy_(original_experts.down_proj[i].transpose(0, 1))
         self.experts = new_module
         # since all the models use norm_topk_prob, we don't need to have a extra check for it
         # self.norm_topk_prob = config.norm_topk_prob
