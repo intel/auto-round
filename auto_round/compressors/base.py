@@ -90,7 +90,7 @@ from auto_round.utils import (
     to_dtype,
     unsupported_meta_device,
 )
-from auto_round.utils_bk.device import (
+from auto_round.utils.device import (
     get_major_device,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
