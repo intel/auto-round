@@ -559,7 +559,7 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> s
         tmp_devices = list(set(tmp_devices))
         device = None
         for tmp_device in tmp_devices:
-            if device != "cpu":
+            if tmp_device != "cpu":
                 device = tmp_device
                 break
         if device is None:
