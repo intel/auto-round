@@ -693,16 +693,6 @@ def set_auto_device_map_for_block_with_tuning(
     set_non_auto_device_map(block, device_map, names)
 
 
-#
-# def set_device_map_for_auto_scheme(model, device_map):
-#     if not device_map:
-#         return
-#     if device_map == "auto" or (isinstance(device_map, str) and "," in device_map):  # auto device map
-#         set_avg_auto_device_map(model)
-#     else:
-#         set_non_auto_device_map(model, device_map)
-
-
 def partition_dict_numbers(number_dict, n):
     """
     Partition a dictionary of numbers into N groups with approximately equal sums
