@@ -306,7 +306,7 @@ ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`avg_bits(float)` Target average bits for the whole model, only to be quantized layer will be counted in the average bits calculation.
+`avg_bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation.
 
 `options(Union[str, list[Union[QuantizationScheme, str]])` the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
 
