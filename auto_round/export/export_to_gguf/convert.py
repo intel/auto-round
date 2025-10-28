@@ -412,7 +412,7 @@ def prepare_tensors(cls):
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
                 if new_name in tensor_info:
-                    print("new_name already add to gguf_writer, skip")
+                    logger.warning(f"{new_name} already add to gguf_writer, skip")
                     skip = True
                     break
             if skip:
