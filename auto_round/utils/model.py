@@ -23,7 +23,6 @@ from typing import Union
 import torch
 import transformers
 
-
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -947,6 +946,7 @@ def set_module(model, key, new_module):
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
     from auto_round.utils import deepspeed_exists
+
     if deepspeed_exists:
         from deepspeed.module_inject import LinearAllreduce, LinearLayer
     if type(layer) == torch.nn.Linear:

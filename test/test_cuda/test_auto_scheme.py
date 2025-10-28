@@ -87,7 +87,7 @@ class TestAutoScheme(unittest.TestCase):
         target_bits = 5.265
         for device_map in ["auto", "0,1", "0", None]:
             scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
-            ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1,device_map=device_map)
+            ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, device_map=device_map)
             model, layer_config = ar.quantize()
             avg_bits, _ = compute_avg_bits_for_model(model)
             print(avg_bits)
@@ -98,25 +98,22 @@ class TestAutoScheme(unittest.TestCase):
         model_name = "/models/Qwen3-0.6B"
         target_bits = 5.265
         from transformers import AutoModelForCausalLM, AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto"
-        )
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
-        ar = AutoRound(model=model,tokenizer=tokenizer, scheme=scheme, iters=0, nsamples=1)
+        ar = AutoRound(model=model, tokenizer=tokenizer, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
-
 
     def test_non_low_gpu_mem_usage(self):
         model_name = "/models/Qwen3-0.6B"
         target_bits = 5.265
         # for device_map in ["auto", "0,1", "0", None]:
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"),low_gpu_mem_usage=False,device_map="auto")
+
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
