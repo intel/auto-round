@@ -433,7 +433,7 @@ class BaseCompressor(object):
 
         if not self.enable_torch_compile and self.super_bits is None and not scheme.low_gpu_mem_usage:
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
-        gen_scheme = GenScheme(
+        self.scheme_generator = GenScheme(
             scheme,
             self.model,
             quant_layer_names,
@@ -443,7 +443,7 @@ class BaseCompressor(object):
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
         )
-        layer_config = gen_scheme.get_layer_config()
+        layer_config = self.scheme_generator.get_layer_config()
         return layer_config
 
     def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
