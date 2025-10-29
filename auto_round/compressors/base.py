@@ -2478,9 +2478,8 @@ class BaseCompressor(object):
         if q_input is not None:
             if input_ids is not q_input:
                 clear_memory(input_ids)
-            else:
-                clear_memory()
             input_ids = q_input
+        clear_memory()
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block,
@@ -2567,6 +2566,7 @@ class BaseCompressor(object):
                 current_output = to_device(current_output, device)
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
+                clear_memory()  # clean cached memory after getting output_q
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -2586,6 +2586,7 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
+                clear_memory()  # clean cached memory after backward
 
             if i == 0:
                 init_loss = total_loss

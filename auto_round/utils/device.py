@@ -517,8 +517,8 @@ def estimate_tuning_block_mem(
     input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
     if torch.xpu.is_available():
         # https://github.com/intel/torch-xpu-ops/issues/2232
-        # sdpa on XPU takes more memory than expected.
-        additional_memory = 12
+        # sdpa on XPU takes more memory than expected. 2 from grad tensor
+        additional_memory = 9 * 2 + 1
     else:
         additional_memory = 1  # sdpa usage and loss calculation usage
 
@@ -674,68 +674,52 @@ def _allocate_layers_to_devices(
     Strategy:
     1. Sort layers by memory size (descending) to prioritize large operations
     2. Allocate largest layers to later devices first (to keep device 0 free for I/O)
-    3. For each layer, find the best device considering:
-       - Sufficient remaining memory (preferred)
-       - Continuity (prefer same device as neighboring layers in original model order)
-       - Load balancing (minimize wasted space)
-    4. Fallback to device with most remaining space if all devices are over capacity
+    3. For each layer, prefer: neighbor's device > devices with more space > later devices for large layers
 
     Args:
-        layer_memory_dict (dict): Mapping of layer names to their memory info (order preserved)
-            Format: {layer_name: {"param_memory": float, "output_memory": float}}
+        layer_memory_dict (dict): Mapping of layer names to memory info (order preserved)
         device_memory (dict): Available memory for each device (will be modified)
-            Format: {device_name: available_memory_gb}
-        cuda_xpu_devices (list): List of available device names (e.g., ["cuda:0", "cuda:1"])
+        cuda_xpu_devices (list): List of device names (e.g., ["cuda:0", "cuda:1"])
         mem_per_param (float): Memory multiplier per parameter GB
 
     Returns:
-        tuple[dict, list]:
-            - device_map: Mapping of layer names to assigned devices
-            - names: List of layer names in processing order
+        tuple[dict, list]: (device_map, names)
 
-    Examples:
-        Example - Distribution with 3 devices:
-            Given layers [huge: 20GB, big: 15GB, large: 10GB, medium: 5GB, small: 2GB]
-            and 3 devices [device 0, device 1, device 2]:
-            - 'huge' → tries device 2 first (last device, preferred for largest layer)
-            - 'big' → tries device 1 (second-to-last, preferred for second largest)
-            - 'large' → tries device 0, but prioritizes neighbor's device if applicable
-            - 'medium' and 'small' → assigned based on remaining capacity and neighbors
+    Example (LLaMA block with 7 layers on 3 devices):
+        Input:
+            # cuda:0 already occupied by input/output tensors and activations
+            device_memory = {"cuda:0": 15.0, "cuda:1": 40.0, "cuda:2": 40.0}
+            cuda_xpu_devices = ["cuda:0", "cuda:1", "cuda:2"]
+            mem_per_param = 2.0
 
-            Result: Device 0 has lightest load, suitable for handling I/O overhead
+        Processing order (sorted by param_memory, descending):
+            1. gate_proj (11.0 * 2 = 22.0 GB) -> cuda:2 (largest layer, prefer last device)
+            2. up_proj   (11.0 * 2 = 22.0 GB) -> cuda:1 (largest layer, prefer 2nd last device)
+            3. down_proj (11.0 * 2 = 22.0 GB) -> cuda:1 (cuda:0 only has 15GB, insufficient)
+            4. q_proj    (4.0 * 2 = 8.0 GB)   -> cuda:2 (neighbor of gate_proj, continuity bonus)
+            5. o_proj    (4.0 * 2 = 8.0 GB)   -> cuda:2 (neighbor of q_proj, continuity bonus)
+            6. k_proj    (1.0 * 2 = 2.0 GB)   -> cuda:1 (neighbor of q_proj, continuity bonus)
+            7. v_proj    (1.0 * 2 = 2.0 GB)   -> cuda:1 (neighbor of k_proj, continuity bonus)
+
     """
     device_map = {}
     names = []
 
-    # Build layer order map from original dict order (preserves model structure)
     layer_names_in_order = list(layer_memory_dict.keys())
     layer_order = {name: idx for idx, name in enumerate(layer_names_in_order)}
 
-    # Sort layers by memory size (descending) to handle large layers first
-    # This prevents large layers from being stuck without suitable devices later
     sorted_layers = sorted(layer_memory_dict.items(), key=lambda x: x[1]["param_memory"], reverse=True)
 
-    # Track assigned layers to avoid duplicates
-    assigned_layers = set()
-
-    # Track preferred starting device for large layers (start from last device)
     num_devices = len(cuda_xpu_devices)
-    preferred_device_idx = num_devices - 1  # Start from last device
+    preferred_device_idx = num_devices - 1  # Start from last device for large layers
 
-    # Process each layer in sorted order (large to small)
     for layer_idx, (layer_name, mem_info) in enumerate(sorted_layers):
-        if layer_name in assigned_layers:
-            continue
-
         names.append(layer_name)
-        layer_param_memory = mem_info["param_memory"]
-        estimated_memory = layer_param_memory * mem_per_param
+        estimated_memory = mem_info["param_memory"] * mem_per_param
 
-        # Find neighboring layers in original model order for continuity evaluation
+        # Find neighbor devices
         current_layer_idx = layer_order[layer_name]
         neighbor_devices = set()
-
-        # Check previous and next layers in original order
         for offset in [-1, 1]:
             neighbor_idx = current_layer_idx + offset
             if 0 <= neighbor_idx < len(layer_names_in_order):
@@ -743,87 +727,42 @@ def _allocate_layers_to_devices(
                 if neighbor_name in device_map:
                     neighbor_devices.add(device_map[neighbor_name])
 
-        # Phase 1: Try to find a device with sufficient space
+        # Find best device
         best_device = None
-        best_device_idx = None
-        min_score = float("inf")
+        best_score = float("inf")
 
-        for dev_idx in range(num_devices):
-            dev = cuda_xpu_devices[dev_idx]
+        for dev_idx, dev in enumerate(cuda_xpu_devices):
             remaining = device_memory[dev] - estimated_memory
+            if remaining < 0:
+                continue  # Skip devices without enough space
 
-            # Only consider devices with enough space
-            if remaining >= 0:
-                # Continuity bonus: strongly prefer device used by neighboring layers
-                # This keeps adjacent layers in the model on the same device, reducing communication
-                if dev in neighbor_devices:
-                    continuity_bonus = -2000  # Very strong preference for neighbor's device
-                else:
-                    continuity_bonus = 0
+            # Score components (lower is better)
+            continuity_bonus = -2000 if dev in neighbor_devices else 0
+            large_layer_bonus = -500 if layer_idx < num_devices and dev_idx >= preferred_device_idx else 0
+            load_balance_penalty = -remaining  # More space = lower penalty
 
-                # For large layers (early in sorted order), prefer later devices
-                # This keeps device 0 lighter as it handles I/O overhead
-                if layer_idx < num_devices and dev_idx >= preferred_device_idx:
-                    large_layer_bonus = -500  # Moderate preference for later devices
-                else:
-                    large_layer_bonus = 0
+            score = load_balance_penalty + continuity_bonus + large_layer_bonus
+            if score < best_score:
+                best_score = score
+                best_device = dev
 
-                # Score = remaining memory waste + continuity penalty + large layer penalty (lower is better)
-                score = abs(remaining) + continuity_bonus + large_layer_bonus
-                if score < min_score:
-                    min_score = score
-                    best_device = dev
-                    best_device_idx = dev_idx
-
-        # Phase 2: Fallback - if no device has enough space, prefer neighbor's device
+        # Fallback: if no device has space, use neighbor's or last device
         if best_device is None:
             if neighbor_devices:
-                # Prefer neighbor's device even if over capacity
-                for dev in neighbor_devices:
-                    if best_device is None or device_memory[dev] > device_memory[best_device]:
-                        best_device = dev
-                        best_device_idx = cuda_xpu_devices.index(dev)
+                best_device = max(neighbor_devices, key=lambda d: device_memory[d])
             else:
-                # No neighbors assigned yet, prefer later devices for large layers
-                if layer_idx < num_devices:
-                    # Try from last device backwards
-                    max_remaining = float("-inf")
-                    for dev_idx in range(num_devices - 1, -1, -1):
-                        dev = cuda_xpu_devices[dev_idx]
-                        remaining = device_memory[dev] - estimated_memory
-                        if remaining > max_remaining:
-                            max_remaining = remaining
-                            best_device = dev
-                            best_device_idx = dev_idx
-                else:
-                    # For smaller layers, use device with most remaining space
-                    max_remaining = float("-inf")
-                    for dev_idx in range(num_devices):
-                        dev = cuda_xpu_devices[dev_idx]
-                        remaining = device_memory[dev] - estimated_memory
-                        if remaining > max_remaining:
-                            max_remaining = remaining
-                            best_device = dev
-                            best_device_idx = dev_idx
+                best_device = max(cuda_xpu_devices, key=lambda d: device_memory[d])
 
-        # Phase 3: Final safety fallback - use last device if still None
-        # Use last device to keep device 0 lighter
-        if best_device is None:
-            best_device = cuda_xpu_devices[-1]
-            best_device_idx = num_devices - 1
-
-        # Assign layer to the selected device
+        # Assign layer
         device_map[layer_name] = best_device
         device_memory[best_device] -= estimated_memory
-        assigned_layers.add(layer_name)
 
-        # Update preferred device index for next large layer
-        # Move backwards through devices to distribute large layers
+        # Update preferred device for next large layer
         if layer_idx < num_devices and preferred_device_idx > 0:
             preferred_device_idx -= 1
 
-    # Restore device_map to original layer order for printing
-    ordered_device_map = {name: device_map[name] for name in layer_memory_dict.keys() if name in device_map}
+    # Restore original order
+    ordered_device_map = {name: device_map[name] for name in layer_names_in_order if name in device_map}
     return ordered_device_map, names
 
 
@@ -906,7 +845,7 @@ def set_auto_device_map_for_block_with_tuning(
 
     # Allocate layers to devices using load-balancing strategy
     device_map, names = _allocate_layers_to_devices(layer_memory_dict, device_memory, cuda_xpu_devices, mem_per_param)
-    print(device_map)
+
     set_non_auto_device_map(block, device_map, names)
 
 
