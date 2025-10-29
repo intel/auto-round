@@ -160,6 +160,8 @@ def compute_layer_bits(
     n_param = weight.numel()
     weight_bits = getattr(layer, "bits", 16)
     group_size = getattr(layer, "group_size", 128)
+    data_type = getattr(layer, "data_type", "int")
+    is_sym = getattr(layer, "sym", False)
     super_group_size = getattr(layer, "super_group_size", None)
     super_weight_bits = getattr(layer, "super_bits", None)
 
@@ -175,7 +177,7 @@ def compute_layer_bits(
 
     # Determine number of groups based on group size
     if group_size > 0:
-        n_group = out_features * (in_features + group_size - 1) // group_size
+        n_group = out_features * ((in_features + group_size - 1) // group_size)
     elif group_size == 0:
         n_group = 1
     elif group_size == -1:
@@ -185,9 +187,12 @@ def compute_layer_bits(
 
     # Compute auxiliary bits (scales, zero-points, or double quantization)
     aux_total_bits = 0
-    if not super_group_size:
+    if "mx_fp" in data_type or "nv_fp" in data_type or "fp4" in data_type:
+        scale_bits = 8
+    else:
         scale_bits = 16
-        zp_bits = weight_bits
+    zp_bits = weight_bits if not is_sym else 0
+    if not super_group_size:
         aux_total_bits = n_group * (scale_bits + zp_bits)
     else:
         aux_total_bits += n_group * super_weight_bits * 2
