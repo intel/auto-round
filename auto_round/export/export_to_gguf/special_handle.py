@@ -20,7 +20,7 @@ import torch
 from safetensors import safe_open
 from torch import Tensor
 
-from auto_round.utils import download_hf_model
+from auto_round.utils import download_or_get_path
 
 
 def handle_special_model(cls, model_architecture):
@@ -32,7 +32,7 @@ def handle_special_model(cls, model_architecture):
 
 def get_tensor_from_file(dir_path, tensor_name):
     if not os.path.isdir(dir_path):
-        dir_path = download_hf_model(dir_path)
+        dir_path = download_or_get_path(dir_path)
     INDEX_FILE = "model.safetensors.index.json"
     # get filename
     if INDEX_FILE in os.listdir(dir_path):

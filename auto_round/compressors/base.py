@@ -103,6 +103,7 @@ class BaseCompressor(object):
 
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
@@ -127,6 +128,7 @@ class BaseCompressor(object):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
+        platform="hf",
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
@@ -232,6 +234,7 @@ class BaseCompressor(object):
         device = kwargs.pop("device", None)
         # Scale factor for RAM usage per parameter.
         mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+        self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
@@ -263,6 +266,7 @@ class BaseCompressor(object):
         if isinstance(model, str):
             model, tokenizer = llm_load_model(
                 model,
+                platform=platform,
                 device="cpu",  # always load cpu first
             )
         elif tokenizer is None and not self.diffusion and iters > 0:

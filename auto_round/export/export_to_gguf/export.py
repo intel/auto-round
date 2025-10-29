@@ -28,7 +28,7 @@ from auto_round.utils import (
     LazyImport,
     check_to_quantized,
     clear_memory,
-    download_hf_model,
+    download_or_get_path,
     flatten_list,
     get_block_names,
     get_gguf_architecture,
@@ -77,7 +77,7 @@ def create_model_class(
     tmp_work_dir = model.name_or_path
     os.makedirs(output_dir, exist_ok=True)
     if not os.path.isdir(tmp_work_dir):
-        tmp_work_dir = download_hf_model(tmp_work_dir)
+        tmp_work_dir = download_or_get_path(tmp_work_dir)
     with torch.inference_mode():
         model_architecture = get_gguf_architecture(tmp_work_dir, model_type=model_type)
         try:

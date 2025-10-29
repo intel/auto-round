@@ -86,6 +86,7 @@ class MLLMCompressor(BaseCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
         processor: Any multi-modal model will require an object to encode or
                    decode the data that groups several modalities (among text, vision and audio).
@@ -144,6 +145,7 @@ class MLLMCompressor(BaseCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
+        platform: str = "hf",
         tokenizer=None,
         processor=None,
         image_processor=None,
@@ -171,7 +173,7 @@ class MLLMCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            model, processor, tokenizer, image_processor = mllm_load_model(model, device=self.device)
+            model, processor, tokenizer, image_processor = mllm_load_model(model, platform=platform, device=self.device)
 
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
@@ -257,6 +259,7 @@ class MLLMCompressor(BaseCompressor):
         kwargs["mllm"] = True
         super(MLLMCompressor, self).__init__(
             model=model,
+            platform=platform,
             tokenizer=tokenizer,
             scheme=scheme,
             layer_config=layer_config,
@@ -374,6 +377,7 @@ class MLLMCompressor(BaseCompressor):
                     continue
                 try:
                     if isinstance(data_new, torch.Tensor):
+                        data_new = data_new.to(self.model.device)
                         self.model(data_new)
                     elif isinstance(data_new, tuple) or isinstance(data_new, list):
                         self.model(*data_new)

@@ -45,6 +45,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
         basic.add_argument(
+            "--platform",
+            default="hf",
+            help="Platform to load the pre-trained model. Options: [hf, model_scope]."
+            " hf stands for huggingface and model_scope stands for model scope.",
+        )
+        basic.add_argument(
             "--scheme",
             default="W4A16",
             type=str,
@@ -565,6 +571,7 @@ def tune(args):
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
+        platform=args.platform,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,

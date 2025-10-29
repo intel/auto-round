@@ -39,6 +39,7 @@ class AutoRound:
 
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
@@ -63,6 +64,7 @@ class AutoRound:
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
+        platform: str = "hf",
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
@@ -143,7 +145,7 @@ class AutoRound:
         """
         model_cls = []
 
-        if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model):
+        if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
             if extra_config:
@@ -166,6 +168,7 @@ class AutoRound:
             kwargs.update(extra_config.to_dict())
         ar = dynamic_compressor(
             model=model,
+            platform=platform,
             tokenizer=tokenizer,
             scheme=scheme,
             layer_config=layer_config,
@@ -310,6 +313,7 @@ class AutoRoundLLM(LLMCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
+        platform: str = "hf",
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
@@ -327,6 +331,7 @@ class AutoRoundLLM(LLMCompressor):
     ):
         super().__init__(
             model=model,
+            platform=platform,
             tokenizer=tokenizer,
             scheme=scheme,
             layer_config=layer_config,
@@ -350,6 +355,7 @@ class AutoRoundAdam(AdamCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
@@ -409,6 +415,7 @@ class AutoRoundAdam(AdamCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
+        platform: str = "hf",
         tokenizer=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
@@ -427,6 +434,7 @@ class AutoRoundAdam(AdamCompressor):
     ):
         super().__init__(
             model=model,
+            platform=platform,
             tokenizer=tokenizer,
             scheme=scheme,
             layer_config=layer_config,
@@ -451,6 +459,7 @@ class AutoRoundMLLM(MLLMCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
         processor: Any multi-modal model will require an object to encode or
                    decode the data that groups several modalities (among text, vision and audio).
@@ -509,6 +518,7 @@ class AutoRoundMLLM(MLLMCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
+        platform: str = "hf",
         tokenizer=None,
         processor=None,
         image_processor=None,
@@ -529,6 +539,7 @@ class AutoRoundMLLM(MLLMCompressor):
     ):
         super().__init__(
             model=model,
+            platform=platform,
             tokenizer=tokenizer,
             processor=processor,
             image_processor=image_processor,
@@ -555,6 +566,7 @@ class AutoRoundDiffusion(DiffusionCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
         guidance_scale (float): Control how much the image generation process follows the text prompt.
                                 The more it is, the more closely it follows the prompt (default is 7.5).
