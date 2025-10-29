@@ -16,7 +16,7 @@ import os
 
 import torch.nn as nn
 
-from auto_round.utils import copy_python_files_from_model_cache, logger
+from auto_round.utils import copy_python_files_from_model_cache, logger, is_meta_model
 
 
 def save_model(
@@ -47,12 +47,19 @@ def save_model(
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
-    try:
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    except ValueError as e:
-        if hasattr(model, "generation_config"):
-            setattr(model.generation_config, "do_sample", True)
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    if is_meta_model(model):
+        if hasattr(model, "config") and model.config is not None:
+            model.config.save_pretrained(save_dir)
+            
+        if hasattr(model, "generation_config") and model.generation_config is not None:
+            model.generation_config.save_pretrained(save_dir)
+    else:
+        try:
+            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+        except ValueError as e:
+            if hasattr(model, "generation_config"):
+                setattr(model.generation_config, "do_sample", True)
+            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):

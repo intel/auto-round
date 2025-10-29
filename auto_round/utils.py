@@ -2838,3 +2838,16 @@ def is_diffusion_model(model_or_path: Union[str, object]):
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
+def is_meta_model(model: torch.nn.Module) -> bool:
+    is_meta = False
+    for p in model.parameters():
+        if getattr(p, "is_meta", False) or (hasattr(p, "device") and p.device.type == "meta"):
+            is_meta = True
+            break
+    if not is_meta:
+        for b in model.buffers():
+            if getattr(b, "is_meta", False) or (hasattr(b, "device") and b.device.type == "meta"):
+                is_meta = True
+                break
+    return is_meta
