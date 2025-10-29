@@ -683,7 +683,6 @@ def set_auto_device_map_for_block_with_tuning(
 
     Note:
         This function is intended for internal use in device memory management and tuning.
-        The mem_per_param_scale parameter should be adjusted based on empirical memory usage observations.
     """
     if torch.cuda.is_available():
         num_devices = torch.cuda.device_count()

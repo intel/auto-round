@@ -230,8 +230,6 @@ class BaseCompressor(object):
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
-        # Scale factor for RAM usage per parameter.
-        mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
@@ -332,10 +330,6 @@ class BaseCompressor(object):
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
         self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
-        if mem_per_param_scale is None:
-            self.mem_per_param_scale = 13 if self.iters != 0 else 1
-        else:
-            self.mem_per_param_scale = mem_per_param_scale
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1428,9 +1422,7 @@ class BaseCompressor(object):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-                    set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
-                    )
+                    set_auto_device_map_for_block_with_tuning(block, self.device_map, input_ids, self.low_gpu_mem_usage)
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -2444,9 +2436,7 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
 
         if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-            set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
-            )
+            set_auto_device_map_for_block_with_tuning(block, self.device_map, input_ids, self.low_gpu_mem_usage)
 
         if self.device_map is not None:
             for n, m in block.named_modules():

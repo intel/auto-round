@@ -158,14 +158,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
         )
         tuning.add_argument(
-            "--mem_per_param_scale",
-            default=13,
-            type=float,
-            help="Memory scaling factor for parameter memory estimation. "
-            "Adjust this if you need to control memory usage during tuning. "
-            "Lower values reduce memory usage but may affect accuracy.",
-        )
-        tuning.add_argument(
             "--gradient_accumulate_steps",
             default=1,
             type=int,
@@ -522,7 +514,6 @@ def tune(args):
         enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         lr=args.lr,
         minmax_lr=args.minmax_lr,
-        mem_per_param_scale=args.mem_per_param_scale,
         nblocks=args.nblocks,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
