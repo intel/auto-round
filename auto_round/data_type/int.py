@@ -17,6 +17,7 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 
 
@@ -71,9 +72,34 @@ def quant_tensor_rnt_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
         imatrix = imatrix.reshape(1, -1)
 
         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
-        imatrix = imatrix.reshape(tensor.shape)
+        quant_weights = imatrix.reshape(tensor.shape)
 
-    scale = search_scales(tensor, bits, qw=imatrix)
+        if torch.min(quant_weights) == 0:
+            logger.warning_once(
+                "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
+            )
+            zero_cnt = torch.sum(quant_weights == 0, dim=-1)
+            replace_index = zero_cnt > group_size // 2
+            if torch.sum(replace_index) > 0:
+                ## fallback to no imatrix
+                if bits == 2:
+                    tmp_quant_weights = torch.abs(tensor)
+                elif bits == 4 or bits == 5:
+                    sigma2 = (
+                        torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / 32
+                    )  ## Note 32 is different from QK_K
+                    av_x = torch.sqrt(sigma2)
+                    tmp_quant_weights = torch.abs(tensor) + av_x
+                quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
+            mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
+            if torch.sum(mean_replace_index) > 0:
+                ## use mean values to fill zero values
+                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
+                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
+                replace_idx = quant_weights == 0
+                quant_weights[replace_idx] = tmp_quant_weights[replace_idx]
+
+    scale = search_scales(tensor, bits, qw=quant_weights)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     int_w = round_ste(tensor / scale + v)
     q = torch.clamp(int_w, -maxq, maxq - 1)
