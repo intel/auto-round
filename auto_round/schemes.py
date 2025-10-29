@@ -16,7 +16,6 @@ from copy import deepcopy
 from dataclasses import dataclass, fields
 from typing import Optional, Union
 
-
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
 
 
@@ -284,8 +283,6 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
         if equal:
             return key
     return ""
-
-
 
     def __post_init__(self):
         if isinstance(self.options, str):
