@@ -16,7 +16,7 @@ from copy import deepcopy
 from dataclasses import dataclass, fields
 from typing import Optional, Union
 
-__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
+__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
 
 @dataclass
