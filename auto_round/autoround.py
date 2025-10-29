@@ -28,8 +28,10 @@ from auto_round.compressors import (
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
+
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
 
 class AutoRound:
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
