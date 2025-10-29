@@ -157,4 +157,5 @@ class GenScheme:
             )[0]
             for option in self.auto_scheme.options
         ]
-        return min(avg_bits), max(avg_bits)
+        self.min_avg_bit, self.max_avg_bit = min(avg_bits), max(avg_bits)
+        return self.min_avg_bit, self.max_avg_bit
