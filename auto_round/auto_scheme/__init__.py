@@ -11,32 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
 
-AUTO_SCHEME_METHODS = {}
-
-
-def register_scheme_methods(names):
-    """Class decorator to register a mixed precision algorithm to the registry.
-
-    Decorator function used before a Pattern subclass.
-
-    Args:
-        names: A string. Define the export type.
-
-    Returns:
-        cls: The class of register.
-    """
-
-    def register(alg):
-        if isinstance(names, (tuple, list)):
-            for name in names:
-                AUTO_SCHEME_METHODS[name] = alg
-        else:
-            AUTO_SCHEME_METHODS[names] = alg
-
-        return alg
-
-    return register
-
-
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 import auto_round.auto_scheme.default_alg
