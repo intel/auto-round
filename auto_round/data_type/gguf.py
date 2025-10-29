@@ -286,6 +286,9 @@ def quant_tensor_asym_dq(
 
 
 def _imatrix_handle_zero(imatrix, weight, bits):
+    if not isinstance(imatrix, torch.Tensor):
+        return imatrix
+
     group_size = 16 if bits == 2 else 32
     if torch.min(imatrix) == 0:
         logger.warning_once(
