@@ -139,6 +139,8 @@ class BaseCompressor(object):
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
+        enable_alg_ext: bool = False,
+        disable_opt_rtn: bool = True,
         seed: int = 42,
         **kwargs,
     ):
@@ -189,14 +191,9 @@ class BaseCompressor(object):
 
             >>> layer_config = {
             ...     "layer1": {
-            ...         "data_type": "int",
-            ...         "bits": 4,
+            ...         "bits": 3,
             ...         "group_size": 128,
             ...         "sym": True,
-            ...         "act_data_type": None,
-            ...         "act_bits": 16,
-            ...         "act_group_size": None,
-            ...         "act_sym": None,
             ...     },
             ...     "layer2": {
             ...         "W8A16"
@@ -214,10 +211,8 @@ class BaseCompressor(object):
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
         lr = kwargs.pop("lr", None)
-        enable_alg_ext = kwargs.pop("enable_alg_ext", False)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
-        disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
