@@ -17,7 +17,7 @@ from typing import Iterable, Optional, Union
 
 import torch
 
-from auto_round.auto_scheme import AUTO_SCHEME_METHODS
+from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
 from auto_round.auto_scheme.utils import compute_avg_bits_for_scheme
 from auto_round.compressors.utils import gguf_type_fallback
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
@@ -41,11 +41,11 @@ class AutoScheme:
     enable_torch_compile: Optional[bool] = None
     disable_opt_rtn: bool = True
     low_gpu_mem_usage: bool = True
+
     def __post_init__(self):
         if isinstance(self.options, str):
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
-
 
 
 class GenScheme:

@@ -283,4 +283,3 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
         if equal:
             return key
     return ""
-
