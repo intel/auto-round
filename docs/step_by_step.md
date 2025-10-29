@@ -282,8 +282,6 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
 
-We strongly recommend set `enable_torch_compile` to True to save VRAM.
-
 **Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
 
 #### CLI Usage
