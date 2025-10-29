@@ -13,11 +13,13 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import torch
 
-from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+if TYPE_CHECKING:
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
 from auto_round.compressors import (
     AdamCompressor,
     BaseCompressor,
