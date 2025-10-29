@@ -284,7 +284,3 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
             return key
     return ""
 
-    def __post_init__(self):
-        if isinstance(self.options, str):
-            options = self.options.upper().replace(" ", "")
-            self.options = options.split(",")
