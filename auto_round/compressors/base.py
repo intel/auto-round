@@ -30,7 +30,7 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
-from auto_round.auto_scheme import AutoScheme
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
