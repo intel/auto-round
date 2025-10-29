@@ -17,7 +17,7 @@ from typing import Union
 
 import torch
 
-from auto_round.auto_scheme import AutoScheme
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors import (
     AdamCompressor,
     BaseCompressor,
