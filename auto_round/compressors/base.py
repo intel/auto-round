@@ -30,6 +30,7 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
@@ -52,7 +53,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import AutoScheme, QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -139,6 +140,8 @@ class BaseCompressor(object):
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
+        enable_alg_ext: bool = False,
+        disable_opt_rtn: bool = True,
         seed: int = 42,
         **kwargs,
     ):
@@ -189,14 +192,9 @@ class BaseCompressor(object):
 
             >>> layer_config = {
             ...     "layer1": {
-            ...         "data_type": "int",
-            ...         "bits": 4,
+            ...         "bits": 3,
             ...         "group_size": 128,
             ...         "sym": True,
-            ...         "act_data_type": None,
-            ...         "act_bits": 16,
-            ...         "act_group_size": None,
-            ...         "act_sym": None,
             ...     },
             ...     "layer2": {
             ...         "W8A16"
@@ -214,10 +212,8 @@ class BaseCompressor(object):
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
         lr = kwargs.pop("lr", None)
-        enable_alg_ext = kwargs.pop("enable_alg_ext", False)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
-        disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)

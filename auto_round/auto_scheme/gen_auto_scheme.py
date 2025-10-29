@@ -11,19 +11,41 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import math
-from dataclasses import asdict
-from typing import Iterable, Union
+
+from dataclasses import dataclass
+from typing import Iterable, Optional, Union
 
 import torch
 
-from auto_round import AutoScheme
-from auto_round.auto_scheme import AUTO_SCHEME_METHODS
+from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
 from auto_round.auto_scheme.utils import compute_avg_bits_for_scheme
 from auto_round.compressors.utils import gguf_type_fallback
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_layer_features, get_module
+
+
+@dataclass
+class AutoScheme:
+    avg_bits: float
+    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str], ...]]
+    shared_layers: Optional[Iterable[Iterable[str]]] = None
+    method: str = "default"
+    ignore_scale_zp_bits: bool = False
+    batch_size: Optional[int] = None
+    nsamples: Optional[int] = None
+    seqlen: Optional[int] = None
+    dataset: Optional[str] = None  # Import Notice no comma for each item
+    device_map: Optional[Union[str, torch.device, int, dict]] = None
+    enable_torch_compile: Optional[bool] = None
+    disable_opt_rtn: bool = True
+    low_gpu_mem_usage: bool = True
+
+    def __post_init__(self):
+        if isinstance(self.options, str):
+            options = self.options.upper().replace(" ", "")
+            self.options = options.split(",")
 
 
 class GenScheme:
