@@ -305,6 +305,7 @@ def _imatrix_handle_zero(imatrix, weight, bits):
                 sigma2 = torch.sum(torch.pow(weight, 2), dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
                 av_x = torch.sqrt(sigma2)
                 tmp_quant_weights = torch.abs(weight) + av_x
+            tmp_quant_weights = tmp_quant_weights.to(imatrix.dtype)
             imatrix[replace_index, :] = tmp_quant_weights[replace_index, :]
         mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
         if torch.sum(mean_replace_index) > 0:

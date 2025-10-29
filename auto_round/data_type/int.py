@@ -75,7 +75,7 @@ def quant_tensor_rnt_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
         imatrix = imatrix.reshape(tensor.shape)
 
-    imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
+        imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
