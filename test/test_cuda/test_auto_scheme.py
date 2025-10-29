@@ -146,7 +146,7 @@ class TestAutoScheme(unittest.TestCase):
     #
     def test_max_target_bits(self):
         model_name = "/models/opt-125m"
-        target_bits = 8.211
+        target_bits = 8.025
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()

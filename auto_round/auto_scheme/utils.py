@@ -191,7 +191,7 @@ def compute_layer_bits(
         scale_bits = 8
     else:
         scale_bits = 16
-    zp_bits = weight_bits if not is_sym else 0
+    zp_bits = weight_bits if not is_sym or "int" in data_type else 0
     if not super_group_size:
         aux_total_bits = n_group * (scale_bits + zp_bits)
     else:
