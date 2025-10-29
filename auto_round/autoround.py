@@ -17,6 +17,7 @@ from typing import Union
 
 import torch
 
+from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import (
     AdamCompressor,
     BaseCompressor,
@@ -26,7 +27,6 @@ from auto_round.compressors import (
     MLLMCompressor,
 )
 from auto_round.logger import deprecated, logger
-from auto_round.auto_scheme import AutoScheme
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
 

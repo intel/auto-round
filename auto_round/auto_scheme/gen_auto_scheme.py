@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Iterable, Union, Optional
+from dataclasses import dataclass
+from typing import Iterable, Optional, Union
+
 import torch
+
 from auto_round.auto_scheme import AUTO_SCHEME_METHODS
 from auto_round.auto_scheme.utils import compute_avg_bits_for_scheme
 from auto_round.compressors.utils import gguf_type_fallback
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-from auto_round.utils import get_layer_features, get_module
-from dataclasses import dataclass
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils import get_layer_features, get_module
 
 
 @dataclass
@@ -39,7 +41,6 @@ class AutoScheme:
     enable_torch_compile: Optional[bool] = None
     disable_opt_rtn: bool = True
     low_gpu_mem_usage: bool = True
-
 
 
 class GenScheme:
