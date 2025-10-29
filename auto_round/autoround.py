@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import torch
 
@@ -28,7 +28,8 @@ from auto_round.compressors import (
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
-
+if TYPE_CHECKING:
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
 class AutoRound:
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
@@ -64,7 +65,7 @@ class AutoRound:
         cls,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        scheme: "str|dict|QuantizationScheme|AutoScheme" = "W4A16",
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
