@@ -234,6 +234,9 @@ class BaseCompressor(object):
         device = kwargs.pop("device", None)
         # Scale factor for RAM usage per parameter.
         mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+
+        if os.getenv("MODEL_PLATFORM"):
+            platform = os.getenv("MODEL_PLATFORM").lower()
         self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
