@@ -41,11 +41,11 @@ class AutoScheme:
     enable_torch_compile: Optional[bool] = None
     disable_opt_rtn: bool = True
     low_gpu_mem_usage: bool = True
+
     def __post_init__(self):
         if isinstance(self.options, str):
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
-
 
 
 class GenScheme:
