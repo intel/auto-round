@@ -1,8 +1,12 @@
 <div align="center">
 
 
-AutoRound
-===========================
+
+<p align="center">
+  <img src="docs/imgs/AutoRound.png" alt="AutoRound Overview" width="20%">
+</p>
+
+
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
