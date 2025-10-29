@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Any, Callable, Union
+from typing import Union
 
 import torch
 
