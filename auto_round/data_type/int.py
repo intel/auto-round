@@ -22,7 +22,7 @@ from auto_round.utils import get_reciprocal
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
     nmax = pow(2, bits - 1)
-    imax = abs(data).argmax(axis=-1, keepdims=True)
+    imax = torch.abs(data).argmax(dim=-1, keepdim=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
     iscales = -nmax * get_reciprocal(group_max)
     scales = get_reciprocal(iscales)
