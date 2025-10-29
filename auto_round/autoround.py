@@ -13,12 +13,9 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import Union
 
 import torch
-
-if TYPE_CHECKING:
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
 from auto_round.compressors import (
     AdamCompressor,
@@ -67,7 +64,7 @@ class AutoRound:
         cls,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
+        scheme: "str|dict|QuantizationScheme|AutoScheme" = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
