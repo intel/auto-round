@@ -45,9 +45,7 @@ refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and
  for some accuracy results. 
 
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
-  all bits other than 3 bits. Example
-  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound). **A more advanced algorithm** tailored for specific configurations may be available in
+  all bits other than 3 bits. **A more advanced algorithm** tailored for specific configurations may be available in
   v0.8.1.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
@@ -186,11 +184,11 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 # ar = AutoRound(model_name_or_path, nsamples=128, iters=50, lr=5e-3)
 
 # Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m", etc.
-ar.quantize_and_save(output_dir="./tmp_autoround", format="auto_round")
+ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ```
 
 ### AutoScheme Usage 
-
+Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
 from auto_round import AutoRound, AutoScheme
 
@@ -231,7 +229,7 @@ ar.quantize_and_save()
 
 
 ##### Device/Speed Configuration
-- **enable_torch_compile (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
+- **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `"cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`).
 
@@ -259,7 +257,7 @@ from auto_round import AutoRoundMLLM
 model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
 # Quantize the model
 ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
-output_dir = "./tmp_autoround"
+output_dir = "./qmodel"
 ar.quantize_and_save(output_dir)
 ```
 
