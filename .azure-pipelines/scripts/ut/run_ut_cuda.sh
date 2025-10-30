@@ -36,6 +36,7 @@ function create_conda_env() {
     fi
     uv pip install -v --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake==4.0.2
+    uv pip install torch==2.8.0 torchvision
 }
 
 function print_test_results_table() {
