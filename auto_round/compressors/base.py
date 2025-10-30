@@ -2437,10 +2437,12 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
             set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
+        else:
+            block = block.to(device)
 
         if self.device_map is not None:
             for n, m in block.named_modules():
