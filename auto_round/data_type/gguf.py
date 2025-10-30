@@ -315,7 +315,7 @@ def _imatrix_handle_zero(imatrix, weight, bits):
             tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, imatrix.shape[1])
             replace_idx = imatrix == 0
             imatrix[replace_idx] = tmp_quant_weights[replace_idx]
-        return imatrix.reshape(weight.shape)
+    return imatrix.reshape(weight.shape)
 
 
 @torch.no_grad()
@@ -370,7 +370,7 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
 
-        _imatrix_handle_zero(quant_weights, tensor, bits)
+        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
