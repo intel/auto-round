@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
-    "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE ", "False").lower() in ["1", "true"],
+    "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE", "False").lower() in ["1", "true"],
 }
 
 
@@ -43,3 +43,30 @@ def is_set(name: str):
     if name in environment_variables:
         return name in os.environ
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def set_config(**kwargs):
+    """
+    Set configuration values for environment variables.
+
+    Args:
+        **kwargs: Keyword arguments where keys are environment variable names
+                 and values are the desired values to set.
+
+    Example:
+        set_config(AR_LOG_LEVEL="DEBUG", AR_USE_MODELSCOPE=True)
+    """
+    for key, value in kwargs.items():
+        if key in environment_variables:
+            # Convert value to appropriate string format
+            if key == "AR_USE_MODELSCOPE":
+                # Handle boolean values for AR_USE_MODELSCOPE
+                str_value = "true" if value in [True, "True", "true", "1", 1] else "false"
+            else:
+                # For other variables, convert to string
+                str_value = str(value)
+
+            # Set the environment variable
+            os.environ[key] = str_value
+        else:
+            raise AttributeError(f"module {__name__!r} has no attribute {key!r}")

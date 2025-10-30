@@ -30,6 +30,7 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round import envs
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
@@ -235,7 +236,7 @@ class BaseCompressor(object):
         # Scale factor for RAM usage per parameter.
         mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
 
-        if os.getenv("AR_USE_MODELSCOPE", False):
+        if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)

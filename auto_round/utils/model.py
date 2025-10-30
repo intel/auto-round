@@ -23,6 +23,7 @@ from typing import Union
 import torch
 import transformers
 
+from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -149,10 +150,10 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
 
 
 def download_or_get_path(repo_id: str, platform: str = None) -> str:
-    from auto_round.envs import AR_USE_MODELSCOPE
+    from auto_round import envs
 
     if platform is None:
-        if AR_USE_MODELSCOPE:
+        if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         else:
             platform = "hf"
@@ -224,7 +225,8 @@ def llm_load_model(
         "hf",
         "model_scope",
     ], "current only support hf or model_scope platform to load pretrained model."
-    os.environ["AR_USE_MODELSCOPE"] = "True" if platform.lower() == "model_scope" else "False"
+    if platform.lower() == "model_scope" and not envs.AR_USE_MODELSCOPE:
+        envs.set_config(AR_USE_MODELSCOPE=True)
     if platform == "model_scope":
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
@@ -309,7 +311,8 @@ def mllm_load_model(
         "hf",
         "model_scope",
     ], "current only support hf or model_scope platform to load pretrained model."
-    os.environ["AR_USE_MODELSCOPE"] = "model_scope" if platform.lower() == "model_scope" else "hf"
+    if platform.lower() == "model_scope" and not envs.AR_USE_MODELSCOPE:
+        envs.set_config(AR_USE_MODELSCOPE=True)
 
     if platform == "model_scope":
         import modelscope  # pylint: disable=E0401
