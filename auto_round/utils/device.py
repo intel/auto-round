@@ -473,9 +473,9 @@ def estimate_tuning_block_mem(
         tuple: A tuple containing the following:
             - layer_memory_dict (dict): A dictionary mapping layer names to their memory consumption (in GB).
               Format: {layer_name: {"param_memory": float, "output_memory": float}}
-              SDPA layers are represented with a fixed 1GB output memory.
             - input_output_memory (float): The memory consumption (in GB) for input and output
                 tensors of the block.
+            - additional_memory (float): Additional memory overhead (in GB) for operations like attention.
     """
     # Calculate all block parameters memory and build layer-wise memory dict
     from auto_round.utils.model import get_layer_features
@@ -517,13 +517,13 @@ def estimate_tuning_block_mem(
     # Assuming bfloat16 or float32, input and output
     input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
 
-    # considering sdpa (attention activation) memory and reference_output memory for loss calculation
+    # Considering norm, sdpa, reference_output, etc.
     additional_memory = 1
     if torch.xpu.is_available():
         # https://github.com/intel/torch-xpu-ops/issues/2232
-        # sdpa on XPU takes more memory than expected. 2 from grad tensor
-        xpu_sdpa_additional_memory = 9  # GB
-        additional_memory += xpu_sdpa_additional_memory * 2
+        # TODO: XPU takes more memory than expected. for llama 8B, it's 9*2 GB
+        xpu_additional_memory = 9  # GB
+        additional_memory += xpu_additional_memory * 2
 
     return layer_memory_dict, input_output_memory, additional_memory
 
@@ -845,6 +845,16 @@ def set_auto_device_map_for_block_with_tuning(
     logger.debug(f"Auto device map for block: {device_map}")
 
     set_non_auto_device_map(block, device_map, names)
+
+    # Ensure all remaining modules with params/buffers are moved to device_0
+    # This prevents mixed CPU/GPU execution within the same block
+    for name, module in block.named_modules():
+        if name not in names:  # This module wasn't assigned a device
+            # Check if module has any parameters or buffers
+            has_params = any(True for _ in module.parameters(recurse=False))
+            has_buffers = any(True for _ in module.buffers(recurse=False))
+            if has_params or has_buffers:
+                set_tuning_device_for_layer(block, name, device_0)
 
 
 def partition_dict_numbers(number_dict, n):

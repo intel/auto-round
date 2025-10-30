@@ -311,7 +311,6 @@ class BaseCompressor(object):
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.seqlen = seqlen
         self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
-        self.pick_samples = self.batch_size * self.gradient_accumulate_steps
         self.nblocks = nblocks
         self.dataset = dataset
         self.iters = iters
@@ -1424,7 +1423,7 @@ class BaseCompressor(object):
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
                     set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.pick_samples
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
                     )
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -2250,10 +2249,10 @@ class BaseCompressor(object):
         init_loss = None
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
         batch_size = 1  # Force to low gpu
-        self.pick_samples = batch_size * gradient_accumulate_steps
-        self.pick_samples = min(nsamples, self.pick_samples)
+        pick_samples = batch_size * gradient_accumulate_steps
+        pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[: self.pick_samples]
+            whole_indices = torch.randperm(nsamples)[:pick_samples]
         total_loss = 0
         num_elm = 1
         mse_reduction = "mean"
@@ -2264,7 +2263,7 @@ class BaseCompressor(object):
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[: self.pick_samples]
+                whole_indices = torch.randperm(nsamples)[:pick_samples]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
                         num_elm = self._get_current_num_elm(q_inputs, whole_indices)
@@ -2440,7 +2439,7 @@ class BaseCompressor(object):
 
         if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
             set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.pick_samples
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
             )
 
         if self.device_map is not None:
@@ -2483,8 +2482,9 @@ class BaseCompressor(object):
         if q_input is not None:
             if input_ids is not q_input:
                 clear_memory(input_ids)
+            else:
+                clear_memory()
             input_ids = q_input
-        clear_memory()
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block,
@@ -2540,9 +2540,10 @@ class BaseCompressor(object):
         else:
             nsamples = len(input_ids)
 
-        self.pick_samples = min(nsamples, self.pick_samples)
+        pick_samples = self.batch_size * self.gradient_accumulate_steps
+        pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[: self.pick_samples]
+            whole_indices = torch.randperm(nsamples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -2557,7 +2558,7 @@ class BaseCompressor(object):
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[: self.pick_samples]
+                whole_indices = torch.randperm(nsamples)[:pick_samples]
                 # We assume the block input and output shape is same
                 if self.gradient_accumulate_steps != 1:
                     num_elm = self._get_current_num_elm(input_ids, whole_indices)
@@ -2570,7 +2571,7 @@ class BaseCompressor(object):
                 current_output = to_device(current_output, device)
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
-                clear_memory()  # clean cached memory after getting output_q
+
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -2590,7 +2591,11 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
-                clear_memory()  # clean cached memory after backward
+
+                # Temporary change for 70B model OOM issue on XPU
+                # TODO: Remove after https://github.com/intel/torch-xpu-ops/issues/2232 is fixed
+                if torch.xpu.is_available():
+                    clear_memory()  # clean cached memory after backward
 
             if i == 0:
                 init_loss = total_loss
@@ -2745,7 +2750,6 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
                 input_ids,
