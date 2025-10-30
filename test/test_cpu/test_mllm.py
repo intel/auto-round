@@ -175,7 +175,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
 
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             quantized_model_path,
-            torch_dtype="float16",
+            dtype="float16",
             device_map="auto",
         )
         processor = AutoProcessor.from_pretrained(quantized_model_path)
@@ -232,7 +232,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         from PIL import Image
         from transformers import AutoProcessor, AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained("./saved", torch_dtype="auto", device_map="auto")
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained("./saved", dtype="auto", device_map="auto")
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
         processor = AutoProcessor.from_pretrained("./saved")
         messages = [

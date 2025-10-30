@@ -35,7 +35,7 @@ class TestAutoRoundXPU(unittest.TestCase):
     def test_gptq_format(self):
         model_name = "facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype="auto", trust_remote_code=True, device_map="auto"
+            model_name, dtype="auto", trust_remote_code=True, device_map="auto"
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -68,7 +68,7 @@ class TestAutoRoundXPU(unittest.TestCase):
     def test_awq_format(self):
         model_name = "facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype="auto", trust_remote_code=True, device_map="xpu"
+            model_name, dtype="auto", trust_remote_code=True, device_map="xpu"
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True

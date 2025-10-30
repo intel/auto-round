@@ -35,7 +35,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_optimum
     def test_autogptq_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -66,7 +66,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_optimum
     def test_autogptq_format_fp_layers(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         layer_config = {}
         for n, m in model.named_modules():
@@ -103,7 +103,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autogptq_format_qsave_fp_layers(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         layer_config = {}
         for n, m in model.named_modules():
@@ -154,7 +154,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -187,7 +187,7 @@ class TestAutoRound(unittest.TestCase):
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -221,7 +221,7 @@ class TestAutoRound(unittest.TestCase):
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format_fp_qsave_layers(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 16},
             "model.decoder.layers.9.self_attn.v_proj": {"bits": 16},
@@ -262,7 +262,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_3bit_asym_torch_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 3, 128, False
         autoround = AutoRound(
@@ -291,7 +291,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_3bit_sym_torch_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 3, 128, True
         autoround = AutoRound(

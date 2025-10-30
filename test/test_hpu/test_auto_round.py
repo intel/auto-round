@@ -11,7 +11,7 @@ def run_opt_125m_on_hpu():
     from auto_round import AutoRound
 
     model_name = "facebook/opt-125m"
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     bits, group_size, sym = 4, 128, False
@@ -58,7 +58,7 @@ def test_w4a8(data_type):
     model_name = "facebook/opt-125m"
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype="auto",
+        dtype="auto",
         attn_implementation="eager",
         trust_remote_code=True,
     )

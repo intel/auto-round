@@ -60,7 +60,7 @@ class AutoRoundTest(unittest.TestCase):
         torch.cuda.synchronize()
         cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name)
         cls.quantized_model = AutoModelForCausalLM.from_pretrained(
-            cls.model_name, device_map=cls.device_map, torch_dtype=torch.float16
+            cls.model_name, device_map=cls.device_map, dtype=torch.float16
         )
 
     def tearDown(self):
@@ -90,7 +90,7 @@ class AutoRoundTest(unittest.TestCase):
         quantization_config = AutoRoundConfig(backend="triton")
         quantized_model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map=self.device_map,
             quantization_config=quantization_config,
         )
@@ -105,7 +105,7 @@ class AutoRoundTest(unittest.TestCase):
         """
         input_ids = self.tokenizer(self.input_text, return_tensors="pt")
 
-        quantized_model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto")
+        quantized_model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
 
         self.assertIn(self.tokenizer.decode(output[0], skip_special_tokens=True), self.EXPECTED_OUTPUTS)
@@ -121,7 +121,7 @@ class AutoRoundTest(unittest.TestCase):
             quantized_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 device_map=self.device_map,
-                torch_dtype=torch.float16,
+                dtype=torch.float16,
                 quantization_config=quantization_config,
             )
 
@@ -140,7 +140,7 @@ class AutoRoundTest(unittest.TestCase):
         """
         quantization_config = AutoRoundConfig(backend="triton")
         quantized_model = AutoModelForCausalLM.from_pretrained(
-            self.model_name, device_map="auto", quantization_config=quantization_config, torch_dtype="auto"
+            self.model_name, device_map="auto", quantization_config=quantization_config, dtype="auto"
         )
         input_ids = self.tokenizer(self.input_text, return_tensors="pt").to(quantized_model.device)
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
@@ -155,7 +155,7 @@ class AutoRoundTest(unittest.TestCase):
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, device_map="cuda", quantization_config=quantization_config, torch_dtype="auto"
+            model_name, device_map="cuda", quantization_config=quantization_config, dtype="auto"
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -173,7 +173,7 @@ class AutoRoundTest(unittest.TestCase):
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
+            model_name, device_map="cpu", quantization_config=quantization_config, dtype="auto"
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -186,7 +186,7 @@ class AutoRoundTest(unittest.TestCase):
         Simple test that checks if auto-round work properly with mixed bits
         """
         model_name = "facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 8},
@@ -199,7 +199,7 @@ class AutoRoundTest(unittest.TestCase):
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         with tempfile.TemporaryDirectory() as tmpdirname:
             autoround.quantize_and_save(output_dir=tmpdirname)
-            model = AutoModelForCausalLM.from_pretrained(tmpdirname, torch_dtype=torch.float16, device_map="cuda")
+            model = AutoModelForCausalLM.from_pretrained(tmpdirname, dtype=torch.float16, device_map="cuda")
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])

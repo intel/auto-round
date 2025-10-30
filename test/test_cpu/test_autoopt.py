@@ -24,7 +24,7 @@ class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 

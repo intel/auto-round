@@ -26,7 +26,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
     def test_marlin_group_size(self):
         for group_size in [-1, 64]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = 4, group_size, True
             autoround = AutoRound(
@@ -44,7 +44,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
             quantization_config = AutoRoundConfig(backend="marlin")
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+                self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
             )
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -55,7 +55,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
         for group_size in [32, 128]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = 4, group_size, True
             autoround = AutoRound(
@@ -73,7 +73,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
             quantization_config = AutoRoundConfig(backend="marlin")
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+                self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
             )
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -120,7 +120,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_marlin_4bits_sym_with_zp_m_1(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -138,7 +138,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="marlin")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -149,7 +149,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -161,7 +161,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     # def test_marlin_4bits_sym(self):
-    #     model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+    #     model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
     #     tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
     #     bits, group_size, sym = 4, 128, True
     #     autoround = AutoRound(
@@ -180,7 +180,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
     #     quantization_config = AutoRoundConfig(backend="marlin")
     #     model = AutoModelForCausalLM.from_pretrained(
     #         self.save_folder,
-    #         torch_dtype=torch.float16,
+    #         dtype=torch.float16,
     #         device_map="auto",
     #         quantization_config=quantization_config
     #     )
@@ -194,7 +194,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
     #
     #     model = AutoModelForCausalLM.from_pretrained(
     #         self.save_folder,
-    #         torch_dtype=torch.bfloat16,
+    #         dtype=torch.bfloat16,
     #         device_map="auto",
     #         quantization_config=quantization_config
     #     )

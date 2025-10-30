@@ -195,9 +195,9 @@ def llm_load_model(
     )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
+    dtype = "auto"
     if device_str is not None and "hpu" in device_str:
-        torch_dtype = torch.bfloat16
+        dtype = torch.bfloat16
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
@@ -210,7 +210,7 @@ def llm_load_model(
     if _use_hpu_compile_mode():
         model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
-            torch_dtype=torch_dtype,
+            dtype=dtype,
             attn_implementation="eager",
             trust_remote_code=trust_remote_code,
             device_map="auto" if use_auto_mapping else None,
@@ -219,7 +219,7 @@ def llm_load_model(
         try:
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
+                dtype=dtype,
                 trust_remote_code=trust_remote_code,
                 device_map="auto" if use_auto_mapping else None,
             )
@@ -228,7 +228,7 @@ def llm_load_model(
                 orig_func = set_fake_cuda_device_capability()
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
-                    torch_dtype=torch_dtype,
+                    dtype=dtype,
                     trust_remote_code=trust_remote_code,
                     device_map="auto" if use_auto_mapping else None,
                 )
@@ -241,7 +241,7 @@ def llm_load_model(
             logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
+                dtype=dtype,
                 trust_remote_code=False,
                 device_map="auto" if use_auto_mapping else None,
             )
@@ -256,7 +256,7 @@ def llm_load_model(
 def mllm_load_model(
     pretrained_model_name_or_path,
     device="cpu",
-    torch_dtype="auto",
+    dtype="auto",
     use_auto_mapping=True,
     trust_remote_code=True,
     model_dtype=None,
@@ -268,9 +268,9 @@ def mllm_load_model(
     from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
+    dtype = "auto"
     if device_str is not None and "hpu" in device_str:
-        torch_dtype = torch.bfloat16
+        dtype = torch.bfloat16
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
@@ -306,7 +306,7 @@ def mllm_load_model(
         model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path,
             trust_remote_code=trust_remote_code,
-            torch_dtype=torch_dtype,
+            dtype=dtype,
             device_map="auto" if use_auto_mapping else None,
         )
     else:
@@ -318,7 +318,7 @@ def mllm_load_model(
                 pretrained_model_name_or_path,
                 model_base=None,
                 model_name=pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
+                dtype=dtype,
             )
         else:
             if architectures.endswith("Model") and hasattr(
@@ -333,7 +333,7 @@ def mllm_load_model(
                 model = cls.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
-                    torch_dtype=torch_dtype,
+                    dtype=dtype,
                     device_map="auto" if use_auto_mapping else None,
                 )
             except ValueError as e:
@@ -342,7 +342,7 @@ def mllm_load_model(
                     model = cls.from_pretrained(
                         pretrained_model_name_or_path,
                         trust_remote_code=trust_remote_code,
-                        torch_dtype=torch_dtype,
+                        dtype=dtype,
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
@@ -383,7 +383,7 @@ def mllm_load_model(
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     device: Union[str, torch.device] = "cpu",
-    torch_dtype: Union[str, torch.dtype] = "auto",
+    dtype: Union[str, torch.dtype] = "auto",
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
     model_dtype: str = None,
@@ -393,14 +393,14 @@ def diffusion_load_model(
     from auto_round.utils.device import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
+    dtype = "auto"
     if device_str is not None and "hpu" in device_str:
-        torch_dtype = torch.bfloat16
+        dtype = torch.bfloat16
 
     pipelines = LazyImport("diffusers.pipelines")
 
     pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-        pretrained_model_name_or_path, torch_dtype=torch_dtype
+        pretrained_model_name_or_path, dtype=dtype
     )
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer

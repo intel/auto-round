@@ -23,7 +23,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
         self.save_folder = "./saved"
@@ -63,7 +63,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         assert "!!!" not in res
 
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", quantization_config=quantization_config, torch_dtype=torch.float16
+            quantized_model_path, device_map="cpu", quantization_config=quantization_config, dtype=torch.float16
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
@@ -74,7 +74,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
 
     def test_autoround_sym(self):
         for bits in [4]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, True
             autoround = AutoRound(

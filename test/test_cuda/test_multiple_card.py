@@ -42,7 +42,7 @@ class TestAutoRound(unittest.TestCase):
     @require_gptqmodel
     def test_device_map_str(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = ".*q_proj:0,.*k_proj:cuda:0,v_proj:1,.*up_proj:1"
         autoround = AutoRound(model, tokenizer, device_map=device_map)
@@ -59,7 +59,7 @@ class TestAutoRound(unittest.TestCase):
     @multi_card
     def test_layer_norm(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {"norm": "cuda:1"}
         autoround = AutoRound(
@@ -70,7 +70,7 @@ class TestAutoRound(unittest.TestCase):
     @multi_card
     def test_rms_norm(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {"norm": "cuda:1"}
         autoround = AutoRound(
@@ -81,7 +81,7 @@ class TestAutoRound(unittest.TestCase):
     @multi_card
     def test_act_quantization(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
         autoround = AutoRound(
@@ -92,7 +92,7 @@ class TestAutoRound(unittest.TestCase):
     @multi_card
     def test_lm_head(self):
         model_name = "/models/Qwen2.5-7B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1", "lm_head": 1}
         layer_config = {"lm_head": {"bits": 4}}
@@ -111,7 +111,7 @@ class TestAutoRound(unittest.TestCase):
     @multi_card
     def test_device_map(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
         autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32)
@@ -170,7 +170,7 @@ class TestAutoRound(unittest.TestCase):
             "cuda",
             "auto",
         ]:
-            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map=tmp_device_map)
+            model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", device_map=tmp_device_map)
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -214,7 +214,7 @@ class TestAutoRound(unittest.TestCase):
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
         bits, group_size, sym = 4, 128, False
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(
             model,
@@ -314,7 +314,7 @@ class TestAutoRound(unittest.TestCase):
             "auto",
         ]:
             model = AutoModelForCausalLM.from_pretrained(
-                model_name, torch_dtype="auto", device_map=tmp_device_map, quantization_config=quantization_config
+                model_name, dtype="auto", device_map=tmp_device_map, quantization_config=quantization_config
             )
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)

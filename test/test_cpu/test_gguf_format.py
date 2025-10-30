@@ -123,7 +123,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
         # model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-        # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        # model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         # autoround = AutoRound(
         #     model,
         #     self.tokenizer,
@@ -148,7 +148,7 @@ class TestGGUF(unittest.TestCase):
     #
     # def test_q5_k(self):
     #     model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    #     model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
     #     autoround = AutoRound(
     #         model,
     #         self.tokenizer,
@@ -172,7 +172,7 @@ class TestGGUF(unittest.TestCase):
 
     # def test_q6_k(self):
     #     model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    #     model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
     #     autoround = AutoRound(
     #         model,
     #         self.tokenizer,
@@ -196,7 +196,7 @@ class TestGGUF(unittest.TestCase):
 
     def test_gguf_baseline(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -219,7 +219,7 @@ class TestGGUF(unittest.TestCase):
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
         #
-        # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        # model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         # autoround = AutoRound(
         #     model,
         #     self.tokenizer,
@@ -243,7 +243,7 @@ class TestGGUF(unittest.TestCase):
 
     def test_q4_k_m(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
             "lm_head": {
@@ -282,7 +282,7 @@ class TestGGUF(unittest.TestCase):
         self.assertEqual(autoround.layer_config["model.layers.10.mlp.gate_proj"]["mostly"], "gguf:q8_0")
         shutil.rmtree("./saved", ignore_errors=True)
 
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         autoround = AutoRound(model, tokenizer, iters=0, nsamples=1, seqlen=128, disable_opt_rtn=False)
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")

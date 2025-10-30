@@ -63,7 +63,7 @@ def test_e2e_quant_and_load(scheme_name, weight_data_type, act_data_type):
         # Perform inference with the quantized model
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
-            torch_dtype="auto",
+            dtype="auto",
         )
         model.eval()
         assert has_module(

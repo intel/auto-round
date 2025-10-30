@@ -65,7 +65,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
     @require_gptqmodel
     def test_gptqmodel_exllmav2_4bits_asym(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -76,7 +76,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:exllamav2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -87,7 +87,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -100,7 +100,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
     @require_autogptq
     def test_gptq_exllamav2_4bits_sym(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -118,7 +118,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -133,7 +133,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
     def test_gptq_exllamav2_4bits_sym_group_size(self):
         for group_size in [-1, 32, 64, 128, 256, 1024]:  ## 384, 768 has accuracy issue
             print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = 4, group_size, True
             autoround = AutoRound(
@@ -152,7 +152,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
             quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+                self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
             )
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)

@@ -64,7 +64,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_torch_4bits_asym(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -82,7 +82,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -93,7 +93,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -105,7 +105,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_torch_4bits_sym(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -123,7 +123,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)

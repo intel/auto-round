@@ -39,7 +39,7 @@ class TestSupportVLMS(unittest.TestCase):
     #     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
     #     model = Qwen2VLForConditionalGeneration.from_pretrained(
     #         quantized_model_path,
-    #         torch_dtype="float16",
+    #         dtype="float16",
     #         device_map=f"cuda:{self.device}",
     #     )
     #     processor = AutoProcessor.from_pretrained(quantized_model_path)
@@ -99,7 +99,7 @@ class TestSupportVLMS(unittest.TestCase):
             quantized_model_path,
             device_map=f"cuda:{self.device}",
             trust_remote_code=True,
-            torch_dtype="float16",
+            dtype="float16",
         )
         processor = AutoProcessor.from_pretrained(quantized_model_path, trust_remote_code=True, num_crops=4)
 
@@ -146,7 +146,7 @@ class TestSupportVLMS(unittest.TestCase):
         quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128")
         res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map=f"cuda:{self.device}", trust_remote_code=True, torch_dtype="auto"
+            quantized_model_path, device_map=f"cuda:{self.device}", trust_remote_code=True, dtype="auto"
         )
         assert "WQLinear_GEMM" in str(
             type(model.model.vision_embed_tokens.img_processor.vision_model.encoder.layers[0].mlp.fc1)
@@ -200,7 +200,7 @@ class TestSupportVLMS(unittest.TestCase):
             quantized_model_path,
             model_base=None,
             model_name=quantized_model_path,
-            torch_dtype="auto",
+            dtype="auto",
             device_map=f"cuda:{self.device}",
         )
         image_url = "http://images.cocodataset.org/train2017/000000116003.jpg"
@@ -232,7 +232,7 @@ class TestSupportVLMS(unittest.TestCase):
     #     quantized_model_path = os.path.join(self.save_dir, "Llama-3.2-11B-Vision-Instruct-w4g128")
     #     model = MllamaForConditionalGeneration.from_pretrained(
     #         quantized_model_path,
-    #         torch_dtype="float16",
+    #         dtype="float16",
     #         device_map=f"cuda:{self.device}",
     #     )
     #     processor = AutoProcessor.from_pretrained(quantized_model_path)
@@ -277,7 +277,7 @@ class TestSupportVLMS(unittest.TestCase):
         model = (
             AutoModelForCausalLM.from_pretrained(
                 quantized_model_path,
-                torch_dtype="float16",
+                dtype="float16",
                 trust_remote_code=True,
                 device_map=DEVICE,
             )
@@ -343,7 +343,7 @@ class TestSupportVLMS(unittest.TestCase):
             quantized_model_path,
             trust_remote_code=True,
             device_map=f"cuda:{self.device}",
-            torch_dtype="float16",
+            dtype="float16",
         )
         vl_gpt = vl_gpt.eval()
 

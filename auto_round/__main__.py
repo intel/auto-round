@@ -701,7 +701,7 @@ def tune(args):
                 logger.error("Cannot find correct gguf file for evaluation, please check.")
                 sys.exit(-1)
             model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+                eval_folder, gguf_file=gguf_file, device_map="auto", dtype=eval_model_dtype
             )
             model.eval()
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)

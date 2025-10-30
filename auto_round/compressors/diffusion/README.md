@@ -15,7 +15,7 @@ from diffusers import AutoPipelineForText2Image
 
 # Load the model
 model_name = "black-forest-labs/FLUX.1-dev"
-pipe = AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+pipe = AutoPipelineForText2Image.from_pretrained(model_name, dtype=torch.bfloat16)
 
 # Quantize the model
 autoround = AutoRound(

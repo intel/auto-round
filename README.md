@@ -323,7 +323,7 @@ The support for Gaudi device is limited.
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_name = "Intel/DeepSeek-R1-0528-Qwen3-8B-int4-AutoRound"
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

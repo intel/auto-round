@@ -172,7 +172,7 @@ class ModelBase:
 
         # Apply heuristics to figure out typical tensor encoding based on first layer tensor encoding type
         if self.ftype == gguf.LlamaFileType.GUESSED:
-            # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
+            # NOTE: can't use field "dtype" in config.json, because some finetunes lie.
             _, first_tensor = next(self.get_tensors())
             if first_tensor.dtype == torch.float16:
                 logger.info(f"choosing --outtype f16 from first tensor type ({first_tensor.dtype})")

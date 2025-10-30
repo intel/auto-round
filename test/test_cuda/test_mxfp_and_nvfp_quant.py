@@ -32,7 +32,7 @@ def test_e2e_quant_and_infer(scheme):
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map="cpu",
-            torch_dtype="auto",
+            dtype="auto",
             trust_remote_code=True,
         )
 
@@ -52,7 +52,7 @@ def test_e2e_quant_and_infer(scheme):
         # Perform inference with the quantized model
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
-            torch_dtype="auto",
+            dtype="auto",
         )
         model.eval()
         assert has_module(model, QMODULE_MAPPING[scheme]), f"Expected {QMODULE_MAPPING[scheme].__name__} in the model."

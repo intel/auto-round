@@ -43,7 +43,7 @@ class TestAutoRound(unittest.TestCase):
         with self.assertRaises(NotImplementedError) as cm:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                torch_dtype="auto",
+                dtype="auto",
                 trust_remote_code=True,
                 device_map="cpu",
                 quantization_config=quantization_config,
@@ -54,7 +54,7 @@ class TestAutoRound(unittest.TestCase):
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype="auto",
+            dtype="auto",
             trust_remote_code=True,
             device_map="cpu",
             quantization_config=quantization_config,

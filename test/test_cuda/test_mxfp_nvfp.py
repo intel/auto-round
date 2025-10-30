@@ -157,7 +157,7 @@ class TestAutoRound(unittest.TestCase):
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, dtype="auto", device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
 

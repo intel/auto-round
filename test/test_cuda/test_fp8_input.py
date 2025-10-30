@@ -26,7 +26,7 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Qwen3-0.6B-FP8"
         ar = AutoRound(model=model_name, iters=0)
         ar.quantize_and_save(output_dir=self.save_dir)
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.save_dir, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -44,7 +44,7 @@ class TestAutoRound(unittest.TestCase):
         # output = llm("There is a girl who likes adventure,", max_tokens=32)
         # print(output)
         # shutil.rmtree("./saved", ignore_errors=True)
-        # model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+        # model = AutoModelForCausalLM.from_pretrained(self.save_dir, dtype="auto", trust_remote_code=True)
         # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         # text = "There is a girl who likes adventure,"
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)

@@ -35,7 +35,7 @@ class TestQuantizationConv1d(unittest.TestCase):
 
     @require_gptqmodel
     def test_quant(self):
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         from auto_round import AutoRoundConfig
 

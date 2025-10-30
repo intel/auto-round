@@ -65,7 +65,7 @@ class TestAutoRound(unittest.TestCase):
     @require_greater_than_051
     def test_3bits_autoround(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=3)
         quantized_model_path = self.save_dir
@@ -73,7 +73,7 @@ class TestAutoRound(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
@@ -85,7 +85,7 @@ class TestAutoRound(unittest.TestCase):
     @require_greater_than_051
     def test_3bits_asym_autoround(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         bits, sym = 3, False
         autoround = AutoRound(model, tokenizer, bits=bits, sym=sym)
@@ -107,7 +107,7 @@ class TestAutoRound(unittest.TestCase):
     @require_greater_than_050
     def test_norm_bias_tuning(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=2, group_size=64, enable_norm_bias_tuning=True)
         autoround.quantize()
@@ -124,7 +124,7 @@ class TestAutoRound(unittest.TestCase):
     @require_greater_than_050
     def test_2bits_autoround(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=2, group_size=64)
         autoround.quantize()

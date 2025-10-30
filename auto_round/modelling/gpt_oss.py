@@ -62,7 +62,7 @@ class SequentialGPTOSSMoE(nn.Module):
         super().__init__()
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
-        dtype_str = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
+        dtype_str = getattr(config, "dtype", None)
         dtype = torch.bfloat16 if str(dtype_str).endswith("bfloat16") else torch.float32
         top_k = config.num_experts_per_tok
         self.hidden_size = hidden_size
