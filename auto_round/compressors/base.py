@@ -2439,7 +2439,7 @@ class BaseCompressor(object):
 
         if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
             set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
 
         if self.device_map is not None:
@@ -2491,7 +2491,7 @@ class BaseCompressor(object):
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
-            device=self.device,
+            device=device,
         )
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales

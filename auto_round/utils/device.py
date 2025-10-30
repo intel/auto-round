@@ -770,6 +770,7 @@ def set_auto_device_map_for_block_with_tuning(
     input_ids: list[torch.Tensor],
     low_gpu_mem_usage=False,
     pick_samples=8,
+    output_device=None,
 ):
     """
     Automatically sets the device map for the block based on available GPUs and memory constraints.
@@ -780,6 +781,7 @@ def set_auto_device_map_for_block_with_tuning(
         input_ids (list[torch.Tensor]): List of input tensors used for estimating memory requirements.
         low_gpu_mem_usage (bool, optional): If True, ignoring input/output memory. Defaults to False.
         pick_samples (int, optional): Number of samples to consider for memory estimation. Defaults to 8.
+        output_device (str | torch.device, optional): Device to move unassigned modules to. Defaults to None.
 
     Returns:
         None
@@ -851,15 +853,15 @@ def set_auto_device_map_for_block_with_tuning(
     logger.debug(f"Auto device map for block: {device_map}")
     set_non_auto_device_map(block, device_map, names)
 
-    # Ensure all remaining modules with parameters/buffers are moved to device_0
-    # This prevents mixed CPU/GPU execution within the same block
+    # Ensure all remaining modules with parameters/buffers are moved to expected device, by default device_0
+    output_device = device_0 if output_device is None else output_device
     for name, module in block.named_modules():
         if name not in names:  # This module wasn't assigned a device
             # Check if module has any parameters or buffers
             has_params = any(True for _ in module.parameters(recurse=False))
             has_buffers = any(True for _ in module.buffers(recurse=False))
             if has_params or has_buffers:
-                module = module.to(device_0)
+                module = module.to(output_device)
 
 
 def partition_dict_numbers(number_dict, n):
