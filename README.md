@@ -65,25 +65,22 @@ refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and
 Delivers strong performance even at 2–3 bits [example models](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b), with leading results at 4 bits [benchmark](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard).
 
 ✅ **Ecosystem Integration**
-Seamlessly works with **Transformers, vLLM,** and more.
+Seamlessly works with **Transformers, vLLM, SGLang** and more.
 
 ✅ **Multiple Formats Export**
 Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
+✅ **Fast Mixed Bits/Dtypes Scheme Generation**
+Automatically configure in minutes, with about 1.1X-1.5X the model’s BF16 RAM size as overhead. Accuracy [results](./docs/auto_scheme_acc.md) and [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme).
+
+✅ **Optimized Round-to-Nearest Mode**
+Use `--iters 0` for fast quantization with some accuracy drop for 4 bits. Details are shown in [opt_rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
+
 ✅ **Affordable Quantization Cost**
 Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [quantization costs](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
-✅ **Fast Mixed Bits/Dtypes Scheme Generation**
-Automatically configure in minutes, with about 2X-4X the model’s BF16 VRAM size as overhead. Accuracy [results](./docs/auto_scheme_acc.md) and [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme).
-
 ✅ **10+ VLMs Support**
 Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
-
-✅ **Layerwise Mixed Bits Quantization**
-Assign different bits per layer for fine-grained accuracy/performance trade-offs. Details are shown in [mixed bits quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
-
-✅ **Optimized Round-to-Nearest Mode**
-Use `--iters 0` for fast, calibration-free quantization with some accuracy drop for 4 bits. Details are shown in [opt_rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
 
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
@@ -187,6 +184,37 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ```
 
+<details>
+<summary>Important Hyperparameters</summary>
+
+##### Quantization Scheme & Configuration
+- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`.
+- **`bits` (int)**: Number of bits for quantization (default is `None`). If not None, it will override the scheme setting.
+- **`group_size` (int)**: Size of the quantization group (default is `None`). If not None, it will override the scheme setting.
+- **`sym` (bool)**: Whether to use symmetric quantization (default is `None`). If not None, it will override the scheme setting.
+- **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
+
+##### Algorithm Settings
+- **`enable_alg_ext` (bool)**: Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
+
+##### Tuning Process Parameters
+- **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
+- **`lr` (float)**: The learning rate for rounding value (default is `None`). When None, it will be set to `1.0/iters` automatically.
+- **`batch_size` (int)**: Batch size for training (default is `8`). 4 is also commonly used.
+
+##### Calibration Dataset
+- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
+- **`nsamples` (int)**: Number of samples for tuning (default is `128`).
+- **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
+
+##### Device/Speed Configuration
+- **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
+- **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
+- **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `"cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`).
+
+</details>
+
 ### AutoScheme Usage 
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
@@ -203,38 +231,18 @@ ar.quantize_and_save()
 ~~~
 
 <details>
-<summary>Important Hyperparameters</summary>
-
-##### Quantization Scheme & Configuration
-- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`.
-- **`bits` (int)**: Number of bits for quantization (default is `None`). If not None, it will override the scheme setting.
-- **`group_size` (int)**: Size of the quantization group (default is `None`). If not None, it will override the scheme setting.
-- **`sym` (bool)**: Whether to use symmetric quantization (default is `None`). If not None, it will override the scheme setting.
-- **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
+<summary>Important Hyperparameters of AutoScheme</summary>
 
 
-##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
-- **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
+##### AutoScheme Hyperparameters
 
-##### Tuning Process Parameters
-- **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
-- **`lr` (float)**: The learning rate for rounding value (default is `None`). When None, it will be set to `1.0/iters` automatically.
-- **`batch_size` (int)**: Batch size for training (default is `8`). 4 is also commonly used.
-
-##### Calibration Dataset
-- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
-- **`nsamples` (int)**: Number of samples for tuning (default is `128`).
-- **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
-
-
-##### Device/Speed Configuration
-- **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
-- **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
-- **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `"cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`).
+- **`avg_bits` (float)**: Target average bit-width for the entire model. Only quantized layers are included in the average bit calculation.  
+- **`options` (str | list[str] | list[QuantizationScheme])**: Candidate quantization schemes to choose from. It can be a single comma-separated string (e.g., `"W4A16,W2A16"`), a list of strings (e.g., `["W4A16", "W2A16"]`), or a list of `QuantizationScheme` objects.  
+- **`ignore_scale_zp_bits` (bool)**: Only supported in API usage. Determines whether to exclude the bits of scale and zero-point from the average bit-width calculation (default: `False`).  
+- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Defines groups of layers that share quantization settings.  
+- **`batch_size` (int, optional)**: Only supported in API usage. Can be set to `1` to reduce VRAM usage at the expense of longer tuning time.  
 
 </details>
-
 ### API Usage for VLMs
 
 If you encounter issues during quantization, try setting iters=0 (to enable RTN) and use group_size=32 for better
