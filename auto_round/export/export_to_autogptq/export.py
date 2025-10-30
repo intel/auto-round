@@ -17,6 +17,8 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields
+from typing import Any, Dict
 
 import threadpoolctl as tctl
 
@@ -47,18 +49,28 @@ import transformers
 from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
-from auto_round.export.utils import save_model
+from auto_round.export.utils import filter_quantization_config, get_autogptq_packing_qlinear, save_model
+from auto_round.schemes import QuantizationScheme
+
+GPTQ_REQUIRED_CONFIG_KEYS = (
+    "bits",
+    "group_size",
+    "sym",
+)
+
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
-    get_autogptq_packing_qlinear,
     get_block_names,
     get_module,
+    json_serialize,
+    matches_any_regex,
     set_module,
     is_meta_model,
+    to_standard_regex,
 )
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
@@ -67,6 +79,54 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
     "gpt_neox.layers",
     "model.layers",
 ]
+from auto_round.export.export_to_autoround.utils import check_neq_config
+
+
+def convert_to_autogptq_dynamic(regex_config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Convert AutoRound-style regex_config into AutoGPTQ-style QuantizerConfig.dynamic.
+
+    Rules:
+    - bits < 16 -> quantize -> positive match `+:regex`
+    - bits == 16 -> skip quantize -> negative match `-:regex`
+    """
+    converted = {}
+    for name, cfg in regex_config.items():
+        bits = cfg.get("bits")
+        regex = to_standard_regex(name)
+
+        if bits is None:
+            continue  # ignore invalid entries
+        elif bits < 16:
+            converted[f"+:{regex}"] = {"bits": bits}
+            for key in GPTQ_REQUIRED_CONFIG_KEYS:  # only save keys gptq supported
+                converted[f"+:{regex}"][key] = regex_config[name][key]
+        else:
+            # skip quantization
+            converted[f"-:{regex}"] = {}
+    return converted
+
+
+def convert_from_autogptq_dynamic(dynamic_config: dict) -> dict:
+    """
+    Convert AutoGPTQ-style QuantizerConfig.dynamic into AutoRound-style extra_config.
+
+    Rules:
+    - '+:regex' => quantize => keep bits and other quantization keys
+    - '-:regex' => skip quantize => set bits to 16 (FP16 passthrough)
+    """
+    converted = {}
+    for name, cfg in dynamic_config.items():
+        # Strip the +: or -:
+        if name.startswith("+:"):
+            regex = name[2:]
+            # keep all config fields (bits, group_size, sym, etc.)
+            converted[regex] = dict(cfg)
+        elif name.startswith("-:"):
+            regex = name[2:]
+            # mark skipped layers with bits=16
+            converted[regex] = {"bits": 16, "act_bits": 16}
+    return converted
 
 
 def pack_layer(name, model, backend, device=None):
@@ -133,58 +193,93 @@ def pack_layer(name, model, backend, device=None):
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2", **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
+    # --- 1️⃣ Extract inputs & configs ---
     model = kwargs["model"]
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
-    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
-    tokenizer = kwargs.get("tokenizer", None)
-    processor = kwargs.get("processor", None)
-    device = kwargs.get("device", None)
-    image_processor = kwargs.get("image_processor", None)
-    if output_dir is not None and os.path.exists(output_dir):
-        logger.warning(f"{output_dir} already exists, this may cause model conflict")
-    if output_dir is not None and tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-        tokenizer.save_pretrained(output_dir)
-    if output_dir is not None and processor is not None:
-        processor.save_pretrained(output_dir)
-    if output_dir is not None and image_processor is not None:
-        image_processor.save_pretrained(output_dir)
-    ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
+    layer_config = kwargs["layer_config"]
+    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
+    tokenizer = kwargs.get("tokenizer")
+    processor = kwargs.get("processor")
+    image_processor = kwargs.get("image_processor")
+    device = kwargs.get("device")
+    safe_serialization = kwargs.get("safe_serialization", True)
+
+    # --- Save metadata (tokenizer, processor, etc.) ---
+    if output_dir:
+        if os.path.exists(output_dir):
+            logger.warning(f"{output_dir} already exists, may cause overwrite conflicts.")
+        for comp in (tokenizer, processor, image_processor):
+            if comp is not None and hasattr(comp, "save_pretrained"):
+                comp.save_pretrained(output_dir)
+
+    # --- Handle quantization structure ---
     all_blocks = quant_block_list
-    flattened_list = [item for sublist in all_blocks for item in sublist]
-    common_prefix = os.path.commonprefix(flattened_list).rstrip(".")
-    if common_prefix not in BLOCK_PATTERNS:
-        logger.error("auto-gptq format may not support loading this quantized model")
+    flattened = [x for sub in all_blocks for x in sub]
+    common_prefix = os.path.commonprefix(flattened).rstrip(".")
+
+    if "BLOCK_PATTERNS" in kwargs and common_prefix not in kwargs["BLOCK_PATTERNS"]:
+        logger.error(f"Unsupported block prefix '{common_prefix}' for AutoGPTQ format.")
         quantization_config["block_name_to_quantize"] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
 
-    ## as layers maybe already packed, we need to check in layer_config
-    layer_config = kwargs["layer_config"]
+    # --- Build per-layer dynamic overrides ---
+    regex_config = quantization_config.pop("regex_config", {})
+    block_name_to_quantize = quantization_config.get("block_name_to_quantize")
+    extra_config = {}
+    lm_head_quantized = False
+    scheme_keys = [f.name for f in fields(QuantizationScheme)]
+    for layer_name, cfg in layer_config.items():
+        bits = cfg.get("bits", 16)
+        in_blocks = cfg.get("in_blocks", False)
+        # Handle non-block layers (e.g., LM head)
+        if not in_blocks and bits <= 8:
+            lm_head_quantized = True
+            extra_config[layer_name] = {k: cfg[k] for k in GPTQ_REQUIRED_CONFIG_KEYS}
+            continue
+        # Handle block layers
+        if in_blocks or (block_name_to_quantize and check_start_with_block_name(layer_name, block_name_to_quantize)):
+            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
+            if neq_keys:
+                if matches_any_regex(layer_name, regex_config):
+                    continue
+                extra_config[layer_name] = {k: cfg[k] for k in GPTQ_REQUIRED_CONFIG_KEYS}
+
+    # --- Merge regex_config + extra_config into GPTQ dynamic config ---
+    dynamic = {}
+    if regex_config:
+        dynamic.update(convert_to_autogptq_dynamic(regex_config))
+    if extra_config:
+        dynamic.update(convert_to_autogptq_dynamic(extra_config))
+    if dynamic:
+        quantization_config["dynamic"] = dynamic
+
+    # --- Block-wise quantization verification ---
     for n, m in model.named_modules():
         m.tmp_name = n
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
-    for block_names in all_blocks:
-        first_block = get_module(model, block_names[0])
-        for n, m in first_block.named_modules():
-            if m.tmp_name not in layer_config.keys():
-                continue
-            if not check_to_quantized(layer_config[m.tmp_name]):
-                all_to_quantized = False
-            else:
-                modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]
+    if not dynamic:  # Only uniform precision
+        for block_names in all_blocks:
+            first_block = get_module(model, block_names[0])
+            for n, m in first_block.named_modules():
+                if m.tmp_name not in layer_config:
+                    continue
+                if not check_to_quantized(layer_config[m.tmp_name]):
+                    all_to_quantized = False
+                else:
+                    modules_in_block_to_quantize.append(n)
+        modules_in_block_to_quantize = [modules_in_block_to_quantize]
+
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
-    for n, m in model.named_modules():
+    for _, m in model.named_modules():
         delattr(m, "tmp_name")
 
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
-    layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
@@ -203,6 +298,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
                     pass
     if output_dir is None:
         return model
+    quantization_config["lm_head"] = lm_head_quantized
     quantization_config["provider"] = "auto-round"
     quantization_config["quant_method"] = "gptq"
     quantization_config.pop("dataset", None)  ## pile-10k is not supported in gptq

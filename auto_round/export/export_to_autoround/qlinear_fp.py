@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # Copyright (c) 2021 - present / Neuralmagic, Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,10 +34,11 @@ import torch
 import torch.nn as nn
 import transformers
 
+from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import _get_packing_device, is_mx_fp, is_nv_fp
+from auto_round.utils import get_packing_device
 
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
@@ -72,14 +72,22 @@ class QuantLinear(nn.Module):
         super().__init__()
         if bits not in [4, 8]:
             raise NotImplementedError("Only 4,8 bits are supported.")
-        if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
-        if self.is_mx and group_size != 32:
-            raise NotImplementedError("Only group_size 32 are supported for mxfp.")
-        if self.is_nv and group_size not in [16, 32]:
-            raise NotImplementedError("Only group_size 16 are supported for nvfp.")
+        if self.is_mx:
+            if group_size != 32:
+                raise NotImplementedError(f"Only group_size 32 are supported for {BackendDataType.MX_FP} data type.")
+            if infeatures % group_size != 0:
+                raise NotImplementedError(
+                    f"in_feature must be divisible by {group_size} for {BackendDataType.MX_FP} data type."
+                )
+        if self.is_nv:
+            if group_size % 16 != 0:
+                raise NotImplementedError(f"Only group_size 16 are supported for {BackendDataType.NV_FP} data type.")
+            if infeatures % group_size != 0:
+                raise NotImplementedError(
+                    f"in_feature must be divisible by {group_size} for {BackendDataType.NV_FP} data type."
+                )
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -131,7 +139,7 @@ class QuantLinear(nn.Module):
         pass
 
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         if getattr(linear, "bias", None) is not None:
             self.bias = linear.bias.detach().to(torch.float16)
 

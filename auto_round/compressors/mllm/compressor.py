@@ -25,7 +25,6 @@ from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.mllm.dataset import get_mllm_dataloader
 from auto_round.compressors.mllm.template import Template, get_template
 from auto_round.logger import logger
-from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
     NOT_SUPPORT_ONLY_TEXT_MODELS,
@@ -33,7 +32,6 @@ from auto_round.special_model_handler import (
     _handle_special_model,
 )
 from auto_round.utils import (
-    _is_fp8_model,
     check_to_quantized,
     clear_memory,
     detect_device,
@@ -41,6 +39,7 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_max_vram,
+    is_fp8_model,
     mllm_load_model,
     mv_module_from_gpu,
     to_device,
@@ -108,7 +107,6 @@ class MLLMCompressor(BaseCompressor):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -315,11 +313,6 @@ class MLLMCompressor(BaseCompressor):
             self.dataloader = self.dataset
         total_cnt = 0
 
-        if self.low_cpu_mem_usage:
-            embed_layers = get_layers_before_block(self.model)
-            for n, m in embed_layers:
-                m = m.to(self.device)
-
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for data in self.dataloader:
@@ -417,10 +410,6 @@ class MLLMCompressor(BaseCompressor):
                     if isinstance(v[key], list) and len(v[key]) == total_cnt:
                         self.inputs[k][key] = v[key][:max_len]
 
-        # clean embed weight to save memory
-        if self.low_cpu_mem_usage:
-            for n, m in embed_layers:
-                m = m.to("meta")
         # torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):

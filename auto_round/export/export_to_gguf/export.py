@@ -28,6 +28,7 @@ from auto_round.utils import (
     LazyImport,
     check_to_quantized,
     clear_memory,
+    download_hf_model,
     flatten_list,
     get_block_names,
     get_gguf_architecture,
@@ -73,7 +74,10 @@ def create_model_class(
     low_cpu_mem_usage=False,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
 ):
-    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
+    tmp_work_dir = model.name_or_path
+    os.makedirs(output_dir, exist_ok=True)
+    if not os.path.isdir(tmp_work_dir):
+        tmp_work_dir = download_hf_model(tmp_work_dir)
     with torch.inference_mode():
         model_architecture = get_gguf_architecture(tmp_work_dir, model_type=model_type)
         try:
@@ -94,9 +98,12 @@ def create_model_class(
             raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
+        hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), "mistral" in model.config.model_type)
+        hparams.pop("quantization_config", None)
         model_instance = model_class(
-            dir_model=tmp_work_dir,
+            dir_model=Path(tmp_work_dir),
             ftype=output_type,
+            hparams=hparams,
             fname_out=Path(output_dir),
             is_big_endian=False,
             model_name=model_name,
@@ -126,19 +133,10 @@ def pack_gguf_layer(
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
-    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
-    if output_dir is not None and os.path.exists(output_dir) and not os.path.exists(tmp_work_dir):
+    if output_dir is not None and os.path.exists(output_dir):
         logger.warning_once(f"{output_dir} already exists, this may cause model conflict")
-    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     if "gguf_model_instance_global" not in globals():
         config = model.config
-        config.save_pretrained(tmp_work_dir)
-        if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-            tokenizer.save_pretrained(tmp_work_dir)
-        if processor is not None:
-            processor.save_pretrained(tmp_work_dir)
-        if image_processor is not None:
-            image_processor.save_pretrained(tmp_work_dir)
 
         gguf_model_instance_global = [
             create_model_class(
@@ -201,27 +199,11 @@ def pack_gguf_layer(
 @torch.inference_mode()
 def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, **kwargs):
     """Export the model to gguf format."""
-    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
-    if output_dir is not None and os.path.exists(output_dir) and not os.path.exists(tmp_work_dir):
-        logger.warning(f"{output_dir} already exists, this may cause model conflict")
-
     st = time.time()
     global gguf_model_instance_global
 
     model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
-        config = model.config
-        config.save_pretrained(tmp_work_dir)
-        tokenizer = kwargs.get("tokenizer", None)
-        if tokenizer is not None:
-            tokenizer.save_pretrained(tmp_work_dir)
-        processor = kwargs.get("processor", None)
-        if processor is not None:
-            processor.save_pretrained(tmp_work_dir)
-        image_processor = kwargs.get("image_processor", None)
-        if image_processor is not None:
-            image_processor.save_pretrained(tmp_work_dir)
-
         gguf_model_instance_global = [
             create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT)
         ]
@@ -237,6 +219,5 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
         rt = time.time() - st
         logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")
     del gguf_model_instance_global
-    shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
     return model
