@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Any, Callable, Union
 
 import torch
 
@@ -285,6 +286,39 @@ def quant_tensor_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
+def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int):
+    if not isinstance(imatrix, torch.Tensor):
+        return imatrix
+
+    group_size = 16 if bits == 2 else 32
+    imatrix = imatrix.reshape(-1, imatrix.shape[-1])
+    if torch.min(imatrix) == 0:
+        logger.warning_once(
+            "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
+        )
+
+        zero_cnt = torch.sum(imatrix == 0, dim=-1)
+        replace_index = zero_cnt > group_size // 2
+        if torch.sum(replace_index) > 0:
+            ## fallback to no imatrix
+            if bits == 2:
+                tmp_quant_weights = torch.abs(weight)
+            elif bits == 4 or bits == 5:
+                sigma2 = torch.sum(torch.pow(weight, 2), dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
+                av_x = torch.sqrt(sigma2)
+                tmp_quant_weights = torch.abs(weight) + av_x
+            tmp_quant_weights = tmp_quant_weights.to(imatrix.dtype)
+            imatrix[replace_index, :] = tmp_quant_weights[replace_index, :]
+        mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
+        if torch.sum(mean_replace_index) > 0:
+            ## use mean values to fill zero values
+            tmp_quant_weights = torch.sum(imatrix, dim=-1) / (imatrix.shape[1] - zero_cnt)
+            tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, imatrix.shape[1])
+            replace_idx = imatrix == 0
+            imatrix[replace_idx] = tmp_quant_weights[replace_idx]
+    return imatrix.reshape(weight.shape)
+
+
 @torch.no_grad()
 def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None):
     super_bits = 4 if bits == 2 else 6
@@ -337,30 +371,7 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
 
-        if torch.min(quant_weights) == 0:
-            logger.warning_once(
-                "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
-            )
-
-            zero_cnt = torch.sum(quant_weights == 0, dim=-1)
-            replace_index = zero_cnt > group_size // 2
-            if torch.sum(replace_index) > 0:
-                ## fallback to no imatrix
-                if bits == 2:
-                    tmp_quant_weights = torch.abs(tensor)
-                elif bits == 4 or bits == 5:
-                    sigma2 = (
-                        torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / 32
-                    )  ## Note 32 is different from QK_K
-                    av_x = torch.sqrt(sigma2)
-                    tmp_quant_weights = torch.abs(tensor) + av_x
-                quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
-            mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
-            if torch.sum(mean_replace_index) > 0:
-                ## use mean values to fill zero values
-                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
-                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
-                quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
+        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
@@ -532,27 +543,8 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
         weights = imatrix.reshape(1, -1)
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
-        if torch.min(quant_weights) == 0:
-            logger.warning_once(
-                "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
-            )
-            zero_cnt = torch.sum(quant_weights == 0, dim=-1)
-            replace_index = zero_cnt > group_size // 2
-            if torch.sum(replace_index) > 0:
-                if bits == 6:
-                    quant_weights[replace_index] = tensor[replace_index] * tensor[replace_index]
-                else:
-                    sigma2 = 2 * torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
-                    tmp_quant_weights = torch.sqrt(sigma2 + tensor * tensor)
-                    quant_weights[replace_index] = tmp_quant_weights[replace_index]
-            mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
-            if torch.sum(mean_replace_index) > 0:
-                ## use mean values to fill zero values
-                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[-1] - zero_cnt)
-                tmp_quant_weights = (
-                    tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1]).reshape(tensor.shape)
-                )
-                quant_weights[mean_replace_index] = tmp_quant_weights[mean_replace_index]
+
+        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
     return scale

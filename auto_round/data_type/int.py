@@ -17,6 +17,7 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 
 
@@ -44,7 +45,7 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
 
 
 @register_dtype("rtn_int_sym")
-def quant_tensor_rnt_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
+def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
     """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
 
     Args:
@@ -62,6 +63,7 @@ def quant_tensor_rnt_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
+    from auto_round.data_type.gguf import _imatrix_handle_zero
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
@@ -72,6 +74,8 @@ def quant_tensor_rnt_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
 
         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
         imatrix = imatrix.reshape(tensor.shape)
+
+        imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))

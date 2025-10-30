@@ -1135,8 +1135,10 @@ class BaseCompressor(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared.to(module.imatrix.device)
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
@@ -1454,6 +1456,10 @@ class BaseCompressor(object):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
+                    # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
+                    # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
+                    if hasattr(m, "imatrix"):
+                        m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
