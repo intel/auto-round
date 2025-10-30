@@ -4,9 +4,15 @@ This feature is experimental and may be subject to changes, including potential 
 
 ## Quantization
 
+Quantization for diffusion models is limited:
+
+1. Only transformer module of diffusion models will be quantized..
+2. Loading quantized model is not supported yet, so please use `fake` format for quantization.
+3. Calibration dataset only supports `coco2014` and user customized `.tsv` file.
+
+
 ### API Usage (CPU/GPU) Recommended
 
-By default, AutoRoundDiffusion only quantizes the transformer module of diffusion models and uses `COCO2014 captions` for calibration.
 
 ```python
 import torch
