@@ -399,9 +399,7 @@ def diffusion_load_model(
 
     pipelines = LazyImport("diffusers.pipelines")
 
-    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-        pretrained_model_name_or_path, dtype=dtype
-    )
+    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path, dtype=dtype)
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
     return pipe, model.to(device)
