@@ -1481,6 +1481,10 @@ class BaseCompressor(object):
         else:
             set_module(self.model, name, m)
 
+        if self.save_block_immediate:
+            last_module = name == [n for n, m in self.model.named_modules() if check_to_quantized(m)][-1]
+            self._save_block_immediate(m, last_module)
+
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
@@ -1495,7 +1499,6 @@ class BaseCompressor(object):
             self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-
         if is_nv_fp(self.data_type):
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -3133,7 +3136,7 @@ class BaseCompressor(object):
             self._total_param_size_bytes = 0
             # Directory
             self._packed_blocks_root = os.path.join(
-                self._get_save_folder_name(self.formats[0]), "packed_blocks"
+                self._get_save_folder_name(self.formats[0]), ""
             )
             os.makedirs(self._packed_blocks_root, exist_ok=True)
 
