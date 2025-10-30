@@ -111,6 +111,7 @@ def run_mxfp4_emulations(
     weight_scale: torch.Tensor,
     bias: torch.Tensor | None = None,
 ):
+    # TODO: select the rounding mode based on config
     group_size = 32
     # quantize input to (FP4 and interleaved block scale)
     input_scale, x_q = to_mxfp4_rceil(
@@ -207,6 +208,7 @@ def fp4_121_scaled_even_rounding(x: torch.Tensor) -> torch.Tensor:
 def qdq_mxfp4(
     x: torch.Tensor,
 ) -> torch.Tensor:
+    # TODO: select the rounding mode based on config
     block_size = 32
     shape = x.shape
     x = x.reshape(-1, block_size)
