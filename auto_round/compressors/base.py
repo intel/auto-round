@@ -141,7 +141,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
-        disable_opt_rtn: bool = True,
+        disable_opt_rtn: bool = False,
         seed: int = 42,
         **kwargs,
     ):
