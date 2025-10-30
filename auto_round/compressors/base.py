@@ -311,6 +311,7 @@ class BaseCompressor(object):
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.seqlen = seqlen
         self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
+        self.pick_samples = self.batch_size * self.gradient_accumulate_steps
         self.nblocks = nblocks
         self.dataset = dataset
         self.iters = iters
@@ -1422,7 +1423,9 @@ class BaseCompressor(object):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-                    set_auto_device_map_for_block_with_tuning(block, self.device_map, input_ids, self.low_gpu_mem_usage)
+                    set_auto_device_map_for_block_with_tuning(
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.pick_samples
+                    )
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -2247,10 +2250,10 @@ class BaseCompressor(object):
         init_loss = None
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
         batch_size = 1  # Force to low gpu
-        pick_samples = batch_size * gradient_accumulate_steps
-        pick_samples = min(nsamples, pick_samples)
+        self.pick_samples = batch_size * gradient_accumulate_steps
+        self.pick_samples = min(nsamples, self.pick_samples)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:pick_samples]
+            whole_indices = torch.randperm(nsamples)[: self.pick_samples]
         total_loss = 0
         num_elm = 1
         mse_reduction = "mean"
@@ -2261,7 +2264,7 @@ class BaseCompressor(object):
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:pick_samples]
+                whole_indices = torch.randperm(nsamples)[: self.pick_samples]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
                         num_elm = self._get_current_num_elm(q_inputs, whole_indices)
@@ -2436,7 +2439,9 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
 
         if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-            set_auto_device_map_for_block_with_tuning(block, self.device_map, input_ids, self.low_gpu_mem_usage)
+            set_auto_device_map_for_block_with_tuning(
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.pick_samples
+            )
 
         if self.device_map is not None:
             for n, m in block.named_modules():
@@ -2535,10 +2540,9 @@ class BaseCompressor(object):
         else:
             nsamples = len(input_ids)
 
-        pick_samples = self.batch_size * self.gradient_accumulate_steps
-        pick_samples = min(nsamples, pick_samples)
+        self.pick_samples = min(nsamples, self.pick_samples)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:pick_samples]
+            whole_indices = torch.randperm(nsamples)[: self.pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -2553,7 +2557,7 @@ class BaseCompressor(object):
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:pick_samples]
+                whole_indices = torch.randperm(nsamples)[: self.pick_samples]
                 # We assume the block input and output shape is same
                 if self.gradient_accumulate_steps != 1:
                     num_elm = self._get_current_num_elm(input_ids, whole_indices)

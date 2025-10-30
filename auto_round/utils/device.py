@@ -494,6 +494,7 @@ def estimate_tuning_block_mem(
             param_size = module.weight.nbytes
             total_param_mem += param_size
             param_memory_gb = param_size / 1024**3
+            param_memory_gb *= 2  # considering the v tensor for weight rounding
 
             # Estimate output memory based on input_features and out_features
             in_features, out_features = get_layer_features(module)
@@ -515,12 +516,14 @@ def estimate_tuning_block_mem(
 
     # Assuming bfloat16 or float32, input and output
     input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    # considering sdpa (attention activation) memory and reference_output memory for loss calculation
+    additional_memory = 1
     if torch.xpu.is_available():
         # https://github.com/intel/torch-xpu-ops/issues/2232
         # sdpa on XPU takes more memory than expected. 2 from grad tensor
-        additional_memory = 9 * 2 + 1
-    else:
-        additional_memory = 1  # sdpa usage and loss calculation usage
+        xpu_sdpa_additional_memory = 9  # GB
+        additional_memory += xpu_sdpa_additional_memory * 2
 
     return layer_memory_dict, input_output_memory, additional_memory
 
@@ -666,7 +669,7 @@ def set_non_auto_device_map(
 
 
 def _allocate_layers_to_devices(
-    layer_memory_dict: dict, device_memory: dict, cuda_xpu_devices: list, mem_per_param: float
+    layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
 ) -> tuple[dict, list]:
     """
     Allocates layers to devices using a load-balancing strategy.
@@ -679,7 +682,7 @@ def _allocate_layers_to_devices(
     Args:
         layer_memory_dict (dict): Mapping of layer names to memory info (order preserved)
         device_memory (dict): Available memory for each device (will be modified)
-        cuda_xpu_devices (list): List of device names (e.g., ["cuda:0", "cuda:1"])
+        gpu_devices (list): List of device names (e.g., ["cuda:0", "cuda:1"])
         mem_per_param (float): Memory multiplier per parameter GB
 
     Returns:
@@ -710,20 +713,20 @@ def _allocate_layers_to_devices(
     layer_names_in_order = list(layer_memory_dict.keys())
     layer_order = {name: idx for idx, name in enumerate(layer_names_in_order)}
     sorted_layers = sorted(layer_memory_dict.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
-    num_devices = len(cuda_xpu_devices)
+    num_devices = len(gpu_devices)
 
     def find_best_device(layer_name, estimated_memory, layer_idx):
         """Find the best device for a layer."""
         # Phase 1: Direct assign largest layers to higher-index devices first
         if layer_idx < num_devices - 1:
-            return cuda_xpu_devices[-(layer_idx + 1)]
+            return gpu_devices[-(layer_idx + 1)]
 
         # Phase 2: Choose device with best score (memory + continuity)
         best_device = None
         best_score = float("-inf")
         current_layer_order = layer_order[layer_name]
 
-        for device in cuda_xpu_devices:
+        for device in gpu_devices:
             if device_memory[device] < estimated_memory:
                 continue
 
@@ -745,7 +748,7 @@ def _allocate_layers_to_devices(
                 best_device = device
 
         # Fallback: device with most available memory
-        return best_device or max(cuda_xpu_devices, key=lambda d: device_memory[d])
+        return best_device or max(gpu_devices, key=lambda d: device_memory[d])
 
     # Allocate layers
     for layer_idx, (layer_name, mem_info) in enumerate(sorted_layers):
@@ -799,10 +802,10 @@ def set_auto_device_map_for_block_with_tuning(
         device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
 
     if device_list:
-        cuda_xpu_devices = [f"{device_name}:{i}" for i in device_list]
-        device_0 = cuda_xpu_devices[0]
+        gpu_devices = [f"{device_name}:{i}" for i in device_list]
+        device_0 = gpu_devices[0]
     else:
-        cuda_xpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
+        gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
         device_0 = f"{device_name}:0"
 
     device_0_memory = get_device_memory(device_list[0] if device_list else 0)
@@ -822,7 +825,7 @@ def set_auto_device_map_for_block_with_tuning(
 
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory
-    for i in range(1, len(cuda_xpu_devices)):
+    for i in range(1, len(gpu_devices)):
         device_idx = device_list[i] if device_list else i
         total_available_memory += get_device_memory(device_idx)
 
@@ -833,12 +836,12 @@ def set_auto_device_map_for_block_with_tuning(
     # Initialize device memory tracking
     device_memory = {}
     device_memory[device_0] = card_0_left_memory
-    for i in range(1, len(cuda_xpu_devices)):
+    for i in range(1, len(gpu_devices)):
         device_idx = device_list[i] if device_list else i
-        device_memory[cuda_xpu_devices[i]] = get_device_memory(device_idx)
+        device_memory[gpu_devices[i]] = get_device_memory(device_idx)
 
     # Allocate layers to devices using load-balancing strategy
-    device_map, names = _allocate_layers_to_devices(layer_memory_dict, device_memory, cuda_xpu_devices, mem_per_param)
+    device_map, names = _allocate_layers_to_devices(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
     logger.debug(f"Auto device map for block: {device_map}")
 
     set_non_auto_device_map(block, device_map, names)
@@ -927,9 +930,9 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
             return
 
     if device_list:
-        cuda_xpu_devices = [f"{device_name}:{i}" for i in device_list]
+        gpu_devices = [f"{device_name}:{i}" for i in device_list]
     else:
-        cuda_xpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
+        gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
 
     for block_names in block_name_list:
         for block_name in block_names:
@@ -945,7 +948,7 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
             device_index = 0
             for res in res_list:
                 for key in res.keys():
-                    set_tuning_device_for_layer(block_module, key, cuda_xpu_devices[device_index])
+                    set_tuning_device_for_layer(block_module, key, gpu_devices[device_index])
                 device_index += 1
 
 
