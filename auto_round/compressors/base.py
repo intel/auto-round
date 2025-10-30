@@ -2594,7 +2594,7 @@ class BaseCompressor(object):
 
                 # Temporary change for 70B model OOM issue on XPU
                 # TODO: Remove after https://github.com/intel/torch-xpu-ops/issues/2232 is fixed
-                if torch.xpu.is_available():
+                if torch.xpu.is_available() and self.low_gpu_mem_usage:
                     clear_memory()  # clean cached memory after backward
 
             if i == 0:

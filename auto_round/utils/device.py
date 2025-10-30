@@ -458,76 +458,6 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def estimate_tuning_block_mem(
-    block: torch.nn.Module, input_ids: list[torch.Tensor], pick_samples: int
-) -> tuple[dict, float]:
-    """
-    Calculates the memory consumption of a specific block in the model.
-
-    Args:
-        block (torch.nn.Module): The block of the model to analyze.
-        input_ids (list[torch.Tensor]): A list of input tensors for the block.
-        pick_samples (int): Number of samples to consider for memory estimation.
-
-    Returns:
-        tuple: A tuple containing the following:
-            - layer_memory_dict (dict): A dictionary mapping layer names to their memory consumption (in GB).
-              Format: {layer_name: {"param_memory": float, "output_memory": float}}
-            - input_output_memory (float): The memory consumption (in GB) for input and output
-                tensors of the block.
-            - additional_memory (float): Additional memory overhead (in GB) for operations like attention.
-    """
-    # Calculate all block parameters memory and build layer-wise memory dict
-    from auto_round.utils.model import get_layer_features
-
-    layer_memory_dict = {}
-    total_param_mem = 0
-
-    # Calculate batch_size and sequence_length from input_ids for output memory estimation
-    seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
-    element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
-
-    for name, module in block.named_modules():
-        if check_to_quantized(module):
-            enable_act_quant = module.act_bits <= 8
-            layer_name = name
-            param_size = module.weight.nbytes
-            total_param_mem += param_size
-            param_memory_gb = param_size / 1024**3
-            param_memory_gb *= 2  # considering the v tensor for weight rounding
-
-            # Estimate output memory based on input_features and out_features
-            in_features, out_features = get_layer_features(module)
-            if in_features is not None and out_features is not None:
-                # Output tensor size: batch_size * seq_len * out_features * element_size
-                output_size = pick_samples * seq_len * out_features * element_size
-                output_memory_gb = output_size / 1024**3
-
-                # If enable_act_quant, add input tensor memory to param_memory
-                if enable_act_quant:
-                    input_size = pick_samples * seq_len * in_features * element_size
-                    input_memory_gb = input_size / 1024**3
-                    param_memory_gb += input_memory_gb
-            else:
-                output_memory_gb = 0.0
-
-            # memory * 2, because it contains grad tensor.
-            layer_memory_dict[layer_name] = {"param_memory": param_memory_gb * 2, "output_memory": output_memory_gb * 2}
-
-    # Assuming bfloat16 or float32, input and output
-    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
-
-    # Considering norm, sdpa, reference_output, etc.
-    additional_memory = 1
-    if torch.xpu.is_available():
-        # https://github.com/intel/torch-xpu-ops/issues/2232
-        # TODO: XPU takes more memory than expected. for llama 8B, it's 9*2 GB
-        xpu_additional_memory = 9  # GB
-        additional_memory += xpu_additional_memory * 2
-
-    return layer_memory_dict, input_output_memory, additional_memory
-
-
 def out_of_vram(error_msg):
     error_msg = str(error_msg)
     # CUDA
@@ -763,6 +693,77 @@ def _allocate_layers_to_devices(
     return ordered_device_map, names
 
 
+def estimate_tuning_block_mem(
+    block: torch.nn.Module, input_ids: list[torch.Tensor], pick_samples: int
+) -> tuple[dict, float]:
+    """
+    Calculates the memory consumption of a specific block in the model.
+
+    Args:
+        block (torch.nn.Module): The block of the model to analyze.
+        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+        pick_samples (int): Number of samples to consider for memory estimation.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - layer_memory_dict (dict): A dictionary mapping layer names to their memory consumption (in GB).
+              Format: {layer_name: {"param_memory": float, "output_memory": float}}
+            - input_output_memory (float): The memory consumption (in GB) for input and output
+                tensors of the block.
+            - additional_memory (float): Additional memory overhead (in GB) for operations like attention.
+    """
+    # Calculate all block parameters memory and build layer-wise memory dict
+    from auto_round.utils.model import get_layer_features
+
+    layer_memory_dict = {}
+    total_param_mem = 0
+
+    # Calculate batch_size and sequence_length from input_ids for output memory estimation
+    seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
+    element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
+
+    for name, module in block.named_modules():
+        if check_to_quantized(module):
+            enable_act_quant = module.act_bits <= 8
+            layer_name = name
+            param_size = module.weight.nbytes
+            param_memory_gb = param_size / 1024**3
+            param_memory_gb *= 2  # considering the v tensor for weight rounding
+
+            # Estimate output memory based on input_features and out_features
+            in_features, out_features = get_layer_features(module)
+            if in_features is not None and out_features is not None:
+                # Output tensor size: batch_size * seq_len * out_features * element_size
+                output_size = pick_samples * seq_len * out_features * element_size
+                output_memory_gb = output_size / 1024**3
+
+                # If enable_act_quant, add input tensor memory to param_memory
+                if enable_act_quant:
+                    input_size = pick_samples * seq_len * in_features * element_size
+                    input_memory_gb = input_size / 1024**3
+                    param_memory_gb += input_memory_gb
+            else:
+                output_memory_gb = 0.0
+
+            # memory * 2, because it contains grad tensor.
+            layer_memory_dict[layer_name] = {"param_memory": param_memory_gb * 2, "output_memory": output_memory_gb * 2}
+
+    # Assuming bfloat16 or float32, input and output
+    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    # Roughly estimate additional memory for attention and other operations
+    additional_activation_memory = sum(info["output_memory"] for info in layer_memory_dict.values())
+    # 1GB considers norm weight, sdpa, reference_output, etc.
+    additional_memory = additional_activation_memory + 1  # GB
+    if torch.xpu.is_available():
+        # https://github.com/intel/torch-xpu-ops/issues/2232
+        # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
+        xpu_additional_memory = 12  # GB
+        additional_memory += xpu_additional_memory
+
+    return layer_memory_dict, block_input_output_memory, additional_memory
+
+
 def set_auto_device_map_for_block_with_tuning(
     block: torch.nn.Module,
     device_map,
@@ -809,19 +810,23 @@ def set_auto_device_map_for_block_with_tuning(
         device_0 = f"{device_name}:0"
 
     device_0_memory = get_device_memory(device_list[0] if device_list else 0)
-    layer_memory_dict, input_output_memory, additional_memory = estimate_tuning_block_mem(
+    layer_memory_dict, block_input_output_memory, additional_memory = estimate_tuning_block_mem(
         block, input_ids, pick_samples
     )
     if low_gpu_mem_usage:
-        input_output_memory = 0
+        block_input_output_memory = 0
 
     # Calculate total block memory from layer memory dict (including both param and output memory)
     total_block_param_memory = sum(info["param_memory"] for info in layer_memory_dict.values())
     total_block_output_memory = sum(info["output_memory"] for info in layer_memory_dict.values())
 
     # Average dispatch strategy
-    # card_0_left_memory = card_0_mem - input_output_memory - additional_memory - layer_outputs_memory
-    card_0_left_memory = device_0_memory - input_output_memory - additional_memory - total_block_output_memory
+    # card_0_left_memory = card_0_mem - block_input_output_memory - additional_memory - layer_outputs_memory
+    logger.debug("Card 0 used memory details:")
+    logger.debug(f"  Block input output cache memory: {block_input_output_memory} GB")
+    logger.debug(f"  Quantized layer outputs memory: {total_block_output_memory} GB")
+    logger.debug(f"  Additional_memory from other ops: {additional_memory} GB")
+    card_0_left_memory = device_0_memory - block_input_output_memory - total_block_output_memory - additional_memory
 
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory
@@ -842,11 +847,11 @@ def set_auto_device_map_for_block_with_tuning(
 
     # Allocate layers to devices using load-balancing strategy
     device_map, names = _allocate_layers_to_devices(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
-    logger.debug(f"Auto device map for block: {device_map}")
 
+    logger.debug(f"Auto device map for block: {device_map}")
     set_non_auto_device_map(block, device_map, names)
 
-    # Ensure all remaining modules with params/buffers are moved to device_0
+    # Ensure all remaining modules with parameters/buffers are moved to device_0
     # This prevents mixed CPU/GPU execution within the same block
     for name, module in block.named_modules():
         if name not in names:  # This module wasn't assigned a device
@@ -854,7 +859,7 @@ def set_auto_device_map_for_block_with_tuning(
             has_params = any(True for _ in module.parameters(recurse=False))
             has_buffers = any(True for _ in module.buffers(recurse=False))
             if has_params or has_buffers:
-                set_tuning_device_for_layer(block, name, device_0)
+                module = module.to(device_0)
 
 
 def partition_dict_numbers(number_dict, n):
