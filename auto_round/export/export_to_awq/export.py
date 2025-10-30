@@ -40,8 +40,8 @@ from auto_round.utils import (
     extract_block_names_to_str,
     get_block_names,
     get_module,
-    set_module,
     is_meta_model,
+    set_module,
 )
 
 

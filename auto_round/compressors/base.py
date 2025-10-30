@@ -2698,6 +2698,7 @@ class BaseCompressor(object):
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         import torch
+
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         input_ids = to_dtype(input_ids, tmp_dtype)
 
@@ -2810,8 +2811,11 @@ class BaseCompressor(object):
         clear_memory()
 
     def _save_block_immediate(self, m, last_group=False):
-        import os, json, torch
+        import json
+        import os
         from collections import OrderedDict
+
+        import torch
 
         # User configurable (can be preset on self)
         max_shard_size = getattr(self, "max_shard_size", "5GB")
@@ -2820,9 +2824,9 @@ class BaseCompressor(object):
         def _parse_size(size_str: str) -> int:
             s = size_str.strip().upper()
             if s.endswith("GB"):
-                return int(s[:-2]) * (1024 ** 3)
+                return int(s[:-2]) * (1024**3)
             if s.endswith("MB"):
-                return int(s[:-2]) * (1024 ** 2)
+                return int(s[:-2]) * (1024**2)
             if s.endswith("KB"):
                 return int(s[:-2]) * 1024
             return int(s)
@@ -2835,12 +2839,13 @@ class BaseCompressor(object):
             if safe_serialization:
                 try:
                     from safetensors.torch import save_file as _sf  # noqa
+
                     self._use_safetensors = True
                 except ImportError:
                     logger.warning("safe_serialization=True but safetensors not installed; fallback to torch.save.")
             self._current_shard_tensors = OrderedDict()
             self._current_shard_size = 0
-            self._shard_meta = []         # list of dicts: {file, params}
+            self._shard_meta = []  # list of dicts: {file, params}
             self._global_weight_map = {}  # param_name -> final shard file (filled after finalize)
             self._shard_counter = 0
             self._shard_suffix = "safetensors" if self._use_safetensors else "bin"
@@ -2848,9 +2853,7 @@ class BaseCompressor(object):
             self._total_param_elems = 0
             self._total_param_size_bytes = 0
             # Directory
-            self._packed_blocks_root = os.path.join(
-                self._get_save_folder_name(self.formats[0]), ""
-            )
+            self._packed_blocks_root = os.path.join(self._get_save_folder_name(self.formats[0]), "")
             os.makedirs(self._packed_blocks_root, exist_ok=True)
 
         # Collect tensors directly from current (multi)block `m`
@@ -2858,6 +2861,7 @@ class BaseCompressor(object):
         for k, v in m.state_dict().items():
             if isinstance(v, torch.Tensor):
                 flat_tensors[f"{m.tmp_name}.{k}"] = v.detach().cpu()
+
         # Append tensors into the running shard(s)
         def _flush_current_shard():
             if len(self._current_shard_tensors) == 0:
@@ -2867,6 +2871,7 @@ class BaseCompressor(object):
             tmp_path = os.path.join(self._packed_blocks_root, tmp_name)
             if self._use_safetensors:
                 from safetensors.torch import save_file
+
                 save_file(self._current_shard_tensors, tmp_path)
             else:
                 torch.save(self._current_shard_tensors, tmp_path)
@@ -2875,7 +2880,7 @@ class BaseCompressor(object):
             for param in params:
                 free_module_name = param.rsplit(".", 1)[0]
                 free_module = get_module(self.model, free_module_name)
-                
+
                 # free module only when all its parameters have been saved
                 free_flag = True
                 free_module_state_dict = free_module.state_dict()
@@ -2946,10 +2951,7 @@ class BaseCompressor(object):
                     continue
 
                 # If adding this tensor would overflow current shard -> flush current first
-                if (
-                    self._current_shard_size + t_size > self._max_shard_bytes
-                    and self._current_shard_size > 0
-                ):
+                if self._current_shard_size + t_size > self._max_shard_bytes and self._current_shard_size > 0:
                     _flush_current_shard()
 
                 # Add to current shard
@@ -2978,11 +2980,7 @@ class BaseCompressor(object):
                     for p in meta["params"]:
                         self._global_weight_map[p] = new_name
 
-                index_fname = (
-                    "model.safetensors.index.json"
-                    if self._use_safetensors
-                    else "model.bin.index.json"
-                )
+                index_fname = "model.safetensors.index.json" if self._use_safetensors else "model.bin.index.json"
                 index_path = os.path.join(self._packed_blocks_root, index_fname)
                 index_data = {
                     "metadata": {
@@ -3000,12 +2998,12 @@ class BaseCompressor(object):
                     f"saved {total_shards} shard(s) (HF-style, including remaining unsaved weights) to "
                     f"{self._packed_blocks_root} (index: {index_fname})"
                 )
-                
+
                 try:
                     copy_python_files_from_model_cache(self.model, self._get_save_folder_name(self.formats[0]))
                 except Exception as e:
                     logger.warning("Skipping source model Python file copy due to error: %s", e)
-            
+
             # 4) Cleanup attributes to release memory after final shard is written
             try:
                 attrs_to_cleanup = [
@@ -3028,7 +3026,7 @@ class BaseCompressor(object):
                 clear_memory()
             except Exception as _cleanup_err:
                 logger.warning(f"shard cleanup warning: {_cleanup_err}")
-    
+
     def save_quantized(
         self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs
     ) -> torch.nn.Module:

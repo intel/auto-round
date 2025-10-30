@@ -36,9 +36,9 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_block_names,
     get_module,
+    is_meta_model,
     set_amax_for_all_moe_layers,
     set_module,
-    is_meta_model,
 )
 from auto_round.wrapper import WrapperWALayer
 

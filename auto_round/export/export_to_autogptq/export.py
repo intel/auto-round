@@ -66,10 +66,10 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_block_names,
     get_module,
+    is_meta_model,
     json_serialize,
     matches_any_regex,
     set_module,
-    is_meta_model,
     to_standard_regex,
 )
 

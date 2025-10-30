@@ -39,8 +39,8 @@ from auto_round.utils import (
     check_to_quantized,
     copy_python_files_from_model_cache,
     get_module,
-    set_module,
     is_meta_model,
+    set_module,
     to_standard_regex,
 )
 

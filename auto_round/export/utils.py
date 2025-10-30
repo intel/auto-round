@@ -16,7 +16,7 @@ import os
 
 import torch.nn as nn
 
-from auto_round.utils import copy_python_files_from_model_cache, logger, is_meta_model
+from auto_round.utils import copy_python_files_from_model_cache, is_meta_model, logger
 
 
 def save_model(
@@ -50,7 +50,7 @@ def save_model(
     if is_meta_model(model):
         if hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(save_dir)
-            
+
         if hasattr(model, "generation_config") and model.generation_config is not None:
             model.generation_config.save_pretrained(save_dir)
     else:

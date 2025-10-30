@@ -298,6 +298,7 @@ def get_reciprocal(tensor):
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
+
 def is_meta_model(model: torch.nn.Module) -> bool:
     is_meta = False
     for p in model.parameters():
