@@ -239,6 +239,7 @@ ar.quantize_and_save()
 - **`batch_size` (int, optional)**: Only supported in API usage. Can be set to `1` to reduce VRAM usage at the expense of longer tuning time.  
 
 </details>
+
 ### API Usage for VLMs
 
 If you encounter issues during quantization, try setting iters=0 (to enable RTN) and use group_size=32 for better
