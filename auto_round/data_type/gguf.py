@@ -290,6 +290,7 @@ def _imatrix_handle_zero(imatrix, weight, bits):
         return imatrix
 
     group_size = 16 if bits == 2 else 32
+    imatrix = imatrix.reshape(-1, imatrix.shape[-1])
     if torch.min(imatrix) == 0:
         logger.warning_once(
             "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
@@ -314,7 +315,7 @@ def _imatrix_handle_zero(imatrix, weight, bits):
             tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, imatrix.shape[1])
             replace_idx = imatrix == 0
             imatrix[replace_idx] = tmp_quant_weights[replace_idx]
-        return imatrix
+        return imatrix.reshape(weight.shape)
 
 
 @torch.no_grad()
