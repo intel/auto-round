@@ -207,7 +207,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### Device/Speed Configuration
 - **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
-- **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `"cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`).
+- **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, "cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`). When using "auto", it will try to use all available GPUs.
 
 </details>
 
