@@ -2798,7 +2798,7 @@ class BaseCompressor(object):
             pbar.update(1)
 
         if not self.save_block_immediate:
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+            self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
                 delattr(m, "name")
