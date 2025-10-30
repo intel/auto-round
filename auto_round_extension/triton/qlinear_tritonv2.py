@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.utils import _get_packing_device
+from auto_round.utils import get_packing_device
 from auto_round_extension.triton.triton_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
@@ -39,6 +39,7 @@ except ImportError as e:
         )
 
     class FakeTriton:
+
         def __getattr__(self, name):
             raise ImportError(
                 f"Trying to use the triton backend, but could not import triton dependencies with the following error: {triton_import_exception}"
@@ -104,16 +105,16 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         pass
 
     def pack(self, linear, scales, zeros, g_idx=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
 
         W = linear.weight.data.to(device).clone()
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)

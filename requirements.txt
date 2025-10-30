@@ -1,14 +1,13 @@
-accelerate
+# accelerate<=1.5.1
+accelerate>=1.10.0
 datasets
 py-cpuinfo
 sentencepiece
-numpy < 2.0
+numpy
 tqdm
 packaging
 pillow
-numba
 tbb
-triton ## for fp8 model
 torch
 transformers>=4.38
 threadpoolctl

@@ -41,7 +41,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.utils import _get_packing_device
+from auto_round.utils import get_packing_device
 
 logger = getLogger(__name__)
 
@@ -119,7 +119,7 @@ class QuantLinear(nn.Module):
         pass
 
     def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         scales_t = scales.t().contiguous()
 
         self.act_scales.data.copy_(act_scales.squeeze().clone())
@@ -129,9 +129,9 @@ class QuantLinear(nn.Module):
         self.scales = scales_t.clone().half()
 
         W = linear.weight.data.to(device).clone()
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)

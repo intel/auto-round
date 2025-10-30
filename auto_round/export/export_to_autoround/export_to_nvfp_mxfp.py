@@ -17,6 +17,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields
 
 import threadpoolctl as tctl
 import torch
@@ -24,20 +25,21 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-from auto_round.export.export_to_autoround.utils import REQUIRED_CONFIG_KEYS, check_neq_config
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.export.export_to_autoround.utils import check_neq_config
+from auto_round.export.utils import filter_quantization_config, save_model
+from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
-    _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
     get_module,
-    is_mx_fp,
-    is_nv_fp,
-    logger,
+    get_packing_device,
     set_amax_for_all_moe_layers,
     set_module,
+    to_standard_regex,
 )
 from auto_round.wrapper import WrapperWALayer
 
@@ -53,7 +55,7 @@ def pack_layer(name, model, backend, device=None):
     if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
     layer = get_module(model, name)
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
+    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
     if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
@@ -82,13 +84,13 @@ def pack_layer(name, model, backend, device=None):
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
-    if isinstance(layer, nn.Linear):
+    if type(layer) == nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
+    elif type(layer) == nn.Conv2d:
         in_features = layer.in_channels
         out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+    elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
 
@@ -171,9 +173,9 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
         # generate static input_global_scale
         for n, m in model.named_modules():
-            if isinstance(m, SUPPORTED_LAYER_TYPES):
+            if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
-                if layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
+                if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")
                     from auto_round.data_type.nvfp import calculate_gparam
 
@@ -194,26 +196,26 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         for i in range(len(block_name_to_quantize)):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
-    for layer_name in layer_config:
-        if (
-            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
-        ):  ##lm head ##TODO fix act and so on
-            extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        elif layer_config[layer_name]["in_blocks"] or (
+    scheme_keys = [f.name for f in fields(QuantizationScheme)]
+    for layer_name, cfg in layer_config.items():
+        if not cfg["in_blocks"] and cfg["bits"] <= 8:  # lm head
+            extra_config[layer_name] = {key: cfg.get(key) for key in scheme_keys}
+        elif cfg["in_blocks"] or (
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
-            neq_keys = check_neq_config(
-                layer_config[layer_name], **{k: quantization_config[k] for k in REQUIRED_CONFIG_KEYS}
-            )
+            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
-            for key in neq_keys:
-                if layer_config[layer_name][key] is not None:
-                    extra_config[layer_name][key] = layer_config[layer_name][key]
+                for key in scheme_keys:
+                    if cfg[key] is not None:
+                        extra_config[layer_name][key] = cfg[key]
+
+    regex_config = quantization_config.pop("regex_config")
+    if regex_config is not None:
+        for name in regex_config.keys():
+            regex_name = to_standard_regex(name)
+            extra_config[regex_name] = {**{k: regex_config[name][k] for k in scheme_keys}}
+
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
@@ -250,46 +252,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
         processor.save_pretrained(output_dir)
 
     dtype = None
-    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-
-
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
-    """Save model state dict and configs.
-
-    Args:
-        model (`nn.Module`):
-            Model to be saved. The model can be wrapped or unwrapped.
-        save_dir (`str`):
-            Directory to which to save. Will be created if it doesn't exist.
-        max_shard_size (`str`, defaults to `"10GB"`):
-            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
-            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
-            <Tip warning={true}>
-
-            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
-            which will be bigger than `max_shard_size`.
-
-            </Tip>
-        safe_serialization (`bool`, defaults to `True`):
-            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_path = os.path.join(save_dir, "config.json")
-    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, "r") as file:
-            data = json.load(file)
-        data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, "w") as file:
-            json.dump(data, file, indent=2)
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
-
-    try:
-        copy_python_files_from_model_cache(model, save_dir)
-    except Exception as e:
-        logger.warning("Skipping source model Python file copy due to error: %s", e)

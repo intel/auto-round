@@ -42,7 +42,7 @@ from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
-from auto_round.utils import is_hpu_supported
+from auto_round.utils import is_hpex_available
 
 logger = getLogger(__name__)
 import sys
@@ -57,7 +57,7 @@ AUTOROUND_MINIMUM_VERSION = version.parse("0.2")
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
-    try:  ##TODO remove it later
+    try:  # TODO remove it later
         import auto_round
 
         return True, auto_round.__version__
@@ -126,7 +126,7 @@ class AutoHfQuantizer:
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
             )
-        if "auto-round" in quant_method or is_hpu_supported():  # pragma: no cover
+        if "auto-round" in quant_method or is_hpex_available():  # pragma: no cover
             target_cls = AutoRoundQuantizer
         else:
             target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
@@ -270,8 +270,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
             raise ValueError("group_size must be greater than 0 or equal to -1")
 
     def get_loading_attributes(self):
-        loading_attibutes_dict = {"backend": self.backend}
-        return loading_attibutes_dict
+        loading_attributes_dict = {"backend": self.backend}
+        return loading_attributes_dict
 
     def to_dict(self):
         config_dict = super().to_dict()

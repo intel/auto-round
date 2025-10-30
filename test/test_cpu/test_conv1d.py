@@ -23,7 +23,7 @@ class LLMDataLoader:
 class TestQuantizationConv1d(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "MBZUAI/LaMini-GPT-124M"
+        self.model_name = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 

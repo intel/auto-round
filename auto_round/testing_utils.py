@@ -14,9 +14,13 @@
 
 import importlib.util
 import unittest
+from functools import wraps
+from typing import Callable, Literal
 
 import torch
 from transformers.utils.versions import require_version
+
+from auto_round.logger import logger
 
 
 def is_gguf_available():
@@ -47,7 +51,7 @@ def is_itrex_available():
     return importlib.util.find_spec("intel_extension_for_transformers") is not None
 
 
-def is_flash_attn_avaliable():
+def is_flash_attn_available():
     return importlib.util.find_spec("flash_attn") is not None
 
 
@@ -203,7 +207,7 @@ def require_vlm_env(test_case):
 
     env_check = True
     # pip install flash-attn --no-build-isolation
-    env_check &= is_flash_attn_avaliable()
+    env_check &= is_flash_attn_available()
 
     # pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
     env_check &= importlib.util.find_spec("llava") is not None
@@ -211,3 +215,64 @@ def require_vlm_env(test_case):
     env_check &= importlib.util.find_spec("xformers") is not None
 
     return unittest.skipUnless(env_check, "Environment is not satisfactory")(test_case)
+
+
+def require_package_version(
+    package: str, version_spec: str, on_fail: Literal["skip", "warn", "error"] = "skip"
+) -> bool:
+    """
+    Check if a package satisfies a version requirement.
+
+    Args:
+        package (str): Name of the Python package (e.g., "transformers").
+        version_spec (str): Version specifier string (e.g., ">=0.5.0", "<4.57.0").
+        on_fail (str, optional): Behavior when requirement is not met:
+            - "skip": return False (used for skipping tests)
+            - "warn": issue a warning but return True
+            - "error": raise ImportError
+        Defaults to "skip".
+
+    Returns:
+        bool: True if requirement satisfied or on_fail=="warn", False if skipped
+    """
+    try:
+        require_version(f"{package}{version_spec}")
+        return True
+    except ImportError as e:
+        msg = f"Requirement not satisfied: {package}{version_spec}"
+        if on_fail == "skip":
+            return False
+        elif on_fail == "warn":
+            logger.warning_once(msg)
+            return True
+        else:  # on_fail == "error"
+            raise ImportError(msg) from e
+
+
+def require_package_version_ut(package: str, version_spec: str) -> Callable:
+    """
+    Decorator for unittest.TestCase methods to enforce a package version requirement.
+
+    The decorated test will be skipped if the package version does not satisfy the requirement.
+
+    Args:
+        package (str): Name of the package (e.g., "transformers", "auto-round").
+        version_spec (str): Version specifier string (e.g., ">=0.5.0", "<4.57.0").
+
+    Returns:
+        Callable: A decorator to wrap unittest test methods.
+    """
+
+    def decorator(test_func: Callable) -> Callable:
+        reason = f"Test requires {package}{version_spec}"
+        return unittest.skipUnless(require_package_version(package, version_spec, on_fail="skip"), reason)(test_func)
+
+    return decorator
+
+
+def has_module(model: torch.nn.Module, target_module_type: torch.nn.Module) -> bool:
+    """Check if the model contains a specific module type."""
+    for _, module in model.named_modules():
+        if isinstance(module, target_module_type):
+            return True
+    return False

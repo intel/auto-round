@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import sys
 from functools import lru_cache
 from io import open
@@ -15,12 +16,33 @@ try:
 except Exception as error:
     assert False, "Error: Could not open '%s' due %s\n" % (filepath, error)
 
-version = __version__
-
 # All BUILD_* flags are initially set to `False`` and
 # will be updated to `True` if the corresponding environment check passes.
 PYPI_RELEASE = os.environ.get("PYPI_RELEASE", None)
 BUILD_HPU_ONLY = os.environ.get("BUILD_HPU_ONLY", "0") == "1"
+
+
+def is_commit_on_tag():
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--exact-match", "--tags"], capture_output=True, text=True, check=True
+        )
+        tag_name = result.stdout.strip()
+        return tag_name
+    except subprocess.CalledProcessError:
+        return False
+
+
+def get_build_version():
+    if is_commit_on_tag():
+        return __version__
+    try:
+        result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
+        distance = result.stdout.strip().split("-")[-2]
+        commit = result.stdout.strip().split("-")[-1]
+        return f"{__version__}.dev{distance}+{commit}"
+    except subprocess.CalledProcessError:
+        return __version__
 
 
 @lru_cache(None)
@@ -115,14 +137,22 @@ LIB_INSTALL_CFG = {
 if __name__ == "__main__":
     # There are two ways to install hpu-only package:
     # 1. python setup.py lib install
-    # 2. Within the gaudi docker where the HPU is available, we install the auto_round_lib by default.
+    # 2. Within the gaudi docker where the HPU is available, we install the "auto_round_lib" by default.
     is_user_requesting_library_build = "lib" in sys.argv
     if is_user_requesting_library_build:
         sys.argv.remove("lib")
     should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
-
     if should_build_library:
         package_name = "auto_round_lib"
+
+    # Install hpu dependencies when hpu is build args, and keep "auto_round" package name.
+    # Only available for source code installation, "python setup.py install hpu".
+    hpu_build = "hpu" in sys.argv
+    if hpu_build:
+        sys.argv.remove("hpu")
+        package_name = "auto_round"
+
+    if should_build_library or hpu_build:
         INSTALL_CFG = LIB_INSTALL_CFG
     else:
         package_name = "auto_round"
@@ -135,7 +165,7 @@ if __name__ == "__main__":
     setup(
         name=package_name,
         author="Intel AIPT Team",
-        version=version,
+        version=get_build_version(),
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com, heng.guo@intel.com",
         description="Repository of AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs",
         long_description=open("README.md", "r", encoding="utf-8").read(),
@@ -146,7 +176,7 @@ if __name__ == "__main__":
         packages=include_packages,
         install_requires=install_requires,
         extras_require=extras_require,
-        python_requires=">=3.7.0",
+        python_requires=">=3.10.0",
         classifiers=[
             "Intended Audience :: Science/Research",
             "Programming Language :: Python :: 3",
@@ -154,5 +184,5 @@ if __name__ == "__main__":
             "License :: OSI Approved :: Apache Software License",
         ],
         include_package_data=True,
-        package_data={"": ["mllm/templates/*.json"]},
+        package_data={"": ["mllm/templates/*.json", "alg_ext.abi3.so"]},
     )

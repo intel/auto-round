@@ -3,7 +3,7 @@ To ensure a fair comparison as much as possible and alleviate overfitting in per
 
 Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ，Omniquant and our approach, a sequence length of 2048 is used. And HQQ is a data free method, no need to calibrate.
 
-For GPTQ, we have enabled act-order and true-seqential, and also activated static group in scenarios where group_size!=-1. The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.
+For GPTQ, we have enabled act-order and true-sequential, and also activated static group in scenarios where group_size!=-1. The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.
 
 For Omniquant, we adhere to the official settings, which include running for 20 epochs and disabling 'let'. We conducted calibration tests using sample sizes of 512 and 128, as well as a sample size of 512 with a batch size of 4. Our findings show that using a sample size of 512 typically results in comparable or slight higher performance for models <=13B. Therefore, we present the results based on the sample size of 512. For 70B models, due the the NAN loss issue and to reduce the tuning cost, we adopted 128 samples for calibration.
 

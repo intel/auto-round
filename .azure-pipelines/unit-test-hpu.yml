@@ -48,18 +48,11 @@ stages:
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
 
-  # - stage: Unit_test_baseline
-  #   displayName: Unit Test Baseline
-  #   dependsOn: []
-  #   jobs:
-  #     - job:
-  #       displayName: Unit Test
-  #       steps:
-  #         - template: template/ut-template.yml
-  #           parameters:
-  #             imageSource: "pull"
-  #             dockerConfigName: "gitCloneDockerConfig"
-  #             utScriptFileName: "run_ut_hpu"
-  #             uploadPath: $(UPLOAD_PATH)
-  #             utArtifact: "ut_baseline"
-  #             repo: $(REPO)
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core sdk 7.0.x'
+            inputs:
+              version: 7.0.x
+
+          - task: PublishCodeCoverageResults@2
+            inputs:
+              summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
