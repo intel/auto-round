@@ -15,9 +15,10 @@ import argparse
 import os
 import sys
 
+from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
-from auto_round.schemes import PRESET_SCHEMES, AutoScheme
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -789,7 +790,7 @@ def run_eval():
     if args.eval_task_by_task:
         eval_task_by_task(
             model=args.model,
-            device=args.device,
+            device=args.device_map,
             tasks=args.tasks,
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,

@@ -12,15 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.adam import AdamCompressor
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.base import BaseCompressor as LLMCompressor
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
-from auto_round.compressors.config import (
-    DiffusionExtraConfig,
-    ExtraConfig,
-    MLLMExtraConfig,
-    SchemeExtraConfig,
-    TuningExtraConfig,
-)
+from auto_round.utils.device import *
+from auto_round.utils.common import *
+from auto_round.utils.model import *

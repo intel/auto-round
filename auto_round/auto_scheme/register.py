@@ -12,15 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.adam import AdamCompressor
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.base import BaseCompressor as LLMCompressor
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
-from auto_round.compressors.config import (
-    DiffusionExtraConfig,
-    ExtraConfig,
-    MLLMExtraConfig,
-    SchemeExtraConfig,
-    TuningExtraConfig,
-)
+AUTO_SCHEME_METHODS = {}
+
+
+def register_scheme_methods(names):
+    """Class decorator to register a mixed precision algorithm to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        names: A string. Define the export type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(alg):
+        if isinstance(names, (tuple, list)):
+            for name in names:
+                AUTO_SCHEME_METHODS[name] = alg
+        else:
+            AUTO_SCHEME_METHODS[names] = alg
+
+        return alg
+
+    return register

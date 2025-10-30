@@ -89,7 +89,7 @@ class TestMainFunc(unittest.TestCase):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        from auto_round.utils import get_fp_layer_names
+        from auto_round.compressors.utils import get_fp_layer_names
 
         layer_names = get_fp_layer_names(model, "model.decoder.layers.0,model.decoder.layers.1")
         layer_configs = {}
@@ -114,7 +114,7 @@ class TestMainFunc(unittest.TestCase):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        from auto_round.utils import get_fp_layer_names
+        from auto_round.compressors.utils import get_fp_layer_names
 
         layer_names = get_fp_layer_names(model, "model.decoder.layers.0,model.decoder.layers.1")
         layer_configs = {}

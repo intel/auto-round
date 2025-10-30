@@ -16,23 +16,40 @@ import torch
 import transformers
 from torch.functional import F
 
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func
 from auto_round.logger import logger
-
-from .utils import (
+from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compile_func,
     deepspeed_exists,
-    get_scale_shape,
-    is_mx_fp,
-    is_nv_fp,
     set_module,
 )
 
 if deepspeed_exists:
     from deepspeed import comm as dist
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
+
+
+def get_scale_shape(weight, group_size):
+    """Computes the shape of the scale tensor for quantization based on the weight tensor and group size.
+
+    Args:
+      weight (torch.Tensor): The weight tensor of the layer.
+      group_size (int): The size of the groups for quantization.
+
+    Returns:
+      The shape of the scale tensor to be used for quantization.
+    """
+    if group_size == 0:
+        return 1
+    elif group_size == -1 or weight.shape[1] < group_size:
+        shape = weight.shape[0]
+    else:
+        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
+
+    return shape
 
 
 def reshape_and_pad_tensor(v, group_size=-1):
@@ -138,8 +155,12 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             orig_weight = orig_weight.t()
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
-        self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
-        self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
+        if self.enable_round_tuning:
+            self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
+            self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
+        else:
+            self.weight_min = None
+            self.weight_max = None
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
@@ -215,7 +236,7 @@ class WrapperLinear(torch.nn.Module):
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
         weight_q, scale, zp = self.weight_quant_func(
-            weight,
+            weight.to(self.device),
             bits=self.orig_layer.bits,
             group_size=self.orig_layer.group_size,
             v=value,
@@ -345,7 +366,7 @@ class WrapperLinear(torch.nn.Module):
             assert global_scale.numel() == 1
             self.orig_layer.weight_global_scale = global_scale.to("cpu")
 
-        ##unwrapper bias
+        # Unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
             bias_v = best_params["bias_v"].to(self.device)
             bias = self.orig_layer.bias
@@ -449,6 +470,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        # logger.info(self.orig_layer.tmp_name)
         x = x.to(self.device)
         weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
