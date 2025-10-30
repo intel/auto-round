@@ -18,12 +18,12 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
-    AUTOROUND_USE_MODELSCOPE: bool = "False"
+    AR_USE_MODELSCOPE: bool = "False"
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
-    "AUTOROUND_USE_MODELSCOPE": lambda: os.getenv("AUTOROUND_USE_MODELSCOPE ", "False").lower() in ["1", "true"],
+    "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE ", "False").lower() in ["1", "true"],
 }
 
 

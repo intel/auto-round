@@ -149,10 +149,10 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
 
 
 def download_or_get_path(repo_id: str, platform: str = None) -> str:
-    from auto_round.envs import AUTOROUND_USE_MODELSCOPE
+    from auto_round.envs import AR_USE_MODELSCOPE
 
     if platform is None:
-        if AUTOROUND_USE_MODELSCOPE:
+        if AR_USE_MODELSCOPE:
             platform = "model_scope"
         else:
             platform = "hf"
@@ -164,7 +164,7 @@ def download_or_get_path(repo_id: str, platform: str = None) -> str:
 
 
 def download_modelscope_model(repo_id: str, local_dir: str = None, cache_dir: str = None):
-    from modelscope.utils.file_utils import get_modelscope_cache_dir
+    from modelscope.utils.file_utils import get_modelscope_cache_dir  # pylint: disable=E0401
 
     system_cache = cache_dir if cache_dir is not None else get_modelscope_cache_dir()
     if local_dir:
@@ -176,7 +176,7 @@ def download_modelscope_model(repo_id: str, local_dir: str = None, cache_dir: st
     if os.path.exists(directory):
         return directory
     else:
-        from modelscope.hub.snapshot_download import snapshot_download
+        from modelscope.hub.snapshot_download import snapshot_download  # pylint: disable=E0401
 
         return snapshot_download(repo_id)
 
@@ -224,9 +224,9 @@ def llm_load_model(
         "hf",
         "model_scope",
     ], "current only support hf or model_scope platform to load pretrained model."
-    os.environ["AUTOROUND_USE_MODELSCOPE"] = "model_scope" if platform.lower() == "model_scope" else "hf"
+    os.environ["AR_USE_MODELSCOPE"] = "True" if platform.lower() == "model_scope" else "False"
     if platform == "model_scope":
-        from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer
+        from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
@@ -309,11 +309,11 @@ def mllm_load_model(
         "hf",
         "model_scope",
     ], "current only support hf or model_scope platform to load pretrained model."
-    os.environ["AUTOROUND_USE_MODELSCOPE"] = "model_scope" if platform.lower() == "model_scope" else "hf"
+    os.environ["AR_USE_MODELSCOPE"] = "model_scope" if platform.lower() == "model_scope" else "hf"
 
     if platform == "model_scope":
-        import modelscope
-        from modelscope import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+        import modelscope  # pylint: disable=E0401
+        from modelscope import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
 
         base_lib = modelscope
     else:
@@ -423,7 +423,7 @@ def mllm_load_model(
                 )
             try:
                 if platform == "model_scope":
-                    from modelscope import AutoImageProcessor
+                    from modelscope import AutoImageProcessor  # pylint: disable=E0401
                 else:
                     from transformers import AutoImageProcessor
 
