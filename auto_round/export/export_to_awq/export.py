@@ -112,10 +112,13 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if image_processor is not None and output_dir is not None:
         image_processor.save_pretrained(output_dir)
 
-    if inplace:
-        compressed_model = model.to("cpu")
+    if not is_meta_model(model):
+        if inplace:
+            compressed_model = model.to("cpu")
+        else:
+            compressed_model = copy.deepcopy(model.to("cpu"))
     else:
-        compressed_model = copy.deepcopy(model.to("cpu"))
+        compressed_model = model
 
     names = list(layer_config.keys())
 

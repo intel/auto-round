@@ -1482,7 +1482,8 @@ class BaseCompressor(object):
             set_module(self.model, name, m)
 
         if self.save_block_immediate:
-            last_module = name == [n for n, m in self.model.named_modules() if check_to_quantized(m)][-1]
+            all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+            last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             self._save_block_immediate(m, last_module)
 
     @torch.inference_mode()
