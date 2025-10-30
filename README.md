@@ -48,11 +48,7 @@ refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and
   all bits other than 3 bits. **A more advanced algorithm** tailored for specific configurations may be available in
   v0.8.1.
 
-[2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
-  vLLM versions later than v0.85.post1.
-
-[2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
-  with Transformers versions later than 4.51.3.
+[2025/05] AutoRound has been integrated into **Transformers** and **vLLM**. 
 
 [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
