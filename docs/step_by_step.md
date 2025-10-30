@@ -119,6 +119,7 @@ AutoRound supports several Schemes:
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
+- **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 are supported)
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to llm-compressor format. data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
@@ -281,8 +282,6 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
 
-We strongly recommend set `enable_torch_compile` to True to save VRAM.
-
 **Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
 
 #### CLI Usage
@@ -306,15 +305,19 @@ ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`avg_bits(float)`: Target average bits for the whole model, only to be quantized layer will be counted in the average bits calculation.
+`avg_bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation.
 
-`options(Union[str, list[Union[QuantizationScheme, str]])`: the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
+`options(Union[str, list[Union[QuantizationScheme, str]])` the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
 
-`ignore_scale_zp_bits(bool)`: Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
+`ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
 
 `device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
 
 `shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
+
+`batch_size (Optional[int])` could be set to 1 to reduce VRAM but increase time cost
+
+`low_gpu_mem_usage(bool=True)` whether to reduce gpu memory usage at the cost of more time cost
 
 In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
 
@@ -348,10 +351,23 @@ ar.quantize_and_save()
 ```
 
 #### AutoScheme Cost
-The tuning cost of AutoScheme is approximately 2 to 4 times that of model's bf16 size, depending on the options.
+
 We tested it on Nvidia A100 80G using torch v2.8.
 
-We will try to optimize the VRAM usage in the future.
+We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-1.5x of the model's BF16 size
+
+| Models        | Scheme                | VRAM Cost | Time Cost             |
+| ------------- | --------------------- | --------- | --------------------- |
+| Qwen3-8B      | W2A16 / W4A16 / W8A16 | 14G       | 60s * len of options  |
+| Qwen3-8B      | MXFP4 / MXFP8         | 18G       | 60s * len of options  |
+| Qwen3-8B      | GGUF*                 | 14G       | 80s * len of options  |
+| Qwen3-32B     | W2A16 / W4A16 / W8A16 | 29G       | 180s*  len of options |
+| Qwen3-32B     | MXFP4 / MXFP8         | 29G       | 180s*  len of options |
+| Qwen3-32B     | GGUF*                 | 18G       | 300s * len of options |
+| Llama-3.3-70B | W2A16 / W4A16 / W8A16 | 32G       | 420s * len of options |
+
+<details>
+<summary>Cost w/o low_gpu_mem_usage </summary>
 
 | Models    | Scheme            | VRAM Cost <br />(torch compile) | Time Cost<br /> torch compile | VRAM Cost <br />wo torch compile | Time Cost<br /> wo torch compile |
 | --------- | ----------------- | ------------------------------- | ----------------------------- | -------------------------------- | -------------------------------- |
@@ -361,7 +377,7 @@ We will try to optimize the VRAM usage in the future.
 | Qwen3-32B | W2A16/W4A16/W8A16 | OOM with 240G                   | ---                           | OOM with 240G                    | ---                              |
 | Qwen3-32B | MXFP4/MXFP8       | 160G                            | 200s * len of options         | 200G                             | 240s * len of options            |
 | Qwen3-32B | GGUF*             | 210G                            | 80s * len of options          | 200G                             | 60s * len of options             |
-
+</details> 
 
 
 #### Limitations

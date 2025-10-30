@@ -18,7 +18,7 @@ import re
 from collections import UserDict
 from dataclasses import asdict, fields
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Union
 
 import torch
 import transformers
@@ -263,7 +263,6 @@ def mllm_load_model(
     **kwargs,
 ):
     import transformers
-    from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
@@ -732,7 +731,7 @@ def set_nested_attr(module, attr_name: str, value):
     setattr(module, attrs[-1], value)
 
 
-def _pad_weight(weight: torch.Tensor, block_size: list) -> Tuple[torch.Tensor, int, int]:
+def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
     """Pads a matrix to make its dimensions multiples of block_size."""
     M, N = weight.shape[-2:]
     block_size_m, block_size_n = block_size
@@ -757,7 +756,7 @@ def _unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_f
 
 def pad_block_fp8_weight_naive(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
-) -> Tuple[torch.Tensor, int, int]:
+) -> tuple[torch.Tensor, int, int]:
     assert len(block_size) == 2
 
     block_size_m, block_size_n = block_size
@@ -946,8 +945,10 @@ def set_module(model, key, new_module):
 
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    from auto_round.utils.common import LinearAllreduce, LinearLayer, deepspeed_exists
+    from auto_round.utils import deepspeed_exists
 
+    if deepspeed_exists:
+        from deepspeed.module_inject import LinearAllreduce, LinearLayer
     if type(layer) == torch.nn.Linear:
         return layer.in_features, layer.out_features
     elif type(layer) == transformers.pytorch_utils.Conv1D:  # TODO: Verify correctness

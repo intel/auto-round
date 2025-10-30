@@ -1,8 +1,12 @@
 <div align="center">
 
 
-AutoRound
-===========================
+
+<p align="center">
+  <img src="docs/imgs/AutoRound.png" alt="AutoRound Overview" width="20%">
+</p>
+
+
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
@@ -41,9 +45,7 @@ refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and
  for some accuracy results. 
 
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
-  all bits other than 3 bits. Example
-  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound). **A more advanced algorithm** tailored for specific configurations may be available in
+  all bits other than 3 bits. **A more advanced algorithm** tailored for specific configurations may be available in
   v0.8.1.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
@@ -182,58 +184,54 @@ ar = AutoRound(model_name_or_path, scheme="W4A16")
 # ar = AutoRound(model_name_or_path, nsamples=128, iters=50, lr=5e-3)
 
 # Supported formats: "auto_round" (default), "auto_gptq", "auto_awq", "llm_compressor", "gguf:q4_k_m", etc.
-ar.quantize_and_save(output_dir="./tmp_autoround", format="auto_round")
+ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ```
 
+### AutoScheme Usage 
+Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
+~~~python
+from auto_round import AutoRound, AutoScheme
+
+model_name = "Qwen/Qwen3-8B"
+avg_bits = 3.0
+scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
+layer_config = {"lm_head": "GGUF:Q6_K"}
+
+# Change iters to 200 for non-GGUF schemes
+ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar.quantize_and_save()
+~~~
+
 <details>
-  <summary>Detailed Hyperparameters</summary>
+<summary>Important Hyperparameters</summary>
 
-- `model`: The PyTorch model to be quantized.
+##### Quantization Scheme & Configuration
+- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`.
+- **`bits` (int)**: Number of bits for quantization (default is `None`). If not None, it will override the scheme setting.
+- **`group_size` (int)**: Size of the quantization group (default is `None`). If not None, it will override the scheme setting.
+- **`sym` (bool)**: Whether to use symmetric quantization (default is `None`). If not None, it will override the scheme setting.
+- **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
 
-- `tokenizer`: An optional tokenizer for processing input data. If none, a dataset must be provided.
 
-- `bits (int)`: Number of bits for quantization (default is 4).
+##### Algorithm Settings
+- **`enable_alg_ext` (bool)**: Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
 
-- `group_size (int)`: Size of the quantization group (default is 128).
+##### Tuning Process Parameters
+- **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
+- **`lr` (float)**: The learning rate for rounding value (default is `None`). When None, it will be set to `1.0/iters` automatically.
+- **`batch_size` (int)**: Batch size for training (default is `8`). 4 is also commonly used.
 
-- `sym (bool)`: Whether to use symmetric quantization (default is True).
+##### Calibration Dataset
+- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
+- **`nsamples` (int)**: Number of samples for tuning (default is `128`).
+- **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 
-- `enable_quanted_input (bool)`: Whether to use the output of the previous quantized block as the input for the current
-  block for tuning (default is True).
 
-- `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
-
-- `iters (int)`: Number of tuning iterations (default is 200).
-
-- `lr (float)`: The learning rate for rounding value (default is None, it will be set to 1.0/iters automatically).
-
-- `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
-
-- `nsamples (int)`: Number of samples for tuning (default is 128).
-
-- `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
-
-- `batch_size (int)`: Batch size for training (default is 8).
-
-- `scale_dtype (str)`: The data type of quantization scale to be used (default is "float16"), different kernels have
-  different choices.
-
-- `amp (bool)`: Whether to use automatic mixed precision (default is True).
-
-- `nblocks (int)`: Packing several blocks as one for tuning together (default is 1).
-
-- `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
-
-- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is False).
-
-- `dataset Union[str, list, tuple, torch.utils.data.DataLoader]`: The dataset name for tuning (default is "
-  NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
-  ./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
-
-- `layer_config (dict)`: Configuration for weight quantization (default is None), mainly for mixed bits
-  or mixed precision.
-
-- `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
+##### Device/Speed Configuration
+- **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
+- **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
+- **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `"cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`).
 
 </details>
 
@@ -259,7 +257,7 @@ from auto_round import AutoRoundMLLM
 model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
 # Quantize the model
 ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
-output_dir = "./tmp_autoround"
+output_dir = "./qmodel"
 ar.quantize_and_save(output_dir)
 ```
 
@@ -303,7 +301,6 @@ sampling_params = {"temperature": 0.6, "top_p": 0.95}
 
 outputs = llm.generate(prompts, sampling_params)
 for prompt, output in zip(prompts, outputs):
-    print("===============================")
     print(f"Prompt: {prompt}\nGenerated text: {output['text']}")
 ```
 
