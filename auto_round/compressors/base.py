@@ -1312,10 +1312,11 @@ class BaseCompressor(object):
         self.model.to("cpu")
 
         enable_imatrix = False
-        if has_gguf_k and not self.disable_opt_rtn:
-            enable_imatrix = True
-        if self.data_type == "int" and self.sym:
-            enable_imatrix = True
+        if not self.disable_opt_rtn:
+            if has_gguf_k:
+                enable_imatrix = True
+            elif self.data_type == "int" and self.sym:
+                enable_imatrix = True
 
         if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
