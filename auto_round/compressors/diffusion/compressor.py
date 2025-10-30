@@ -46,8 +46,8 @@ class DiffusionCompressor(BaseCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         guidance_scale (float): Control how much the image generation process follows the text prompt.
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).
@@ -81,8 +81,8 @@ class DiffusionCompressor(BaseCompressor):
     def __init__(
         self,
         model: Union[object, str],
-        platform: str = "hf",
         tokenizer=None,
+        platform: str = "hf",
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator_seed: int = None,
@@ -146,8 +146,8 @@ class DiffusionCompressor(BaseCompressor):
         kwargs["diffusion"] = True
         super(DiffusionCompressor, self).__init__(
             model=model,
-            platform=platform,
             tokenizer=None,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,

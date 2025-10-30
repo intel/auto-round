@@ -39,8 +39,8 @@ class AutoRound:
 
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
@@ -64,8 +64,8 @@ class AutoRound:
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
-        platform: str = "hf",
         tokenizer=None,
+        platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -168,8 +168,8 @@ class AutoRound:
             kwargs.update(extra_config.to_dict())
         ar = dynamic_compressor(
             model=model,
-            platform=platform,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -313,8 +313,8 @@ class AutoRoundLLM(LLMCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        platform: str = "hf",
         tokenizer=None,
+        platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -331,8 +331,8 @@ class AutoRoundLLM(LLMCompressor):
     ):
         super().__init__(
             model=model,
-            platform=platform,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -355,8 +355,8 @@ class AutoRoundAdam(AdamCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
@@ -415,8 +415,8 @@ class AutoRoundAdam(AdamCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        platform: str = "hf",
         tokenizer=None,
+        platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -434,8 +434,8 @@ class AutoRoundAdam(AdamCompressor):
     ):
         super().__init__(
             model=model,
-            platform=platform,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             batch_size=batch_size,
@@ -459,8 +459,8 @@ class AutoRoundMLLM(MLLMCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         processor: Any multi-modal model will require an object to encode or
                    decode the data that groups several modalities (among text, vision and audio).
         image_processor: Image processor for special model like llava.
@@ -518,8 +518,8 @@ class AutoRoundMLLM(MLLMCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        platform: str = "hf",
         tokenizer=None,
+        platform: str = "hf",
         processor=None,
         image_processor=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
@@ -539,8 +539,8 @@ class AutoRoundMLLM(MLLMCompressor):
     ):
         super().__init__(
             model=model,
-            platform=platform,
             tokenizer=tokenizer,
+            platform=platform,
             processor=processor,
             image_processor=image_processor,
             scheme=scheme,
@@ -566,8 +566,8 @@ class AutoRoundDiffusion(DiffusionCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         guidance_scale (float): Control how much the image generation process follows the text prompt.
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).

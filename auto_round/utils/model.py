@@ -149,10 +149,13 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
 
 
 def download_or_get_path(repo_id: str, platform: str = None) -> str:
-    from auto_round.envs import MODEL_PLATFORM
+    from auto_round.envs import AUTOROUND_USE_MODELSCOPE
 
     if platform is None:
-        platform = MODEL_PLATFORM.lower()
+        if AUTOROUND_USE_MODELSCOPE:
+            platform = "model_scope"
+        else:
+            platform = "hf"
 
     if platform == "model_scope":
         return download_modelscope_model(repo_id)
@@ -221,7 +224,7 @@ def llm_load_model(
         "hf",
         "model_scope",
     ], "current only support hf or model_scope platform to load pretrained model."
-    os.environ["MODEL_PLATFORM"] = platform.upper()
+    os.environ["AUTOROUND_USE_MODELSCOPE"] = "model_scope" if platform.lower() == "model_scope" else "hf"
     if platform == "model_scope":
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer
     else:
@@ -306,7 +309,7 @@ def mllm_load_model(
         "hf",
         "model_scope",
     ], "current only support hf or model_scope platform to load pretrained model."
-    os.environ["MODEL_PLATFORM"] = platform.upper()
+    os.environ["AUTOROUND_USE_MODELSCOPE"] = "model_scope" if platform.lower() == "model_scope" else "hf"
 
     if platform == "model_scope":
         import modelscope

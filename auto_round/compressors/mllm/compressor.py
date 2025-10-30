@@ -86,8 +86,8 @@ class MLLMCompressor(BaseCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         processor: Any multi-modal model will require an object to encode or
                    decode the data that groups several modalities (among text, vision and audio).
         image_processor: Image processor for special model like llava.
@@ -145,8 +145,8 @@ class MLLMCompressor(BaseCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        platform: str = "hf",
         tokenizer=None,
+        platform: str = "hf",
         processor=None,
         image_processor=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
@@ -259,8 +259,8 @@ class MLLMCompressor(BaseCompressor):
         kwargs["mllm"] = True
         super(MLLMCompressor, self).__init__(
             model=model,
-            platform=platform,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,

@@ -26,8 +26,8 @@ class AdamCompressor(BaseCompressor):
 
     Args:
         model: The PyTorch model to be quantized.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
@@ -86,8 +86,8 @@ class AdamCompressor(BaseCompressor):
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
-        platform="hf",
         tokenizer=None,
+        platform="hf",
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -105,8 +105,8 @@ class AdamCompressor(BaseCompressor):
     ):
         super(AdamCompressor, self).__init__(
             model=model,
-            platform=platform,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             batch_size=batch_size,
