@@ -149,7 +149,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             set_weight_attrs(w13_bias, extra_weight_attrs)
 
             w2_bias = torch.nn.Parameter(
-                torch.zeros(num_experts, hidden_size, dtype=bias_dtype),
+                torch.zeros(E, H, dtype=bias_dtype),
                 requires_grad=False,
             )
             layer.register_parameter("w2_bias", w2_bias)

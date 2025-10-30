@@ -51,8 +51,7 @@ def pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
     indices = indices.reshape(-1)
 
     # Handle odd length by padding if necessary
-    if indices.numel() % 2 != 0:
-        indices = torch.cat([indices, torch.zeros(1, dtype=torch.long, device=device)])
+    assert indices.numel() % 2 != 0, f"Expected even number of elements, got {indices.numel()}"
 
     # Reshape to pair consecutive elements
     indices = indices.reshape(-1, 2)
