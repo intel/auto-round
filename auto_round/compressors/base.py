@@ -2439,20 +2439,21 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
-            set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
-            )
+        # >>>>>>>>>>>>> @yi
+        # if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+        #     set_auto_device_map_for_block_with_tuning(
+        #         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+        #     )
 
-        if self.device_map is not None:
-            for n, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+        # if self.device_map is not None:
+        #     for n, m in block.named_modules():
+        #         if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+        #             continue
+        #         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
-                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                add_hook_to_module(m, hook, True)
-
+        #         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+        #         add_hook_to_module(m, hook, True)
+        # <<<<<<<<<<<< @yi
         if q_input is None:
             hook_handles = self._register_act_max_hook(block)
 
@@ -2460,8 +2461,8 @@ class BaseCompressor(object):
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
 
-            for handle in hook_handles:
-                handle.remove()
+            # for handle in hook_handles:
+            #     handle.remove()
         else:
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
@@ -2640,17 +2641,19 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if self.device_map is not None:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
+            # @yi
+            # if self.device_map is not None:
+            #     accelerate.hooks.remove_hook_from_submodules(block)
+            # mv_module_from_gpu(block)
             clear_memory(input_ids)
 
             return q_outputs, output
 
         else:
-            if self.device_map is not None:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
+            # @yi
+            # if self.device_map is not None:
+            #     accelerate.hooks.remove_hook_from_submodules(block)
+            # mv_module_from_gpu(block)
             clear_memory(input_ids)
             return None, output
 

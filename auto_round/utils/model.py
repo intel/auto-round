@@ -443,7 +443,8 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
         "pre_mm_projector_norm",
         "vision",
     ]
-
+    # FIXME: yi, fix it later
+    return False
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
     if not os.path.isdir(model_path):
         model_path = download_hf_model(model_path)
