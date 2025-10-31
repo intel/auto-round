@@ -46,8 +46,8 @@ from auto_round.compressors.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
-    set_layer_config,
     save_block_immediate,
+    set_layer_config,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
@@ -2811,7 +2811,6 @@ class BaseCompressor(object):
         del inputs
 
         clear_memory()
-
 
     def save_quantized(
         self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs

@@ -1028,24 +1028,26 @@ def reset_params(inputs):
     if "use_cache" in inputs.keys():  # Not storing kv cache
         inputs["use_cache"] = False
 
+
 def save_block_immediate(rounder, m, name=None, last_group=False):
     """
     Shard-saves the parameters of a model block (or group of blocks) immediately into disk,
     accumulating tensors into size-limited shards, optionally finalizing all remaining
     model weights when processing the last group.
-    
+
     Args:
         path (str): The path to check.
         rounder (object): The object of compressor.
         m (torch.nn.Module): The current block (or composite module) whose parameters will be added to the shard set.
         name (str): Override module name used as prefix for saved parameter keys. If None, falls back to m.tmp_name.
-        last_group (bool): If True, triggers final pass over the entire model to include unsaved weights, 
+        last_group (bool): If True, triggers final pass over the entire model to include unsaved weights,
             writes shard index, renames shard files, copies source files, and releases temporary state.
     """
     import json
     import os
     from collections import OrderedDict
-    from auto_round.utils import get_module, clear_memory
+
+    from auto_round.utils import clear_memory, get_module
 
     # User configurable (can be preset on rounder)
     max_shard_size = getattr(rounder, "max_shard_size", "5MB")
