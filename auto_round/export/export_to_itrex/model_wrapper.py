@@ -349,10 +349,10 @@ class WeightOnlyLinear(torch.nn.Module):
                 self.weight = weight
             input = input.type(self.weight.dtype)
             logger.debug(f"Calculating {self}")
-            return F.linear(input, self.weight, self.bias)
+            return F.linear(input, self.weight, self.bias)  # pylint: disable=E1102
         else:
             input = input.type(weight.dtype)
-            return F.linear(input, weight, self.bias)
+            return F.linear(input, weight, self.bias)  # pylint: disable=E1102
 
     def extra_repr(self) -> str:
         tmp_str = "in_features={}, out_features={}, bits={}, group_size={}, bias={}".format(

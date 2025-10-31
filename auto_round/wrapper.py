@@ -425,7 +425,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the linear layer.
         """
-        return F.linear(x, weight, bias)
+        return F.linear(x, weight, bias)  # pylint: disable=E1102
 
     def all_reduce_linear_forward(self, x, weight, bias):
         """Performs the forward pass for a linear layer.

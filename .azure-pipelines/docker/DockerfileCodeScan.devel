@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG UBUNTU_VER=22.04
+ARG UBUNTU_VER=24.04
 FROM ubuntu:${UBUNTU_VER} as devel
 
 # See http://bugs.python.org/issue19846
@@ -24,8 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     aspell-en \
     python3 \
     python3-pip \
-    python3-dev \
-    python3-distutils \
     autoconf \
     build-essential \
     wget
@@ -40,9 +38,8 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 
 USER hostuser
 
-ENV PATH="/home/hostuser/.local/bin:${PATH}"
-RUN python -m pip install --no-cache-dir --upgrade pip
-RUN python -m pip install --no-cache-dir pylint==2.12.1\
-    bandit
+ENV PATH="/home/hostuser/.local/bin:$PATH"
+RUN pip config set global.break-system-packages true
+RUN python -m pip install --no-cache-dir pylint bandit
 
 WORKDIR /
