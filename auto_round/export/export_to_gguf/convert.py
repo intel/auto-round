@@ -167,11 +167,11 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         from safetensors import safe_open
 
         from auto_round.export.export_to_gguf.special_handle import get_tensor_from_file
-        from auto_round.utils import download_hf_model
+        from auto_round.utils import download_or_get_path
 
         dir_path = cls.model.name_or_path
         if not os.path.isdir(dir_path):
-            dir_path = download_hf_model(dir_path)
+            dir_path = download_or_get_path(dir_path)
         INDEX_FILE = "model.safetensors.index.json"
         if INDEX_FILE in os.listdir(dir_path):
             with open(os.path.join(dir_path, INDEX_FILE)) as f:

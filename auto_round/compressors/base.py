@@ -30,6 +30,7 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
     block_forward,
@@ -105,6 +106,7 @@ class BaseCompressor(object):
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
@@ -129,6 +131,7 @@ class BaseCompressor(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform="hf",
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -228,6 +231,10 @@ class BaseCompressor(object):
         device = kwargs.pop("device", None)
         # Scale factor for RAM usage per parameter.
         mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+
+        if envs.AR_USE_MODELSCOPE:
+            platform = "model_scope"
+        self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
@@ -259,6 +266,7 @@ class BaseCompressor(object):
         if isinstance(model, str):
             model, tokenizer = llm_load_model(
                 model,
+                platform=platform,
                 device="cpu",  # always load cpu first
             )
         elif tokenizer is None and not self.diffusion and iters > 0:

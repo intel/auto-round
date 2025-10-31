@@ -480,7 +480,7 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
 
     from auto_round.export.export_to_gguf.convert import download_convert_file
     from auto_round.logger import logger
-    from auto_round.utils.model import download_hf_model, get_gguf_architecture
+    from auto_round.utils.model import download_or_get_path, get_gguf_architecture
 
     formats = sorted(formats, key=lambda x: len(x))
     export_gguf = False
@@ -505,7 +505,7 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
             else:
                 model_path = args_or_ar.model.name_or_path
             if not os.path.isdir(model_path):
-                model_path = download_hf_model(model_path)
+                model_path = download_or_get_path(model_path, args_or_ar.platform)
             model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
             if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
                 logger.warning(
@@ -539,7 +539,7 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
         else:
             model_path = args_or_ar.model.name_or_path
         if not os.path.isdir(model_path):
-            model_path = download_hf_model(model_path)
+            model_path = download_or_get_path(model_path, args_or_ar.platform)
         model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
         if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
