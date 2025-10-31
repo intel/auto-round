@@ -87,7 +87,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int):
         return data_new
 
 
-def get_quant_func(dtype, bits, sym):
+def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
     This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
@@ -98,40 +98,38 @@ def get_quant_func(dtype, bits, sym):
         dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
         bits (int): The bit width for the quantization (e.g., 2,4,8).
         sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
+        disable_opt_rtn(bool): whether to disable optimized rtn.
 
     Returns:
         function: The quantization function corresponding to the specified parameters.
+        str
     """
-    key = dtype
-    if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key], key
 
-    if sym:
-        key = dtype + "_sym"
-    else:
-        key = dtype + "_asym"
+    def pad_sym(data_type):
+        if sym:
+            data_sym = data_type + "_sym"
+        else:
+            data_sym = data_type + "_asym"
+        return data_sym
 
-    if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key], key
+    def pad_bits(data_type):
+        return data_type + str(bits)
 
-    ##need to add bits and sym infos
-    if sym:
-        key = dtype + str(bits) + "_sym"
-    else:
-        key = dtype + str(bits) + "_asym"
+    if not disable_opt_rtn:
+        rtn_data_type = "rtn_" + dtype
+        data_types = [rtn_data_type, pad_bits(rtn_data_type), pad_sym(rtn_data_type), pad_sym(pad_bits(rtn_data_type))]
+        for data_type in data_types:
+            from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
-    if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key], key
+            if data_type in QUANT_FUNC_WITH_DTYPE:
+                return QUANT_FUNC_WITH_DTYPE[data_type], data_type
 
-    if sym:
-        key = dtype + str(bits)
-    else:
-        key = dtype + str(bits)
+    data_types = [dtype, pad_bits(dtype), pad_sym(dtype), pad_sym(pad_bits(dtype))]
+    for data_type in data_types:
+        from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
-    if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key], key
-
-    raise ValueError(f"{dtype} is not supported")
+        if data_type in QUANT_FUNC_WITH_DTYPE:
+            return QUANT_FUNC_WITH_DTYPE[data_type], data_type
 
 
 def round_ste(x: torch.Tensor):
@@ -224,9 +222,9 @@ def float8_e4m3fn_hpu_ste(x: torch.Tensor):
 
 @lru_cache(None)
 def get_gaudi_fp8_ste_func():
-    from auto_round.utils import is_hpu_supported
+    from auto_round.utils import is_hpex_available
 
-    if is_hpu_supported():
+    if is_hpex_available():
         fn = float8_e4m3fn_hpu_ste
         logger.warning_once("Using HPU STE for FP8")
     else:

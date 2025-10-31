@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import json
+import logging
 import random
 import sys
+
+logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
 from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
@@ -654,7 +657,6 @@ def get_dataloader(
     Returns:
         DataLoader: The DataLoader for the calibrated dataset.
     """
-
     dataset_names = dataset_name.split(",")
 
     def filter_func(example):

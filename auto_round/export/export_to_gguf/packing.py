@@ -106,7 +106,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     if qw is not None:
         w = qw
     elif rmse_type == 1:
-        w = data**2
+        w = torch.pow(data, 2)
     elif rmse_type == 2:
         w = 1
     elif rmse_type == 3:
@@ -155,7 +155,7 @@ def make_q3_quants(data, bits, do_rmse=False):
                 w_tmp, data_tmp, L_tmp = w[:, :, i], data[:, :, i], L[:, :, i]
                 slx = sumlx - w_tmp * data_tmp * L_tmp
                 replace_idx = slx > 0
-                sl2 = suml2 - w_tmp * L_tmp**2
+                sl2 = suml2 - w_tmp * torch.pow(L_tmp, 2)
                 new_L = torch.round(data_tmp * sl2 / slx).clip(-nmax, nmax - 1)
                 tmp_replace_idx = replace_idx & (new_L != L_tmp)
                 slx[tmp_replace_idx] += w_tmp[tmp_replace_idx] * data_tmp[tmp_replace_idx] * new_L[tmp_replace_idx]
@@ -207,7 +207,7 @@ def make_qkx2_quants(data, bits, weights=None, rmin=-1.0, rdelta=0.1, nstep=20, 
     L = torch.clip(l_values, 0, nmax).to(torch.uint8)
 
     diffs = scale * L + group_min - data
-    diffs = torch.abs(diffs) if use_mad else diffs**2
+    diffs = torch.abs(diffs) if use_mad else torch.pow(diffs, 2)
     best_mad = torch.sum(weights * diffs, dim=-1, keepdim=True)
 
     if nstep < 1:
@@ -221,7 +221,7 @@ def make_qkx2_quants(data, bits, weights=None, rmin=-1.0, rdelta=0.1, nstep=20, 
         Laux = torch.clip(l_values, 0, nmax).to(torch.uint8)
 
         sum_l = torch.sum(weights * Laux, dim=-1, keepdim=True)
-        sum_l2 = torch.sum(weights * Laux**2, dim=-1, keepdim=True)
+        sum_l2 = torch.sum(weights * torch.pow(Laux, 2), dim=-1, keepdim=True)
         sum_xl = torch.sum(weights * Laux * data, dim=-1, keepdim=True)
 
         D = sum_w * sum_l2 - sum_l * sum_l
@@ -233,7 +233,7 @@ def make_qkx2_quants(data, bits, weights=None, rmin=-1.0, rdelta=0.1, nstep=20, 
         this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
 
         diffs = this_scale * Laux + this_min - data
-        diffs = torch.abs(diffs) if use_mad else diffs**2
+        diffs = torch.abs(diffs) if use_mad else torch.pow(diffs, 2)
         mad = torch.sum(weights * diffs, dim=-1, keepdim=True)
 
         replace_idx &= mad < best_mad
@@ -751,11 +751,11 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
 
     tmp_L = all_L.reshape(nb, 4, 64) & 0xF
     output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2).cpu().numpy().astype(np.uint8)
-    ouptut_qh = (all_L >> 4).reshape(nb, 2, 4, 32) << torch.tensor([0, 2, 4, 6], device=all_L.device).reshape(
+    output_qh = (all_L >> 4).reshape(nb, 2, 4, 32) << torch.tensor([0, 2, 4, 6], device=all_L.device).reshape(
         1, 1, 4, 1
     )
     output_qh = (
-        np.bitwise_or.reduce(ouptut_qh.cpu().numpy(), axis=2, dtype=np.uint8)  # pylint: disable=E1121
+        np.bitwise_or.reduce(output_qh.cpu().numpy(), axis=2, dtype=np.uint8)  # pylint: disable=E1121
         .reshape(nb, QK_K // 4)
         .astype(np.uint8)
     )  # pylint: disable=E1121

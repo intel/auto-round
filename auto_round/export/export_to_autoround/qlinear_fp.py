@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # Copyright (c) 2021 - present / Neuralmagic, Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,10 +34,11 @@ import torch.nn as nn
 import transformers
 
 import auto_round.envs as envs
+from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import _get_packing_device, is_mx_fp, is_nv_fp, logger
+from auto_round.utils import get_packing_device, logger
 
 # from auto_round.utils import get_weight_compress_dtype
 E8M0_EXPONENT_BIAS = 127
@@ -71,14 +71,22 @@ class QuantLinear(nn.Module):
         super().__init__()
         if bits not in [4, 8]:
             raise NotImplementedError("Only 4,8 bits are supported.")
-        if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
-        if self.is_mx and group_size != 32:
-            raise NotImplementedError("Only group_size 32 are supported for mxfp.")
-        if self.is_nv and group_size not in [16, 32]:
-            raise NotImplementedError("Only group_size 16 are supported for nvfp.")
+        if self.is_mx:
+            if group_size != 32:
+                raise NotImplementedError(f"Only group_size 32 are supported for {BackendDataType.MX_FP} data type.")
+            if infeatures % group_size != 0:
+                raise NotImplementedError(
+                    f"in_feature must be divisible by {group_size} for {BackendDataType.MX_FP} data type."
+                )
+        if self.is_nv:
+            if group_size % 16 != 0:
+                raise NotImplementedError(f"Only group_size 16 are supported for {BackendDataType.NV_FP} data type.")
+            if infeatures % group_size != 0:
+                raise NotImplementedError(
+                    f"in_feature must be divisible by {group_size} for {BackendDataType.NV_FP} data type."
+                )
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -89,15 +97,17 @@ class QuantLinear(nn.Module):
         self.act_bits = kwargs.get("act_bits", None)
 
         weight_name = "weight" if self.bits == 8 and self.is_mx else "weight_packed"
+        weight_infeatures = infeatures if self.bits == 8 else infeatures // 2
+        weight_dtype = torch.float8_e4m3fn if self.bits == 8 else torch.uint8
         ## TODO check the dtype of weight_packed and weight_scale
         self.register_buffer(
             weight_name,
-            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
+            torch.zeros((outfeatures, weight_infeatures), dtype=weight_dtype),
         )
         self.register_buffer(
             "weight_scale",
             torch.zeros(
-                (math.ceil(infeatures / self.group_size), outfeatures),
+                (outfeatures, math.ceil(infeatures / self.group_size)),
                 dtype=torch.float16,  ## TODO update to correct scale dtype for different bits
             ),
         )
@@ -128,20 +138,21 @@ class QuantLinear(nn.Module):
         pass
 
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         if getattr(linear, "bias", None) is not None:
             self.bias = linear.bias.detach().to(torch.float16)
 
         W = linear.weight.data.detach().to(device)
-        if isinstance(linear, nn.Conv2d):
+        if type(linear) == nn.Conv2d:
             W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+        if type(linear) == transformers.pytorch_utils.Conv1D:
             W = W.t()
 
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
         scales = scales.to(device)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
+            global_scale = global_scale.reshape([1])
             global_scale = global_scale.to(device)
             scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
                 scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
@@ -155,11 +166,13 @@ class QuantLinear(nn.Module):
             final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
         else:
             final_scale = scales.to(torch.float8_e4m3fn)
+
         self.weight_scale = final_scale
         # self.weight =  get_compressed_weight(scaled_tensor, self.bits, self.data_type) ## TODO
         if self.bits == 8:
             compress_dtype = torch.float8_e4m3fn
             self.weight = scaled_tensor.to(compress_dtype)
+
         else:
             compress_dtype = torch.uint8
             self.weight_packed = pack_fp4_to_uint8(scaled_tensor)
@@ -168,7 +181,8 @@ class QuantLinear(nn.Module):
             self.weight_global_scale = global_scale.to(torch.float32).to(device)
 
         if input_global_scale is not None:
-            self.input_global_scale = input_global_scale.to(torch.float32).to(device)
+            # TODO: the shape of `input_global_scale` is [] in some cases — need to investigate why.
+            self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
         return
 
 
