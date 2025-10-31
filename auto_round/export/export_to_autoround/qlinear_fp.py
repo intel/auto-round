@@ -28,20 +28,19 @@
 # limitations under the License.
 
 import math
-from logging import getLogger
 
 import numpy as np
 import torch
 import torch.nn as nn
 import transformers
 
+import auto_round.envs as envs
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import _get_packing_device, is_mx_fp, is_nv_fp
+from auto_round.utils import _get_packing_device, is_mx_fp, is_nv_fp, logger
 
 # from auto_round.utils import get_weight_compress_dtype
-logger = getLogger(__name__)
 E8M0_EXPONENT_BIAS = 127
 E8M0_EXPONENT_NAN_VAL = 255
 
@@ -188,7 +187,19 @@ def pack_fp4_to_uint8_cpu(x: torch.Tensor) -> torch.Tensor:
 
 
 # Adapted from https://github.com/neuralmagic/compressed-tensors/pull/400
-@torch.compile(fullgraph=True, dynamic=True)
+
+
+def _get_packing_fn():
+    if envs.AR_ENABLE_COMPILE_PACKING:
+        logger.warning_once(
+            "Compiled FP4 to UINT8 packing may be incompatible with multi-threading."
+            " Disable it by setting AR_ENABLE_COMPILE_PACKING=0"
+        )
+        return torch.compile(fullgraph=True, dynamic=True)(_pack_fp4_to_uint8)
+    else:
+        return torch.compiler.disable()(_pack_fp4_to_uint8)
+
+
 def pack_fp4_to_uint8_cuda(x: torch.Tensor) -> torch.Tensor:
     """
     Packs a tensor with values in the fp4 range into uint8.
@@ -196,7 +207,8 @@ def pack_fp4_to_uint8_cuda(x: torch.Tensor) -> torch.Tensor:
     :param x: tensor to pack
     returns: a packed tensor in uint8
     """
-    return _pack_fp4_to_uint8(x)
+    pack_fn = _get_packing_fn()
+    return pack_fn(x)
 
 
 def _pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
