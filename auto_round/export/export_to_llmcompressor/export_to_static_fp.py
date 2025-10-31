@@ -34,9 +34,9 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_module,
     get_packing_device,
-    unsupported_meta_device,
     logger,
     set_module,
+    unsupported_meta_device,
 )
 
 

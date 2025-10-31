@@ -16,7 +16,7 @@ import os
 
 import torch.nn as nn
 
-from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device, logger
+from auto_round.utils import copy_python_files_from_model_cache, logger, unsupported_meta_device
 
 
 def save_model(

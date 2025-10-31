@@ -66,11 +66,11 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_block_names,
     get_module,
-    unsupported_meta_device,
     json_serialize,
     matches_any_regex,
     set_module,
     to_standard_regex,
+    unsupported_meta_device,
 )
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum

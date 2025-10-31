@@ -40,8 +40,8 @@ from auto_round.utils import (
     extract_block_names_to_str,
     get_block_names,
     get_module,
-    unsupported_meta_device,
     set_module,
+    unsupported_meta_device,
 )
 
 

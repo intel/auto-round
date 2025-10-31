@@ -1029,7 +1029,7 @@ def reset_params(inputs):
         inputs["use_cache"] = False
 
 
-def save_block_immediate(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool =False):
+def save_block_immediate(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
     """
     Shard-saves the parameters of a model block (or group of blocks) immediately into disk,
     accumulating tensors into size-limited shards, optionally finalizing all remaining
