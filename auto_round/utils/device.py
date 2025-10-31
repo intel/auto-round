@@ -816,6 +816,8 @@ def estimate_tuning_block_mem(
         # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
         xpu_additional_memory = 12  # GB
         additional_memory += xpu_additional_memory
+        logger.warning_once("XPU additional memory usage of SDPA is estimated to be 12 GB.")
+        logger.warning_once("Remove it after https://github.com/intel/torch-xpu-ops/issues/2232 is fixed.")
 
     return layer_memory_dict, block_input_output_memory, additional_memory
 
