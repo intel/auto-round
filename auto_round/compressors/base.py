@@ -328,8 +328,9 @@ class BaseCompressor(object):
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
 
-        self.is_packing_immediate = True  # whether to pack the layer immediately after tuning
-        self.save_block_immediate = True
+        # Whether to pack the layer immediately after tuning
+        self.is_packing_immediate = kwargs.pop("is_packing_immediate", False)
+        self.save_block_immediate = kwargs.pop("save_block_immediate", False)
         if mem_per_param_scale is None:
             self.mem_per_param_scale = 13 if self.iters != 0 else 1
         else:
@@ -1276,7 +1277,8 @@ class BaseCompressor(object):
         if self.save_block_immediate:
             all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
-            self._save_block_immediate(m, last_module)
+            m = get_module(self.model, name)
+            self._save_block_immediate(m, name, last_module)
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1463,8 +1465,8 @@ class BaseCompressor(object):
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
-
-                mv_module_from_gpu(block)
+                if not self.save_block_immediate:
+                    mv_module_from_gpu(block)
                 pbar.update(1)
 
         pbar.close()
@@ -2697,7 +2699,6 @@ class BaseCompressor(object):
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
-        import torch
 
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         input_ids = to_dtype(input_ids, tmp_dtype)
@@ -2810,15 +2811,13 @@ class BaseCompressor(object):
 
         clear_memory()
 
-    def _save_block_immediate(self, m, last_group=False):
+    def _save_block_immediate(self, m, name=None, last_group=False):
         import json
         import os
         from collections import OrderedDict
 
-        import torch
-
         # User configurable (can be preset on self)
-        max_shard_size = getattr(self, "max_shard_size", "5GB")
+        max_shard_size = getattr(self, "max_shard_size", "5MB")
         safe_serialization = getattr(self, "safe_serialization", True)
 
         def _parse_size(size_str: str) -> int:
@@ -2859,8 +2858,9 @@ class BaseCompressor(object):
         # Collect tensors directly from current (multi)block `m`
         flat_tensors = OrderedDict()
         for k, v in m.state_dict().items():
+            tmp_name = name if name is not None else m.tmp_name
             if isinstance(v, torch.Tensor):
-                flat_tensors[f"{m.tmp_name}.{k}"] = v.detach().cpu()
+                flat_tensors[f"{tmp_name}.{k}"] = v
 
         # Append tensors into the running shard(s)
         def _flush_current_shard():
@@ -2884,12 +2884,16 @@ class BaseCompressor(object):
                 # free module only when all its parameters have been saved
                 free_flag = True
                 free_module_state_dict = free_module.state_dict()
+                already_saved_name = []
+                for _meta in self._shard_meta:
+                    already_saved_name += _meta.get("params", [])
                 for free_module_key in free_module_state_dict:
                     free_module_key_full_name = f"{free_module_name}.{free_module_key}"
-                    if free_module_key_full_name not in params:
+                    if free_module_key_full_name not in already_saved_name:
                         free_flag = False
                 if free_flag:
                     free_module.to("meta")
+                    del self._current_shard_tensors[param]
             self._current_shard_tensors = OrderedDict()
             self._current_shard_size = 0
             clear_memory()
