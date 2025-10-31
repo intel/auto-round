@@ -24,16 +24,12 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4
 
 logger = init_logger(__name__)
 
 
 QMOE_METHODS_DISPATCH_TABLE = {}
-
-
-def _is_mxfp4_w4a4(scheme: QuantizationScheme):
-    # FIXME: below impl is incomplete
-    return scheme.bits == 4 and scheme.group_size == 32
 
 
 class AutoRoundMoEMethod(FusedMoEMethodBase):
