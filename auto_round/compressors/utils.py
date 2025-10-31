@@ -1050,7 +1050,7 @@ def save_block_immediate(rounder, m, name=None, last_group=False):
     from auto_round.utils import clear_memory, get_module
 
     # User configurable (can be preset on rounder)
-    max_shard_size = getattr(rounder, "max_shard_size", "5MB")
+    max_shard_size = getattr(rounder, "max_shard_size", "5GB")
     safe_serialization = getattr(rounder, "safe_serialization", True)
 
     def _parse_size(size_str: str) -> int:
