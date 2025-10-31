@@ -2741,6 +2741,7 @@ class BaseCompressor(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
                 quantize_block = self._quantize_block
         else:
             quantize_block = self._quantize_block
