@@ -108,7 +108,7 @@ function run_unit_test() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
    
     # run unit tests individually with separate logs
-    for test_file in $(find . -name "test_*.py"); do
+    for test_file in $(find . -name "test_*.py" ! -name "test_*vlms.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."

@@ -11,6 +11,7 @@ lm-eval>=0.4.9.1
 numpy < 2.0
 optimum
 pandas
+parameterized
 pillow
 py-cpuinfo
 torch
