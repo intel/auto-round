@@ -16,7 +16,7 @@ import os
 
 import torch.nn as nn
 
-from auto_round.utils import copy_python_files_from_model_cache, is_meta_model, logger
+from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device, logger
 
 
 def save_model(
@@ -47,7 +47,7 @@ def save_model(
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
-    if is_meta_model(model):
+    if unsupported_meta_device(model):
         if hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(save_dir)
 

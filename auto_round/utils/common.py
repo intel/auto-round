@@ -297,17 +297,3 @@ def get_reciprocal(tensor):
     else:
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
-
-
-def is_meta_model(model: torch.nn.Module) -> bool:
-    is_meta = False
-    for p in model.parameters():
-        if getattr(p, "is_meta", False) or (hasattr(p, "device") and p.device.type == "meta"):
-            is_meta = True
-            break
-    if not is_meta:
-        for b in model.buffers():
-            if getattr(b, "is_meta", False) or (hasattr(b, "device") and b.device.type == "meta"):
-                is_meta = True
-                break
-    return is_meta

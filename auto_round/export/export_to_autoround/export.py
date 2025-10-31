@@ -39,7 +39,7 @@ from auto_round.utils import (
     check_to_quantized,
     copy_python_files_from_model_cache,
     get_module,
-    is_meta_model,
+    unsupported_meta_device,
     set_module,
     to_standard_regex,
 )
@@ -351,7 +351,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    if not is_meta_model(model):
+    if not unsupported_meta_device(model):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             with tqdm(total=len(names), leave=True) as pbar:
 

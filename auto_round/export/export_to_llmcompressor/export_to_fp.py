@@ -36,7 +36,7 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_block_names,
     get_module,
-    is_meta_model,
+    unsupported_meta_device,
     set_amax_for_all_moe_layers,
     set_module,
 )
@@ -189,7 +189,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    if not is_meta_model(model):
+    if not unsupported_meta_device(model):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             with tqdm(total=len(names), leave=True) as pbar:
 

@@ -1029,14 +1029,13 @@ def reset_params(inputs):
         inputs["use_cache"] = False
 
 
-def save_block_immediate(rounder, m, name=None, last_group=False):
+def save_block_immediate(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool =False):
     """
     Shard-saves the parameters of a model block (or group of blocks) immediately into disk,
     accumulating tensors into size-limited shards, optionally finalizing all remaining
     model weights when processing the last group.
 
     Args:
-        path (str): The path to check.
         rounder (object): The object of compressor.
         m (torch.nn.Module): The current block (or composite module) whose parameters will be added to the shard set.
         name (str): Override module name used as prefix for saved parameter keys. If None, falls back to m.tmp_name.
