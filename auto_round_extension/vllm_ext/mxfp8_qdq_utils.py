@@ -53,7 +53,7 @@ def dequant_mx_fp8(weight_fp8, scale_e8m0, block_size):
 
 
 def quant_mx_fp8(tensor):
-    from .torchao_patch import ScaleCalculationMode, to_mx
+    from auto_round_extension.vllm_ext.torchao_patch import ScaleCalculationMode, to_mx
 
     scale_e8m0_biased, data_lp = to_mx(
         data_hp=tensor,
