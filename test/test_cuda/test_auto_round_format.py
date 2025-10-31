@@ -82,7 +82,7 @@ class TestAutoRound(unittest.TestCase):
     @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_asym(self):
         for bits in [2, 3, 4, 8]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, False
             autoround = AutoRound(
@@ -112,7 +112,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_autogptq
     def test_mixed_precision(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         layer_config = {}
 
@@ -128,7 +128,7 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -140,7 +140,7 @@ class TestAutoRound(unittest.TestCase):
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_awq_backend(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -157,7 +157,7 @@ class TestAutoRound(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -168,7 +168,7 @@ class TestAutoRound(unittest.TestCase):
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_folder, dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -180,7 +180,7 @@ class TestAutoRound(unittest.TestCase):
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            model_name, dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -190,7 +190,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_ipex
     def test_autoround_gptq_sym_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -245,7 +245,7 @@ class TestAutoRound(unittest.TestCase):
     @require_ipex
     @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_awq_sym_format(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -271,7 +271,7 @@ class TestAutoRound(unittest.TestCase):
         assert "!!!" not in res
 
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", trust_remote_code=True, torch_dtype=torch.bfloat16
+            quantized_model_path, device_map="cpu", trust_remote_code=True, dtype=torch.bfloat16
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
@@ -285,7 +285,7 @@ class TestAutoRound(unittest.TestCase):
     @require_greater_than_050
     def test_autoround_sym(self):
         for bits in [2, 3, 4, 8]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, True
             autoround = AutoRound(
@@ -319,7 +319,7 @@ class TestAutoRound(unittest.TestCase):
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype="auto",
+            dtype="auto",
             trust_remote_code=True,
             device_map="auto",
             quantization_config=quantization_config,

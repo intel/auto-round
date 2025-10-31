@@ -105,10 +105,10 @@ def pack_layer(layer_name, model, data_type, device=None):
     weight = layer.weight
     weight, orig_shape, pad_len = reshape_pad_tensor_by_group_size(weight, layer.group_size)
     act_scale = layer.act_scale.view(-1) if hasattr(layer, "act_scale") else None
-    torch_dtype = torch.float8_e4m3fn
+    dtype = torch.float8_e4m3fn
     if "fp8_e5m2" in data_type:
-        torch_dtype = torch.float8_e5m2
-    info = torch.finfo(torch_dtype)
+        dtype = torch.float8_e5m2
+    info = torch.finfo(dtype)
     if zp is not None:
         if isinstance(zp, torch.Tensor):
             zp = zp.to(packing_device)
@@ -117,7 +117,7 @@ def pack_layer(layer_name, model, data_type, device=None):
         q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
     q_weight = torch.clamp(q_weight, info.min, info.max)
-    q_weight = q_weight.to(torch_dtype)
+    q_weight = q_weight.to(dtype)
     if type(layer) == torch.nn.Linear:
         in_features = layer.in_features
         out_features = layer.out_features

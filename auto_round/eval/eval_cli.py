@@ -174,7 +174,7 @@ def eval(args):
                 " but may affect accuracy."
             )
         model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+            model, gguf_file=gguf_file, device_map="auto", dtype=eval_model_dtype
         )
         model.eval()
         st = time.time()
@@ -252,7 +252,7 @@ def eval_task_by_task(
             )
 
         model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+            model, gguf_file=gguf_file, device_map="auto", dtype=eval_model_dtype
         )
         model.eval()
         parallelism = False

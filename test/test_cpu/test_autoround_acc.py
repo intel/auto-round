@@ -38,7 +38,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_default_acc(self):
         model_name = "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32, trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         inp = torch.ones([1, 10], dtype=torch.long)
@@ -57,7 +57,7 @@ class TestAutoRound(unittest.TestCase):
         out0 = model(inp)
         print(f"out0 = {float(out0[0][0][0][0])}")
 
-        model_tmp = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True)
+        model_tmp = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32, trust_remote_code=True)
         autoround_1 = AutoRound(
             model_tmp,
             tokenizer,

@@ -34,7 +34,7 @@ class TestAutoRound(unittest.TestCase):
     def setUpClass(self):
         self.model_name = "/models/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -234,7 +234,7 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
-            torch_dtype="auto",
+            dtype="auto",
             device_map="auto",
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)

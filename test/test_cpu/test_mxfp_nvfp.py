@@ -37,7 +37,7 @@ class TestAutoRoundFP(unittest.TestCase):
     def setUpClass(self):
         model_name = "facebook/opt-125m"  # /tf_dataset/auto_round/models/
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -308,7 +308,7 @@ class TestAutoRoundFP(unittest.TestCase):
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="cpu")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, dtype="auto", device_map="cpu")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
 

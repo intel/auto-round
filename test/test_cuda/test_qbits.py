@@ -52,7 +52,7 @@ class TestAutoRound(unittest.TestCase):
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype="auto",
+            dtype="auto",
             trust_remote_code=True,
             device_map="cpu",
             quantization_config=quantization_config,
@@ -66,7 +66,7 @@ class TestAutoRound(unittest.TestCase):
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype="auto",
+            dtype="auto",
             trust_remote_code=True,
             device_map="cpu",
             quantization_config=quantization_config,
@@ -76,7 +76,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_itrex
     def test_mixed_precision(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         layer_config = {}
 
@@ -95,7 +95,7 @@ class TestAutoRound(unittest.TestCase):
 
         model = AutoModelForCausalLM.from_pretrained(
             self.save_folder,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
             device_map="cpu",
         )
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -109,7 +109,7 @@ class TestAutoRound(unittest.TestCase):
     @require_gptqmodel
     def test_autoround_sym(self):
         for bits in [4]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, True
             autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=2)

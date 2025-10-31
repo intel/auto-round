@@ -38,14 +38,14 @@ class TestAutoRound(unittest.TestCase):
 
     def test_glm4(self):
         model_name = "/models/glm-4-9b-chat"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
         assert is_pure_text_model(model), "Expected model to be pure text model"
 
     def test_opt_125m(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.decoder.layers"], [12])
 
@@ -53,56 +53,56 @@ class TestAutoRound(unittest.TestCase):
 
     def test_Qwen(self):
         model_name = "/models/Qwen2.5-7B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [28])
         assert is_pure_text_model(model)
 
     def test_phi4(self):
         model_name = "/models/phi-4"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [40])
         assert is_pure_text_model(model)
 
     def test_llama3(self):
         model_name = "/models/Meta-Llama-3.1-8B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [32])
         assert is_pure_text_model(model)
 
     def test_mixtral(self):
         model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [32])
         assert is_pure_text_model(model)
 
     def test_falcon(self):
         model_name = "/models/Falcon3-7B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [28])
         assert is_pure_text_model(model)
 
     def test_orca(self):
         model_name = "/models/Orca-2-7b"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [32])
         assert is_pure_text_model(model)
 
     def test_OLMo(self):
         model_name = "/models/OLMo-2-1124-7B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.layers"], [32])
         assert is_pure_text_model(model)
 
     def test_Qwen2VL(self):
         model_name = "/models/Qwen2-VL-2B-Instruct"
-        model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [28])
 
@@ -112,7 +112,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_Llama32(self):
         model_name = "/models/Llama-3.2-11B-Vision-Instruct"
-        model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForVision2Seq.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [40])
 
@@ -131,7 +131,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_SmolVLM(self):
         model_name = "/models/SmolVLM-Instruct"
-        model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForVision2Seq.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.text_model.layers"], [24])
 
@@ -141,7 +141,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_glm_4v(self):
         model_name = "/models/glm-4v-9b"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
 
@@ -153,7 +153,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_gemma3(self):
         model_name = "/models/gemma-3-12b-it"
-        model = Gemma3ForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = Gemma3ForConditionalGeneration.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [48])
 
@@ -165,7 +165,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_Mistral3(self):
         model_name = "/models/Mistral-Small-3.1-24B-Instruct-2503"
-        model = Mistral3ForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = Mistral3ForConditionalGeneration.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [40])
 
@@ -177,7 +177,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_Molmo(self):
         model_name = "/models/Molmo-7B-D-0924"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.transformer.blocks"], [28])
 

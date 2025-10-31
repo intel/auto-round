@@ -15,7 +15,7 @@ class TestLLMC(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "/tf_dataset/auto_round/models/stas/tiny-random-llama-2"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
 
     @classmethod

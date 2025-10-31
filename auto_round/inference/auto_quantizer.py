@@ -329,10 +329,10 @@ class AutoRoundQuantizer(HfQuantizer):
                     "auto-round` or install from source"
                 )
 
-    def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
-        if torch_dtype is None:
-            torch_dtype = torch.bfloat16
-        return torch_dtype
+    def update_dtype(self, dtype: "torch.dtype") -> "torch.dtype":
+        if dtype is None:
+            dtype = torch.bfloat16
+        return dtype
 
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.

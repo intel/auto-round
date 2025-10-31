@@ -100,7 +100,7 @@ class TestAutoScheme(unittest.TestCase):
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", device_map="auto")
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
         ar = AutoRound(model=model, tokenizer=tokenizer, scheme=scheme, iters=0, nsamples=1)
         model, layer_config = ar.quantize()

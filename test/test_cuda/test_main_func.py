@@ -41,7 +41,7 @@ class TestMainFunc(unittest.TestCase):
     @require_optimum
     def test_backend(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
         autoround.quantize()
@@ -69,7 +69,7 @@ class TestMainFunc(unittest.TestCase):
     @require_package_version_ut("transformers", "<4.57.0")
     def test_backend_awq(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
         autoround.quantize()
@@ -87,7 +87,7 @@ class TestMainFunc(unittest.TestCase):
     @require_gptqmodel
     def test_fp_layers(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         from auto_round.compressors.utils import get_fp_layer_names
 
@@ -112,7 +112,7 @@ class TestMainFunc(unittest.TestCase):
     @require_package_version_ut("transformers", "<4.57.0")
     def test_fp_layers_awq(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         from auto_round.compressors.utils import get_fp_layer_names
 
@@ -135,7 +135,7 @@ class TestMainFunc(unittest.TestCase):
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     def test_undivided_group_size_tuning(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         autoround = AutoRound(model, tokenizer, bits=4, group_size=127, nsamples=2, iters=2)
@@ -144,7 +144,7 @@ class TestMainFunc(unittest.TestCase):
     @require_gptqmodel
     def test_adam(self):
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRoundAdam(model, tokenizer, bits=4, group_size=128)
         autoround.quantize()
@@ -165,7 +165,7 @@ class TestMainFunc(unittest.TestCase):
             print("skip autoround asym test, as autoround is not installed from source")
             return
         model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128, sym=False)
         autoround.quantize()

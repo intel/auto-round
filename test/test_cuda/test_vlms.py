@@ -49,7 +49,7 @@ class TestAutoRound(unittest.TestCase):
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             quantized_model_dir,
-            torch_dtype="float16",
+            dtype="float16",
             device_map="auto",
             ##revision="df7f44c" ##AutoGPTQ format
         )

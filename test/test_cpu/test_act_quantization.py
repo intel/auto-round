@@ -24,7 +24,7 @@ class TestAutoRoundAct(unittest.TestCase):
     def setUpClass(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -35,7 +35,7 @@ class TestAutoRoundAct(unittest.TestCase):
 
     def test_mx_fp4(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -54,7 +54,7 @@ class TestAutoRoundAct(unittest.TestCase):
 
     def test_wint4fp8_dynamic(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size = 4, 128
         autoround = AutoRound(
@@ -93,7 +93,7 @@ class TestAutoRoundAct(unittest.TestCase):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         from auto_round.wrapper import WrapperWALayer
 
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -114,7 +114,7 @@ class TestAutoRoundAct(unittest.TestCase):
         self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], 30)
 
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         autoround = AutoRound(
             model,

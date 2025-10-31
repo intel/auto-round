@@ -37,7 +37,7 @@ class TestAutoRound(unittest.TestCase):
     def setUpClass(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -218,7 +218,7 @@ class TestAutoRound(unittest.TestCase):
         from safetensors import safe_open
 
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -247,7 +247,7 @@ class TestAutoRound(unittest.TestCase):
 
                 model = transformers.AutoModelForCausalLM.from_pretrained(
                     quantized_model_path,
-                    torch_dtype="auto",
+                    dtype="auto",
                     low_cpu_mem_usage=True,
                     trust_remote_code=True,
                 )
@@ -277,7 +277,7 @@ class TestAutoRound(unittest.TestCase):
             self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype, torch.float32)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
             self.tokenizer,

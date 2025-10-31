@@ -39,7 +39,7 @@ class TestLocalCalibDataset(unittest.TestCase):
                 jsonl_file.write("\n")
 
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     def test_json(self):
@@ -72,7 +72,7 @@ class TestLocalCalibDataset(unittest.TestCase):
 
     def test_apply_chat_template(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         dataset = "NeelNanda/pile-10k:apply_chat_template:system_prompt=''"
         bits, group_size, sym = 4, 128, True

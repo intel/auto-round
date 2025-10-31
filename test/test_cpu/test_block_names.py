@@ -160,7 +160,7 @@ class TestQuantizationBlocks(unittest.TestCase):
         assert len(block_names_wo_vision) != (block_names_with_vision)
 
     def test_block_name_quant(self):
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         from auto_round.utils import get_block_names
 
         llm_block_names = get_block_names(self.model)

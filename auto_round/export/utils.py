@@ -58,7 +58,7 @@ def save_model(
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
         with open(config_path, "r") as file:
             data = json.load(file)
-        data["torch_dtype"] = str(dtype).split(".")[-1]
+        data["dtype"] = str(dtype).split(".")[-1]
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
     config_file = "quantization_config.json"

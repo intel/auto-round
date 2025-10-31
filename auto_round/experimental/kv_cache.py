@@ -263,7 +263,7 @@ def prep_attention_module_for_calibration(module: torch.nn.Module):
 
 def normalize_static_kv_dtype(static_kv_dtype: Union[str, torch.dtype]) -> torch.dtype:
     valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float"]
-    valid_torch_dtype = {
+    valid_dtype = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
         "fp8": torch.float8_e4m3fn,
@@ -272,13 +272,13 @@ def normalize_static_kv_dtype(static_kv_dtype: Union[str, torch.dtype]) -> torch
         "float": torch.float32,  # Alias for float32
     }
     if static_kv_dtype in valid_dtype_name_lst:
-        new_dtype = valid_torch_dtype[static_kv_dtype]
-    elif static_kv_dtype in valid_torch_dtype.values():
+        new_dtype = valid_dtype[static_kv_dtype]
+    elif static_kv_dtype in valid_dtype.values():
         new_dtype = static_kv_dtype
     else:
         raise ValueError(
             f"Invalid static kv dtype: {static_kv_dtype}. "
-            f"Valid options are: {', '.join(valid_dtype_name_lst  + list(valid_torch_dtype.values()))}."
+            f"Valid options are: {', '.join(valid_dtype_name_lst  + list(valid_dtype.values()))}."
         )
     return new_dtype
 
