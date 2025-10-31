@@ -716,6 +716,10 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
+    def test_alg_ext_import(self):
+        from auto_round.alg_ext import quantize_block_ext
+
+
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
