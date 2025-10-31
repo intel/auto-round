@@ -201,7 +201,7 @@ class TestMainFunc(unittest.TestCase):
 
     def test_save_block_immediate(self):
         bits, group_size = 4, 32
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         quantized_model_path = "./saved"
