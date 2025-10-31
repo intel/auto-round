@@ -258,17 +258,17 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
-    if not dynamic:  # Only uniform precision
-        for block_names in all_blocks:
-            first_block = get_module(model, block_names[0])
-            for n, m in first_block.named_modules():
-                if m.tmp_name not in layer_config:
-                    continue
-                if not check_to_quantized(layer_config[m.tmp_name]):
-                    all_to_quantized = False
-                else:
-                    modules_in_block_to_quantize.append(n)
-        modules_in_block_to_quantize = [modules_in_block_to_quantize]
+    # for backward compatibility
+    for block_names in all_blocks:
+        first_block = get_module(model, block_names[0])
+        for n, m in first_block.named_modules():
+            if m.tmp_name not in layer_config:
+                continue
+            if not check_to_quantized(layer_config[m.tmp_name]):
+                all_to_quantized = False
+            else:
+                modules_in_block_to_quantize.append(n)
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]
 
     if all_to_quantized:
         modules_in_block_to_quantize = None
@@ -315,3 +315,4 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         model, output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
     )
     return model
+

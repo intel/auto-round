@@ -132,6 +132,20 @@ def feature_multiply_checker_group_size(
     )
 
 
+def feature_compatible_multiply_checker(
+    in_feature, out_feature, config, in_feature_multiplier, out_feature_multiplier=None
+):
+    group_size = config["group_size"]
+    if out_feature_multiplier is None:
+        out_feature_multiplier = in_feature_multiplier
+    compatible_flag = in_feature < group_size and in_feature * out_feature % group_size == 0
+    return (
+        in_feature % in_feature_multiplier == 0
+        and out_feature % out_feature_multiplier == 0
+        and (in_feature % group_size == 0 or compatible_flag)
+    )
+
+
 def in_feature_checker_group_size(in_feature, out_feature, config):
     group_size = config["group_size"]
     return in_feature % group_size == 0
@@ -147,6 +161,9 @@ in_feature_multiply_checker_32 = functools.partial(
 )
 exllamav2_feature_checker = functools.partial(
     feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=32
+)
+compatible_exllamav2_feature_checker = functools.partial(
+    feature_compatible_multiply_checker, in_feature_multiplier=32, out_feature_multiplier=32
 )
 
 gptqmodel_marlin_feature_checker = functools.partial(
@@ -185,9 +202,9 @@ BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     # 16, 384,768 accuracy issue
     group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
-    checkers=[exllamav2_feature_checker],
+    checkers=[compatible_exllamav2_feature_checker],
     alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
-    requirements=["auto-gptq>=0.7.1"],
+    requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
 )
 
 BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
@@ -1039,3 +1056,4 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         log(joined_cmds)
         if logger_level == "error":
             exit(-1)
+
