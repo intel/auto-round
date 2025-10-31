@@ -138,7 +138,7 @@ def feature_compatible_multiply_checker(
     group_size = config["group_size"]
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
-    compatible_flag = in_feature < group_size and in_feature * out_feature % group_size == 0
+    compatible_flag = in_feature < group_size and (in_feature * out_feature) % group_size == 0
     return (
         in_feature % in_feature_multiplier == 0
         and out_feature % out_feature_multiplier == 0
