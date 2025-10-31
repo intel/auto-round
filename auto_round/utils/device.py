@@ -425,50 +425,33 @@ def clear_memory_if_reached_threshold(threshold=0.85):
     Returns:
         bool: True if memory was cleared, False otherwise.
     """
-    # Check CUDA devices
+    # Detect CUDA/XPU devices
     if torch.cuda.is_available():
-        num_devices = torch.cuda.device_count()
-        for i in range(num_devices):
-            try:
-                total_memory = torch.cuda.get_device_properties(i).total_memory
-                allocated_memory = torch.cuda.memory_reserved(i)
+        name, device_api = "CUDA", torch.cuda
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        name, device_api = "XPU", torch.xpu
+    else:
+        return
+
+    num_devices = device_api.device_count()
+    for i in range(num_devices):
+        try:
+            total_memory = device_api.get_device_properties(i).total_memory
+            allocated_memory = device_api.memory_reserved(i) if name == "CUDA" else device_api.memory_allocated(i)
+            memory_usage_ratio = allocated_memory / total_memory
+
+            if memory_usage_ratio >= threshold:
+                logger.warning_once(
+                    f"{name} device {i}: Memory usage {memory_usage_ratio*100:.2f}% "
+                    f"exceeds threshold {threshold*100:.2f}%. Clearing memory..."
+                )
+                clear_memory()
+                allocated_memory = device_api.memory_reserved(i) if name == "CUDA" else device_api.memory_allocated(i)
                 memory_usage_ratio = allocated_memory / total_memory
-
-                if memory_usage_ratio >= threshold:
-                    logger.info(
-                        f"CUDA device {i}: Memory usage {memory_usage_ratio*100:.2f}% "
-                        f"exceeds threshold {threshold*100:.2f}%. Clearing memory..."
-                    )
-                    clear_memory()
-                    allocated_memory = torch.cuda.memory_reserved(i)
-                    memory_usage_ratio = allocated_memory / total_memory
-                    logger.info(f"Cleared memory. CUDA device {i}: Memory usage {memory_usage_ratio*100:.2f}%")
-                    break
-            except Exception as e:
-                logger.warning(f"Failed to check memory for CUDA device {i}: {e}")
-
-    # Check XPU devices if memory not yet cleared
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        num_devices = torch.xpu.device_count()
-        for i in range(num_devices):
-            try:
-                total_memory = torch.xpu.get_device_properties(i).total_memory
-                allocated_memory = torch.xpu.memory_allocated(i)
-                memory_usage_ratio = allocated_memory / total_memory
-
-                if memory_usage_ratio >= threshold:
-                    logger.info(
-                        f"XPU device {i}: Memory usage {memory_usage_ratio*100:.2f}% "
-                        f"exceeds threshold {threshold*100:.2f}%. Clearing memory..."
-                    )
-                    clear_memory()
-                    allocated_memory = torch.xpu.memory_reserved(i)
-                    memory_usage_ratio = allocated_memory / total_memory
-                    logger.info(f"Cleared memory. XPU device {i}: Memory usage {memory_usage_ratio*100:.2f}%")
-                    break
-            except Exception as e:
-                logger.warning(f"Failed to check memory for XPU device {i}: {e}")
-    return False
+                logger.warning_once(f"Cleared memory. {name} device {i}: Memory usage {memory_usage_ratio*100:.2f}%")
+                return True
+        except Exception as e:
+            logger.warning_once(f"Failed to check memory for {name} device {i}: {e}")
 
 
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
