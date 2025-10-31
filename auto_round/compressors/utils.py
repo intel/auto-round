@@ -26,7 +26,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model
+from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model, copy_python_files_from_model_cache
 
 
 class BackendDataType(str, Enum):
