@@ -415,6 +415,45 @@ def clear_memory(tensor=None):
         _clear_memory_for_cpu_and_cuda(tensor)
 
 
+def clear_memory_if_reached_threshold(threshold=0.85):
+    """Check all available devices and clear memory if any device is using close to the threshold.
+
+    Args:
+        threshold (float): Memory usage threshold (default: 0.85 for 85%).
+                            If any device exceeds this percentage, clear_memory() will be called.
+
+    Returns:
+        bool: True if memory was cleared, False otherwise.
+    """
+    # Detect CUDA/XPU devices
+    if torch.cuda.is_available():
+        name, device_api = "CUDA", torch.cuda
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        name, device_api = "XPU", torch.xpu
+    else:
+        return
+
+    num_devices = device_api.device_count()
+    for i in range(num_devices):
+        try:
+            total_memory = device_api.get_device_properties(i).total_memory
+            allocated_memory = device_api.memory_reserved(i) if name == "CUDA" else device_api.memory_allocated(i)
+            memory_usage_ratio = allocated_memory / total_memory
+
+            if memory_usage_ratio >= threshold:
+                logger.warning_once(
+                    f"{name} device {i}: Memory usage {memory_usage_ratio*100:.2f}% "
+                    f"exceeds threshold {threshold*100:.2f}%. Clearing memory..."
+                )
+                clear_memory()
+                allocated_memory = device_api.memory_reserved(i) if name == "CUDA" else device_api.memory_allocated(i)
+                memory_usage_ratio = allocated_memory / total_memory
+                logger.warning_once(f"Cleared memory. {name} device {i}: Memory usage {memory_usage_ratio*100:.2f}%")
+                return True
+        except Exception as e:
+            logger.warning_once(f"Failed to check memory for {name} device {i}: {e}")
+
+
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     """Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
 
@@ -456,36 +495,6 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
-
-
-def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: list[torch.Tensor]) -> tuple[float, float]:
-    """
-    Calculates the memory consumption of a specific block in the model.
-
-    Args:
-        block (torch.nn.Module): The block of the model to analyze.
-        input_ids (list[torch.Tensor]): A list of input tensors for the block.
-
-    Returns:
-        tuple: A tuple containing the following:
-            - block_memory (float): The memory consumption (in GB) of the block's linear layers.
-            - input_output_memory (float): The memory consumption (in GB) for input and output
-                tensors of the block.
-    """
-    # Calculate all block parameters memory
-    from auto_round.utils.model import check_to_quantized
-
-    total_param_mem = 0
-    for name, module in block.named_modules():
-        if check_to_quantized(module):
-            param_size = module.weight.nbytes
-            total_param_mem += param_size
-    block_memory = total_param_mem / 1024**3  # Convert to GB
-
-    # Assuming bfloat16 or float32, input and output
-    input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
-
-    return block_memory, input_output_memory
 
 
 def out_of_vram(error_msg):
@@ -538,7 +547,7 @@ def get_device_memory(i: int = 0) -> int:
     if torch.cuda.is_available():
         total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
     elif torch.xpu.is_available():
-        raise RuntimeError("XPU does not support device_map='auto' currently.")
+        total_memory = bytes_to_gigabytes(torch.xpu.get_device_properties(i).total_memory)
     else:
         raise RuntimeError("No supported device found (CUDA or XPU).")
     return total_memory
@@ -628,8 +637,181 @@ def set_non_auto_device_map(
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
 
+def _allocate_layers_to_devices(
+    layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
+) -> tuple[dict, list]:
+    """
+    Allocates layers to devices using a load-balancing strategy.
+
+    Strategy:
+    1. Sort layers by memory size (descending), preserve order for equal sizes
+    2. Assign largest N layers to higher-index devices (N = num_devices)
+    3. Remaining layers use memory availability + layer continuity scorings
+
+    Args:
+        layer_memory_dict (dict): Mapping of layer names to memory info (order preserved)
+        device_memory (dict): Available memory for each device (will be modified)
+        gpu_devices (list): List of device names (e.g., ["cuda:0", "cuda:1"])
+        mem_per_param (float): Memory multiplier per parameter GB
+
+    Returns:
+        tuple[dict, list]: (device_map, names)
+
+    Example:
+        Input:
+            device_memory = {"cuda:0": 30.0, "cuda:1": 40.0, "cuda:2": 40.0}
+            layer_memory_dict = {
+                "q_proj": {"param_memory": 4.0}, "k_proj": {"param_memory": 1.0},
+                "v_proj": {"param_memory": 1.0}, "o_proj": {"param_memory": 4.0},
+                "gate_proj": {"param_memory": 11.0}, "up_proj": {"param_memory": 11.0},
+                "down_proj": {"param_memory": 11.0}
+            }
+            mem_per_param = 2.0
+
+        Result (allocation order by size):
+            1. gate_proj (22GB) -> cuda:2 (largest, prefer last device)
+            2. up_proj (22GB) -> cuda:1 (2nd largest, prefer 2nd last device)
+            3. down_proj (22GB) -> cuda:0 (3rd largest, cuda:0 has 30GB available)
+            4. q_proj (8GB) -> cuda:2 (neighbor of gate_proj, continuity bonus)
+            5. o_proj (8GB) -> cuda:2 (neighbor of q_proj, continuity bonus)
+            6. k_proj (2GB) -> cuda:1 (neighbor of q_proj via original order)
+            7. v_proj (2GB) -> cuda:1 (neighbor of k_proj, continuity bonus)
+    """
+    device_map = {}
+    names = []
+    layer_names_in_order = list(layer_memory_dict.keys())
+    layer_order = {name: idx for idx, name in enumerate(layer_names_in_order)}
+    sorted_layers = sorted(layer_memory_dict.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
+    num_devices = len(gpu_devices)
+
+    def find_best_device(layer_name, estimated_memory, layer_idx):
+        """Find the best device for a layer."""
+        # Phase 1: Direct assign largest layers to higher-index devices first
+        if layer_idx < num_devices - 1:
+            return gpu_devices[-(layer_idx + 1)]
+
+        # Phase 2: Choose device with best score (memory + continuity)
+        best_device = None
+        best_score = float("-inf")
+        current_layer_order = layer_order[layer_name]
+
+        for device in gpu_devices:
+            if device_memory[device] < estimated_memory:
+                continue
+
+            # Memory score (normalized)
+            memory_score = device_memory[device] / estimated_memory
+
+            # Continuity bonus for adjacent layers
+            continuity_bonus = 0
+            for offset in [-1, 1]:  # Check previous and next neighbors
+                neighbor_idx = current_layer_order + offset
+                if 0 <= neighbor_idx < len(layer_names_in_order):
+                    neighbor_name = layer_names_in_order[neighbor_idx]
+                    if neighbor_name in device_map and device_map[neighbor_name] == device:
+                        continuity_bonus += 1.0
+
+            total_score = memory_score + continuity_bonus
+            if total_score > best_score:
+                best_score = total_score
+                best_device = device
+
+        # Fallback: device with most available memory
+        return best_device or max(gpu_devices, key=lambda d: device_memory[d])
+
+    # Allocate layers
+    for layer_idx, (layer_name, mem_info) in enumerate(sorted_layers):
+        names.append(layer_name)
+        estimated_memory = mem_info["param_memory"] * mem_per_param
+        best_device = find_best_device(layer_name, estimated_memory, layer_idx)
+        device_map[layer_name] = best_device
+        device_memory[best_device] -= estimated_memory
+
+    # Restore original order
+    ordered_device_map = {name: device_map[name] for name in layer_names_in_order if name in device_map}
+    return ordered_device_map, names
+
+
+def estimate_tuning_block_mem(
+    block: torch.nn.Module, input_ids: list[torch.Tensor], pick_samples: int
+) -> tuple[dict, float]:
+    """
+    Calculates the memory consumption of a specific block in the model.
+
+    Args:
+        block (torch.nn.Module): The block of the model to analyze.
+        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+        pick_samples (int): Number of samples to consider for memory estimation.
+
+    Returns:
+        tuple: A tuple containing the following:
+            - layer_memory_dict (dict): A dictionary mapping layer names to their memory consumption (in GB).
+              Format: {layer_name: {"param_memory": float, "output_memory": float}}
+            - input_output_memory (float): The memory consumption (in GB) for input and output
+                tensors of the block.
+            - additional_memory (float): Additional memory overhead (in GB) for operations like attention.
+    """
+    # Calculate all block parameters memory and build layer-wise memory dict
+    from auto_round.utils.model import get_layer_features
+
+    layer_memory_dict = {}
+    total_param_mem = 0
+
+    # Calculate batch_size and sequence_length from input_ids for output memory estimation
+    seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
+    element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
+
+    for name, module in block.named_modules():
+        if check_to_quantized(module):
+            enable_act_quant = module.act_bits <= 8
+            layer_name = name
+            param_size = module.weight.nbytes
+            param_memory_gb = param_size / 1024**3
+            param_memory_gb *= 2  # considering the v tensor for weight rounding
+
+            # Estimate output memory based on input_features and out_features
+            in_features, out_features = get_layer_features(module)
+            if in_features is not None and out_features is not None:
+                # Output tensor size: batch_size * seq_len * out_features * element_size
+                output_size = pick_samples * seq_len * out_features * element_size
+                output_memory_gb = output_size / 1024**3
+
+                # If enable_act_quant, add input tensor memory to param_memory
+                if enable_act_quant:
+                    input_size = pick_samples * seq_len * in_features * element_size
+                    input_memory_gb = input_size / 1024**3
+                    param_memory_gb += input_memory_gb
+            else:
+                output_memory_gb = 0.0
+
+            # memory * 2, because it contains grad tensor.
+            layer_memory_dict[layer_name] = {"param_memory": param_memory_gb * 2, "output_memory": output_memory_gb * 2}
+
+    # Assuming bfloat16 or float32, input and output
+    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+
+    # Roughly estimate additional memory for attention and other operations
+    additional_activation_memory = sum(info["output_memory"] for info in layer_memory_dict.values())
+    # 1GB considers norm weight, sdpa, reference_output, etc.
+    additional_memory = additional_activation_memory + 1  # GB
+    if torch.xpu.is_available():
+        # https://github.com/intel/torch-xpu-ops/issues/2232
+        # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
+        xpu_additional_memory = 12  # GB
+        additional_memory += xpu_additional_memory
+        logger.warning_once("XPU additional memory usage of SDPA is estimated to be 12 GB.")
+        logger.warning_once("Remove it after https://github.com/intel/torch-xpu-ops/issues/2232 is fixed.")
+
+    return layer_memory_dict, block_input_output_memory, additional_memory
+
+
 def set_auto_device_map_for_block_with_tuning(
-    block: torch.nn.Module, device_map, input_ids: list[torch.Tensor], low_gpu_mem_usage=False, mem_per_param_scale=13.0
+    block: torch.nn.Module,
+    device_map,
+    input_ids: list[torch.Tensor],
+    low_gpu_mem_usage=False,
+    pick_samples=8,
+    output_device=None,
 ):
     """
     Automatically sets the device map for the block based on available GPUs and memory constraints.
@@ -639,9 +821,8 @@ def set_auto_device_map_for_block_with_tuning(
         device_map (str | int | dict): Specifies the device mapping.
         input_ids (list[torch.Tensor]): List of input tensors used for estimating memory requirements.
         low_gpu_mem_usage (bool, optional): If True, ignoring input/output memory. Defaults to False.
-        mem_per_param_scale (float, optional): Scaling factor for estimating memory usage per parameter in the block.
-            Typical values range from 10.0 to 20.0 depending on model size and GPU memory characteristics.
-            Higher values are more conservative and help avoid out-of-memory errors. Defaults to 13.0.
+        pick_samples (int, optional): Number of samples to consider for memory estimation. Defaults to 8.
+        output_device (str | torch.device, optional): Device to move unassigned modules to. Defaults to None.
 
     Returns:
         None
@@ -651,13 +832,13 @@ def set_auto_device_map_for_block_with_tuning(
 
     Note:
         This function is intended for internal use in device memory management and tuning.
-        The mem_per_param_scale parameter should be adjusted based on empirical memory usage observations.
     """
     if torch.cuda.is_available():
-        num_gpus = torch.cuda.device_count()
+        num_devices = torch.cuda.device_count()
+        device_name = "cuda"
     elif torch.xpu.is_available():
-        logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
-        return
+        num_devices = torch.xpu.device_count()
+        device_name = "xpu"
     else:
         raise RuntimeError("No CUDA or XPU devices found.")
     device_list = None
@@ -665,53 +846,66 @@ def set_auto_device_map_for_block_with_tuning(
         device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
 
     if device_list:
-        cuda_devices = [f"cuda:{i}" for i in device_list]
-        device_0 = cuda_devices[0]
+        gpu_devices = [f"{device_name}:{i}" for i in device_list]
+        device_0 = gpu_devices[0]
     else:
-        cuda_devices = [f"cuda:{i}" for i in range(num_gpus)]
-        device_0 = "cuda:0"
+        gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
+        device_0 = f"{device_name}:0"
 
     device_0_memory = get_device_memory(device_list[0] if device_list else 0)
-    block_memory, input_output_memory = estimate_tuning_block_mem(block, input_ids)
+    layer_memory_dict, block_input_output_memory, additional_memory = estimate_tuning_block_mem(
+        block, input_ids, pick_samples
+    )
     if low_gpu_mem_usage:
-        input_output_memory = 0
+        block_input_output_memory = 0
 
-    if (block_memory * mem_per_param_scale + input_output_memory) < device_0_memory:
-        return  # fit in one GPU
+    # Calculate total block memory from layer memory dict (including both param and output memory)
+    total_block_param_memory = sum(info["param_memory"] for info in layer_memory_dict.values())
+    total_block_output_memory = sum(info["output_memory"] for info in layer_memory_dict.values())
 
-    device_map = {}
-    device_memory = {device: get_device_memory(int(device.split(":")[1])) for device in cuda_devices}
-    device_memory[device_0] = device_0_memory - input_output_memory
+    # Average dispatch strategy
+    # card_0_left_memory = card_0_mem - block_input_output_memory - additional_memory - layer_outputs_memory
+    logger.debug("Card 0 used memory details [Estimated]:")
+    logger.debug(f"  Block input output cache memory: {block_input_output_memory} GB")
+    logger.debug(f"  Quantized layer outputs memory: {total_block_output_memory} GB")
+    logger.debug(f"  Additional_memory from other ops: {additional_memory} GB")
 
-    device_idx = 0
-    names = []
-    # First, fill device 0 to its maximum capacity, then distribute the remaining layers evenly across other devices
-    for n, m in block.named_modules():
-        if check_to_quantized(m):
-            layer_name = m.tmp_name
-            names.append(layer_name)
-            layer_memory = m.weight.nbytes / 1024**3
-            if device_idx == 0 and layer_memory * mem_per_param_scale < device_memory[cuda_devices[device_idx]]:
-                device_map[layer_name] = cuda_devices[device_idx]
-                device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
-            elif device_idx == 0:
-                device_idx += 1  # Move to the next device once device 0 is full
-                device_map[layer_name] = cuda_devices[device_idx]
-                device_memory[cuda_devices[device_idx]] -= layer_memory * mem_per_param_scale
-            else:
-                # Calculate the target device index based on even distribution
-                sorted_devices = sorted(cuda_devices, key=lambda d: device_memory[d], reverse=True)
-                device_idx = sorted_devices[0]
-                if layer_memory * mem_per_param_scale < device_memory[device_idx]:
-                    device_map[layer_name] = device_idx
-                    device_memory[device_idx] -= layer_memory * mem_per_param_scale
-                else:
-                    logger.warning_once(
-                        f"Block {block.tmp_name} not fit in available GPU memory. "
-                        "Consider using more GPUs or reducing mem_per_param_scale if OOM occurs."
-                    )
+    card_0_left_memory = max(
+        0, device_0_memory - block_input_output_memory - total_block_output_memory - additional_memory
+    )
 
+    # Calculate total available memory across all devices
+    total_available_memory = card_0_left_memory
+    for i in range(1, len(gpu_devices)):
+        device_idx = device_list[i] if device_list else i
+        total_available_memory += get_device_memory(device_idx)
+
+    # Calculate total params (in GB, considering param_memory only for calculation)
+    total_params = total_block_param_memory
+    mem_per_param = total_available_memory / total_params
+
+    # Initialize device memory tracking
+    device_memory = {}
+    device_memory[device_0] = card_0_left_memory
+    for i in range(1, len(gpu_devices)):
+        device_idx = device_list[i] if device_list else i
+        device_memory[gpu_devices[i]] = get_device_memory(device_idx)
+
+    # Allocate layers to devices using load-balancing strategy
+    device_map, names = _allocate_layers_to_devices(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
+
+    logger.debug(f"Auto device map for block: {device_map}")
     set_non_auto_device_map(block, device_map, names)
+
+    # Ensure all remaining modules with parameters/buffers are moved to expected device, by default device_0
+    output_device = device_0 if output_device is None else output_device
+    for name, module in block.named_modules():
+        if name not in names:  # This module wasn't assigned a device
+            # Check if module has any parameters or buffers
+            has_params = any(True for _ in module.parameters(recurse=False))
+            has_buffers = any(True for _ in module.buffers(recurse=False))
+            if has_params or has_buffers:
+                module = module.to(output_device)
 
 
 def partition_dict_numbers(number_dict, n):
@@ -789,16 +983,17 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     else:
         if torch.cuda.is_available():
             num_devices = torch.cuda.device_count()
+            device_name = "cuda"
         elif torch.xpu.is_available():
-            logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
-            return
+            num_devices = torch.xpu.device_count()
+            device_name = "xpu"
         else:
             return
 
     if device_list:
-        cuda_devices = [f"cuda:{i}" for i in device_list]
+        gpu_devices = [f"{device_name}:{i}" for i in device_list]
     else:
-        cuda_devices = [f"cuda:{i}" for i in range(num_devices)]
+        gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
 
     for block_names in block_name_list:
         for block_name in block_names:
@@ -814,7 +1009,7 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
             device_index = 0
             for res in res_list:
                 for key in res.keys():
-                    set_tuning_device_for_layer(block_module, key, cuda_devices[device_index])
+                    set_tuning_device_for_layer(block_module, key, gpu_devices[device_index])
                 device_index += 1
 
 

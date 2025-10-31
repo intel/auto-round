@@ -85,7 +85,9 @@ def _handle_moe_model(model, formats=None):
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
 
-        logger.warning("Llama4 experts are converted, the quantized model can not run on transformers.")
+        logger.warning(
+            f"{model.config.model_type} experts are converted, the quantized model can not run on transformers."
+        )
     return model
 
 

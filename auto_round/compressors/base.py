@@ -30,6 +30,7 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
     block_forward,
@@ -93,6 +94,7 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import (
+    clear_memory_if_reached_threshold,
     get_major_device,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
@@ -106,6 +108,7 @@ class BaseCompressor(object):
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
@@ -130,6 +133,7 @@ class BaseCompressor(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform="hf",
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -227,8 +231,9 @@ class BaseCompressor(object):
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
-        # Scale factor for RAM usage per parameter.
-        mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
+        if envs.AR_USE_MODELSCOPE:
+            platform = "model_scope"
+        self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
@@ -260,6 +265,7 @@ class BaseCompressor(object):
         if isinstance(model, str):
             model, tokenizer = llm_load_model(
                 model,
+                platform=platform,
                 device="cpu",  # always load cpu first
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
@@ -332,10 +338,6 @@ class BaseCompressor(object):
         # Whether to pack the layer immediately after tuning
         self.is_packing_immediate = kwargs.pop("is_packing_immediate", False)
         self.save_block_immediate = kwargs.pop("save_block_immediate", False)
-        if mem_per_param_scale is None:
-            self.mem_per_param_scale = 13 if self.iters != 0 else 1
-        else:
-            self.mem_per_param_scale = mem_per_param_scale
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1139,8 +1141,10 @@ class BaseCompressor(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared.to(module.imatrix.device)
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
@@ -1319,10 +1323,11 @@ class BaseCompressor(object):
         self.model.to("cpu")
 
         enable_imatrix = False
-        if has_gguf_k and not self.disable_opt_rtn:
-            enable_imatrix = True
-        if self.data_type == "int" and self.sym:
-            enable_imatrix = True
+        if not self.disable_opt_rtn:
+            if has_gguf_k:
+                enable_imatrix = True
+            elif self.data_type == "int" and self.sym:
+                enable_imatrix = True
 
         if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
@@ -1434,7 +1439,7 @@ class BaseCompressor(object):
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
                     set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
                     )
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -1463,6 +1468,10 @@ class BaseCompressor(object):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
+                    # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
+                    # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
+                    if hasattr(m, "imatrix"):
+                        m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
@@ -2448,10 +2457,12 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
             set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
+        else:
+            block = block.to(device)
 
         if self.device_map is not None:
             for n, m in block.named_modules():
@@ -2502,7 +2513,7 @@ class BaseCompressor(object):
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
-            device=self.device,
+            device=device,
         )
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -2582,6 +2593,7 @@ class BaseCompressor(object):
                 current_output = to_device(current_output, device)
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
+
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -2601,6 +2613,7 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
+                clear_memory_if_reached_threshold(threshold=0.85)
 
             if i == 0:
                 init_loss = total_loss
@@ -2736,6 +2749,7 @@ class BaseCompressor(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
                 quantize_block = self._quantize_block
         else:
             quantize_block = self._quantize_block
@@ -2756,7 +2770,6 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
                 input_ids,
