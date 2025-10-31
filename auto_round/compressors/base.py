@@ -2817,7 +2817,7 @@ class BaseCompressor(object):
         from collections import OrderedDict
 
         # User configurable (can be preset on self)
-        max_shard_size = getattr(self, "max_shard_size", "5MB")
+        max_shard_size = getattr(self, "max_shard_size", "5GB")
         safe_serialization = getattr(self, "safe_serialization", True)
 
         def _parse_size(size_str: str) -> int:
