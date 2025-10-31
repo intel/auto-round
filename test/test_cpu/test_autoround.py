@@ -812,10 +812,11 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
             is_packing_immediate=True,
             save_block_immediate=True,
-            device_map="cpu"
+            device_map="cpu",
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

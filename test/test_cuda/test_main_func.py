@@ -219,5 +219,6 @@ class TestMainFunc(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+
 if __name__ == "__main__":
     unittest.main()
