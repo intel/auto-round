@@ -17,6 +17,7 @@ import torch
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import float8_e4m3fn_ste, get_gaudi_fp8_ste_func
 
+
 @register_dtype("fp8_to_int_sym")
 def progressive_quant_fp8_int4(
     tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5, **kwargs
