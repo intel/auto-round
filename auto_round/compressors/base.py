@@ -93,6 +93,7 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import (
+    clear_memory_if_reached_threshold,
     get_major_device,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
@@ -229,9 +230,6 @@ class BaseCompressor(object):
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
-        # Scale factor for RAM usage per parameter.
-        mem_per_param_scale = kwargs.pop("mem_per_param_scale", None)
-
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
@@ -336,10 +334,6 @@ class BaseCompressor(object):
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
         self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
-        if mem_per_param_scale is None:
-            self.mem_per_param_scale = 13 if self.iters != 0 else 1
-        else:
-            self.mem_per_param_scale = mem_per_param_scale
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1436,7 +1430,7 @@ class BaseCompressor(object):
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
                     set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
                     )
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -2454,10 +2448,12 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
             set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
+        else:
+            block = block.to(device)
 
         if self.device_map is not None:
             for n, m in block.named_modules():
@@ -2508,7 +2504,7 @@ class BaseCompressor(object):
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
-            device=self.device,
+            device=device,
         )
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -2588,6 +2584,7 @@ class BaseCompressor(object):
                 current_output = to_device(current_output, device)
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
+
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -2607,6 +2604,7 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
+                clear_memory_if_reached_threshold(threshold=0.85)
 
             if i == 0:
                 init_loss = total_loss
@@ -2762,7 +2760,6 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
                 input_ids,
