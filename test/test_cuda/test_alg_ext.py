@@ -28,7 +28,8 @@ class TestAlgExt(unittest.TestCase):
         ar = AutoRound(model=model_name, bits=2, group_size=64, enable_alg_ext=True)
         ar.quantize_and_save(self.save_folder)
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,  device_map="auto",
+            self.save_folder,
+            device_map="auto",
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
