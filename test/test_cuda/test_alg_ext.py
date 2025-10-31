@@ -14,13 +14,13 @@ from auto_round.eval.evaluation import simple_evaluate_user_model
 class TestAlgExt(unittest.TestCase):
 
     @classmethod
-    def setUpClass(self):
-        self.model_name = "/models/opt-125m"
-        self.save_folder = "./saved"
+    def setUpClass(cls):
+        cls.model_name = "/models/opt-125m"
+        cls.save_folder = "./saved"
 
     @classmethod
-    def tearDownClass(self):
-        shutil.rmtree(self.save_folder, ignore_errors=True)
+    def tearDownClass(cls):
+        shutil.rmtree(cls.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_2bits(self):
