@@ -20,7 +20,7 @@ from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, Unqu
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
-from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, check_quantized, get_scheme
 
 logger = init_logger(__name__)
 
@@ -41,19 +41,6 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
         layer: torch.nn.Module,
         prefix: str,
     ) -> "AutoRoundQuantLinearMethod":
-
-        def get_scheme(quant_config: AutoRoundConfig, prefix: str):
-            # Check extra_config first
-            layer_schemes = quant_config.layer_schemes
-            # FIXME: make more robust
-            for name, scheme in layer_schemes.items():
-                if prefix.startswith(name):
-                    return scheme
-            # If not found, use default
-            return quant_config.quant_scheme
-
-        def check_quantized(weight_bits: int) -> bool:
-            return weight_bits < 16
 
         def get_impl(scheme: QuantizationScheme):
             if not check_quantized(scheme.bits):
