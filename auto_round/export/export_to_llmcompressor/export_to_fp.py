@@ -38,6 +38,7 @@ from auto_round.utils import (
     get_module,
     set_amax_for_all_moe_layers,
     set_module,
+    unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperWALayer
 
@@ -188,17 +189,18 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
+    if not unsupported_meta_device(model):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with tqdm(total=len(names), leave=True) as pbar:
 
-            def wrapper(name):
-                pbar.set_description(f"packing {name}")
-                with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend, device)
-                pbar.update(1)
+                def wrapper(name):
+                    pbar.set_description(f"packing {name}")
+                    with tctl.threadpool_limits(limits=1):
+                        pack_layer(name, model, backend, device)
+                    pbar.update(1)
 
-            for _ in executor.map(wrapper, names):
-                pass
+                for _ in executor.map(wrapper, names):
+                    pass
 
     ignore = generate_ignore_regex_list(regex_config=regex_config, layer_config=layer_config)
 

@@ -47,6 +47,7 @@ from auto_round.compressors.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
+    save_block_immediate,
     set_layer_config,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -333,7 +334,10 @@ class BaseCompressor(object):
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
-        self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
+
+        # Whether to pack the layer immediately after tuning
+        self.is_packing_immediate = kwargs.pop("is_packing_immediate", False)
+        self.save_block_immediate = kwargs.pop("save_block_immediate", False)
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1275,6 +1279,12 @@ class BaseCompressor(object):
         else:
             set_module(self.model, name, m)
 
+        if self.save_block_immediate:
+            all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+            last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
+            m = get_module(self.model, name)
+            save_block_immediate(self, m, name, last_module)
+
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
@@ -1289,7 +1299,6 @@ class BaseCompressor(object):
             self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-
         if is_nv_fp(self.data_type):
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -1466,8 +1475,8 @@ class BaseCompressor(object):
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
-
-                mv_module_from_gpu(block)
+                if not self.save_block_immediate:
+                    mv_module_from_gpu(block)
                 pbar.update(1)
 
         pbar.close()
@@ -2704,6 +2713,7 @@ class BaseCompressor(object):
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         input_ids = to_dtype(input_ids, tmp_dtype)
 
@@ -2795,10 +2805,15 @@ class BaseCompressor(object):
                         PACKING_LAYER_WITH_FORMAT[target_backend](
                             tmp_m.tmp_name, self.model, self.formats[0], device=self.device
                         )
+
+            if self.save_block_immediate:
+                last_group = (i + nblocks) >= len(block_names)
+                save_block_immediate(self, m, last_group=last_group)
         if pbar is not None:
             pbar.update(1)
 
-        self.model = mv_module_from_gpu(self.model)
+        if not self.save_block_immediate:
+            self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
                 delattr(m, "name")

@@ -41,6 +41,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     set_module,
+    unsupported_meta_device,
 )
 
 
@@ -110,10 +111,13 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if image_processor is not None and output_dir is not None:
         image_processor.save_pretrained(output_dir)
 
-    if inplace:
-        compressed_model = model.to("cpu")
+    if not unsupported_meta_device(model):
+        if inplace:
+            compressed_model = model.to("cpu")
+        else:
+            compressed_model = copy.deepcopy(model.to("cpu"))
     else:
-        compressed_model = copy.deepcopy(model.to("cpu"))
+        compressed_model = model
 
     names = list(layer_config.keys())
 
@@ -121,17 +125,18 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
+    if not unsupported_meta_device(model):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with tqdm(total=len(names), leave=True) as pbar:
 
-            def wrapper(name):
-                pbar.set_description(f"packing {name}")
-                with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, compressed_model, backend, device)
-                pbar.update(1)
+                def wrapper(name):
+                    pbar.set_description(f"packing {name}")
+                    with tctl.threadpool_limits(limits=1):
+                        pack_layer(name, compressed_model, backend, device)
+                    pbar.update(1)
 
-            for _ in executor.map(wrapper, names):
-                pass
+                for _ in executor.map(wrapper, names):
+                    pass
     if output_dir is None:
         return model
 
