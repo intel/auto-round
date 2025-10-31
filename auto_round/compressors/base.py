@@ -90,7 +90,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupported_meta_device,
-    use_multi_nodes,
+    use_device_map,
 )
 from auto_round.utils.device import (
     get_major_device,
@@ -1433,12 +1433,12 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if use_multi_nodes(self.device_map):
+                if use_device_map(self.device_map):
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
                     )
                 # Dispatch model if needed
-                if use_multi_nodes(self.device_map):
+                if use_device_map(self.device_map):
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -1456,7 +1456,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
-                if use_multi_nodes(self.device_map):
+                if use_device_map(self.device_map):
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
@@ -2453,12 +2453,12 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
 
-        if use_multi_nodes(self.device_map):
+        if use_device_map(self.device_map):
             set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.mem_per_param_scale
             )
 
-        if use_multi_nodes(self.device_map):
+        if use_device_map(self.device_map):
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
@@ -2654,7 +2654,7 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if use_multi_nodes(self.device_map):
+            if use_device_map(self.device_map):
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
@@ -2662,7 +2662,7 @@ class BaseCompressor(object):
             return q_outputs, output
 
         else:
-            if use_multi_nodes(self.device_map):
+            if use_device_map(self.device_map):
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)

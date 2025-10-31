@@ -355,7 +355,7 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
 
 
-def use_multi_nodes(device_map):
+def use_device_map(device_map):
     if device_map is None or isinstance(device_map, int):
         return False
     elif device_map == "auto":
@@ -602,15 +602,11 @@ def set_tuning_device_for_layer(model, name: str, device: str) -> None:
 def set_non_auto_device_map(
     model: torch.nn.Module, device_map: Union[str, int, dict], quant_layer_names: Union[None, list, tuple] = None
 ) -> None:
-    if not device_map:
-        return
-    if device_map == "auto":
-        return
-    if isinstance(device_map, str) and "," in device_map:  # auto device map
-        return
-    if isinstance(device_map, int):
+    if not device_map or device_map == "auto" or isinstance(device_map, int):
         return
     if isinstance(device_map, str):
+        if "," in device_map:  # auto device map
+            return
         device_map = device_map.replace(" ", "")
         infos = device_map.split(",")
         device_map_dict = {}
@@ -672,7 +668,7 @@ def set_auto_device_map_for_block_with_tuning(
         logger.warning_once("XPU does not support auto device map yet, using device 0 for tuning.")
         return
     else:
-        raise RuntimeError("No CUDA or XPU devices found.")
+        return
     device_list = None
     if isinstance(device_map, str) and "," in device_map:
         device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
