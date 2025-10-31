@@ -30,6 +30,8 @@ from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
 
+from auto_round import envs
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
@@ -52,7 +54,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import AutoScheme, QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
+from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -105,6 +107,7 @@ class BaseCompressor(object):
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
@@ -129,6 +132,7 @@ class BaseCompressor(object):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform="hf",
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -140,6 +144,8 @@ class BaseCompressor(object):
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
+        enable_alg_ext: bool = False,
+        disable_opt_rtn: bool = False,
         seed: int = 42,
         **kwargs,
     ):
@@ -190,14 +196,9 @@ class BaseCompressor(object):
 
             >>> layer_config = {
             ...     "layer1": {
-            ...         "data_type": "int",
-            ...         "bits": 4,
+            ...         "bits": 3,
             ...         "group_size": 128,
             ...         "sym": True,
-            ...         "act_data_type": None,
-            ...         "act_bits": 16,
-            ...         "act_group_size": None,
-            ...         "act_sym": None,
             ...     },
             ...     "layer2": {
             ...         "W8A16"
@@ -215,10 +216,8 @@ class BaseCompressor(object):
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
         lr = kwargs.pop("lr", None)
-        enable_alg_ext = kwargs.pop("enable_alg_ext", False)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
-        disable_opt_rtn = kwargs.pop("disable_opt_rtn", False)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
@@ -231,6 +230,9 @@ class BaseCompressor(object):
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         device = kwargs.pop("device", None)
+        if envs.AR_USE_MODELSCOPE:
+            platform = "model_scope"
+        self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
@@ -262,6 +264,7 @@ class BaseCompressor(object):
         if isinstance(model, str):
             model, tokenizer = llm_load_model(
                 model,
+                platform=platform,
                 device="cpu",  # always load cpu first
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
@@ -1134,8 +1137,10 @@ class BaseCompressor(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared.to(module.imatrix.device)
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
@@ -1309,10 +1314,11 @@ class BaseCompressor(object):
         self.model.to("cpu")
 
         enable_imatrix = False
-        if has_gguf_k and not self.disable_opt_rtn:
-            enable_imatrix = True
-        if self.data_type == "int" and self.sym:
-            enable_imatrix = True
+        if not self.disable_opt_rtn:
+            if has_gguf_k:
+                enable_imatrix = True
+            elif self.data_type == "int" and self.sym:
+                enable_imatrix = True
 
         if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
@@ -1453,6 +1459,10 @@ class BaseCompressor(object):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
+                    # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
+                    # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
+                    if hasattr(m, "imatrix"):
+                        m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
@@ -2729,6 +2739,7 @@ class BaseCompressor(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
                 quantize_block = self._quantize_block
         else:
             quantize_block = self._quantize_block

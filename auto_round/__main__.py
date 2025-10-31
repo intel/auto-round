@@ -15,9 +15,10 @@ import argparse
 import os
 import sys
 
+from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
-from auto_round.schemes import PRESET_SCHEMES, AutoScheme
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -43,6 +44,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="facebook/opt-125m",
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
+        basic.add_argument(
+            "--platform",
+            default="hf",
+            help="Platform to load the pre-trained model. Options: [hf, model_scope]."
+            " hf stands for huggingface and model_scope stands for model scope.",
         )
         basic.add_argument(
             "--scheme",
@@ -556,6 +563,7 @@ def tune(args):
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
+        platform=args.platform,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,

@@ -119,6 +119,7 @@ AutoRound supports several Schemes:
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
+- **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 are supported)
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to llm-compressor format. data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
@@ -280,8 +281,6 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 ### AutoScheme
 
 AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
-
-We strongly recommend set `enable_torch_compile` to True to save VRAM.
 
 **Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
 
