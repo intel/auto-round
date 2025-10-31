@@ -18,7 +18,9 @@ from vllm.platforms import current_platform
 MODELS = [
     # "/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/"
     # "/data5/yliu7/HF_HOME/Qwen2.5-0.5B-Instruct-test-FP8_STATIC-fp8kv/"
-    "/data6/yiliu4/Qwen3-15B-A2B-Base-MXFP4"
+    # "/data6/yiliu4/Qwen3-15B-A2B-Base-MXFP4",
+    # "/data6/yiliu4/Llama-3.2-1B-Instruct-MXFP4-fp8attention",
+    "/data6/yiliu4/Llama-3.2-1B-Instruct-MXFP8"
 ]
 
 

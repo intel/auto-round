@@ -14,8 +14,20 @@
 
 import torch
 
+from auto_round.schemes import QuantizationScheme
+
 E8M0_EXPONENT_BIAS = 127
 E8M0_EXPONENT_NAN_VAL = 255
+
+
+def _is_mxfp4_w4a4(scheme: QuantizationScheme):
+    # FIXME: below impl is incomplete
+    return scheme.bits == 4 and scheme.group_size == 32
+
+
+def _is_mxfp8_w8a8(scheme: QuantizationScheme):
+    # FIXME: below impl is incomplete
+    return scheme.bits == 8 and scheme.group_size == 32
 
 
 def get_fp_scale(scale_e8m0):
