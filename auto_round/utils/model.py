@@ -858,7 +858,7 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         )
 
 
-def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
+def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
     """ """
     from auto_round.schemes import QuantizationScheme
 
@@ -870,6 +870,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
+    layer = layer.to(device)
     if layer.__class__.__name__ == "CompressedLinear":
         dq_weight = layer.compressor.decompress_module(layer)
     else:
@@ -879,7 +880,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     return new_layer
 
 
-def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
+def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16, device: str = "cpu"):
     """
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
@@ -889,7 +890,7 @@ def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     cnt = 0
     for n, m in model.named_modules():
         if m.__class__.__name__ == "FP8Linear":
-            new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
+            new_module = convert_fp8_layer_to_linear(m, dtype=dtype, device=device)
             set_module(model, n, new_module)
             cnt += 1
             if cnt % 10 == 0:  # Tricky setting
