@@ -99,6 +99,27 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
+# function decorator to dump the func time
+def time_logger(func: Callable) -> Callable:
+    """Decorator to log the execution time of a function.
+
+    Args:
+        func (Callable): The function to be decorated.
+
+    Returns:
+        Callable: The wrapped function with time logging.
+    """
+
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        logger.info(f"Function '{func.__name__}' executed in {end_time - start_time:.4f} seconds.")
+        return result
+
+    return wrapper
+
+
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -2420,6 +2441,7 @@ class BaseCompressor(object):
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
+    @time_logger
     def _quantize_block(
         self,
         block: torch.nn.Module,
@@ -2566,6 +2588,7 @@ class BaseCompressor(object):
         best_params = {}
         total_loss = 0
         for i in range(self.iters):
+            logger.trace(f"Quant block iteration {i}/{self.iters}, best loss so far: {best_loss}")
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
