@@ -23,6 +23,7 @@ from typing import Union
 import torch
 import transformers
 
+from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -148,6 +149,39 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
     return False
 
 
+def download_or_get_path(repo_id: str, platform: str = None) -> str:
+    from auto_round import envs
+
+    if platform is None:
+        if envs.AR_USE_MODELSCOPE:
+            platform = "model_scope"
+        else:
+            platform = "hf"
+
+    if platform == "model_scope":
+        return download_modelscope_model(repo_id)
+    else:
+        return download_hf_model(repo_id)
+
+
+def download_modelscope_model(repo_id: str, local_dir: str = None, cache_dir: str = None):
+    from modelscope.utils.file_utils import get_modelscope_cache_dir  # pylint: disable=E0401
+
+    system_cache = cache_dir if cache_dir is not None else get_modelscope_cache_dir()
+    if local_dir:
+        directory = os.path.abspath(local_dir)
+    elif cache_dir:
+        directory = os.path.join(system_cache, *repo_id.split("/"))
+    else:
+        directory = os.path.join(system_cache, "models", *repo_id.split("/"))
+    if os.path.exists(directory):
+        return directory
+    else:
+        from modelscope.hub.snapshot_download import snapshot_download  # pylint: disable=E0401
+
+        return snapshot_download(repo_id)
+
+
 def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     """Download hugging face model from hf hub."""
     from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
@@ -180,13 +214,23 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
 
 
 def llm_load_model(
-    pretrained_model_name_or_path,
-    trust_remote_code=True,
-    model_dtype=None,
-    device="cpu",
+    pretrained_model_name_or_path: str,
+    platform: str = "hf",
+    trust_remote_code: bool = True,
+    model_dtype: str = None,
+    device: str = "cpu",
     **kwargs,
 ):
-    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+    assert platform.lower() in [
+        "hf",
+        "model_scope",
+    ], "current only support hf or model_scope platform to load pretrained model."
+    if platform.lower() == "model_scope" and not envs.AR_USE_MODELSCOPE:
+        envs.set_config(AR_USE_MODELSCOPE=True)
+    if platform == "model_scope":
+        from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
+    else:
+        from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils.device import (
         _use_hpu_compile_mode,
@@ -254,16 +298,32 @@ def llm_load_model(
 
 
 def mllm_load_model(
-    pretrained_model_name_or_path,
-    device="cpu",
-    torch_dtype="auto",
-    use_auto_mapping=True,
-    trust_remote_code=True,
-    model_dtype=None,
+    pretrained_model_name_or_path: str,
+    platform: str = "hf",
+    device: str = "cpu",
+    torch_dtype: str = "auto",
+    use_auto_mapping: bool = True,
+    trust_remote_code: bool = True,
+    model_dtype: str = None,
     **kwargs,
 ):
-    import transformers
-    from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+    assert platform.lower() in [
+        "hf",
+        "model_scope",
+    ], "current only support hf or model_scope platform to load pretrained model."
+    if platform.lower() == "model_scope" and not envs.AR_USE_MODELSCOPE:
+        envs.set_config(AR_USE_MODELSCOPE=True)
+
+    if platform == "model_scope":
+        import modelscope  # pylint: disable=E0401
+        from modelscope import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
+
+        base_lib = modelscope
+    else:
+        import transformers
+        from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+
+        base_lib = transformers
 
     from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
 
@@ -322,11 +382,11 @@ def mllm_load_model(
             )
         else:
             if architectures.endswith("Model") and hasattr(
-                transformers, n := architectures.replace("Model", "ForConditionalGeneration")
+                base_lib, n := architectures.replace("Model", "ForConditionalGeneration")
             ):
-                cls = getattr(transformers, n)
-            elif hasattr(transformers, architectures):
-                cls = getattr(transformers, architectures)
+                cls = getattr(base_lib, n)
+            elif hasattr(base_lib, architectures):
+                cls = getattr(base_lib, architectures)
             else:
                 cls = AutoModelForCausalLM
             try:
@@ -365,7 +425,10 @@ def mllm_load_model(
                     pretrained_model_name_or_path, trust_remote_code=trust_remote_code
                 )
             try:
-                from transformers import AutoImageProcessor
+                if platform == "model_scope":
+                    from modelscope import AutoImageProcessor  # pylint: disable=E0401
+                else:
+                    from transformers import AutoImageProcessor
 
                 image_processor = AutoImageProcessor.from_pretrained(
                     pretrained_model_name_or_path, trust_remote_code=trust_remote_code
@@ -382,6 +445,7 @@ def mllm_load_model(
 
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
+    platform: str = "hf",
     device: Union[str, torch.device] = "cpu",
     torch_dtype: Union[str, torch.dtype] = "auto",
     use_auto_mapping: bool = False,
@@ -391,6 +455,11 @@ def diffusion_load_model(
 ):
     from auto_round.utils.common import LazyImport
     from auto_round.utils.device import get_device_and_parallelism
+
+    if platform != "hf":
+        raise NotImplementedError(
+            f"auto_round current only support hf as platform for diffusion model, but get {platform}"
+        )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -425,7 +494,7 @@ def is_pure_text_model(model):
     return True
 
 
-def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
+def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     MM_KEYS = [
         "multi_modal_projector",
         "vision_tower",
@@ -446,7 +515,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module]):
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
     if not os.path.isdir(model_path):
-        model_path = download_hf_model(model_path)
+        model_path = download_or_get_path(model_path, platform=platform)
 
     if isinstance(model_path, str):
         if os.path.exists(os.path.join(model_path, "preprocessor_config.json")):

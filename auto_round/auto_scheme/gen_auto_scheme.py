@@ -133,7 +133,7 @@ class GenScheme:
         Returns:
             dict[str, dict]: Updated layer configuration with applied fallbacks if necessary.
         """
-        for name, scheme in layer_config.items():  # TODO: add unit test (wenhua), the code is a little tricky
+        for name, scheme in layer_config.items():
             if scheme.get("super_bits") is None:
                 continue  # Skip non-GGUF k-quant layers
 
