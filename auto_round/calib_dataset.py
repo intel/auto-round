@@ -632,14 +632,7 @@ def select_dataset(dataset, indices):
         return dataset
 
 
-def get_dataloader(
-    tokenizer,
-    seqlen,
-    dataset_name="NeelNanda/pile-10k",
-    seed=42,
-    bs=8,
-    nsamples=512,
-):
+def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512, return_ds=False):
     """Generate a DataLoader for calibration using specified parameters.
 
     Args:
@@ -851,6 +844,7 @@ def get_dataloader(
 
     if len(dataset_final) > nsamples:
         dataset_final = select_dataset(dataset_final, range(nsamples))
-
+    if return_ds:
+        return dataset_final
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
