@@ -73,16 +73,14 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 
     ~~~python
     def customized_data():
-        ##Important Notice!!! Autoround will drop data < args.seqlen and truncate data to args.seqlen
-        data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
-        data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+        # Important Notice!!! AutoRound will drop data < args.seqlen and truncate data to args.seqlen
+        data = ["AutoRound is an advanced quantization algorithm for low-bits LLM inference" * 240]
         return data
     
     
     def customized_data_with_tokenizer(tokenizer, seqlen=2048):
-        ##Import notice!!! Autoround will drop data < args.seqlen
-        data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
-        data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+        # Import notice!!! AutoRound will drop data < args.seqlen
+        data = ["AutoRound is an advanced quantization algorithm for low-bits LLM inference" * 240]
         tokens = []
         for d in data:
             token = tokenizer(d, truncation=True, max_length=seqlen, return_tensors="pt").data
@@ -121,9 +119,10 @@ AutoRound supports several Schemes:
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
 - **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 are supported)
 - **Mixed Bits Weight only**
-- **NVFP4**(Experimental feature, recommend exporting to llm-compressor format. data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
-- **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
-- **FPW8A16**(**Research feature,no real kernel**, data_type:fp8,act_data_type 16:,group_size 0->per tensor )
+- **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
+- **MXFP4**(**Research feature,no real kernel**, data_type mxfp,act_data_type mxfp_rceil,bits 4, act_bits 4, group_size 32)
+- **MXFP8**(**Research feature,no real kernel**, data_type mxfp,act_data_type mxfp_rceil,group_size 32)
+- **FPW8A16**(**Research feature,no real kernel**, data_type fp8,group_size 0->per tensor )
 - **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tensor)
 
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
@@ -131,20 +130,20 @@ Besides, you could modify the `group_size`, `bits`, `sym` and many other configs
 ### Supported export Formats
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**.
+inference. **[2,3,4,8] bits are supported**. Please set `--format auto_round`
 
 **GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
-community. `q*_k`,`q*_0`,`q*_1` are supported.
+community. `q*_k`,`q*_0`,`q*_1` are supported. Please set `--format gguf:q4_k_m`,  `--format gguf:q2_k_s`, etc
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.  Please set `--format auto_gptq`
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**.
+adopted within the community, **only 4-bits quantization is supported**. Please set `--format auto_awq`
 
-**LLM-Compressor Format**:** NVFP4, MXFP(Kernel is WIP), INT8 are supported**.
+**LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
 ### Hardware Compatibility
 
@@ -158,7 +157,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
    This setting offers a better trade-off between accuracy and tuning cost, and is recommended in all scenarios.
 
     ```bash
-    auto-round --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
+    auto-round --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 - **AutoRoundBest recipe:**
@@ -166,7 +165,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
   This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
   
   ```bash
-  auto-round-best --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
+  auto-round-best --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 - **AutoRoundLight Settings:**
@@ -174,7 +173,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
     This setting offers the best speed (2-3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B
     
     ```bash
-    auto-round-light --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
+    auto-round-light --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 ### API usage
@@ -184,7 +183,7 @@ This setting offers a better trade-off between accuracy and tuning cost, and is 
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
@@ -206,7 +205,7 @@ vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign diffe
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 
 layer_config = {  #  Supports both full layer names and fuzzy (partial) matching
     "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32},
@@ -226,7 +225,7 @@ This setting provides the best accuracy in most scenarios but is 4–5× slower 
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(model=model_name_or_path, scheme="W4A16", nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 output_dir = "./tmp_autoround"
@@ -238,7 +237,7 @@ This setting offers the best speed (2 - 3X faster than AutoRound), but it may ca
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 
 ar = AutoRound(
     model=model_name_or_path,
@@ -331,7 +330,7 @@ shared_layers = [
     ("fc1", "fc2"),
 ]
 target_bits = 5.0
-model_name = "facebook/opt-125m"
+model_name = "Qwen/Qwen3-0.6B"
 scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
 ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
@@ -391,7 +390,7 @@ For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. T
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
     scheme="W4A16",
@@ -408,7 +407,7 @@ This format is well-suited for CPU devices and is widely adopted by the communit
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
 )
@@ -454,7 +453,7 @@ If adjusting hyperparameters does not resolve the issue a, a simple solution is 
 ~~~python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
     device_map="0,1,2,3"
@@ -464,7 +463,7 @@ ar = AutoRound(
 or
 
 ~~~bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "facebook/opt-125m" --scheme "W4A16" --device_map "auto"
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --device_map "auto"
 ~~~
 
 
@@ -576,7 +575,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Currently only support in AutoRound format inference for this config
 
     ```bash
-    auto-round --model_name facebook/opt-125m  --scheme "W4A16" --quant_lm_head --format "auto_round"
+    auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --format "auto_round"
     ```
 
 
@@ -717,7 +716,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 - We leverage lm-eval-harnessing for the evaluation. 
 If not explicitly specify '--task', the default value will be used (typically covering 10+ common tasks).
   ~~~bash
-   auto-round --model facebook/opt-125m  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
+   auto-round --model Qwen/Qwen3-0.6B  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
@@ -755,7 +754,12 @@ Note: To use the vllm backend, please add `--vllm` into the upper command.
 
 ## 6 Known Issues
 
-* Random quantization results in tuning some models
-* ChatGlm-V1 is not supported
+Randomness in quantization may affect tuning results for some models, set `enable_deterministic_algorithms=True` to ensure reproducibility.
+
+
+Some VLMs require manual support.
+
+
+Mamba is not supported.
 
 
