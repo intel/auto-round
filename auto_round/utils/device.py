@@ -746,6 +746,7 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     Returns:
         float: Memory ratio (num_experts_per_tok / num_experts).
                Returns 1.0 for non-MoE models.
+        bool: True if the model is MoE, False otherwise.
 
     Examples:
         - Non-MoE model: returns 1.0
@@ -795,10 +796,10 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
                     f"activation memory ratio: {moe_ratio:.2f}"
                 )
                 logger.debug(f"Using MoE memory ratio: {moe_ratio:.4f}")
-                return moe_ratio
+                return moe_ratio, True
             break  # Only check once per block
 
-    return 1.0  # Default ratio for non-MoE models
+    return 1.0, False  # Default ratio for non-MoE models
 
 
 def estimate_tuning_block_mem(
@@ -829,7 +830,7 @@ def estimate_tuning_block_mem(
     seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
     element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
 
-    moe_ratio = get_moe_memory_ratio(block)  # Get MoE memory ratio (1.0 for non-MoE models)
+    moe_ratio, has_moe = get_moe_memory_ratio(block)  # Get MoE memory ratio (1.0 for non-MoE models)
 
     for name, module in block.named_modules():
         if check_to_quantized(module):
@@ -856,7 +857,8 @@ def estimate_tuning_block_mem(
 
             # memory * 2, because it contains grad tensor.
             # Check if this is a MoE expert layer by layer name (e.g., "mlp.experts.0.gate_proj")
-            is_moe_expert = "expert" in layer_name.lower()
+            parent_module = get_module(block, layer_name.rsplit(".", 1)[0]) if "." in layer_name else block
+            is_moe_expert = "expert" in layer_name.lower() and isinstance(parent_module, torch.nn.ModuleList)
             layer_memory_dict[layer_name] = {
                 "param_memory": param_memory_gb * 2,
                 "output_memory": output_memory_gb * 2,
@@ -873,8 +875,7 @@ def estimate_tuning_block_mem(
     for layer_name, info in layer_memory_dict.items():
         if info.get("is_moe_expert", False):
             # MoE expert layer: only a fraction of experts are active
-            # memory * 2 records intermediate activation memory of GeLU, or etc.
-            layer_activation_memory += info["output_memory"] * moe_ratio * 2
+            layer_activation_memory += info["output_memory"] * moe_ratio
         else:
             # Non-MoE layer: use full activation memory
             layer_activation_memory += info["output_memory"]
@@ -882,13 +883,20 @@ def estimate_tuning_block_mem(
     # layer_activation_memory considers other ops activation memory
     # 1GB considers norm weight, sdpa, reference_output, etc.
     additional_memory = layer_activation_memory + 1  # GB
+    if has_moe:
+        # TODO: Cannot estimate the memory usage correctly for MoE models yet.
+        # For MoE models, additional memory usage can be higher due to routing, gating,
+        # and multiple expert activations. Here we use a conservative estimate.
+        moe_additional_memory = additional_memory * 3  # GB
+        additional_memory += moe_additional_memory
     if torch.xpu.is_available():
         # https://github.com/intel/torch-xpu-ops/issues/2232
         # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
         xpu_additional_memory = 12  # GB
         additional_memory += xpu_additional_memory
-        logger.warning_once("XPU additional memory usage of SDPA is estimated to be 12 GB.")
-        logger.warning_once("Remove it after https://github.com/intel/torch-xpu-ops/issues/2232 is fixed.")
+    logger.warning_once(
+        "[Memory Estimation]: If there is an abnormal memory issue, please collect log with AR_LOG_LEVEL=debug and raise issue to us."
+    )
 
     return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
 
@@ -947,20 +955,17 @@ def set_auto_device_map_for_block_with_tuning(
     if low_gpu_mem_usage:
         block_input_output_memory = 0
 
-    # Calculate total block memory from layer memory dict (including both param and output memory)
     total_block_param_memory = sum(info["param_memory"] for info in layer_memory_dict.values())
-    total_block_output_memory = layer_activation_memory
 
     # Average dispatch strategy
     # card_0_left_memory = card_0_mem - block_input_output_memory - additional_memory - layer_outputs_memory
-    logger.debug("Card 0 used memory details [Estimated]:")
+    card_0_used_memory = block_input_output_memory + layer_activation_memory + additional_memory
+    logger.debug(f"Card 0 used memory details [Estimated]: {card_0_used_memory} GB")
     logger.debug(f"  Block input output cache memory: {block_input_output_memory} GB")
     logger.debug(f"  Quantized layer outputs memory: {layer_activation_memory} GB")
     logger.debug(f"  Additional_memory from other ops: {additional_memory} GB")
 
-    card_0_left_memory = max(
-        0, device_0_memory - block_input_output_memory - total_block_output_memory - additional_memory
-    )
+    card_0_left_memory = max(0, (device_0_memory - card_0_used_memory))
 
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory
