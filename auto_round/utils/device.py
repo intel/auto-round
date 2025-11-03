@@ -442,7 +442,9 @@ def clear_memory_if_reached_threshold(threshold=0.85):
 
             if memory_usage_ratio >= threshold:
                 logger.warning_once(
-                    f"{name} device {i} has reached memory threshold. During the tuning process, a memory clearing operation will be called, which will result in more time consumption."
+                    f"{name} device {i} has reached memory threshold. "
+                    + "Memory clearing operation will be called during each iteration, which "
+                    + "will result in more time consumption."
                 )
                 clear_memory()
                 return True
@@ -894,7 +896,8 @@ def estimate_tuning_block_mem(
         xpu_additional_memory = 12  # GB
         additional_memory += xpu_additional_memory
     logger.warning_once(
-        "[Memory Estimation]: If there is an abnormal memory issue, please collect log with AR_LOG_LEVEL=debug and raise issue to us."
+        "[Memory Estimation]: If there is an abnormal memory issue, please collect log with "
+        + "AR_LOG_LEVEL=debug and raise issue to us."
     )
 
     return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
