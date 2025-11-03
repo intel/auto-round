@@ -2609,11 +2609,11 @@ class BaseCompressor(object):
                         # TODO: whether to improve threshold for llama3.3 70b on 2x 24GB cards
                         clear_memory_if_reached_threshold(threshold=0.5)
                     else:
-                        clear_memory_if_reached_threshold(threshold=0.85)
+                        clear_memory_if_reached_threshold(threshold=0.8)
                 self._scale_loss_and_backward(scaler, loss)
                 if self.low_gpu_mem_usage:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.9)
+                    clear_memory_if_reached_threshold(threshold=0.8)
 
             if i == 0:
                 init_loss = total_loss
