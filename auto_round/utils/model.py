@@ -410,7 +410,7 @@ def mllm_load_model(
                 else:
                     raise
 
-            if "Mistral-Small-3.2" in pretrained_model_name_or_path:
+            if any([name in model.name_or_path for name in ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]]):
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
 
                 if os.path.isdir(pretrained_model_name_or_path):

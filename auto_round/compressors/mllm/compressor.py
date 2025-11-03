@@ -189,7 +189,9 @@ class MLLMCompressor(BaseCompressor):
 
         if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
             template = "default"
-        if hasattr(model, "name_or_path") and "Mistral-Small-3.2" in model.name_or_path:
+        if hasattr(model, "name_or_path") and any(
+            [name in model.name_or_path for name in ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]]
+        ):
             template = "mistral3_2"
         if iters > 0:
             self.template = template if template is not None else model.config.model_type
