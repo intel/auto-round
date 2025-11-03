@@ -46,6 +46,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
         basic.add_argument(
+            "--platform",
+            default="hf",
+            help="Platform to load the pre-trained model. Options: [hf, model_scope]."
+            " hf stands for huggingface and model_scope stands for model scope.",
+        )
+        basic.add_argument(
             "--scheme",
             default="W4A16",
             type=str,
@@ -157,14 +163,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=float,
             help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
-        )
-        tuning.add_argument(
-            "--mem_per_param_scale",
-            default=13,
-            type=float,
-            help="Memory scaling factor for parameter memory estimation. "
-            "Adjust this if you need to control memory usage during tuning. "
-            "Lower values reduce memory usage but may affect accuracy.",
         )
         tuning.add_argument(
             "--gradient_accumulate_steps",
@@ -523,7 +521,6 @@ def tune(args):
         enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         lr=args.lr,
         minmax_lr=args.minmax_lr,
-        mem_per_param_scale=args.mem_per_param_scale,
         nblocks=args.nblocks,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
@@ -566,6 +563,7 @@ def tune(args):
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
+        platform=args.platform,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,

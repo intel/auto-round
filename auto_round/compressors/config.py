@@ -41,7 +41,6 @@ class ExtraConfig:
         lr: float = None,
         lr_scheduler: Callable = None,
         minmax_lr: float = None,
-        mem_per_param_scale: int = None,
         nblocks: int = 1,
         to_quant_block_names: Union[str, list, None] = None,
         scale_dtype: str = "fp16",
@@ -84,8 +83,6 @@ class ExtraConfig:
             lr (float): The learning rate (default is 0.005).
             lr_scheduler: The learning rate scheduler to be used.
             minmax_lr (float): The learning rate for min-max tuning (default is None).
-            mem_per_param_scale (int): Scale factor for memory per parameter,
-                used to adjust memory usage estimation for tuning.
             nblocks (int): Number of blocks (default is 1).
             quant_lm_head (bool): Whether to quant lm_head.
             to_quant_block_names (str|list):  Names of quantitative blocks, please use commas to separate them.
@@ -124,7 +121,6 @@ class ExtraConfig:
             lr=lr,
             lr_scheduler=lr_scheduler,
             minmax_lr=minmax_lr,
-            mem_per_param_scale=mem_per_param_scale,
             nblocks=nblocks,
             to_quant_block_names=to_quant_block_names,
             scale_dtype=scale_dtype,
@@ -260,7 +256,6 @@ class TuningExtraConfig(BaseExtraConfig):
     lr: float = None
     lr_scheduler: Callable = None
     minmax_lr: float = None
-    mem_per_param_scale: int = None
     nblocks: int = 1
     to_quant_block_names: Union[str, list, None] = None
     scale_dtype: str = "fp16"
