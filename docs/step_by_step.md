@@ -130,20 +130,20 @@ Besides, you could modify the `group_size`, `bits`, `sym` and many other configs
 ### Supported export Formats
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**.
+inference. **[2,3,4,8] bits are supported**. Please set `--format auto_round`
 
 **GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
-community. `q*_k`,`q*_0`,`q*_1` are supported.
+community. `q*_k`,`q*_0`,`q*_1` are supported. Please set `--format gguf:q4_k_m`,  `--format gguf:q2_k_s`, etc
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.  Please set `--format auto_gptq`
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**.
+adopted within the community, **only 4-bits quantization is supported**. Please set `--format auto_awq`
 
-**LLM-Compressor Format**: **NVFP4, MXFP(Kernel is WIP) are supported**.
+**LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
 ### Hardware Compatibility
 
