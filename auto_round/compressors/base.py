@@ -1516,6 +1516,21 @@ class BaseCompressor(object):
             q_inputs = q_inputs.pop(input_id_str[0], None)
         return inputs, q_inputs
 
+    def configure_layer_config(self, enable_gguf_official_mixed: None | bool = False):
+        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=enable_gguf_official_mixed,
+            is_mllm=self.mllm,
+        )
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
@@ -1534,20 +1549,8 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = True
         else:
             enable_gguf_official_mixed = False
-        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-            self.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.fp_layers,
-            self.quant_lm_head,
-            enable_gguf_official_mixed=enable_gguf_official_mixed,
-            is_mllm=self.mllm,
-        )
 
+        self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
