@@ -855,10 +855,13 @@ def estimate_tuning_block_mem(
             else:
                 output_memory_gb = 0.0
 
+            if has_moe:
+                pparent_module = get_module(block, layer_name.rsplit(".", 2)[0]) if "." in layer_name else block
+                is_moe_expert = "expert" in layer_name.lower() and isinstance(pparent_module, torch.nn.ModuleList)
+            else:
+                is_moe_expert = False
+
             # memory * 2, because it contains grad tensor.
-            # Check if this is a MoE expert layer by layer name (e.g., "mlp.experts.0.gate_proj")
-            parent_module = get_module(block, layer_name.rsplit(".", 1)[0]) if "." in layer_name else block
-            is_moe_expert = "expert" in layer_name.lower() and isinstance(parent_module, torch.nn.ModuleList)
             layer_memory_dict[layer_name] = {
                 "param_memory": param_memory_gb * 2,
                 "output_memory": output_memory_gb * 2,

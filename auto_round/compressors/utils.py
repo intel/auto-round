@@ -205,9 +205,10 @@ def collect_best_params(block, low_gpu_mem_usage: bool = False):
         if hasattr(m, "orig_layer"):
             params[n] = {}
             for key in m.params.keys():
-                params[n][key] = copy.deepcopy(m.params[key].data)
                 if low_gpu_mem_usage:
-                    params[n][key] = params[n][key].cpu()
+                    params[n][key] = m.params[key].data.cpu()
+                else:
+                    params[n][key] = copy.deepcopy(m.params[key].data)
     return params
 
 
