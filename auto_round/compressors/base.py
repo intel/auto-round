@@ -2603,12 +2603,17 @@ class BaseCompressor(object):
                     )
 
                 total_loss += loss.item() / num_elm
-                # Sometimes the cached memory is not released during training and cause OOM
-                if self.low_gpu_mem_usage and torch.xpu.is_available():
-                    clear_memory_if_reached_threshold(threshold=0.5)
+                if self.low_gpu_mem_usage:
+                    # Sometimes the cached memory is not released and cause OOM during backward
+                    if torch.xpu.is_available():
+                        # TODO: whether to improve threshold for llama3.3 70b on 2x 24GB cards
+                        clear_memory_if_reached_threshold(threshold=0.5)
+                    else:
+                        clear_memory_if_reached_threshold(threshold=0.85)
                 self._scale_loss_and_backward(scaler, loss)
                 if self.low_gpu_mem_usage:
-                    clear_memory_if_reached_threshold(threshold=0.8)
+                    # clear memory to avoid OOM due to memory fragmentation
+                    clear_memory_if_reached_threshold(threshold=0.9)
 
             if i == 0:
                 init_loss = total_loss
