@@ -2321,10 +2321,10 @@ class BaseCompressor(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(wrapper_linear)
+                    best_params = collect_best_params(wrapper_linear, self.low_gpu_mem_usage)
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(wrapper_linear)
+                best_params = collect_best_params(wrapper_linear, self.low_gpu_mem_usage)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -2603,8 +2603,10 @@ class BaseCompressor(object):
                     )
 
                 total_loss += loss.item() / num_elm
+                # Sometimes the cached memory is not released during training and cause OOM
+                if self.low_gpu_mem_usage:
+                    clear_memory_if_reached_threshold(threshold=0.85)
                 self._scale_loss_and_backward(scaler, loss)
-                clear_memory_if_reached_threshold(threshold=0.85)
 
             if i == 0:
                 init_loss = total_loss
@@ -2612,12 +2614,12 @@ class BaseCompressor(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(block)
+                    best_params = collect_best_params(block, self.low_gpu_mem_usage)
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
 
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(block)
+                best_params = collect_best_params(block, self.low_gpu_mem_usage)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -2634,6 +2636,8 @@ class BaseCompressor(object):
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
         logger.info(dump_info)
+        if self.low_gpu_mem_usage:
+            clear_memory()  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -2644,7 +2648,6 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
-            clear_memory()
             q_outputs = self._get_block_outputs(
                 block,
                 input_ids,

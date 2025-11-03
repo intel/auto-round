@@ -431,7 +431,7 @@ def clear_memory_if_reached_threshold(threshold=0.85):
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         name, device_api = "XPU", torch.xpu
     else:
-        return
+        return False
 
     num_devices = device_api.device_count()
     for i in range(num_devices):
@@ -452,6 +452,7 @@ def clear_memory_if_reached_threshold(threshold=0.85):
                 return True
         except Exception as e:
             logger.warning_once(f"Failed to check memory for {name} device {i}: {e}")
+    return False
 
 
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
