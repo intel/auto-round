@@ -2604,9 +2604,11 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 # Sometimes the cached memory is not released during training and cause OOM
-                if self.low_gpu_mem_usage:
-                    clear_memory_if_reached_threshold(threshold=0.85)
+                if self.low_gpu_mem_usage and torch.xpu.is_available():
+                    clear_memory_if_reached_threshold(threshold=0.5)
                 self._scale_loss_and_backward(scaler, loss)
+                if self.low_gpu_mem_usage:
+                    clear_memory_if_reached_threshold(threshold=0.8)
 
             if i == 0:
                 init_loss = total_loss

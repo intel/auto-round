@@ -437,18 +437,14 @@ def clear_memory_if_reached_threshold(threshold=0.85):
     for i in range(num_devices):
         try:
             total_memory = device_api.get_device_properties(i).total_memory
-            allocated_memory = device_api.memory_reserved(i) if name == "CUDA" else device_api.memory_allocated(i)
-            memory_usage_ratio = allocated_memory / total_memory
+            reserved_memory = device_api.memory_reserved(i)
+            memory_usage_ratio = reserved_memory / total_memory
 
             if memory_usage_ratio >= threshold:
                 logger.warning_once(
-                    f"{name} device {i}: Memory usage {memory_usage_ratio*100:.2f}% "
-                    f"exceeds threshold {threshold*100:.2f}%. Clearing memory..."
+                    f"{name} device {i} has reached memory threshold. During the tuning process, a memory clearing operation will be called, which will result in more time consumption."
                 )
                 clear_memory()
-                allocated_memory = device_api.memory_reserved(i) if name == "CUDA" else device_api.memory_allocated(i)
-                memory_usage_ratio = allocated_memory / total_memory
-                logger.warning_once(f"Cleared memory. {name} device {i}: Memory usage {memory_usage_ratio*100:.2f}%")
                 return True
         except Exception as e:
             logger.warning_once(f"Failed to check memory for {name} device {i}: {e}")
@@ -890,7 +886,7 @@ def estimate_tuning_block_mem(
         # TODO: Cannot estimate the memory usage correctly for MoE models yet.
         # For MoE models, additional memory usage can be higher due to routing, gating,
         # and multiple expert activations. Here we use a conservative estimate.
-        moe_additional_memory = additional_memory * 3  # GB
+        moe_additional_memory = additional_memory * 6  # GB
         additional_memory += moe_additional_memory
     if torch.xpu.is_available():
         # https://github.com/intel/torch-xpu-ops/issues/2232
