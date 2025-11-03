@@ -372,7 +372,8 @@ class BaseCompressor(object):
         # Some helpers
         if "hpu" in str(self.device):
             self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
-        self.batch_dim = None
+        # TODO: check with heng/weiwei
+        self.batch_dim = 0
         self.infer_bs_coeff = 1
 
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
@@ -2445,7 +2446,7 @@ class BaseCompressor(object):
         return sum(id.numel() for id in current_input_ids)
 
     @time_logger
-    def _quantize_block(
+    def quantize_block(
         self,
         block: torch.nn.Module,
         input_ids: Union[list[torch.Tensor], dict],
@@ -2762,9 +2763,9 @@ class BaseCompressor(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
-                quantize_block = self._quantize_block
+                quantize_block = self.quantize_block
         else:
-            quantize_block = self._quantize_block
+            quantize_block = self.quantize_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
