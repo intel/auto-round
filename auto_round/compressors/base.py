@@ -479,6 +479,7 @@ class BaseCompressor(object):
                     )
                 bits = kwargs["bits"]
                 scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
+            res = None
             if isinstance(scheme, QuantizationScheme):
                 scheme = asdict(scheme)
             elif isinstance(scheme, dict):
