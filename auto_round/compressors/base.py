@@ -80,6 +80,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_module,
     htcore,
+    is_complex_device_mapping,
     is_debug_mode,
     is_fp8_linear,
     is_fp8_model,
@@ -91,7 +92,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupported_meta_device,
-    use_device_map,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -1436,12 +1436,12 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if use_device_map(self.device_map):
+                if is_complex_device_mapping(self.device_map):
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
                     )
                 # Dispatch model if needed
-                if use_device_map(self.device_map):
+                if is_complex_device_mapping(self.device_map):
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -1459,7 +1459,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
-                if use_device_map(self.device_map):
+                if is_complex_device_mapping(self.device_map):
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
@@ -2456,14 +2456,14 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
 
-        if use_device_map(self.device_map):
+        if is_complex_device_mapping(self.device_map):
             set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
         else:
             block = block.to(device)
 
-        if use_device_map(self.device_map):
+        if is_complex_device_mapping(self.device_map):
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
@@ -2661,7 +2661,7 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if use_device_map(self.device_map):
+            if is_complex_device_mapping(self.device_map):
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
@@ -2669,7 +2669,7 @@ class BaseCompressor(object):
             return q_outputs, output
 
         else:
-            if use_device_map(self.device_map):
+            if is_complex_device_mapping(self.device_map):
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
@@ -2735,7 +2735,7 @@ class BaseCompressor(object):
             )
         ):
             try:
-                from auto_round.alg_ext import quantize_block_ext
+                from auto_round.bk_alg_ext import quantize_block_ext
 
                 BaseCompressor.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
@@ -2751,7 +2751,7 @@ class BaseCompressor(object):
                 quantize_block = self._quantize_block
         elif self.enable_alg_ext and self.data_type.endswith("dq"):
             try:
-                from auto_round.alg_ext import dq_quantize_block_ext
+                from auto_round.bk_alg_ext import dq_quantize_block_ext
 
                 BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
                 quantize_block = self.dq_quantize_block_ext

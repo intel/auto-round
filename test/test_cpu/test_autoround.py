@@ -717,7 +717,7 @@ class TestAutoRound(unittest.TestCase):
         ar.quantize()
 
     def test_alg_ext_import(self):
-        from auto_round.alg_ext import quantize_block_ext
+        from auto_round.bk_alg_ext import quantize_block_ext
 
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):

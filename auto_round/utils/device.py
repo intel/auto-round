@@ -355,7 +355,7 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
 
 
-def use_device_map(device_map):
+def is_complex_device_mapping(device_map):
     if device_map is None or isinstance(device_map, int):
         return False
     elif device_map == "auto":
