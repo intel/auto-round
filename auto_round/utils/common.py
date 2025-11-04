@@ -297,3 +297,28 @@ def get_reciprocal(tensor):
     else:
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
+
+def normalize_input(cur_inputs):
+    # TODO: move it to auto-round
+    input_ids = []
+    input_others = {}
+    positional_inputs = []
+    attention_mask = None
+    position_ids = None
+    cache_position = None
+    position_embeddings = (None, None)
+    for cur_inp in cur_inputs:
+        input_ids.append(cur_inp[0][0][0])
+        for key, val in cur_inp[0][1].items():
+            if key == "position_ids":
+                position_ids = val
+            elif key == "position_embeddings":
+                position_embeddings = val
+            elif key == "cache_position":
+                cache_position = val
+    input_others["position_ids"] = position_ids
+    input_others["positional_inputs"] = positional_inputs
+    input_others["attention_mask"] = attention_mask
+    input_others["position_embeddings"] = position_embeddings
+    input_others["cache_position"] = cache_position
+    return input_ids, input_others

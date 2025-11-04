@@ -20,7 +20,7 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
-from typing import Any, Callable, Union
+from typing import Any, Callable, Union, Optional
 
 import accelerate
 import torch
@@ -90,6 +90,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupported_meta_device,
+    normalize_input,
 )
 from auto_round.utils.device import (
     get_major_device,
@@ -2449,9 +2450,9 @@ class BaseCompressor(object):
     def quantize_block(
         self,
         block: torch.nn.Module,
-        input_ids: Union[list[torch.Tensor], dict],
-        input_others: dict,
+        inputs: tuple[Union[list[torch.Tensor], dict, Any], Optional[dict]],
         q_input: Union[torch.Tensor, dict, None] = None,
+        normalize_inputs: bool = False,
         device: Union[str, torch.device] = "cpu",
     ):
         """Quantize the weights of a given block of the model.
@@ -2471,7 +2472,10 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
-
+        if normalize_inputs:
+            input_ids, input_others = normalize_input(inputs)
+        else:
+            input_ids, input_others = inputs
         # >>>>>>>>>>>>> @yi
         # if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
         #     set_auto_device_map_for_block_with_tuning(
@@ -2615,7 +2619,7 @@ class BaseCompressor(object):
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
-                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                    with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
@@ -2786,8 +2790,7 @@ class BaseCompressor(object):
             m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
-                input_ids,
-                input_others,
+                (input_ids,input_others),
                 q_input=q_input,
                 device=device,
             )
