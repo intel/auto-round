@@ -2735,7 +2735,7 @@ class BaseCompressor(object):
             )
         ):
             try:
-                from auto_round.bk_alg_ext import quantize_block_ext
+                from auto_round.alg_ext import quantize_block_ext
 
                 BaseCompressor.quantize_block_ext = quantize_block_ext
                 quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
@@ -2747,11 +2747,12 @@ class BaseCompressor(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
+                raise
                 logger.error("algorithm extension import error, fallback to default mode")
                 quantize_block = self._quantize_block
         elif self.enable_alg_ext and self.data_type.endswith("dq"):
             try:
-                from auto_round.bk_alg_ext import dq_quantize_block_ext
+                from auto_round.alg_ext import dq_quantize_block_ext
 
                 BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
                 quantize_block = self.dq_quantize_block_ext
