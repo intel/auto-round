@@ -206,7 +206,7 @@ def collect_best_params(block, low_gpu_mem_usage: bool = False):
             params[n] = {}
             for key in m.params.keys():
                 if low_gpu_mem_usage:
-                    params[n][key] = m.params[key].data.cpu()
+                    params[n][key] = m.params[key].data.to("cpu", copy=True)
                 else:
                     params[n][key] = copy.deepcopy(m.params[key].data)
     return params

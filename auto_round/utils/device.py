@@ -731,6 +731,25 @@ def _allocate_layers_to_devices(
     return ordered_device_map, names
 
 
+def get_first_available_attr(obj, attr_names: list[str], default=None):
+    """
+    Get the first available attribute from a list of attribute names.
+
+    Args:
+        obj: The object to get the attribute from.
+        attr_names (list[str]): List of attribute names to try in order.
+        default: Default value to return if none of the attributes exist.
+
+    Returns:
+        The value of the first available attribute, or default if none exist.
+    """
+    for attr_name in attr_names:
+        value = getattr(obj, attr_name, None)
+        if value is not None:
+            return value
+    return default
+
+
 def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     """
     Calculate the memory ratio for MoE (Mixture of Experts) models.
@@ -754,48 +773,45 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     from auto_round.utils.model import is_moe
 
     for name, module in block.named_modules():
-        if is_moe(module):
-            config = getattr(block, "config", None)
-            if config is None:
-                break
+        if not is_moe(module):
+            continue
 
-            # Try to get num_experts_per_tok (active experts count)
-            num_experts_per_tok = getattr(
-                config, "num_experts_per_tok", None
-            )  # Mixtral, Qwen2MoE, DeepSeek, GPT-OSS, Llama4, LLaDAMoE
-            if num_experts_per_tok is None:
-                num_experts_per_tok = getattr(config, "moe_num_active_primary_experts", None)  # SmallThinker
-            if num_experts_per_tok is None:
-                # HunYuan MoE uses moe_topk (array), get first element
-                moe_topk = getattr(config, "moe_topk", None)  # HunYuan MoE V1
-                if moe_topk is not None and isinstance(moe_topk, (list, tuple)) and len(moe_topk) > 0:
-                    num_experts_per_tok = moe_topk[0]
-                elif moe_topk is not None:
-                    num_experts_per_tok = moe_topk
+        config = getattr(block, "config", None)
+        if config is None:
+            break
 
-            if num_experts_per_tok is None:
-                break
+        # Try to get num_experts_per_tok (active experts count)
+        # Mixtral, Qwen2MoE, DeepSeek, GPT-OSS, Llama4, LLaDAMoE, SmallThinker
+        num_experts_per_tok = get_first_available_attr(
+            config, ["num_experts_per_tok", "moe_num_active_primary_experts"]
+        )
 
-            # Get total number of experts
-            num_experts = getattr(config, "num_local_experts", None)  # Mixtral, PhiMoE, Grok, Llama4
-            if num_experts is None:
-                num_experts = getattr(
-                    config, "num_experts", None
-                )  # Qwen2MoE, Olmo, BailingMoE, GroveMoE, HunYuan, LLaDAMoE
-            if num_experts is None:
-                num_experts = getattr(config, "moe_num_primary_experts", None)  # SmallThinker
-            if num_experts is None:
-                num_experts = getattr(config, "n_routed_experts", None)  # DeepSeek
+        # HunYuan MoE uses moe_topk (array), get first element
+        if num_experts_per_tok is None:
+            moe_topk = getattr(config, "moe_topk", None)  # HunYuan MoE V1
+            if moe_topk is not None and isinstance(moe_topk, (list, tuple)) and len(moe_topk) > 0:
+                num_experts_per_tok = moe_topk[0]
+            elif moe_topk is not None:
+                num_experts_per_tok = moe_topk
 
-            if num_experts is not None and num_experts > 0:
-                moe_ratio = num_experts_per_tok / num_experts
-                logger.debug(
-                    f"MoE detected: {num_experts_per_tok}/{num_experts} experts active per token, "
-                    f"activation memory ratio: {moe_ratio:.2f}"
-                )
-                logger.debug(f"Using MoE memory ratio: {moe_ratio:.4f}")
-                return moe_ratio, True
-            break  # Only check once per block
+        if num_experts_per_tok is None:
+            break
+
+        # Get total number of experts
+        # Mixtral, PhiMoE, Grok, Llama4, Qwen2MoE, Olmo, BailingMoE, GroveMoE, HunYuan, LLaDAMoE, SmallThinker, DeepSeek
+        num_experts = get_first_available_attr(
+            config, ["num_local_experts", "num_experts", "moe_num_primary_experts", "n_routed_experts"]
+        )
+
+        if num_experts is not None and num_experts > 0:
+            moe_ratio = num_experts_per_tok / num_experts
+            logger.debug(
+                f"MoE detected: {num_experts_per_tok}/{num_experts} experts active per token, "
+                f"activation memory ratio: {moe_ratio:.2f}"
+            )
+            logger.debug(f"Using MoE memory ratio: {moe_ratio:.4f}")
+            return moe_ratio, True
+        break  # Only check once per block
 
     return 1.0, False  # Default ratio for non-MoE models
 
@@ -910,6 +926,7 @@ def set_auto_device_map_for_block_with_tuning(
     low_gpu_mem_usage=False,
     pick_samples=8,
     output_device=None,
+    card_0_threshold=0.9,
 ):
     """
     Automatically sets the device map for the block based on available GPUs and memory constraints.
@@ -921,10 +938,12 @@ def set_auto_device_map_for_block_with_tuning(
         low_gpu_mem_usage (bool, optional): If True, ignoring input/output memory. Defaults to False.
         pick_samples (int, optional): Number of samples to consider for memory estimation. Defaults to 8.
         output_device (str | torch.device, optional): Device to move unassigned modules to. Defaults to None.
+        card_0_threshold (float, optional): Threshold ratio to determine if the first device is at high risk of
+            running out of memory. Defaults to 0.9 (90%).
 
     Returns:
         card_0_in_high_risk (bool): True if the first device is at risk of running out of memory, False otherwise.
-            card_0_in_high_risk = card_0_used_memory / device_0_memory > 0.8
+            card_0_in_high_risk = card_0_used_memory / device_0_memory > card_0_threshold
             card_0_used_memory = card_0_left_memory + block_input_output_memory + additional_memory
             We may need to clear card 0 memory more frequently during training/inference in that case.
 
@@ -934,6 +953,11 @@ def set_auto_device_map_for_block_with_tuning(
     Note:
         This function is intended for internal use in device memory management and tuning.
     """
+    if not (device_map == "auto" or ((isinstance(device_map, str) and "," in device_map))):
+        block = block.to(output_device)
+        card_0_in_high_risk = False  # card 0 contains weight, clear_memory will not help much
+        return card_0_in_high_risk
+
     if torch.cuda.is_available():
         num_devices = torch.cuda.device_count()
         device_name = "cuda"
@@ -971,7 +995,7 @@ def set_auto_device_map_for_block_with_tuning(
     logger.debug(f"  Additional_memory from other ops: {additional_memory} GB")
 
     card_0_left_memory = max(0, (device_0_memory - card_0_used_memory))
-    card_0_in_high_risk = card_0_used_memory / device_0_memory >= 0.8
+    card_0_in_high_risk = card_0_used_memory / device_0_memory >= card_0_threshold
 
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory

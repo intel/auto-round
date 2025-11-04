@@ -1430,7 +1430,7 @@ class BaseCompressor(object):
 
                 if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
                     set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
                 if self.device_map is not None:
@@ -2448,12 +2448,9 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
-            card_0_in_high_risk = set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
-            )
-        else:
-            block = block.to(device)
+        card_0_in_high_risk = set_auto_device_map_for_block_with_tuning(
+            block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
+        )
 
         if self.device_map is not None:
             for n, m in block.named_modules():
@@ -2777,6 +2774,7 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
+            del m.config
             if self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
