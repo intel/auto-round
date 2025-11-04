@@ -2472,7 +2472,7 @@ class BaseCompressor(object):
                 add_hook_to_module(m, hook, True)
 
         if q_input is None:
-            hook_handles =register_act_max_hook()
+            hook_handles = register_act_max_hook()
 
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
@@ -2529,9 +2529,8 @@ class BaseCompressor(object):
                     else:
                         round_params.append(m.params[key])
 
-
         @torch._dynamo.disable()
-        def get_optimzier():
+        def get_optimizer():
             lr = torch.tensor(self.lr)
             minmax_lr = torch.tensor(self.minmax_lr)
             if self.enable_minmax_tuning:
@@ -2547,9 +2546,9 @@ class BaseCompressor(object):
                 )
             else:
                 lr_schedule = copy.deepcopy(self.lr_scheduler)
-            return optimizer,lr_schedule
+            return optimizer, lr_schedule
 
-        optimizer,lr_schedule = get_optimzier()
+        optimizer, lr_schedule = get_optimizer()
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (

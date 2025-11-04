@@ -14,10 +14,11 @@
 
 import logging
 from functools import lru_cache, wraps
-from typing import  Callable, Optional, TypeVar
+from typing import Callable, Optional, TypeVar
+
+import torch
 
 import auto_round.envs as envs
-import torch
 
 T = TypeVar("T", bound="Callable")  # used by `deprecated`
 
