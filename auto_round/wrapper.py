@@ -172,15 +172,15 @@ class WrapperLinear(torch.nn.Module):
         self.weight_quant_func, self.data_type = get_quant_func(
             orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn
         )
-        if self.enable_torch_compile:
-            self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
+        # if self.enable_torch_compile:
+        #     self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(
                 orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, self.disable_opt_rtn
             )
-            if self.enable_torch_compile:
-                self.act_quant_func = compile_func(self.act_quant_func, self.device)
+            # if self.enable_torch_compile:
+            #     self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
 
         # Bias tuning
@@ -498,8 +498,8 @@ class WrapperWALayer(torch.nn.Module):
         self.data_type = orig_layer.data_type if hasattr(orig_layer, "data_type") else None
         self.act_data_type = orig_layer.act_data_type if hasattr(orig_layer, "act_data_type") else None
         self.act_quant_func = self.orig_layer.act_quant_func
-        if self.enable_torch_compile:
-            self.act_quant_func = compile_func(self.act_quant_func, self.device)
+        # if self.enable_torch_compile:
+        #     self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
 
     def forward(self, x):

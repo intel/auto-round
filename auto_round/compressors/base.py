@@ -2607,21 +2607,21 @@ class BaseCompressor(object):
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
 
-                if self.attention_mask:
-                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-                    tmp_attention_mask.unsqueeze_(-1)
-                else:
-                    tmp_attention_mask = 1.0
+                # if self.attention_mask:
+                #     tmp_attention_mask = [self.attention_mask[i] for i in indices]
+                #     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+                #     tmp_attention_mask.unsqueeze_(-1)
+                # else:
+                #     tmp_attention_mask = 1.0
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(  # pylint: disable=not-callable
-                            output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                            output_q , current_output
                         )
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32) * tmp_attention_mask,
-                        current_output.to(torch.float32) * tmp_attention_mask,
+                        output_q.to(torch.float32),
+                        current_output.to(torch.float32),
                     )
 
                 total_loss += loss.item() / num_elm
@@ -2789,34 +2789,34 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
-            if self.is_packing_immediate:
-                from auto_round.export import PACKING_LAYER_WITH_FORMAT
-
-                for _, tmp_m in m.named_modules():
-                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
-                        continue
-                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    has_gguf = any("gguf" in format_ for format_ in self.formats)
-                    if has_gguf:
-                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
-
-                        output_dir = self._get_save_folder_name(self.formats[0])
-                        model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-                        pack_gguf_layer(
-                            tmp_m.tmp_name,
-                            self.model,
-                            self.formats[0],
-                            output_dir,
-                            self.layer_config,
-                            self.tokenizer,
-                            processor=self.processor if hasattr(self, "processor") else None,
-                            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                            model_type=model_type,
-                        )
-                    else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](
-                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
-                        )
+            # if self.is_packing_immediate:
+            #     from auto_round.export import PACKING_LAYER_WITH_FORMAT
+            #
+            #     for _, tmp_m in m.named_modules():
+            #         if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
+            #             continue
+            #         target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+            #         has_gguf = any("gguf" in format_ for format_ in self.formats)
+            #         if has_gguf:
+            #             from auto_round.export.export_to_gguf.export import pack_gguf_layer
+            #
+            #             output_dir = self._get_save_folder_name(self.formats[0])
+            #             model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
+            #             pack_gguf_layer(
+            #                 tmp_m.tmp_name,
+            #                 self.model,
+            #                 self.formats[0],
+            #                 output_dir,
+            #                 self.layer_config,
+            #                 self.tokenizer,
+            #                 processor=self.processor if hasattr(self, "processor") else None,
+            #                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+            #                 model_type=model_type,
+            #             )
+            #         else:
+            #             PACKING_LAYER_WITH_FORMAT[target_backend](
+            #                 tmp_m.tmp_name, self.model, self.formats[0], device=self.device
+            #             )
         if pbar is not None:
             pbar.update(1)
 
