@@ -767,7 +767,7 @@ def tune(args):
                 batch_size=args.eval_bs,
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
-                mllm=autoround.mllm,
+                mllm=autoround.mllm,  # pylint: disable=E1101
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -778,7 +778,7 @@ def tune(args):
             st = time.time()
             if "llama" in args.model.lower():
                 model_args += ",add_bos_token=True"
-            if autoround.mllm:
+            if autoround.mllm:  # pylint: disable=E1101
                 model_type = "hf-multimodal"
                 if args.eval_bs is None or args.eval_bs == "auto":
                     logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
