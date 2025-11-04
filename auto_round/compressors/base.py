@@ -39,6 +39,7 @@ from auto_round.compressors.utils import (
     collect_best_params,
     get_shared_keys,
     gguf_args_check,
+    immediate_saving,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
@@ -47,7 +48,6 @@ from auto_round.compressors.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
-    immediate_saving,
     set_layer_config,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
