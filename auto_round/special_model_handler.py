@@ -39,6 +39,8 @@ SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
 CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
 
+MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
+
 
 def _get_moe_converter(config):
     # Dispatch table for model_type to replacement_info functions
