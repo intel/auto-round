@@ -796,7 +796,7 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
-    def test_save_block_immediate(self):
+    def test_immediate_saving(self):
         bits, group_size = 4, 32
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -810,8 +810,8 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             dataset=self.llm_dataloader,
-            is_packing_immediate=True,
-            save_block_immediate=True,
+            immediate_packing=True,
+            immediate_saving=True,
             device_map="cpu",
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")

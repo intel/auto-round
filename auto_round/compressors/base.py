@@ -47,7 +47,7 @@ from auto_round.compressors.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
-    save_block_immediate,
+    immediate_saving,
     set_layer_config,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -336,8 +336,11 @@ class BaseCompressor(object):
         self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
-        self.is_packing_immediate = kwargs.pop("is_packing_immediate", False)
-        self.save_block_immediate = kwargs.pop("save_block_immediate", False)
+        self.immediate_packing = kwargs.pop("immediate_packing", True)
+        self.immediate_saving = kwargs.pop("immediate_saving", True)
+        if self.immediate_saving and "int" not in self.data_type:
+            logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.immediate_saving = False
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1197,7 +1200,7 @@ class BaseCompressor(object):
         `rtn_*` version if supported, then wraps and unwraps the module to apply
         quantization. If GPU memory is insufficient, it falls back to CPU.
 
-        If packing is enabled (`is_packing_immediate`), the function will also export
+        If packing is enabled (`immediate_packing`), the function will also export
         the quantized layer to the appropriate backend format.
 
         Args:
@@ -1214,7 +1217,7 @@ class BaseCompressor(object):
 
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
+        if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
@@ -1251,7 +1254,7 @@ class BaseCompressor(object):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.is_packing_immediate:
+        if self.immediate_packing:
             from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
             if check_to_quantized(m):
@@ -1279,11 +1282,11 @@ class BaseCompressor(object):
         else:
             set_module(self.model, name, m)
 
-        if self.save_block_immediate:
+        if self.immediate_saving:
             all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.model, name)
-            save_block_immediate(self, m, name, last_module)
+            immediate_saving(self, m, name, last_module)
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1475,7 +1478,7 @@ class BaseCompressor(object):
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
-                if not self.save_block_immediate:
+                if not self.immediate_saving:
                     mv_module_from_gpu(block)
                 pbar.update(1)
 
@@ -1554,7 +1557,7 @@ class BaseCompressor(object):
                 )
                 and self.inplace
             ):
-                self.is_packing_immediate = True
+                self.immediate_packing = True
         if self.iters == 0:
             return self._quantize_rtn()
 
@@ -1626,9 +1629,9 @@ class BaseCompressor(object):
                 device=self.device,
                 pbar=pbar,
             )
-            if self.is_packing_immediate and len(self.formats) != 1:
+            if self.immediate_packing and len(self.formats) != 1:
                 raise ValueError(
-                    f"Expected exactly one packing format when 'is_packing_immediate' is True, "
+                    f"Expected exactly one packing format when 'immediate_packing' is True, "
                     f"but got {len(self.formats)} formats."
                 )
         pbar.set_description("Quantizing done")
@@ -1712,7 +1715,7 @@ class BaseCompressor(object):
         has_gguf = False
         if hasattr(self, "formats"):
             has_gguf = any("gguf" in format_ for format_ in self.formats)
-        if has_gguf and self.is_packing_immediate:
+        if has_gguf and self.immediate_packing:
             enable_quanted_input = False
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
@@ -2777,7 +2780,7 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
-            if self.is_packing_immediate:
+            if self.immediate_packing:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
                 for _, tmp_m in m.named_modules():
@@ -2806,13 +2809,13 @@ class BaseCompressor(object):
                             tmp_m.tmp_name, self.model, self.formats[0], device=self.device
                         )
 
-            if self.save_block_immediate:
+            if self.immediate_saving:
                 last_group = (i + nblocks) >= len(block_names)
-                save_block_immediate(self, m, last_group=last_group)
+                immediate_saving(self, m, last_group=last_group)
         if pbar is not None:
             pbar.update(1)
 
-        if not self.save_block_immediate:
+        if not self.immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
