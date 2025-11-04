@@ -85,7 +85,6 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
-        model_dtype: str = None,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -187,7 +186,6 @@ class AutoRound:
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
-            model_dtype=model_dtype,
             **kwargs,
         )
         return ar

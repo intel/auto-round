@@ -114,7 +114,6 @@ class BaseCompressor(object):
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
         enable_torch_compile (bool): Whether to enable compile_func for quant blocks/layers.
-        model_dtype (str): model dtype used to load pre-trained model.
     """
 
     bits: int | None
@@ -148,7 +147,6 @@ class BaseCompressor(object):
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool = False,
         seed: int = 42,
-        model_dtype: str = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -231,6 +229,7 @@ class BaseCompressor(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        model_dtype = kwargs.pop("model_dtype", None)
         device = kwargs.pop("device", None)
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"

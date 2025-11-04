@@ -127,7 +127,6 @@ class MLLMCompressor(BaseCompressor):
         to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
-        model_dtype (str): model dtype used to load pre-trained model.
         **kwargs: Additional keyword arguments.
     """
 
@@ -163,11 +162,11 @@ class MLLMCompressor(BaseCompressor):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        model_dtype: str = None,
         **kwargs,
     ):
         extra_data_dir = kwargs.pop("extra_data_dir", None)
         template = kwargs.pop("template", None)
+        model_dtype = kwargs.pop("model_dtype", None)
 
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         if device_map is None:
