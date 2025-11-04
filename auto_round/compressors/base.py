@@ -336,11 +336,8 @@ class BaseCompressor(object):
         self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
-        self.immediate_packing = kwargs.pop("immediate_packing", True)
-        self.immediate_saving = kwargs.pop("immediate_saving", True)
-        if self.immediate_saving and "int" not in self.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
-            self.immediate_saving = False
+        self.immediate_packing = kwargs.pop("immediate_packing", False)
+        self.immediate_saving = kwargs.pop("immediate_saving", False)
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1558,6 +1555,10 @@ class BaseCompressor(object):
                 and self.inplace
             ):
                 self.immediate_packing = True
+                self.immediate_saving = True
+        if self.immediate_saving and "int" not in self.data_type:
+            logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.immediate_saving = False
         if self.iters == 0:
             return self._quantize_rtn()
 
