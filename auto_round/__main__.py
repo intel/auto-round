@@ -36,10 +36,17 @@ RECIPES = {
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.add_argument(
+            "model",
+            default=None,
+            nargs="?",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
         basic = self.add_argument_group("Basic Arguments")
         basic.add_argument(
-            "--model",
             "--model_name",
+            "--model",
             "--model_name_or_path",
             default="facebook/opt-125m",
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
@@ -433,6 +440,9 @@ def setup_parser(recipe="default"):
 
 
 def tune(args):
+    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+    if args.model is None:
+        args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -785,6 +795,9 @@ def setup_eval_parser():
 
 def run_eval():
     args = setup_eval_parser()
+    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+    if args.model is None:
+        args.model = args.model_name
     if args.eval_task_by_task:
         eval_task_by_task(
             model=args.model,
