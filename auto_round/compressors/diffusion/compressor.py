@@ -63,6 +63,7 @@ class DiffusionCompressor(BaseCompressor):
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
         device_map (str | dict | int | torch.device, optional): Device placement map. Defaults to 0.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
+        model_dtype (str): model dtype used to load pre-trained model.
         **kwargs: Additional keyword arguments.
     """
 
@@ -98,6 +99,7 @@ class DiffusionCompressor(BaseCompressor):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        model_dtype: str = None,
         **kwargs,
     ):
         logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
@@ -112,7 +114,7 @@ class DiffusionCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            pipe, model = diffusion_load_model(model, platform=platform, device=self.device)
+            pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
         elif isinstance(model, pipeline_utils.DiffusionPipeline):
             pipe = model
             model = pipe.transformer

@@ -114,6 +114,7 @@ class BaseCompressor(object):
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
         enable_torch_compile (bool): Whether to enable compile_func for quant blocks/layers.
+        model_dtype (str): model dtype used to load pre-trained model.
     """
 
     bits: int | None
@@ -147,6 +148,7 @@ class BaseCompressor(object):
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool = False,
         seed: int = 42,
+        model_dtype: str = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -266,6 +268,7 @@ class BaseCompressor(object):
                 model,
                 platform=platform,
                 device="cpu",  # always load cpu first
+                model_dtype=model_dtype,
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
@@ -481,6 +484,7 @@ class BaseCompressor(object):
                 # We’d better keep the string scheme instead of the dict config,
                 # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
                 # even though they share the same scheme dict.
+                scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
                 scheme = asdict(preset_name_to_scheme(scheme))

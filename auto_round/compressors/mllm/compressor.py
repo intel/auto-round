@@ -127,6 +127,7 @@ class MLLMCompressor(BaseCompressor):
         to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
+        model_dtype (str): model dtype used to load pre-trained model.
         **kwargs: Additional keyword arguments.
     """
 
@@ -162,6 +163,7 @@ class MLLMCompressor(BaseCompressor):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        model_dtype: str = None,
         **kwargs,
     ):
         extra_data_dir = kwargs.pop("extra_data_dir", None)
@@ -173,7 +175,9 @@ class MLLMCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            model, processor, tokenizer, image_processor = mllm_load_model(model, platform=platform, device=self.device)
+            model, processor, tokenizer, image_processor = mllm_load_model(
+                model, platform=platform, device=self.device, model_dtype=model_dtype
+            )
 
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)

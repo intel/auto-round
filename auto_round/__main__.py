@@ -52,6 +52,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
+        basic.add_argument("--model_dtype", default=None, help="model dtype used to load the pre-trained model")
         basic.add_argument(
             "--platform",
             default="hf",
@@ -589,6 +590,7 @@ def tune(args):
         enable_adam=args.adam,
         extra_config=extra_config,
         layer_config=layer_config,
+        model_dtype=args.model_dtype,
     )
 
     model_name = args.model.rstrip("/")

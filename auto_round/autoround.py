@@ -85,6 +85,7 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
+        model_dtype: str = None,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -120,6 +121,7 @@ class AutoRound:
             device_map (str | dict, optional): Device placement map. Defaults to None.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
+            model_dtype (str): model dtype used to load pre-trained model.
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
@@ -185,6 +187,7 @@ class AutoRound:
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
+            model_dtype=model_dtype,
             **kwargs,
         )
         return ar

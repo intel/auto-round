@@ -101,6 +101,7 @@ class AdamCompressor(BaseCompressor):
         enable_torch_compile: bool = False,
         seed: int = 42,
         optimizer="AdamW",
+        model_dtype: str = None,
         **kwargs,
     ):
         super(AdamCompressor, self).__init__(
@@ -119,6 +120,7 @@ class AdamCompressor(BaseCompressor):
             gradient_accumulate_steps=gradient_accumulate_steps,
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
+            model_dtype=model_dtype,
             **kwargs,
         )
 
