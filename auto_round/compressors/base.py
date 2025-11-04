@@ -2449,7 +2449,7 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
 
         if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
-            set_auto_device_map_for_block_with_tuning(
+            card_0_in_high_risk = set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
         else:
@@ -2603,15 +2603,14 @@ class BaseCompressor(object):
                     )
 
                 total_loss += loss.item() / num_elm
-                if self.low_gpu_mem_usage:
-                    # Sometimes the cached memory is not released and cause OOM during backward
-                    if torch.xpu.is_available():
-                        # TODO: whether to improve threshold for llama3.3 70b on 2x 24GB cards
-                        clear_memory_if_reached_threshold(threshold=0.5)
-                    else:
-                        clear_memory_if_reached_threshold(threshold=0.8)
+
+                if self.low_gpu_mem_usage and card_0_in_high_risk:
+                    # clear memory to avoid OOM due to memory fragmentation
+                    clear_memory_if_reached_threshold(threshold=0.5)
+
                 self._scale_loss_and_backward(scaler, loss)
-                if self.low_gpu_mem_usage:
+
+                if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.8)
 

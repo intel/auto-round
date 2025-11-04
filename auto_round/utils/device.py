@@ -923,7 +923,10 @@ def set_auto_device_map_for_block_with_tuning(
         output_device (str | torch.device, optional): Device to move unassigned modules to. Defaults to None.
 
     Returns:
-        None
+        card_0_in_high_risk (bool): True if the first device is at risk of running out of memory, False otherwise.
+            card_0_in_high_risk = card_0_used_memory / device_0_memory > 0.8
+            card_0_used_memory = card_0_left_memory + block_input_output_memory + additional_memory
+            We may need to clear card 0 memory more frequently during training/inference in that case.
 
     Raises:
         RuntimeError: If no CUDA or XPU devices are found.
@@ -968,6 +971,7 @@ def set_auto_device_map_for_block_with_tuning(
     logger.debug(f"  Additional_memory from other ops: {additional_memory} GB")
 
     card_0_left_memory = max(0, (device_0_memory - card_0_used_memory))
+    card_0_in_high_risk = card_0_used_memory / device_0_memory >= 0.8
 
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory
@@ -1001,6 +1005,8 @@ def set_auto_device_map_for_block_with_tuning(
             has_buffers = any(True for _ in module.buffers(recurse=False))
             if has_params or has_buffers:
                 module = module.to(output_device)
+
+    return card_0_in_high_risk
 
 
 def partition_dict_numbers(number_dict, n):
