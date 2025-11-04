@@ -2472,7 +2472,7 @@ class BaseCompressor(object):
         #         add_hook_to_module(m, hook, True)
 
         if q_input is None:
-            hook_handles =register_act_max_hook()
+            hook_handles = register_act_max_hook()
 
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
@@ -2529,7 +2529,6 @@ class BaseCompressor(object):
                     else:
                         round_params.append(m.params[key])
 
-
         # if self.enable_minmax_tuning:
         #     optimizer = self.optimizer(
         #         [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
@@ -2538,7 +2537,7 @@ class BaseCompressor(object):
         #     optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
 
         @torch._dynamo.disable()
-        def get_optimzier():
+        def get_optimizer():
             lr = torch.tensor(self.lr)
             minmax_lr = torch.tensor(self.minmax_lr)
             if self.enable_minmax_tuning:
@@ -2554,9 +2553,9 @@ class BaseCompressor(object):
                 )
             else:
                 lr_schedule = copy.deepcopy(self.lr_scheduler)
-            return optimizer,lr_schedule
+            return optimizer, lr_schedule
 
-        optimizer,lr_schedule = get_optimzier()
+        optimizer, lr_schedule = get_optimizer()
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
@@ -2567,8 +2566,6 @@ class BaseCompressor(object):
             unwrapper_block(block, {})  # TODO Quant layer should change
             mv_module_from_gpu(block)
             return output, output
-
-
 
         if isinstance(input_ids, dict):  # input_ids of Flux is dict
             nsamples = len(input_ids["hidden_states"])
