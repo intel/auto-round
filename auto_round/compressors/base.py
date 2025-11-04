@@ -80,6 +80,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_module,
     htcore,
+    is_complex_device_mapping,
     is_debug_mode,
     is_fp8_linear,
     is_fp8_model,
@@ -472,7 +473,15 @@ class BaseCompressor(object):
         """Parse and set the quantization scheme."""
 
         def _parse_and_set(scheme, kwargs):
-            res = ""
+            if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
+                if "bits" not in kwargs:
+                    data_type = kwargs["data_type"]
+                    raise KeyError(
+                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative.."
+                    )
+                bits = kwargs["bits"]
+                scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
+            res = None
             if isinstance(scheme, QuantizationScheme):
                 scheme = asdict(scheme)
             elif isinstance(scheme, dict):
@@ -1205,7 +1214,7 @@ class BaseCompressor(object):
         m = get_module(self.model, name)
 
         if is_fp8_linear(m):
-            m = convert_fp8_layer_to_linear(m, self.amp_dtype)
+            m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
             set_module(self.model, name, m)
 
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
@@ -1358,7 +1367,7 @@ class BaseCompressor(object):
                 cnt += 1
         # Convert remaining fp8
         if is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
+            convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
         self.quantized = True
         return self.model, self.layer_config
 
@@ -1424,16 +1433,15 @@ class BaseCompressor(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
-                block = block.to(self.device)
                 if is_fp8_model(self.model):
-                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
+                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
+                if is_complex_device_mapping(self.device_map):
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
                     )
                 # Dispatch model if needed
-                if self.device_map is not None:
+                if is_complex_device_mapping(self.device_map):
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -1451,7 +1459,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
-                if self.device_map is not None:
+                if is_complex_device_mapping(self.device_map):
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
@@ -1630,7 +1638,7 @@ class BaseCompressor(object):
         if is_fp8_model(self.model):
             for n, m in self.model.named_modules():
                 if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
+                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
                     set_module(self.model, n, new_layer)
 
         end_time = time.time()
@@ -1678,8 +1686,8 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                if is_fp8_model(self.model):
-                    new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
+                if is_fp8_linear(layer):
+                    new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype, self.device).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
 
@@ -2445,17 +2453,17 @@ class BaseCompressor(object):
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
                 if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
+                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
+        if is_complex_device_mapping(self.device_map):
             set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
         else:
             block = block.to(device)
 
-        if self.device_map is not None:
+        if is_complex_device_mapping(self.device_map):
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
@@ -2653,7 +2661,7 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if self.device_map is not None:
+            if is_complex_device_mapping(self.device_map):
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
@@ -2661,7 +2669,7 @@ class BaseCompressor(object):
             return q_outputs, output
 
         else:
-            if self.device_map is not None:
+            if is_complex_device_mapping(self.device_map):
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
@@ -2738,6 +2746,16 @@ class BaseCompressor(object):
                     )
                 else:
                     logger.info("using algorithm extension for quantization.")
+            except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
+                quantize_block = self._quantize_block
+        elif self.enable_alg_ext and self.data_type.endswith("dq"):
+            try:
+                from auto_round.alg_ext import dq_quantize_block_ext
+
+                BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
+                quantize_block = self.dq_quantize_block_ext
+                logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
                 quantize_block = self._quantize_block
