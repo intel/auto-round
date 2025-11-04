@@ -1102,18 +1102,18 @@ def partition_dict_numbers(number_dict, n):
 def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     block_name_list = get_block_names(model)
     device_list = None
+    if torch.cuda.is_available():
+        num_devices = torch.cuda.device_count()
+        device_name = "cuda"
+    elif torch.xpu.is_available():
+        num_devices = torch.xpu.device_count()
+        device_name = "xpu"
+    else:
+        return
+
     if isinstance(device_map, str) and "," in device_map:
         device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
         num_devices = len(device_list)
-    else:
-        if torch.cuda.is_available():
-            num_devices = torch.cuda.device_count()
-            device_name = "cuda"
-        elif torch.xpu.is_available():
-            num_devices = torch.xpu.device_count()
-            device_name = "xpu"
-        else:
-            return
 
     if device_list:
         gpu_devices = [f"{device_name}:{i}" for i in device_list]
