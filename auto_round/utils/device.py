@@ -956,7 +956,8 @@ def set_auto_device_map_for_block_with_tuning(
     if not (device_map == "auto" or ((isinstance(device_map, str) and "," in device_map))):
         block = block.to(output_device)
         card_0_in_high_risk = False  # card 0 contains weight, clear_memory will not help much
-        return card_0_in_high_risk
+        loss_device = output_device
+        return card_0_in_high_risk, loss_device
 
     if torch.cuda.is_available():
         num_devices = torch.cuda.device_count()
@@ -973,14 +974,18 @@ def set_auto_device_map_for_block_with_tuning(
     if device_list:
         gpu_devices = [f"{device_name}:{i}" for i in device_list]
         device_0 = gpu_devices[0]
+        device_1 = gpu_devices[1]
     else:
         gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
         device_0 = f"{device_name}:0"
+        device_1 = f"{device_name}:1"
 
     device_0_memory = get_device_memory(device_list[0] if device_list else 0)
+    device_1_memory = get_device_memory(device_list[1] if device_list else 1)
     layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory = (
         estimate_tuning_block_mem(block, input_ids, pick_samples)
     )
+    loss_memory = block_input_output_memory / 2  # GB, rough estimate for loss tensor memory
     if low_gpu_mem_usage:
         block_input_output_memory = 0
 
@@ -996,10 +1001,12 @@ def set_auto_device_map_for_block_with_tuning(
 
     card_0_left_memory = max(0, (device_0_memory - card_0_used_memory))
     card_0_in_high_risk = card_0_used_memory / device_0_memory >= card_0_threshold
+    card_1_left_memory = max(0, device_1_memory - loss_memory) if card_0_in_high_risk else device_1_memory
+    loss_device = device_1 if card_0_in_high_risk else output_device
 
     # Calculate total available memory across all devices
-    total_available_memory = card_0_left_memory
-    for i in range(1, len(gpu_devices)):
+    total_available_memory = card_0_left_memory + card_1_left_memory
+    for i in range(2, len(gpu_devices)):
         device_idx = device_list[i] if device_list else i
         total_available_memory += get_device_memory(device_idx)
 
@@ -1030,7 +1037,7 @@ def set_auto_device_map_for_block_with_tuning(
             if has_params or has_buffers:
                 module = module.to(output_device)
 
-    return card_0_in_high_risk
+    return card_0_in_high_risk, loss_device
 
 
 def partition_dict_numbers(number_dict, n):

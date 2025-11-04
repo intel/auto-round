@@ -2402,6 +2402,7 @@ class BaseCompressor(object):
         input_others: dict,
         indices: list[int],
         device: str,
+        output_device: str = "cpu",
     ) -> torch.Tensor:
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -2412,7 +2413,7 @@ class BaseCompressor(object):
             share_cache_keys=self.shared_cache_keys,
         )
         output_q = self.block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
-        return output_q
+        return output_q.to(output_device)
 
     def _get_current_num_elm(
         self,
@@ -2448,7 +2449,7 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
-        card_0_in_high_risk = set_auto_device_map_for_block_with_tuning(
+        card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
             block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
         )
 
@@ -2578,18 +2579,18 @@ class BaseCompressor(object):
 
                 current_output = self._get_current_output(output, indices)
 
-                current_output = to_device(current_output, device)
+                current_output = to_device(current_output, loss_device)
 
-                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
+                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
 
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(loss_device)
                     tmp_attention_mask.unsqueeze_(-1)
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
-                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                    with autocast(device_type=loss_device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
