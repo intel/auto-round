@@ -2580,7 +2580,7 @@ class BaseCompressor(object):
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
-        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(self.device)
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
