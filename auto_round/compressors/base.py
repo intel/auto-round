@@ -230,6 +230,7 @@ class BaseCompressor(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        model_dtype = kwargs.pop("model_dtype", None)
         device = kwargs.pop("device", None)
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
@@ -267,6 +268,7 @@ class BaseCompressor(object):
                 model,
                 platform=platform,
                 device="cpu",  # always load cpu first
+                model_dtype=model_dtype,
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
@@ -490,6 +492,7 @@ class BaseCompressor(object):
                 # We’d better keep the string scheme instead of the dict config,
                 # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
                 # even though they share the same scheme dict.
+                scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
                 scheme = asdict(preset_name_to_scheme(scheme))

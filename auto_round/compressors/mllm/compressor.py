@@ -168,6 +168,7 @@ class MLLMCompressor(BaseCompressor):
 
         extra_data_dir = kwargs.pop("extra_data_dir", None)
         template = kwargs.pop("template", None)
+        model_dtype = kwargs.pop("model_dtype", None)
 
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         if device_map is None:
@@ -175,7 +176,9 @@ class MLLMCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            model, processor, tokenizer, image_processor = mllm_load_model(model, platform=platform, device=self.device)
+            model, processor, tokenizer, image_processor = mllm_load_model(
+                model, platform=platform, device=self.device, model_dtype=model_dtype
+            )
 
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
