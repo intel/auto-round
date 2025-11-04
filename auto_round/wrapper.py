@@ -225,8 +225,6 @@ class WrapperLinear(torch.nn.Module):
         min_scale.data.clamp_(0, 1.0)
         max_scale.data.clamp_(0, 1.0)
         weight = self.orig_layer.weight
-        if weight.device.type == "meta":
-            weight = self.orig_layer.get_weight().to(self.device)
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             weight = weight.t()
 
@@ -480,8 +478,8 @@ class WrapperLinear(torch.nn.Module):
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
-        if bias is not None and bias.device.type == "meta":
-            bias = self.orig_layer.get_bias().to(self.device)
+        # if bias is not None and bias.device.type == "meta":
+        #     bias = self.orig_layer.get_bias().to(self.device)
         if self.enable_norm_bias_tuning:
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 

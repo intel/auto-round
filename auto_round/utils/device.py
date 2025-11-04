@@ -395,6 +395,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
     if isinstance(tensor, list):
         for i in range(len(tensor)):
             tensor[i] = None
+
     if tensor is not None:
         del tensor
     gc.collect()
