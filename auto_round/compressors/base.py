@@ -2651,6 +2651,8 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
+            if not self.low_gpu_mem_usage:  # In case of clearing memory twice
+                clear_memory()  # clear cached memory during training
             q_outputs = self._get_block_outputs(
                 block,
                 input_ids,
