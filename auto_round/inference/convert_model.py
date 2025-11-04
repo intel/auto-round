@@ -582,6 +582,9 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
 
+    from auto_round.special_model_handler import _handle_moe_model
+    model = _handle_moe_model(model, formats=None, device=torch.device("meta")) ## should it be meta data
+
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
@@ -598,3 +601,4 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             process_requirement(requirements, target_device, "warning")
 
     return model, used_backends
+

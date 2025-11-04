@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import torch
 import auto_round.modelling as auto_round_modelling
 from auto_round.utils import LazyImport, logger
 
-mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
+mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
     "phi3_v",
@@ -28,6 +29,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "llama4",
     "internvl_chat",
     "glm4v_moe",
+    "qwen3_vl_moe",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -37,7 +39,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
-CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
+CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss", "qwen3_vl_moe"]
 
 
 def _get_moe_converter(config):
@@ -45,6 +47,7 @@ def _get_moe_converter(config):
     moe_converters = {
         "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
         "llama4": LazyImport("auto_round.modelling.llama4.get_replacement_info"),
+        "qwen3_vl_moe": LazyImport("auto_round.modelling.qwen3_vl_moe.get_replacement_info"),
     }
 
     # Retrieve the appropriate function based on model_type
@@ -60,12 +63,11 @@ def _get_moe_converter(config):
 def _handle_special_model(model):
     if model.config.model_type == "deepseek_vl_v2":
         from functools import partial
-
         model.forward = partial(_deepseek_vl2_forward, model)
     return model
 
 
-def _handle_moe_model(model, formats=None):
+def _handle_moe_model(model, formats=None, device="cpu"):
     if formats is not None and any(["gguf" in format_ for format_ in formats]):
         return model
     if hasattr(model.config, "model_type") and model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
@@ -74,7 +76,8 @@ def _handle_moe_model(model, formats=None):
         from auto_round.utils import clear_memory
 
         new_moe_class, convert_config, orig_cls_name = _get_moe_converter(model.config)
-        model = model.to("cpu")
+        if device != torch.device("meta"):
+            model = model.to(device)
         clear_memory()
 
         for name, module in tqdm(model.named_modules(), desc="Converting model"):
@@ -84,6 +87,7 @@ def _handle_moe_model(model, formats=None):
                 parent, child = name.rsplit(".", maxsplit=1)
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
+                logger.trace(f"Converted module {name} from {cls_name} to {new_moe_class.__name__}")
 
         logger.warning(
             f"{model.config.model_type} experts are converted, the quantized model can not run on transformers."
@@ -156,3 +160,4 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
             )
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
+
