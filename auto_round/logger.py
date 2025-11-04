@@ -13,16 +13,17 @@
 # limitations under the License.
 
 import logging
-import warnings
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, TypeVar
+from typing import  Callable, Optional, TypeVar
 
 import auto_round.envs as envs
+import torch
 
 T = TypeVar("T", bound="Callable")  # used by `deprecated`
 
 
 @lru_cache(maxsize=None)
+@torch._dynamo.disable()
 def warning_once(self, msg, *args):
     """
     Log a warning message only once per unique message/arguments combination.

@@ -2422,6 +2422,7 @@ class BaseCompressor(object):
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
+    @torch.compile()
     def _quantize_block(
         self,
         block: torch.nn.Module,
@@ -2442,30 +2443,36 @@ class BaseCompressor(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        if is_fp8_model(self.model):
-            for n, m in block.named_modules():
-                if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
-                    set_module(block, n, new_layer)
 
-        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
-            set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
-            )
-        else:
-            block = block.to(device)
+        # if is_fp8_model(self.model):
+        #     for n, m in block.named_modules():
+        #         if is_fp8_linear(m):
+        #             new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
+        #             set_module(block, n, new_layer)
+        #
+        # if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
+        #     set_auto_device_map_for_block_with_tuning(
+        #         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
+        #     )
+        # else:
+        block = block.to(device)
 
-        if self.device_map is not None:
-            for n, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+        @torch._dynamo.disable()
+        def register_act_max_hook():
+            hook_handles = self._register_act_max_hook(block)
+            return hook_handles
 
-                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                add_hook_to_module(m, hook, True)
+        # if self.device_map is not None:
+        #     for n, m in block.named_modules():
+        #         if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+        #             continue
+        #         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+        #
+        #         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+        #         add_hook_to_module(m, hook, True)
 
         if q_input is None:
-            hook_handles = self._register_act_max_hook(block)
+            hook_handles =register_act_max_hook()
 
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
@@ -2477,7 +2484,7 @@ class BaseCompressor(object):
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
-            hook_handles = self._register_act_max_hook(block)
+            hook_handles = register_act_max_hook()
             if hook_handles:
                 self._get_block_outputs(
                     block,
@@ -2522,14 +2529,34 @@ class BaseCompressor(object):
                     else:
                         round_params.append(m.params[key])
 
-        lr = torch.tensor(self.lr)
-        minmax_lr = torch.tensor(self.minmax_lr)
-        if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
-            )
-        else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+
+        # if self.enable_minmax_tuning:
+        #     optimizer = self.optimizer(
+        #         [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
+        #     )
+        # else:
+        #     optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+
+        @torch._dynamo.disable()
+        def get_optimzier():
+            lr = torch.tensor(self.lr)
+            minmax_lr = torch.tensor(self.minmax_lr)
+            if self.enable_minmax_tuning:
+                optimizer = self.optimizer(
+                    [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
+                )
+            else:
+                optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+
+            if self.lr_scheduler is None:
+                lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
+                )
+            else:
+                lr_schedule = copy.deepcopy(self.lr_scheduler)
+            return optimizer,lr_schedule
+
+        optimizer,lr_schedule = get_optimzier()
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
@@ -2541,12 +2568,7 @@ class BaseCompressor(object):
             mv_module_from_gpu(block)
             return output, output
 
-        if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
-            )
-        else:
-            lr_schedule = copy.deepcopy(self.lr_scheduler)
+
 
         if isinstance(input_ids, dict):  # input_ids of Flux is dict
             nsamples = len(input_ids["hidden_states"])
@@ -2604,7 +2626,7 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
-                clear_memory_if_reached_threshold(threshold=0.85)
+                # clear_memory_if_reached_threshold(threshold=0.85)
 
             if i == 0:
                 init_loss = total_loss
