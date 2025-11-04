@@ -307,6 +307,8 @@ def mllm_load_model(
     model_dtype: str = None,
     **kwargs,
 ):
+    from auto_round.special_model_handler import MISTRAL_3_2_MODELS
+
     assert platform.lower() in [
         "hf",
         "model_scope",
@@ -410,7 +412,7 @@ def mllm_load_model(
                 else:
                     raise
 
-            if any([name in model.name_or_path for name in ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]]):
+            if any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
 
                 if os.path.isdir(pretrained_model_name_or_path):

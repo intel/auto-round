@@ -27,6 +27,7 @@ from auto_round.compressors.mllm.template import Template, get_template
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
+    MISTRAL_3_2_MODELS,
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SUPPORT_ONLY_TEXT_MODELS,
     _handle_special_model,
@@ -164,6 +165,7 @@ class MLLMCompressor(BaseCompressor):
         seed: int = 42,
         **kwargs,
     ):
+
         extra_data_dir = kwargs.pop("extra_data_dir", None)
         template = kwargs.pop("template", None)
 
@@ -189,9 +191,7 @@ class MLLMCompressor(BaseCompressor):
 
         if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
             template = "default"
-        if hasattr(model, "name_or_path") and any(
-            [name in model.name_or_path for name in ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]]
-        ):
+        if hasattr(model, "name_or_path") and any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
             template = "mistral3_2"
         if iters > 0:
             self.template = template if template is not None else model.config.model_type
