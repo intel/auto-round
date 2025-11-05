@@ -15,6 +15,7 @@ pandas
 protobuf
 pillow
 py-cpuinfo
+tiktoken
 torch
 torchvision
 triton
