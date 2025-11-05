@@ -2454,6 +2454,7 @@ class BaseCompressor(object):
         q_input: Union[torch.Tensor, dict, None] = None,
         normalize_inputs: bool = False,
         device: Union[str, torch.device] = "cpu",
+        auto_offload=True
     ):
         """Quantize the weights of a given block of the model.
 
