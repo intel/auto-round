@@ -20,7 +20,7 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
-from typing import Any, Callable, Union, Optional
+from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
@@ -85,12 +85,12 @@ from auto_round.utils import (
     is_hpex_available,
     llm_load_model,
     mv_module_from_gpu,
+    normalize_input,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
     to_dtype,
     unsupported_meta_device,
-    normalize_input,
 )
 from auto_round.utils.device import (
     get_major_device,
@@ -98,27 +98,6 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
-
-
-# function decorator to dump the func time
-def time_logger(func: Callable) -> Callable:
-    """Decorator to log the execution time of a function.
-
-    Args:
-        func (Callable): The function to be decorated.
-
-    Returns:
-        Callable: The wrapped function with time logging.
-    """
-
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        logger.info(f"Function '{func.__name__}' executed in {end_time - start_time:.4f} seconds.")
-        return result
-
-    return wrapper
 
 
 class BaseCompressor(object):
@@ -2446,7 +2425,6 @@ class BaseCompressor(object):
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
-    @time_logger
     def quantize_block(
         self,
         block: torch.nn.Module,
@@ -2454,7 +2432,7 @@ class BaseCompressor(object):
         q_input: Union[torch.Tensor, dict, None] = None,
         normalize_inputs: bool = False,
         device: Union[str, torch.device] = "cpu",
-        auto_offload=True
+        auto_offload=True,
     ):
         """Quantize the weights of a given block of the model.
 
@@ -2783,7 +2761,7 @@ class BaseCompressor(object):
             m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
-                (input_ids,input_others),
+                (input_ids, input_others),
                 q_input=q_input,
                 device=device,
             )
