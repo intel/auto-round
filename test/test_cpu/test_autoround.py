@@ -796,6 +796,12 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
+    def test_create_adam(self):
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        from auto_round import AutoRound
+
+        ar = AutoRound(model=model_name, enable_adam=True)
+
 
 if __name__ == "__main__":
     unittest.main()
