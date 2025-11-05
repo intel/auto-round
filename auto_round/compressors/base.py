@@ -2583,7 +2583,7 @@ class BaseCompressor(object):
         if self.gradient_accumulate_steps != 1:
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
-            
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -2618,7 +2618,6 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
-
 
             if i == 0:
                 init_loss = total_loss
