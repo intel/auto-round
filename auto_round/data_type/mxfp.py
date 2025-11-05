@@ -46,6 +46,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
+@torch.compile()
 def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
@@ -77,6 +78,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     return tensor
 
 
+@torch.compile()
 def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
@@ -127,6 +129,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
+@torch.compile()
 def quant_mx_rceil(
     tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
 ):

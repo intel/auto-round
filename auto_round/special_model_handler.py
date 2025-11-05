@@ -84,6 +84,7 @@ def _handle_moe_model(model, formats=None):
                 parent, child = name.rsplit(".", maxsplit=1)
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
+                logger.trace("Converting module: %s to %s", name, new_module.__class__.__name__)
 
         logger.warning("Llama4 experts are converted, the quantized model can not run on transformers.")
     return model
