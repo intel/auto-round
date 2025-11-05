@@ -28,8 +28,15 @@ class EvalArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "--model",
+            "model",
+            default=None,
+            nargs="?",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
+        self.add_argument(
             "--model_name",
+            "--model",
             "--model_name_or_path",
             default="facebook/opt-125m",
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
@@ -213,6 +220,7 @@ def eval_task_by_task(
     trust_remote_code=True,
     eval_model_dtype=None,
     retry_times=3,
+    mllm=False,
 ):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
@@ -221,6 +229,7 @@ def eval_task_by_task(
     import traceback
 
     from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
+    from lm_eval.models.hf_vlms import HFMultimodalLM
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -256,16 +265,31 @@ def eval_task_by_task(
         )
         model.eval()
         parallelism = False
-    hflm = HFLM(
-        pretrained=model,
-        tokenizer=tokenizer,
-        device=device_str,
-        batch_size=batch_size,
-        max_batch_size=max_batch_size,
-        parallelize=parallelism,
-        trust_remote_code=trust_remote_code,
-        dtype=eval_model_dtype,
-    )
+    if mllm:
+        if batch_size is None or batch_size == "auto":
+            logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
+            batch_size = 16
+        hflm = HFMultimodalLM(
+            pretrained=model,
+            tokenizer=tokenizer,
+            device=device_str,
+            batch_size=batch_size,
+            max_batch_size=max_batch_size,
+            parallelize=parallelism,
+            trust_remote_code=trust_remote_code,
+            dtype=eval_model_dtype,
+        )
+    else:
+        hflm = HFLM(
+            pretrained=model,
+            tokenizer=tokenizer,
+            device=device_str,
+            batch_size=batch_size,
+            max_batch_size=max_batch_size,
+            parallelize=parallelism,
+            trust_remote_code=trust_remote_code,
+            dtype=eval_model_dtype,
+        )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
