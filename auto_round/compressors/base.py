@@ -2603,8 +2603,8 @@ class BaseCompressor(object):
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                     tmp_attention_mask.unsqueeze_(-1)
                     num_elm = torch.sum(tmp_attention_mask).item()
-                    if num_elm==0:
-                        num_elm=1
+                    if num_elm == 0:
+                        num_elm = 1
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
