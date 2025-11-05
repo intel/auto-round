@@ -3107,3 +3107,7 @@ class BaseCompressor(object):
                 current_input_others[key] = input_others[key]
 
         return current_input_ids, current_input_others
+
+
+class LLMCompressor(BaseCompressor):
+    pass
