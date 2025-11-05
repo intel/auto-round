@@ -1729,7 +1729,7 @@ class BaseCompressor(object):
             del layer_input
             clear_memory(q_layer_input)
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def _get_block_outputs(
         self,
         block: torch.nn.Module,
@@ -2658,7 +2658,8 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
-            # clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
             q_outputs = self._get_block_outputs(
                 block,
                 input_ids,
