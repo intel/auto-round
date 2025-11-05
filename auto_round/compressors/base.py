@@ -2618,8 +2618,7 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
-                if self.low_gpu_mem_usage:
-                    clear_memory_if_reached_threshold(threshold=0.85)
+
 
             if i == 0:
                 init_loss = total_loss
