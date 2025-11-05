@@ -2459,8 +2459,8 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
-        # card_0_in_high_risk indicates that card_0 memory is already in high usage w/o any weights
-        # card_0_used_memory = block_input_output_memory + layer_activation_memory + additional_memory
+        # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
+        # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
         card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
             block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
         )
