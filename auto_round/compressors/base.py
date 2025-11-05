@@ -2433,6 +2433,32 @@ class BaseCompressor(object):
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
+    def _get_loss(
+        self,
+        output_q: torch.Tensor,
+        current_output: torch.Tensor,
+        indices: torch.Tensor,
+        mse_loss: Callable,
+        device: Union[str, torch.device] = "cpu",
+    ):
+        if self.attention_mask:
+            tmp_attention_mask = [self.attention_mask[i] for i in indices]
+            tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+            tmp_attention_mask.unsqueeze_(-1)
+        else:
+            tmp_attention_mask = 1.0
+        if self.amp:
+            with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                loss = mse_loss(  # pylint: disable=not-callable
+                    output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                )
+        else:
+            loss = mse_loss(  # pylint: disable=not-callable
+                output_q.to(torch.float32) * tmp_attention_mask,
+                current_output.to(torch.float32) * tmp_attention_mask,
+            )
+        return loss
+
     def _quantize_block(
         self,
         block: torch.nn.Module,
@@ -2475,8 +2501,47 @@ class BaseCompressor(object):
                 hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                 add_hook_to_module(m, hook, True)
 
+        if (
+            self.sym
+            and self.enable_alg_ext
+            and self.super_group_size is None
+            and (
+                (self.data_type.startswith("int") and self.act_bits >= 8)
+                or self.data_type.startswith("mx")
+                or self.data_type.startswith("nv")
+            )
+        ):
+            try:
+                from auto_round.alg_ext import _get_loss_ext, _register_act_max_hook_ext, wrapper_block_v2
+
+                BaseCompressor._register_act_max_hook_ext = _register_act_max_hook_ext
+                register_act_max_hook = self._register_act_max_hook_ext
+                BaseCompressor._get_loss_ext = _get_loss_ext
+                self._get_loss = self._get_loss_ext
+                wrapper_block = wrapper_block_v2
+                logger.warning_once("using algorithm extension for quantization.")
+                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
+                    logger.warning_once(
+                        "algorithm extension has only undergone limited validation on "
+                        "INT2,mxfp4 and nvfp4; use with caution."
+                    )
+            except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
+        elif self.enable_alg_ext and self.data_type.endswith("dq"):
+            try:
+                from auto_round.alg_ext import _register_act_max_hook_ext, dq_wrapper_block
+
+                BaseCompressor._register_act_max_hook_ext = _register_act_max_hook_ext
+                register_act_max_hook = self._register_act_max_hook_ext
+                wrapper_block = dq_wrapper_block
+                logger.warning_once("using algorithm extension for quantization.")
+            except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
+        else:
+            register_act_max_hook = self._register_act_max_hook
+
         if q_input is None:
-            hook_handles = self._register_act_max_hook(block)
+            hook_handles = register_act_max_hook(block)
 
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
@@ -2488,7 +2553,7 @@ class BaseCompressor(object):
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
-            hook_handles = self._register_act_max_hook(block)
+            hook_handles = register_act_max_hook(block)
             if hook_handles:
                 self._get_block_outputs(
                     block,
@@ -2580,6 +2645,9 @@ class BaseCompressor(object):
         best_params = {}
         total_loss = 0
         for i in range(self.iters):
+            if self.enable_alg_ext and self.data_type.endswith("dq"):
+                for n, m in block.named_modules():
+                    m.cur_iter = i
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
@@ -2589,29 +2657,11 @@ class BaseCompressor(object):
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-
                 current_output = self._get_current_output(output, indices)
-
                 current_output = to_device(current_output, device)
-
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
 
-                if self.attention_mask:
-                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-                    tmp_attention_mask.unsqueeze_(-1)
-                else:
-                    tmp_attention_mask = 1.0
-                if self.amp:
-                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            output_q * tmp_attention_mask, current_output * tmp_attention_mask
-                        )
-                else:
-                    loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32) * tmp_attention_mask,
-                        current_output.to(torch.float32) * tmp_attention_mask,
-                    )
+                loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
@@ -2727,43 +2777,48 @@ class BaseCompressor(object):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
 
-        if (
-            self.sym
-            and self.enable_alg_ext
-            and self.super_group_size is None
-            and (
-                (self.data_type.startswith("int") and self.act_bits >= 8)
-                or self.data_type.startswith("mx")
-                or self.data_type.startswith("nv")
-            )
-        ):
-            try:
-                from auto_round.alg_ext import quantize_block_ext
+        # if (
+        #     self.sym
+        #     and self.enable_alg_ext
+        #     and self.super_group_size is None
+        #     and (
+        #         (self.data_type.startswith("int") and self.act_bits >= 8)
+        #         or self.data_type.startswith("mx")
+        #         or self.data_type.startswith("nv")
+        #     )
+        # ):
+        #     try:
+        #         from auto_round.alg_ext import quantize_block_ext
 
-                BaseCompressor.quantize_block_ext = quantize_block_ext
-                quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
-                    logger.warning(
-                        "algorithm extension has only undergone limited validation on "
-                        "INT2,mxfp4 and nvfp4; use with caution."
-                    )
-                else:
-                    logger.info("using algorithm extension for quantization.")
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
-                quantize_block = self._quantize_block
-        elif self.enable_alg_ext and self.data_type.endswith("dq"):
-            try:
-                from auto_round.alg_ext import dq_quantize_block_ext
+        #         BaseCompressor.quantize_block_ext = quantize_block_ext
+        #         quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
+        #         if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
+        #             logger.warning(
+        #                 "algorithm extension has only undergone limited validation on "
+        #                 "INT2,mxfp4 and nvfp4; use with caution."
+        #             )
+        #         else:
+        #             logger.info("using algorithm extension for quantization.")
+        #     except (ImportError, ModuleNotFoundError):
+        #         logger.error("algorithm extension import error, fallback to default mode")
+        #         quantize_block = self._quantize_block
+        # elif self.enable_alg_ext and self.data_type.endswith("dq"):
+        #     try:
+        #         # from auto_round.alg_ext import dq_quantize_block_ext
 
-                BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
-                quantize_block = self.dq_quantize_block_ext
-                logger.info("using algorithm extension for quantization.")
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
-                quantize_block = self._quantize_block
-        else:
-            quantize_block = self._quantize_block
+        #         # BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
+        #         # quantize_block = self.dq_quantize_block_ext
+        #         from auto_round.alg_ext import _dq_register_act_max_hook, dq_wrapper_block
+        #         self._register_act_max_hook = _dq_register_act_max_hook
+        #         wrapper_block = dq_wrapper_block
+        #         quantize_block = self._quantize_block
+        #         logger.info("using algorithm extension for quantization.")
+        # except (ImportError, ModuleNotFoundError):
+        #     logger.error("algorithm extension import error, fallback to default mode")
+        #     quantize_block = self._quantize_block
+        # else:
+        #     quantize_block = self._quantize_block
+        quantize_block = self._quantize_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
