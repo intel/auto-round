@@ -1267,6 +1267,7 @@ class BaseCompressor(object):
         if not check_to_quantized(m):
             return
         from auto_round.export import PACKING_LAYER_WITH_FORMAT
+
         target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
         has_gguf = any("gguf" in fmt for fmt in self.formats)
 
