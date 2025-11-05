@@ -298,8 +298,8 @@ def get_reciprocal(tensor):
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
+
 def normalize_input(cur_inputs):
-    # TODO: move it to auto-round
     input_ids = []
     input_others = {}
     positional_inputs = []
