@@ -376,8 +376,9 @@ def set_layer_config(
 
     if lm_head_name not in layer_config and quant_lm_head:
         layer_config[lm_head_name] = copy.deepcopy(default_dict)
-    else:
-        layer_config.pop(lm_head_name)
+
+    if not quant_lm_head and not gguf_name:
+        layer_config.pop(lm_head_name, None)
 
     # 8. enforce shape divisibility for int weight-only
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:

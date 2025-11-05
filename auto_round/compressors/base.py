@@ -336,8 +336,8 @@ class BaseCompressor(object):
         self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
-        self.immediate_packing = kwargs.pop("immediate_packing", False)
-        self.immediate_saving = kwargs.pop("immediate_saving", False)
+        self.immediate_packing = False
+        self.immediate_saving = False
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1252,30 +1252,7 @@ class BaseCompressor(object):
 
         # Step 2: Optional immediate packing/export
         if self.immediate_packing:
-            from auto_round.export import PACKING_LAYER_WITH_FORMAT
-
-            if check_to_quantized(m):
-                target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                has_gguf = any("gguf" in fmt for fmt in self.formats)
-
-                if has_gguf:
-                    from auto_round.export.export_to_gguf.export import pack_gguf_layer
-
-                    output_dir = self._get_save_folder_name(self.formats[0])
-                    model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-                    pack_gguf_layer(
-                        name,
-                        self.model,
-                        self.formats[0],
-                        output_dir,
-                        self.layer_config,
-                        self.tokenizer,
-                        processor=self.processor if hasattr(self, "processor") else None,
-                        image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                        model_type=model_type,
-                    )
-                else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
+            self._immediate_pack(name)
         else:
             set_module(self.model, name, m)
 
@@ -1284,6 +1261,33 @@ class BaseCompressor(object):
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.model, name)
             immediate_saving(self, m, name, last_module)
+
+    def _immediate_pack(self, name: str):
+        m = get_module(self.model, name)
+        if not check_to_quantized(m):
+            return
+        from auto_round.export import PACKING_LAYER_WITH_FORMAT
+        target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+        has_gguf = any("gguf" in fmt for fmt in self.formats)
+
+        if has_gguf:
+            from auto_round.export.export_to_gguf.export import pack_gguf_layer
+
+            output_dir = self._get_save_folder_name(self.formats[0])
+            model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
+            pack_gguf_layer(
+                name,
+                self.model,
+                self.formats[0],
+                output_dir,
+                self.layer_config,
+                self.tokenizer,
+                processor=self.processor if hasattr(self, "processor") else None,
+                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                model_type=model_type,
+            )
+        else:
+            PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1740,33 +1744,7 @@ class BaseCompressor(object):
             q_layer_input = to_device(q_layer_input, self.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             if self.immediate_packing:
-                from auto_round.export import PACKING_LAYER_WITH_FORMAT
-                m = get_module(self.model, layer_name)
-                for _, tmp_m in m.named_modules():
-                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
-                        continue
-                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    has_gguf = any("gguf" in format_ for format_ in self.formats)
-                    if has_gguf:
-                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
-
-                        output_dir = self._get_save_folder_name(self.formats[0])
-                        model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-                        pack_gguf_layer(
-                            tmp_m.tmp_name,
-                            self.model,
-                            self.formats[0],
-                            output_dir,
-                            self.layer_config,
-                            self.tokenizer,
-                            processor=self.processor if hasattr(self, "processor") else None,
-                            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                            model_type=model_type,
-                        )
-                    else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](
-                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
-                        )
+                self._immediate_pack(layer_name)
 
             if self.immediate_saving:
                 m = get_module(self.model, layer_name)
@@ -2813,33 +2791,10 @@ class BaseCompressor(object):
                 device=device,
             )
             if self.immediate_packing:
-                from auto_round.export import PACKING_LAYER_WITH_FORMAT
-
                 for _, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
-                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    has_gguf = any("gguf" in format_ for format_ in self.formats)
-                    if has_gguf:
-                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
-
-                        output_dir = self._get_save_folder_name(self.formats[0])
-                        model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-                        pack_gguf_layer(
-                            tmp_m.tmp_name,
-                            self.model,
-                            self.formats[0],
-                            output_dir,
-                            self.layer_config,
-                            self.tokenizer,
-                            processor=self.processor if hasattr(self, "processor") else None,
-                            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                            model_type=model_type,
-                        )
-                    else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](
-                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
-                        )
+                    self._immediate_pack(tmp_m.tmp_name)
 
             if self.immediate_saving:
                 last_group = (i + nblocks) >= len(block_names)
