@@ -199,16 +199,14 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     return True, ""
 
 
-def collect_best_params(block, low_gpu_mem_usage: bool = False):
+def collect_best_params(block, cache_device="cpu"):
+    """Collect the best parameters from the block to the specified device."""
     params = {}
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             params[n] = {}
             for key in m.params.keys():
-                if low_gpu_mem_usage:
-                    params[n][key] = m.params[key].data.to("cpu", copy=True)
-                else:
-                    params[n][key] = copy.deepcopy(m.params[key].data)
+                params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
 
 

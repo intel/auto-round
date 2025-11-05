@@ -2332,10 +2332,10 @@ class BaseCompressor(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(wrapper_linear, self.low_gpu_mem_usage)
+                    best_params = collect_best_params(wrapper_linear, self.cache_device)
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(wrapper_linear, self.low_gpu_mem_usage)
+                best_params = collect_best_params(wrapper_linear, self.cache_device)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -2459,7 +2459,8 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
-
+        # card_0_in_high_risk indicates that card_0 memory is already in high usage w/o any weights
+        # card_0_used_memory = block_input_output_memory + layer_activation_memory + additional_memory
         card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
             block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
         )
@@ -2629,12 +2630,12 @@ class BaseCompressor(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(block, self.low_gpu_mem_usage)
+                    best_params = collect_best_params(block, self.cache_device)
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
 
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(block, self.low_gpu_mem_usage)
+                best_params = collect_best_params(block, self.cache_device)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
