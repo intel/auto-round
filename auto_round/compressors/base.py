@@ -2657,7 +2657,8 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
-            clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
             q_outputs = self._get_block_outputs(
                 block,
                 input_ids,
