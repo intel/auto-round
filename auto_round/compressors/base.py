@@ -1555,7 +1555,8 @@ class BaseCompressor(object):
                 and self.inplace
             ):
                 self.immediate_packing = True
-                self.immediate_saving = True
+                if "gguf" not in formats[0]:
+                    self.immediate_saving = True
         if self.immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
             self.immediate_saving = False
