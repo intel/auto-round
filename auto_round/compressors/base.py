@@ -2777,47 +2777,6 @@ class BaseCompressor(object):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
 
-        # if (
-        #     self.sym
-        #     and self.enable_alg_ext
-        #     and self.super_group_size is None
-        #     and (
-        #         (self.data_type.startswith("int") and self.act_bits >= 8)
-        #         or self.data_type.startswith("mx")
-        #         or self.data_type.startswith("nv")
-        #     )
-        # ):
-        #     try:
-        #         from auto_round.alg_ext import quantize_block_ext
-
-        #         BaseCompressor.quantize_block_ext = quantize_block_ext
-        #         quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-        #         if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
-        #             logger.warning(
-        #                 "algorithm extension has only undergone limited validation on "
-        #                 "INT2,mxfp4 and nvfp4; use with caution."
-        #             )
-        #         else:
-        #             logger.info("using algorithm extension for quantization.")
-        #     except (ImportError, ModuleNotFoundError):
-        #         logger.error("algorithm extension import error, fallback to default mode")
-        #         quantize_block = self._quantize_block
-        # elif self.enable_alg_ext and self.data_type.endswith("dq"):
-        #     try:
-        #         # from auto_round.alg_ext import dq_quantize_block_ext
-
-        #         # BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
-        #         # quantize_block = self.dq_quantize_block_ext
-        #         from auto_round.alg_ext import _dq_register_act_max_hook, dq_wrapper_block
-        #         self._register_act_max_hook = _dq_register_act_max_hook
-        #         wrapper_block = dq_wrapper_block
-        #         quantize_block = self._quantize_block
-        #         logger.info("using algorithm extension for quantization.")
-        # except (ImportError, ModuleNotFoundError):
-        #     logger.error("algorithm extension import error, fallback to default mode")
-        #     quantize_block = self._quantize_block
-        # else:
-        #     quantize_block = self._quantize_block
         quantize_block = self._quantize_block
 
         if pbar is None:
