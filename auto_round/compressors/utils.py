@@ -376,6 +376,8 @@ def set_layer_config(
 
     if lm_head_name not in layer_config and quant_lm_head:
         layer_config[lm_head_name] = copy.deepcopy(default_dict)
+    else:
+        layer_config.pop(lm_head_name)
 
     # 8. enforce shape divisibility for int weight-only
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
@@ -1051,6 +1053,9 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
     # User configurable (can be preset on rounder)
     max_shard_size = getattr(rounder, "max_shard_size", "5GB")
     safe_serialization = getattr(rounder, "safe_serialization", True)
+    layer_names = rounder._get_quantized_layer_names_outside_blocks()
+    if len(layer_names) > 0 and name != layer_names[-1]:
+        last_group = False
 
     def _parse_size(size_str: str) -> int:
         s = size_str.strip().upper()

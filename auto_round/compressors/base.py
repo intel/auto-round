@@ -1638,8 +1638,7 @@ class BaseCompressor(object):
                 )
         pbar.set_description("Quantizing done")
         pbar.close()
-
-        self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
+        self._quantize_layers(layer_names, all_inputs)
 
         if is_fp8_model(self.model):
             for n, m in self.model.named_modules():
@@ -1730,8 +1729,8 @@ class BaseCompressor(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
                 )  ##self.model.hf_device_map has not been changed
-
-        self.model = mv_module_from_gpu(self.model)
+        if not self.immediate_saving:
+            self.model = mv_module_from_gpu(self.model)
         clear_memory()
         quant_layer = self._quantize_layer
         for layer_name in layer_names:
@@ -1740,6 +1739,38 @@ class BaseCompressor(object):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
+            if self.immediate_packing:
+                from auto_round.export import PACKING_LAYER_WITH_FORMAT
+                m = get_module(self.model, layer_name)
+                for _, tmp_m in m.named_modules():
+                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
+                        continue
+                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                    has_gguf = any("gguf" in format_ for format_ in self.formats)
+                    if has_gguf:
+                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
+
+                        output_dir = self._get_save_folder_name(self.formats[0])
+                        model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
+                        pack_gguf_layer(
+                            tmp_m.tmp_name,
+                            self.model,
+                            self.formats[0],
+                            output_dir,
+                            self.layer_config,
+                            self.tokenizer,
+                            processor=self.processor if hasattr(self, "processor") else None,
+                            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                            model_type=model_type,
+                        )
+                    else:
+                        PACKING_LAYER_WITH_FORMAT[target_backend](
+                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
+                        )
+
+            if self.immediate_saving:
+                m = get_module(self.model, layer_name)
+                immediate_saving(self, m, name=layer_name, last_group=True)
             del layer_input
             clear_memory(q_layer_input)
 
@@ -1940,7 +1971,6 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
-
         if self.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
