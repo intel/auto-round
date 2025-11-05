@@ -796,5 +796,6 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
+
 if __name__ == "__main__":
     unittest.main()

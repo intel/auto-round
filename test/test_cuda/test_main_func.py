@@ -199,5 +199,6 @@ class TestMainFunc(unittest.TestCase):
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8, quant_lm_head=True)
         ar.quantize()
 
+
 if __name__ == "__main__":
     unittest.main()
