@@ -2765,7 +2765,7 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
-            if self.is_packing_immediate:
+            if 0 and self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
                 for _, tmp_m in m.named_modules():
