@@ -338,6 +338,7 @@ class BaseCompressor(object):
         # Whether to pack the layer immediately after tuning
         self.immediate_packing = False
         self.immediate_saving = False
+        self.low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1560,7 +1561,7 @@ class BaseCompressor(object):
                 and self.inplace
             ):
                 self.immediate_packing = True
-                if "gguf" not in formats[0]:
+                if "gguf" not in formats[0] and self.low_cpu_mem_usage:
                     self.immediate_saving = True
         if self.immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
