@@ -88,8 +88,6 @@ class SupportedFormats:
             "auto_round:gptqmodel",
             "auto_round:auto_awq",
             "auto_round:llm_compressor",
-            "itrex",
-            "itrex_xpu",
             "fake",
             "llm_compressor",
         )
@@ -297,3 +295,4 @@ def get_reciprocal(tensor):
     else:
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
+

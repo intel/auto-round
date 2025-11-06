@@ -162,28 +162,6 @@ class TestAutoRound(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
 
-    def test_default(self):
-        bits, group_size, sym = 4, 128, False
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=2,
-            dataset=self.llm_dataloader,
-        )
-        autoround.quantize()
-
-        autoround.save_quantized(output_dir="./saved", inplace=False, format="itrex")
-        try:
-            import auto_gptq
-        except:
-            return
-        if torch.cuda.is_available():
-            autoround.save_quantized(output_dir="./saved", inplace=False)
-
     def test_w4g1(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         bits, group_size, sym = 4, -1, True
@@ -817,3 +795,4 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
