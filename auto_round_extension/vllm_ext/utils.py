@@ -31,7 +31,7 @@ def get_scheme(quant_config, prefix: str):
     return quant_config.quant_scheme
 
 
-def check_quantized(weight_bits: int) -> bool:
+def need_quantize(weight_bits: int) -> bool:
     return weight_bits < 16
 
 

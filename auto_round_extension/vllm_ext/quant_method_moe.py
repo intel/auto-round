@@ -24,7 +24,7 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
-from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, check_quantized, get_scheme
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, need_quantize, get_scheme
 
 logger = init_logger(__name__)
 
@@ -44,7 +44,7 @@ class AutoRoundMoEMethod(FusedMoEMethodBase):
     ) -> "AutoRoundMoEMethod":
 
         def get_impl(scheme: QuantizationScheme):
-            if not check_quantized(scheme.bits):
+            if not need_quantize(scheme.bits):
                 from vllm.model_executor.layers.fused_moe.layer import (
                     UnquantizedFusedMoEMethod,
                 )

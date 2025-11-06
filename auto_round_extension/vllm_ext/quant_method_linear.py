@@ -20,7 +20,7 @@ from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, Unqu
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
-from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, check_quantized, get_scheme
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, need_quantize, get_scheme
 
 logger = init_logger(__name__)
 
@@ -41,24 +41,29 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
         layer: torch.nn.Module,
         prefix: str,
     ) -> "AutoRoundQuantLinearMethod":
-        # FIXME: revert this WA after fixing scheme matching issue
-        return UnquantizedLinearMethod()
 
         def get_impl(scheme: QuantizationScheme):
-            if not check_quantized(scheme.bits):
-
-                return UnquantizedLinearMethod()
-
-            elif _is_mxfp8_w8a8(scheme):
+            if _is_mxfp8_w8a8(scheme):
                 from auto_round_extension.vllm_ext.linear_impl_mxfp8 import AutoRoundMXFP8LinearImpl
 
                 return AutoRoundMXFP8LinearImpl(quant_config)
 
+            elif _is_mxfp4_w4a4(scheme):
+                from auto_round_extension.vllm_ext.linear_impl_mxfp4 import AutoRoundMXFP4LinearImpl
+
+                return AutoRoundMXFP4LinearImpl(quant_config)
+
             raise ValueError(f"Unsupported Linear scheme: {scheme}, layer: {prefix}")
 
+        # TODO: use a more robust way to map layer names
+        if prefix.endswith("gate_up_proj"):
+            # update gate_up_proj to gate_proj
+            prefix = prefix.replace("gate_up_proj", "gate_proj")
         layer_scheme = get_scheme(quant_config, prefix)
+        if not need_quantize(layer_scheme.bits):
+            return UnquantizedLinearMethod()
         impl = get_impl(layer_scheme)
-        logger.debug("Apply %s to %s", impl.__class__.__name__, prefix)
+        logger.info("Apply %s to %s", impl.__class__.__name__, prefix)
         return AutoRoundQuantLinearMethod(impl=impl)
 
     @classmethod
