@@ -2271,10 +2271,10 @@ class BaseCompressor(object):
         init_loss = None
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
         batch_size = 1  # Force to low gpu
-        pick_samples = batch_size * gradient_accumulate_steps
-        pick_samples = min(nsamples, pick_samples)
+        global_batch_size = batch_size * gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:pick_samples]
+            whole_indices = torch.randperm(nsamples)[:global_batch_size]
         total_loss = 0
         num_elm = 1
         mse_reduction = "mean"
@@ -2285,7 +2285,7 @@ class BaseCompressor(object):
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:pick_samples]
+                whole_indices = torch.randperm(nsamples)[:global_batch_size]
                 if gradient_accumulate_steps != 1:
                     if q_inputs is not None:
                         num_elm = self._get_current_num_elm(q_inputs, whole_indices)
@@ -2564,10 +2564,10 @@ class BaseCompressor(object):
         else:
             nsamples = len(input_ids)
 
-        pick_samples = self.batch_size * self.gradient_accumulate_steps
-        pick_samples = min(nsamples, pick_samples)
+        global_batch_size = self.batch_size * self.gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:pick_samples]
+            whole_indices = torch.randperm(nsamples)[:global_batch_size]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -2579,13 +2579,15 @@ class BaseCompressor(object):
         init_loss = None
         best_params = {}
         total_loss = 0
+        # We assume the block input and output shape is same
+        if self.gradient_accumulate_steps != 1:
+            whole_indices = torch.arange(global_batch_size)
+            num_elm = self._get_current_num_elm(input_ids, whole_indices)
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:pick_samples]
-                # We assume the block input and output shape is same
-                if self.gradient_accumulate_steps != 1:
-                    num_elm = self._get_current_num_elm(input_ids, whole_indices)
+                whole_indices = torch.randperm(nsamples)[:global_batch_size]
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
@@ -2600,6 +2602,9 @@ class BaseCompressor(object):
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                     tmp_attention_mask.unsqueeze_(-1)
+                    num_elm = torch.sum(tmp_attention_mask).item()
+                    if num_elm == 0:
+                        num_elm = 1
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
@@ -2615,7 +2620,6 @@ class BaseCompressor(object):
 
                 total_loss += loss.item() / num_elm
                 self._scale_loss_and_backward(scaler, loss)
-                clear_memory_if_reached_threshold(threshold=0.85)
 
             if i == 0:
                 init_loss = total_loss
@@ -2655,7 +2659,8 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
-            clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
             q_outputs = self._get_block_outputs(
                 block,
                 input_ids,
