@@ -5,6 +5,7 @@ export VLLM_ENABLE_V1_MULTIPROCESSING=0
 
 model_path="quantized_models/DeepSeek-V2-Lite-Chat-MXFP4/"
 model_path="quantized_models/DeepSeek-V2-Lite-Chat-MXFP4"
+model_path="quantized_models/Qwen3-235B-A22B-MXFP4"
 # model_path="quantized_models/Qwen3-30B-A3B-Base-MXFP4"
 
 
@@ -19,4 +20,5 @@ VLLM_ENABLE_V1_MULTIPROCESSING=1 \
 python generate.py \
     --model ${model_path} \
     --max-tokens 16 \
-    --enforce-eager
+    --enforce-eager \
+    --tensor_parallel_size 4

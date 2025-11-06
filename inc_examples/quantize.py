@@ -10,6 +10,7 @@ def quant_model(args):
     fp_layers = "shared_experts,lm_head,mlp.gate"
     if args.skip_attn:
         fp_layers += ",self_attn"
+    # fp_layers += ",layers.0"
     logger.info(f"Using fp_layers: {fp_layers}")
     autoround = AutoRound(
         model=args.model,

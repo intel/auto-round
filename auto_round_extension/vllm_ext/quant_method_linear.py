@@ -41,6 +41,8 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
         layer: torch.nn.Module,
         prefix: str,
     ) -> "AutoRoundQuantLinearMethod":
+        # FIXME: revert this WA after fixing scheme matching issue
+        return UnquantizedLinearMethod()
 
         def get_impl(scheme: QuantizationScheme):
             if not check_quantized(scheme.bits):
@@ -52,7 +54,7 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
 
                 return AutoRoundMXFP8LinearImpl(quant_config)
 
-            raise ValueError(f"Unsupported Linear scheme: {scheme}")
+            raise ValueError(f"Unsupported Linear scheme: {scheme}, layer: {prefix}")
 
         layer_scheme = get_scheme(quant_config, prefix)
         impl = get_impl(layer_scheme)
