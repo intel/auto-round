@@ -743,20 +743,33 @@ class TestAutoRound(unittest.TestCase):
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
-        ar = AutoRound(model_name, quant_lm_head=True, iters=1, nsamples=1, seqlen=32)
-        ar.quantize()
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0,disabel_opt_rtn=True)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert  model.config.quantization_config.extra_config["lm_head"]["bits"]==4
+
+    def test_quant_lm_head_layer_config(self):
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
+        layer_config ={"lm_head":{"bits":4}}
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0,disabel_opt_rtn=True,layer_config=layer_config)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert  model.config.quantization_config.extra_config["lm_head"]["bits"]==4
+
 
     def test_compressor(self):
-        model_name = "Qwen/Qwen2-VL-2B-Instruct"
-        ar = AutoRound(model_name, enable_adam=True)
-        self.assertEqual(ar.optimizer, torch.optim.AdamW)
-        self.assertTrue(ar.mllm)
+            model_name = "Qwen/Qwen2-VL-2B-Instruct"
+            ar = AutoRound(model_name, enable_adam=True)
+            self.assertEqual(ar.optimizer, torch.optim.AdamW)
+            self.assertTrue(ar.mllm)
 
-        # test old api
-        from auto_round import AutoRoundMLLM
+            # test old api
+            from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM(model_name)
-        self.assertTrue(ar.mllm)
+            ar = AutoRoundMLLM(model_name)
+            self.assertTrue(ar.mllm)
 
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
