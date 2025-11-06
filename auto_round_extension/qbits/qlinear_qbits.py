@@ -220,4 +220,3 @@ def dequantize_weight(qweight, qzeros, scales, bits):
 
 
 __all__ = ["QuantLinear"]
-
