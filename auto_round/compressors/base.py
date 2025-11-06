@@ -1456,7 +1456,7 @@ class BaseCompressor(object):
 
                 if is_complex_device_mapping(self.device_map):
                     set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size
+                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
                 if is_complex_device_mapping(self.device_map):
@@ -2356,10 +2356,10 @@ class BaseCompressor(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(wrapper_linear)
+                    best_params = collect_best_params(wrapper_linear, self.cache_device)
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(wrapper_linear)
+                best_params = collect_best_params(wrapper_linear, self.cache_device)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -2437,6 +2437,7 @@ class BaseCompressor(object):
         input_others: dict,
         indices: list[int],
         device: str,
+        cache_device: str = "cpu",
     ) -> torch.Tensor:
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -2447,7 +2448,7 @@ class BaseCompressor(object):
             share_cache_keys=self.shared_cache_keys,
         )
         output_q = self.block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
-        return output_q
+        return output_q.to(cache_device)
 
     def _get_current_num_elm(
         self,
@@ -2482,13 +2483,15 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
-
-        if is_complex_device_mapping(self.device_map):
-            set_auto_device_map_for_block_with_tuning(
+        # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
+        # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
+        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
+            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
         else:
             block = block.to(device)
+            card_0_in_high_risk, loss_device = False, device
 
         if is_complex_device_mapping(self.device_map):
             for n, m in block.named_modules():
@@ -2618,13 +2621,13 @@ class BaseCompressor(object):
 
                 current_output = self._get_current_output(output, indices)
 
-                current_output = to_device(current_output, device)
+                current_output = to_device(current_output, loss_device)
 
-                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device)
+                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
 
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(loss_device)
                     tmp_attention_mask.unsqueeze_(-1)
                     num_elm = torch.sum(tmp_attention_mask).item()
                     if num_elm == 0:
@@ -2632,7 +2635,7 @@ class BaseCompressor(object):
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
-                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                    with autocast(device_type=loss_device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
@@ -2643,7 +2646,16 @@ class BaseCompressor(object):
                     )
 
                 total_loss += loss.item() / num_elm
+
+                if self.low_gpu_mem_usage and card_0_in_high_risk:
+                    # clear memory to avoid OOM due to memory fragmentation
+                    clear_memory_if_reached_threshold(threshold=0.5)
+
                 self._scale_loss_and_backward(scaler, loss)
+
+                if self.low_gpu_mem_usage and card_0_in_high_risk:
+                    # clear memory to avoid OOM due to memory fragmentation
+                    clear_memory_if_reached_threshold(threshold=0.8)
 
             if i == 0:
                 init_loss = total_loss
@@ -2651,12 +2663,12 @@ class BaseCompressor(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(block)
+                    best_params = collect_best_params(block, self.cache_device)
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
 
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(block)
+                best_params = collect_best_params(block, self.cache_device)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -2673,6 +2685,8 @@ class BaseCompressor(object):
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
         logger.info(dump_info)
+        if self.low_gpu_mem_usage:
+            clear_memory()  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -2683,8 +2697,6 @@ class BaseCompressor(object):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         if self.enable_quanted_input:
-            if self.low_gpu_mem_usage:
-                clear_memory()
             q_outputs = self._get_block_outputs(
                 block,
                 input_ids,
@@ -2811,6 +2823,7 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
+            m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = quantize_block(
                 m,
                 input_ids,
@@ -2818,6 +2831,8 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
+            if hasattr(model, "config"):
+                del m.config
             if self.immediate_packing:
                 for _, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
