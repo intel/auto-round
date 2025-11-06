@@ -9,6 +9,7 @@ pr:
   paths:
     include:
       - auto_round
+      - auto_round_extension
       - test/test*hpu*'
       - setup.py
       - requirements-lib.txt

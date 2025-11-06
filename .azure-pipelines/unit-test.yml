@@ -92,8 +92,7 @@ stages:
               echo "--- collect logs ---"
               docker exec collectLogs bash -c "cd /auto-round \
                 && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-                && pip install -r requirements-cpu.txt \
-                && pip install --no-build-isolation . \
+                && pip install . \
                 && pip list"
               docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
                 && bash ut/collect_log.sh"
