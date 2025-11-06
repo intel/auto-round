@@ -1,6 +1,7 @@
 
 export AR_LOG_LEVEL=TRACE
 model="/storage/yiliu7/Qwen/Qwen3-30B-A3B-Base/"
+model="/storage/yiliu7/Qwen/Qwen3-30B-A3B-Base/"
 # model="/storage/yiliu7/deepseek-ai/DeepSeek-V2-Lite-Chat"
 base_name=$(basename ${model})
 scheme="MXFP4"

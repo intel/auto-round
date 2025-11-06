@@ -250,8 +250,10 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                 return revert_bias
 
             # breakpoint()
-            w13_bias_swapped = revert_interleaved_bias(layer.w13_bias)
-            layer.w13_bias.data.copy_(w13_bias_swapped)
+            if self.has_bias:
+                if envs.VLLM_AR_POST_PROCESS_GPTOSS:
+                    w13_bias_swapped = revert_interleaved_bias(layer.w13_bias)
+                    layer.w13_bias.data.copy_(w13_bias_swapped)
 
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
 
@@ -271,8 +273,8 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                     new_w1[:, ::2, :] = w1[:, : N // 2, :]
                     new_w1[:, 1::2, :] = w1[:, N // 2 :, :]
                     return new_w1
-
-                w1 = revert_interleaved_w1(w1)
+                if envs.VLLM_AR_POST_PROCESS_GPTOSS:
+                    w1 = revert_interleaved_w1(w1)
 
                 w1_scale = None
                 w2 = layer.w2_weight_packed
