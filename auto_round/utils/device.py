@@ -830,7 +830,7 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
 
 
 def estimate_tuning_block_mem(
-    block: torch.nn.Module, input_ids: list[torch.Tensor], pick_samples: int
+    block: torch.nn.Module, input_ids: list[torch.Tensor], batch_size: int
 ) -> tuple[dict, float]:
     """
     Calculates the memory consumption of a specific block in the model.
@@ -838,7 +838,7 @@ def estimate_tuning_block_mem(
     Args:
         block (torch.nn.Module): The block of the model to analyze.
         input_ids (list[torch.Tensor]): A list of input tensors for the block.
-        pick_samples (int): Number of samples to consider for memory estimation.
+        batch_size (int): Number of samples to consider for memory estimation.
 
     Returns:
         tuple: A tuple containing the following:
@@ -871,12 +871,12 @@ def estimate_tuning_block_mem(
             in_features, out_features = get_layer_features(module)
             if in_features is not None and out_features is not None:
                 # Output tensor size: batch_size * seq_len * out_features * element_size
-                output_size = pick_samples * seq_len * out_features * element_size
+                output_size = batch_size * seq_len * out_features * element_size
                 output_memory_gb = output_size / 1024**3
 
                 # If enable_act_quant, add input tensor memory to param_memory
                 if enable_act_quant:
-                    input_size = pick_samples * seq_len * in_features * element_size
+                    input_size = batch_size * seq_len * in_features * element_size
                     input_memory_gb = input_size / 1024**3
                     param_memory_gb += input_memory_gb
             else:
@@ -937,7 +937,7 @@ def set_auto_device_map_for_block_with_tuning(
     device_map,
     input_ids: list[torch.Tensor],
     low_gpu_mem_usage: bool = False,
-    pick_samples: int = 8,
+    batch_size: int = 8,
     output_device: str | torch.device = None,
     card_0_threshold: float = 0.9,
 ):
@@ -949,7 +949,7 @@ def set_auto_device_map_for_block_with_tuning(
         device_map (str | int | dict): Specifies the device mapping.
         input_ids (list[torch.Tensor]): List of input tensors used for estimating memory requirements.
         low_gpu_mem_usage (bool, optional): If True, ignoring input/output memory. Defaults to False.
-        pick_samples (int, optional): Number of samples to consider for memory estimation. Defaults to 8.
+        batch_size (int, optional): Number of samples to consider for memory estimation. Defaults to 8.
         output_device (str | torch.device, optional): Device to move unassigned modules to. Defaults to None.
         card_0_threshold (float, optional): Threshold ratio to determine if the first device is at high risk of
             running out of memory. Defaults to 0.9 (90%).
@@ -996,7 +996,7 @@ def set_auto_device_map_for_block_with_tuning(
     device_0_memory = get_device_memory(device_list[0] if device_list else 0)
     device_1_memory = get_device_memory(device_list[1] if device_list else 1)
     layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory = (
-        estimate_tuning_block_mem(block, input_ids, pick_samples)
+        estimate_tuning_block_mem(block, input_ids, batch_size)
     )
     loss_memory = block_input_output_memory / 2  # GB, rough estimate for loss tensor memory
     if low_gpu_mem_usage:
