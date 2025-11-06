@@ -1,7 +1,7 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for auto-round llm quantization. For vlms quantization, please refer to [vlms user guide](../auto_round/mllm/README.md)
+This document presents step-by-step instructions for auto-round llm quantization. You can refer to [vlms user guide](../auto_round/compressors/mllm/README.md) for vlms quantization and [diffusions user guide](../auto_round/compressors/diffusion/README.md) for diffusions quantization.
 
 * [1 Prerequisite](#1-prerequisite)
 * [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
@@ -19,7 +19,11 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [AutoRoundBest recipe](#autoroundbest-recipe)
     - [AutoRoundLight recipe](#autoroundlight-recipe)
     - [Recipe recommendation](#recipe-recommendation)
-  + [RTN mode](#rtn-mode)
+  + [AutoScheme](#autoscheme)
+    - [CLI Usage](#cli-usage)
+    - [API Usage](#api-usage-1)
+    - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
+  + [OPT RTN mode](#opt-rtn-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#device-multi-gpu-setting-in-quantization)
@@ -69,16 +73,14 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 
     ~~~python
     def customized_data():
-        ##Important Notice!!! Autoround will drop data < args.seqlen and truncate data to args.seqlen
-        data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
-        data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+        # Important Notice!!! AutoRound will drop data < args.seqlen and truncate data to args.seqlen
+        data = ["AutoRound is an advanced quantization algorithm for low-bits LLM inference" * 240]
         return data
     
     
     def customized_data_with_tokenizer(tokenizer, seqlen=2048):
-        ##Import notice!!! Autoround will drop data < args.seqlen
-        data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
-        data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+        # Import notice!!! AutoRound will drop data < args.seqlen
+        data = ["AutoRound is an advanced quantization algorithm for low-bits LLM inference" * 240]
         tokens = []
         for d in data:
             token = tokenizer(d, truncation=True, max_length=seqlen, return_tensors="pt").data
@@ -115,10 +117,12 @@ AutoRound supports several Schemes:
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
-- **Mixed bits Weight only**
-- **NVFP4**(data_type:nvfp4,act_data_type:nvfp4,static_global_scale,group_size 16)
-- **MXFP4**(**Research feature,no real kernel**, data_type:mxfp4,act_data_type:mxfp4,rceil,group_size 32)
-- **FPW8A16**(**Research feature,no real kernel**, data_type:fp8,act_data_type 16:,group_size 0->per tensor )
+- **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 are supported)
+- **Mixed Bits Weight only**
+- **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
+- **MXFP4**(**Research feature,no real kernel**, data_type mxfp,act_data_type mxfp_rceil,bits 4, act_bits 4, group_size 32)
+- **MXFP8**(**Research feature,no real kernel**, data_type mxfp,act_data_type mxfp_rceil,group_size 32)
+- **FPW8A16**(**Research feature,no real kernel**, data_type fp8,group_size 0->per tensor )
 - **FP8_STATIC**(**Research feature,no real kernel**, data_type:fp8,act_data_type:fp8,group_size -1 ->per channel, act_group_size=0->per tensor)
 
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
@@ -126,20 +130,20 @@ Besides, you could modify the `group_size`, `bits`, `sym` and many other configs
 ### Supported export Formats
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**.
+inference. **[2,3,4,8] bits are supported**. Please set `--format auto_round`
 
 **GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
-community. `q*_k`,`q*_0`,`q*_1` are supported.
+community. `q*_k`,`q*_0`,`q*_1` are supported. Please set `--format gguf:q4_k_m`,  `--format gguf:q2_k_s`, etc
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.  Please set `--format auto_gptq`
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**.
+adopted within the community, **only 4-bits quantization is supported**. Please set `--format auto_awq`
 
-**LLM-Compressor Format**:** NVFP4, MXFP(Kernel is WIP), INT8 are supported**.
+**LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
 ### Hardware Compatibility
 
@@ -153,23 +157,23 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
    This setting offers a better trade-off between accuracy and tuning cost, and is recommended in all scenarios.
 
     ```bash
-    auto-round --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
+    auto-round --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
-- **Best Settings:**
+- **AutoRoundBest recipe:**
 
   This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
   
   ```bash
-  auto-round-best --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
+  auto-round-best --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
-- **Light Settings:**
+- **AutoRoundLight Settings:**
 
     This setting offers the best speed (2-3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B
     
     ```bash
-    auto-round-light --model facebook/opt-125m  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
+    auto-round-light --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 ### API usage
@@ -179,7 +183,7 @@ This setting offers a better trade-off between accuracy and tuning cost, and is 
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
@@ -191,7 +195,9 @@ output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
-#### Mixed bits Usage
+#### Mixed Bits Usage
+AutoRound(>0.8) offers auto-scheme to generate mixed bits recipe autocially, please refer to [AutoScheme](#autoscheme) section for more details.
+
 Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. If you're unsure about the details, we recommend using the AutoRound format.
 
 vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign different bit widths to these layers.
@@ -199,7 +205,7 @@ vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign diffe
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 
 layer_config = {  #  Supports both full layer names and fuzzy (partial) matching
     "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32},
@@ -219,7 +225,7 @@ This setting provides the best accuracy in most scenarios but is 4–5× slower 
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(model=model_name_or_path, scheme="W4A16", nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 output_dir = "./tmp_autoround"
@@ -231,7 +237,7 @@ This setting offers the best speed (2 - 3X faster than AutoRound), but it may ca
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 
 ar = AutoRound(
     model=model_name_or_path,
@@ -271,14 +277,120 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 </details>
 
-### RTN mode
-AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting `iters=0` and use `group_size=32` for better results.
+### AutoScheme
+
+AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
+
+**Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
+
+#### CLI Usage
+use `iters=200`for tuning.
+~~~bash
+auto_round \
+  --model_name  $model_name \
+  --avg_bits 6 \
+  --options "mxfp4,mxfp8" \
+  --ignore_scale_zp_bits \
+  --iters 0 \
+  --format fake 
+~~~
+
+#### API Usage
+~~~
+avg_bits= 3.0
+scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64“, "W4A16","W8A16"))
+ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar.quantize_and_save()
+~~~
+
+#### Hyperparameters in AutoScheme
+`avg_bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation.
+
+`options(Union[str, list[Union[QuantizationScheme, str]])` the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
+
+`ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
+
+`device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
+
+`shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
+
+`batch_size (Optional[int])` could be set to 1 to reduce VRAM but increase time cost
+
+`low_gpu_mem_usage(bool=True)` whether to reduce gpu memory usage at the cost of more time cost
+
+In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+
+
+```python
+from auto_round import AutoRound, AutoScheme
+
+shared_layers = [
+    ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
+    ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
+    ("fc1", "fc2"),
+]
+target_bits = 5.0
+model_name = "Qwen/Qwen3-0.6B"
+scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
+ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+model, layer_config = ar.quantize()
+```
+
+Besides, if you want to fix the scheme for some layers, you could set it via `layer_config` in AutoRound API.
+```python
+from auto_round import AutoRound, AutoScheme
+
+model_name = "Qwen/Qwen3-8B"
+avg_bits = 3.0
+scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
+layer_config = {"lm_head": "GGUF:Q6_K"}
+
+ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar.quantize_and_save()
+```
+
+#### AutoScheme Cost
+
+We tested it on Nvidia A100 80G using torch v2.8.
+
+We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-1.5x of the model's BF16 size
+
+| Models        | Scheme                | VRAM Cost | Time Cost             |
+| ------------- | --------------------- | --------- | --------------------- |
+| Qwen3-8B      | W2A16 / W4A16 / W8A16 | 14G       | 60s * len of options  |
+| Qwen3-8B      | MXFP4 / MXFP8         | 18G       | 60s * len of options  |
+| Qwen3-8B      | GGUF*                 | 14G       | 80s * len of options  |
+| Qwen3-32B     | W2A16 / W4A16 / W8A16 | 29G       | 180s*  len of options |
+| Qwen3-32B     | MXFP4 / MXFP8         | 29G       | 180s*  len of options |
+| Qwen3-32B     | GGUF*                 | 18G       | 300s * len of options |
+| Llama-3.3-70B | W2A16 / W4A16 / W8A16 | 32G       | 420s * len of options |
+
+<details>
+<summary>Cost w/o low_gpu_mem_usage </summary>
+
+| Models    | Scheme            | VRAM Cost <br />(torch compile) | Time Cost<br /> torch compile | VRAM Cost <br />wo torch compile | Time Cost<br /> wo torch compile |
+| --------- | ----------------- | ------------------------------- | ----------------------------- | -------------------------------- | -------------------------------- |
+| Qwen3-8B  | W2A16/W4A16/W8A16 | 34G                             | 30s * len of options          | 61G                              | 40s * len of options             |
+| Qwen3-8B  | MXFP4/MXFP8       | 36G                             | 60s * len of options          | 54G                              | 120s * len of options            |
+| Qwen3-8B  | GGUF*             | 54G                             | 30s * len of options          | 50G                              | 23S * len of options             |
+| Qwen3-32B | W2A16/W4A16/W8A16 | OOM with 240G                   | ---                           | OOM with 240G                    | ---                              |
+| Qwen3-32B | MXFP4/MXFP8       | 160G                            | 200s * len of options         | 200G                             | 240s * len of options            |
+| Qwen3-32B | GGUF*             | 210G                            | 80s * len of options          | 200G                             | 60s * len of options             |
+</details> 
+
+
+#### Limitations
+Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
+
+
+### OPT RTN Mode
+AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
     scheme="W4A16",
@@ -295,7 +407,7 @@ This format is well-suited for CPU devices and is widely adopted by the communit
 ```python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
 )
@@ -341,7 +453,7 @@ If adjusting hyperparameters does not resolve the issue a, a simple solution is 
 ~~~python
 from auto_round import AutoRound
 
-model_name_or_path = "facebook/opt-125m"
+model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
     device_map="0,1,2,3"
@@ -351,7 +463,7 @@ ar = AutoRound(
 or
 
 ~~~bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "facebook/opt-125m" --scheme "W4A16" --device_map "auto"
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --device_map "auto"
 ~~~
 
 
@@ -446,15 +558,6 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
 
-    - (only available for .bin file currently) set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from
-      disk of each block when tuning and
-      release the memory of the block after tuning. (more tuning cost)
-
-    - (only available for .bin file currently) set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of
-      each layer from disk when tuning, minimum
-      memory consumption and also the slowest running speed.
-
-
 - **Speedup the tuning:**
     - set `enable_torch_compile` to True
 
@@ -472,7 +575,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Currently only support in AutoRound format inference for this config
 
     ```bash
-    auto-round --model_name facebook/opt-125m  --scheme "W4A16" --quant_lm_head --format "auto_round"
+    auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --format "auto_round"
     ```
 
 
@@ -613,7 +716,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 - We leverage lm-eval-harnessing for the evaluation. 
 If not explicitly specify '--task', the default value will be used (typically covering 10+ common tasks).
   ~~~bash
-   auto-round --model facebook/opt-125m  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
+   auto-round --model Qwen/Qwen3-0.6B  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
@@ -651,7 +754,12 @@ Note: To use the vllm backend, please add `--vllm` into the upper command.
 
 ## 6 Known Issues
 
-* Random quantization results in tuning some models
-* ChatGlm-V1 is not supported
+Randomness in quantization may affect tuning results for some models, set `enable_deterministic_algorithms=True` to ensure reproducibility.
+
+
+Some VLMs require manual support.
+
+
+Mamba is not supported.
 
 

@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import Any, Callable, Union
+from typing import TYPE_CHECKING, Union
 
 import torch
 
@@ -29,6 +29,9 @@ from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
 
+if TYPE_CHECKING:
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
 
 class AutoRound:
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
@@ -40,6 +43,7 @@ class AutoRound:
     Attributes:
         model (torch.nn.Module): The loaded PyTorch model in eval mode.
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
         group_size (int): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
@@ -64,7 +68,8 @@ class AutoRound:
         cls,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        platform: str = "hf",
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -115,10 +120,11 @@ class AutoRound:
             device_map (str | dict, optional): Device placement map. Defaults to None.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
+            model_dtype (str): model dtype used to load pre-trained model.
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                  nblocks, low_cpu_mem_usage, to_quant_block_names,
+                  nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
                   disable_deterministic_algorithms, vlm, static_kv_dtype
         Raises:
@@ -143,7 +149,7 @@ class AutoRound:
         """
         model_cls = []
 
-        if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model):
+        if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
             if extra_config:
@@ -167,6 +173,7 @@ class AutoRound:
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -271,7 +278,7 @@ class AutoRoundLLM(LLMCompressor):
         **kwargs: Backward compatible options:
             - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                 super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                nblocks, low_cpu_mem_usage, to_quant_block_names,
+                nblocks, to_quant_block_names,
                 enable_norm_bias_tuning, enable_quanted_input,
                 disable_deterministic_algorithms, mllm, static_kv_dtype
     Raises:
@@ -311,6 +318,7 @@ class AutoRoundLLM(LLMCompressor):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -328,6 +336,7 @@ class AutoRoundLLM(LLMCompressor):
         super().__init__(
             model=model,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -351,6 +360,7 @@ class AutoRoundAdam(AdamCompressor):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
@@ -366,7 +376,6 @@ class AutoRoundAdam(AdamCompressor):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -411,6 +420,7 @@ class AutoRoundAdam(AdamCompressor):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
@@ -429,6 +439,7 @@ class AutoRoundAdam(AdamCompressor):
         super().__init__(
             model=model,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             batch_size=batch_size,
@@ -453,6 +464,7 @@ class AutoRoundMLLM(MLLMCompressor):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         processor: Any multi-modal model will require an object to encode or
                    decode the data that groups several modalities (among text, vision and audio).
         image_processor: Image processor for special model like llava.
@@ -473,7 +485,6 @@ class AutoRoundMLLM(MLLMCompressor):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -512,6 +523,7 @@ class AutoRoundMLLM(MLLMCompressor):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform: str = "hf",
         processor=None,
         image_processor=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
@@ -532,6 +544,7 @@ class AutoRoundMLLM(MLLMCompressor):
         super().__init__(
             model=model,
             tokenizer=tokenizer,
+            platform=platform,
             processor=processor,
             image_processor=image_processor,
             scheme=scheme,
@@ -558,6 +571,7 @@ class AutoRoundDiffusion(DiffusionCompressor):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         guidance_scale (float): Control how much the image generation process follows the text prompt.
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).

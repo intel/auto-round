@@ -17,6 +17,7 @@ import os
 
 import torch
 
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp, is_static_wfp8afp8
 from auto_round.export.export_to_llmcompressor.config import quantization_config
 from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
 from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
@@ -25,10 +26,6 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     detect_device,
     get_module,
-    is_mx_fp,
-    is_nv_fp,
-    is_standard_fp,
-    is_static_wfp8afp8,
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer

@@ -50,12 +50,23 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, _get_packing_device, _is_fp8_model, clean_module_parameter, get_module, logger
+from auto_round.utils import LazyImport, get_module, get_packing_device, is_fp8_model, logger
 
 gguf = LazyImport("gguf")
 
 if TYPE_CHECKING:
     from torch import Tensor
+
+
+def clean_module_parameter(submodule, parameter):
+    if submodule is None:
+        return
+    is_buffer = parameter in submodule._buffers
+    with torch.no_grad():
+        if is_buffer:
+            submodule._buffers[parameter] = None
+        else:
+            submodule._parameters[parameter] = None
 
 
 def download_convert_file(redownload=False):
@@ -109,7 +120,7 @@ def get_moe_name(cls, name, new_name):
         "FFN_DOWN_EXP": ["down_proj", "w2", "linear_1"],
         "FFN_UP_EXP": ["up_proj", "w3", "linear_v"],
     }
-    nums = re.findall(r"\d+", name)
+    nums = re.findall(r"\.(\d+)\.", name)
     if len(nums) != 2:
         return name
     name_tmp = name[: -len(".weight")].replace(f".{nums[1]}", "")
@@ -145,7 +156,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         yield name, tensor
 
     def is_extra_tensor(tensor_name):
-        if _is_fp8_model(cls.model) and "scale" in tensor_name.split(".")[-1]:
+        if is_fp8_model(cls.model) and "scale" in tensor_name.split(".")[-1]:
             return False
         if tensor_name not in cls.model.tensor_name_list:
             return True
@@ -156,11 +167,11 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         from safetensors import safe_open
 
         from auto_round.export.export_to_gguf.special_handle import get_tensor_from_file
-        from auto_round.utils import download_hf_model
+        from auto_round.utils import download_or_get_path
 
         dir_path = cls.model.name_or_path
         if not os.path.isdir(dir_path):
-            dir_path = download_hf_model(dir_path)
+            dir_path = download_or_get_path(dir_path)
         INDEX_FILE = "model.safetensors.index.json"
         if INDEX_FILE in os.listdir(dir_path):
             with open(os.path.join(dir_path, INDEX_FILE)) as f:
@@ -179,7 +190,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
-    device = _get_packing_device()
+    device = get_packing_device()
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
     zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -204,7 +215,7 @@ def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=
 
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
     suffix = ".weight"
-    device = _get_packing_device()
+    device = get_packing_device()
     if suffix in name:
         layer_name = name[: -len(suffix)]
         module = get_module(cls.model, layer_name)
@@ -401,7 +412,7 @@ def prepare_tensors(cls):
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
                 if new_name in tensor_info:
-                    print("new_name already add to gguf_writer, skip")
+                    logger.info(f"{new_name} already add to gguf_writer, skip")
                     skip = True
                     break
             if skip:

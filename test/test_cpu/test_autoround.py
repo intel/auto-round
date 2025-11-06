@@ -13,7 +13,7 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.low_cpu_mem import get_module
+from auto_round.utils import get_module
 
 
 class LLMDataLoader:
@@ -716,6 +716,9 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
+    def test_alg_ext_import(self):
+        from auto_round.alg_ext import quantize_block_ext
+
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
@@ -736,11 +739,24 @@ class TestAutoRound(unittest.TestCase):
                 iters=1,
                 layer_config=layer_config,
             )
+            ar.quantize()
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
-        ar = AutoRound(model_name, quant_lm_head=True, iters=1, nsamples=1, seqlen=32)
-        ar.quantize()
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
+
+    def test_quant_lm_head_layer_config(self):
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
+        layer_config = {"lm_head": {"bits": 4}}
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True, layer_config=layer_config)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
     def test_compressor(self):
         model_name = "Qwen/Qwen2-VL-2B-Instruct"
@@ -753,6 +769,50 @@ class TestAutoRound(unittest.TestCase):
 
         ar = AutoRoundMLLM(model_name)
         self.assertTrue(ar.mllm)
+
+    def test_attention_mask_in_dataset(self):
+        from transformers import AutoTokenizer
+
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        # model_name = "/models/Qwen3-0.6B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        text = ["haha", "hello world"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        data = [res.data]
+
+        text = ["qudd", "hfd"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        data.append(res.data)
+        from auto_round import AutoRound
+
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
+        ar.quantize()
+
+    def test_attention_mask_via_tokenize_in_dataset(self):
+        from transformers import AutoTokenizer
+
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        # model_name = "/models/Qwen3-0.6B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        text = ["haha", "hello world"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data = [res.data]
+
+        text = ["qudd", "hfd"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data.append(res.data)
+        from auto_round import AutoRound
+
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
+        ar.quantize()
+
+    def test_create_adam(self):
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        from auto_round import AutoRound
+
+        ar = AutoRound(model=model_name, enable_adam=True)
 
 
 if __name__ == "__main__":

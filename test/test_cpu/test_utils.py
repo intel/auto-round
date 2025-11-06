@@ -2,7 +2,7 @@ import sys
 from unittest.mock import patch
 
 sys.path.insert(0, "../..")
-import auto_round.utils as auto_round_utils
+import auto_round.utils.device as auto_round_utils
 
 
 class TestPackingWithNumba:

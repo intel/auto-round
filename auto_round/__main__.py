@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import logging
 import os
-import re
 import sys
 
+from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
 from auto_round.schemes import PRESET_SCHEMES
@@ -24,7 +23,6 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
-    set_cuda_visible_devices,
 )
 
 RECIPES = {
@@ -38,14 +36,28 @@ RECIPES = {
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.add_argument(
+            "model",
+            default=None,
+            nargs="?",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
         basic = self.add_argument_group("Basic Arguments")
         basic.add_argument(
-            "--model",
             "--model_name",
+            "--model",
             "--model_name_or_path",
             default="facebook/opt-125m",
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
+        basic.add_argument("--model_dtype", default=None, help="model dtype used to load the pre-trained model")
+        basic.add_argument(
+            "--platform",
+            default="hf",
+            help="Platform to load the pre-trained model. Options: [hf, model_scope]."
+            " hf stands for huggingface and model_scope stands for model scope.",
         )
         basic.add_argument(
             "--scheme",
@@ -66,6 +78,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="The batch size for tuning/calibration."
             "Larger batch sizes may improve stability but require more memory.",
         )
+        basic.add_argument("--avg_bits", default=None, type=float, help="for auto scheme, number of avg weight bits")
+        basic.add_argument(
+            "--options", default=None, type=str, help="for auto scheme, options for auto scheme, e.g. 'W4A16,W8A16'"
+        )
+
         basic.add_argument(
             "--iters",
             "--iter",
@@ -139,6 +156,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
+            "--ignore_scale_zp_bits",
+            action="store_true",
+            help="for auto scheme whether ignore scale zp bits calculation ",
+        )
+        tuning.add_argument(
             "--lr",
             default=None,
             type=float,
@@ -149,14 +171,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=float,
             help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
-        )
-        tuning.add_argument(
-            "--mem_per_param_scale",
-            default=13,
-            type=float,
-            help="Memory scaling factor for parameter memory estimation. "
-            "Adjust this if you need to control memory usage during tuning. "
-            "Lower values reduce memory usage but may affect accuracy.",
         )
         tuning.add_argument(
             "--gradient_accumulate_steps",
@@ -176,7 +190,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         tuning.add_argument(
             "--scale_dtype",
-            default="fp16",
+            default=None,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="Data type for quantization scales. "
             "fp16/bf16: lower memory, fp32: higher precision. "
@@ -427,6 +441,9 @@ def setup_parser(recipe="default"):
 
 
 def tune(args):
+    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+    if args.model is None:
+        args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -452,8 +469,6 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    # Must set this before import torch
-    # set_cuda_visible_devices(args.device_map)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     import torch
@@ -517,7 +532,6 @@ def tune(args):
         enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         lr=args.lr,
         minmax_lr=args.minmax_lr,
-        mem_per_param_scale=args.mem_per_param_scale,
         nblocks=args.nblocks,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
@@ -549,8 +563,18 @@ def tune(args):
     extra_config.mllm_config = mllm_config
     extra_config.diffusion_config = diffusion_config
 
+    layer_config = {}
+
+    if args.avg_bits is not None:
+        if args.options is None:
+            raise ValueError("please set --options for auto scheme")
+        scheme = AutoScheme(
+            options=args.options, avg_bits=args.avg_bits, ignore_scale_zp_bits=args.ignore_scale_zp_bits
+        )
+
     autoround: BaseCompressor = AutoRound(
         model=model_name,
+        platform=args.platform,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,
@@ -565,6 +589,8 @@ def tune(args):
         not_use_best_mse=args.not_use_best_mse,
         enable_adam=args.adam,
         extra_config=extra_config,
+        layer_config=layer_config,
+        model_dtype=args.model_dtype,
     )
 
     model_name = args.model.rstrip("/")
@@ -741,6 +767,7 @@ def tune(args):
                 batch_size=args.eval_bs,
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
+                mllm=autoround.mllm,  # pylint: disable=E1101
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -751,8 +778,15 @@ def tune(args):
             st = time.time()
             if "llama" in args.model.lower():
                 model_args += ",add_bos_token=True"
+            if autoround.mllm:  # pylint: disable=E1101
+                model_type = "hf-multimodal"
+                if args.eval_bs is None or args.eval_bs == "auto":
+                    logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
+                    args.eval_bs = 16
+            else:
+                model_type = "hf"
             res = simple_evaluate(
-                model="hf",
+                model=model_type,
                 model_args=model_args,
                 tasks=tasks,
                 device=device_str,
@@ -770,11 +804,19 @@ def setup_eval_parser():
 
 
 def run_eval():
+    from auto_round.utils import is_mllm_model
+
     args = setup_eval_parser()
+    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+    if args.model is None:
+        args.model = args.model_name
+    if is_mllm_model(args.model):
+        args.mllm = True
+
     if args.eval_task_by_task:
         eval_task_by_task(
             model=args.model,
-            device=args.device,
+            device=args.device_map,
             tasks=args.tasks,
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,

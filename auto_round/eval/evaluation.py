@@ -17,8 +17,11 @@ from typing import Optional, Union
 
 from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
 
+from auto_round.logger import logger
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+from lm_eval.models.hf_vlms import HFMultimodalLM
 from lm_eval.models.huggingface import HFLM
 
 
@@ -30,16 +33,30 @@ def simple_evaluate_user_model(
     max_batch_size: Optional[int] = 64,
     eval_model_dtype="auto",
     add_bos_token: bool = False,
+    mllm: bool = False,
     **kwargs
 ):
-    hflm = HFLM(
-        pretrained=user_model,
-        tokenizer=tokenizer,
-        batch_size=batch_size,
-        max_batch_size=max_batch_size,
-        dtype=eval_model_dtype,
-        add_bos_token=add_bos_token,
-    )
+    if mllm:
+        if batch_size is None or batch_size == "auto":
+            logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
+            batch_size = 16
+        hflm = HFMultimodalLM(
+            pretrained=user_model,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            max_batch_size=max_batch_size,
+            dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
+        )
+    else:
+        hflm = HFLM(
+            pretrained=user_model,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            max_batch_size=max_batch_size,
+            dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
+        )
     return lm_simple_evaluate(
         model=hflm, model_args=None, batch_size=batch_size, max_batch_size=max_batch_size, limit=limit, **kwargs
     )

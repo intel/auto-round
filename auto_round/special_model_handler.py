@@ -39,6 +39,8 @@ SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
 CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
 
+MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
+
 
 def _get_moe_converter(config):
     # Dispatch table for model_type to replacement_info functions
@@ -85,7 +87,9 @@ def _handle_moe_model(model, formats=None):
                 parent = model.get_submodule(parent)
                 setattr(parent, child, new_module)
 
-        logger.warning("Llama4 experts are converted, the quantized model can not run on transformers.")
+        logger.warning(
+            f"{model.config.model_type} experts are converted, the quantized model can not run on transformers."
+        )
     return model
 
 

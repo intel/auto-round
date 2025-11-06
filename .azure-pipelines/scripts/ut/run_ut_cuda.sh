@@ -5,6 +5,10 @@ CONDA_ENV_NAME="unittest_cuda"
 PYTHON_VERSION="3.10"
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
+SUMMARY_LOG=${LOG_DIR}/results_summary.log
+
+rm -rf ${LOG_DIR} && mkdir -p ${LOG_DIR}
+touch ${SUMMARY_LOG}
 [[ -z "$CUDA_VISIBLE_DEVICES" ]] && export CUDA_VISIBLE_DEVICES=0
 
 function create_conda_env() {
@@ -32,6 +36,56 @@ function create_conda_env() {
     fi
     uv pip install -v --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake==4.0.2
+    uv pip install torch==2.8.0 torchvision
+}
+
+function print_test_results_table() {
+    local log_pattern=$1
+    local test_type=$2
+
+    echo ""
+    echo "==========================================" >> ${SUMMARY_LOG}
+    echo "Test Results Summary - ${test_type}" >> ${SUMMARY_LOG}
+    echo "==========================================" >> ${SUMMARY_LOG}
+    printf "%-30s %-10s %-50s\n" "Test Case" "Result" "Log File" >> ${SUMMARY_LOG}
+    printf "%-30s %-10s %-50s\n" "----------" "------" "--------" >> ${SUMMARY_LOG}
+
+    local total_tests=0
+    local passed_tests=0
+    local failed_tests=0
+
+    for log_file in ${LOG_DIR}/${log_pattern}; do
+        if [ -f "${log_file}" ]; then
+            local test_name=$(basename "${log_file}" .log)
+            # Remove prefix to get clean test case name
+            test_name=${test_name#unittest_cuda_}
+            test_name=${test_name#unittest_cuda_vlm_}
+
+            local result="UNKNOWN"
+            local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || echo 0)
+            local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || echo 0)
+            local passed_count=$(grep -c ' passed' "${log_file}" 2>/dev/null || echo 0)
+
+            if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ]; then
+                result="FAILED"
+                failed_tests=$((failed_tests + 1))
+            elif [ ${passed_count} -gt 0 ]; then
+                result="PASSED"
+                passed_tests=$((passed_tests + 1))
+            else
+                result="NO_TESTS"
+            fi
+
+            total_tests=$((total_tests + 1))
+            local log_filename=$(basename "${log_file}")
+            printf "%-30s %-10s %-50s\n" "${test_name}" "${result}" "${log_filename}" >> ${SUMMARY_LOG}
+        fi
+    done
+
+    echo "==========================================" >> ${SUMMARY_LOG}
+    printf "Total: %d, Passed: %d, Failed: %d\n" ${total_tests} ${passed_tests} ${failed_tests} >> ${SUMMARY_LOG}
+    echo "==========================================" >> ${SUMMARY_LOG}
+    echo "" >> ${SUMMARY_LOG}
 }
 
 function run_unit_test() {
@@ -49,24 +103,25 @@ function run_unit_test() {
     uv pip install -r requirements.txt
     uv pip install -r requirements_diffusion.txt
 
-    uv pip list
+    pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+   
+    # run unit tests individually with separate logs
+    for test_file in $(find . -name "test_*.py" ! -name "test_*vlms.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
+        echo "Running ${test_file}..."
 
-    # setup test env
-    mkdir -p ${LOG_DIR}
-    local ut_log_name=${LOG_DIR}/unittest_cuda.log
-    find . -name "test_*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" >run.sh
-    cat run.sh
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+    done
 
-    # run unit test
-    bash run.sh 2>&1 | tee ${ut_log_name}
+    mv report.html ${LOG_DIR}/
+    mv coverage.xml ${LOG_DIR}/
 
-    cp report.html ${LOG_DIR}/
-    cp coverage.xml ${LOG_DIR}/
-
-    if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
-        echo "Find errors in pytest case, please check the output..."
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
+        echo "Some CUDA unit tests failed. Please check the individual log files for details."
     fi
 }
 
@@ -85,30 +140,32 @@ function run_unit_test_vlm() {
     uv pip install flash-attn==2.7.4.post1 --no-build-isolation
     uv pip install -r requirements_vlm.txt
 
-    uv pip list
+    pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    # setup test env
-    mkdir -p ${LOG_DIR}
-    local ut_log_name=${LOG_DIR}/unittest_cuda_vlm.log
-    find . -name "test*vlms.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report_vlms.html --self-contained-html  --cov-report xml:coverage_vlms.xml --cov-append -vs --disable-warnings ,g" >run_vlms.sh
-    cat run_vlms.sh
+    # run VLM unit tests individually with separate logs
+    for test_file in $(find . -name "test*vlms.py"); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
+        echo "Running ${test_file}..."
 
-    # run unit test
-    bash run_vlms.sh 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vlms.html --self-contained-html --cov-report xml:coverage_vlms.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+    done
 
-    cp report_vlms.html ${LOG_DIR}/
-    cp coverage_vlms.xml ${LOG_DIR}/
+    mv report_vlms.html ${LOG_DIR}/
+    mv coverage_vlms.xml ${LOG_DIR}/
 
-    if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
-        echo "Find errors in pytest case, please check the output..."
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_vlm_test*.log" "CUDA VLM Tests"; then
+        echo "Some CUDA VLM tests failed. Please check the individual log files for details."
     fi
 }
 
 function main() {
     run_unit_test_vlm
     run_unit_test
+    cat ${SUMMARY_LOG}
 }
 
 main

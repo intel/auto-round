@@ -21,12 +21,11 @@ from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
+from auto_round.compressors.utils import block_forward
 from auto_round.logger import logger
-from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
-    block_forward,
     clear_memory,
     diffusion_load_model,
     extract_block_names_to_str,
@@ -48,6 +47,7 @@ class DiffusionCompressor(BaseCompressor):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         guidance_scale (float): Control how much the image generation process follows the text prompt.
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).
@@ -82,6 +82,7 @@ class DiffusionCompressor(BaseCompressor):
         self,
         model: Union[object, str],
         tokenizer=None,
+        platform: str = "hf",
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator_seed: int = None,
@@ -100,6 +101,7 @@ class DiffusionCompressor(BaseCompressor):
         **kwargs,
     ):
         logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        model_dtype = kwargs.pop("model_dtype", None)
 
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
@@ -111,7 +113,7 @@ class DiffusionCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            pipe, model = diffusion_load_model(model, device=self.device)
+            pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
         elif isinstance(model, pipeline_utils.DiffusionPipeline):
             pipe = model
             model = pipe.transformer
@@ -146,6 +148,7 @@ class DiffusionCompressor(BaseCompressor):
         super(DiffusionCompressor, self).__init__(
             model=model,
             tokenizer=None,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -210,7 +213,7 @@ class DiffusionCompressor(BaseCompressor):
     def _get_block_outputs(
         self,
         block: torch.nn.Module,
-        input_ids: torch.Tensor,
+        input_ids: Union[torch.Tensor, dict],
         input_others: torch.Tensor,
         bs: int,
         device: Union[str, torch.device],
@@ -233,8 +236,11 @@ class DiffusionCompressor(BaseCompressor):
         """
 
         output = defaultdict(list)
-        nsamples = len(input_ids)
         output_config = output_configs.get(block.__class__.__name__, [])
+        if isinstance(input_ids, dict):
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
 
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
@@ -299,11 +305,6 @@ class DiffusionCompressor(BaseCompressor):
             self.dataloader = self.dataset
         total_cnt = 0
 
-        if self.low_cpu_mem_usage:
-            embed_layers = get_layers_before_block(self.model)
-            for n, m in embed_layers:
-                m = m.to(self.device)
-
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
@@ -355,10 +356,6 @@ class DiffusionCompressor(BaseCompressor):
                     if isinstance(v[key], list) and len(v[key]) == total_cnt:
                         self.inputs[k][key] = v[key][:max_len]
 
-        # clean embed weight to save memory
-        if self.low_cpu_mem_usage:
-            for n, m in embed_layers:
-                m = m.to("meta")
         # torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
