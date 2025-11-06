@@ -9,8 +9,11 @@ pr:
   paths:
     include:
       - auto_round
+      - auto_round_extension
       - setup.py
       - requirements.txt
+      - requirements-cpu.txt
+      - requirements-lib.txt
       - .azure-pipelines/code-scan.yml
       - .azure-pipelines/scripts/codeScan
 

@@ -38,3 +38,19 @@ class TestAlgExt(unittest.TestCase):
         # wo alg ext 0.2084, with 0.2364
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.22)
         shutil.rmtree(self.save_folder, ignore_errors=True)
+
+    def test_cli(self):
+        import os
+
+        model_name = "/models/opt-125m"
+        python_path = sys.executable
+
+        res = os.system(
+            f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --device auto --enable_alg_ext --avg_bits 2 --options=W2A16,W4A16 --ignore_scale_zp_bits"
+        )
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+
+
+if __name__ == "__main__":
+    unittest.main()

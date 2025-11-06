@@ -101,6 +101,7 @@ class DiffusionCompressor(BaseCompressor):
         **kwargs,
     ):
         logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        model_dtype = kwargs.pop("model_dtype", None)
 
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
@@ -112,7 +113,7 @@ class DiffusionCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            pipe, model = diffusion_load_model(model, platform=platform, device=self.device)
+            pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
         elif isinstance(model, pipeline_utils.DiffusionPipeline):
             pipe = model
             model = pipe.transformer
