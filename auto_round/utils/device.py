@@ -442,9 +442,9 @@ def clear_memory_if_reached_threshold(threshold=0.85):
     """
     # Detect CUDA/XPU devices
     if torch.cuda.is_available():
-        name, device_api = "CUDA", torch.cuda
+        name, device_api = "cuda", torch.cuda
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        name, device_api = "XPU", torch.xpu
+        name, device_api = "xpu", torch.xpu
     else:
         return False
 
@@ -457,14 +457,18 @@ def clear_memory_if_reached_threshold(threshold=0.85):
 
             if memory_usage_ratio >= threshold:
                 logger.warning_once(
-                    f"{name} device {i} has reached memory threshold. "
+                    f"Major device ({name}:{i}) has reached memory threshold. "
                     + "Memory clearing operation will be called during each iteration, which "
                     + "will result in more time consumption."
+                )
+                logger.warning_once(
+                    "To alleviate high memory usage on the major device, consider reducing the `batch_size` "
+                    + "(and correspondingly increasing `gradient_accumulation_steps) or shortening the seqlen."
                 )
                 clear_memory()
                 return True
         except Exception as e:
-            logger.warning_once(f"Failed to check memory for {name} device {i}: {e}")
+            logger.warning_once(f"Failed to check memory for {name}:{i}: {e}")
     return False
 
 
@@ -480,7 +484,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
     Returns:
         tuple: A tuple containing availability status (bool), modified sequence length (int),
-               and modified batch size (int).
+                and modified batch size (int).
     """
     weight_memory = weight.numel() * weight.element_size()
     if "cuda" in device:
