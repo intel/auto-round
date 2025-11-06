@@ -2413,7 +2413,7 @@ class BaseCompressor(object):
         input_others: dict,
         indices: list[int],
         device: str,
-        output_device: str = "cpu",
+        cache_device: str = "cpu",
     ) -> torch.Tensor:
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -2424,7 +2424,7 @@ class BaseCompressor(object):
             share_cache_keys=self.shared_cache_keys,
         )
         output_q = self.block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
-        return output_q.to(output_device)
+        return output_q.to(cache_device)
 
     def _get_current_num_elm(
         self,
@@ -2461,9 +2461,13 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
         # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
         # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-        card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-            block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
-        )
+        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
+            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
+            )
+        else:
+            block = block.to(device)
+            card_0_in_high_risk, loss_device = False, device
 
         if is_complex_device_mapping(self.device_map):
             for n, m in block.named_modules():
@@ -2797,7 +2801,8 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
-            del m.config
+            if hasattr(model, "config"):
+                del m.config
             if self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
 

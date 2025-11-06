@@ -412,10 +412,8 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         del tensor
     gc.collect()
     if torch.cuda.is_available():
-        torch.cuda.synchronize()
         torch.cuda.empty_cache()
     if torch.xpu.is_available():
-        torch.xpu.synchronize()
         torch.xpu.empty_cache()
 
 
@@ -938,10 +936,10 @@ def set_auto_device_map_for_block_with_tuning(
     block: torch.nn.Module,
     device_map,
     input_ids: list[torch.Tensor],
-    low_gpu_mem_usage=False,
-    pick_samples=8,
-    output_device=None,
-    card_0_threshold=0.9,
+    low_gpu_mem_usage: bool = False,
+    pick_samples: int = 8,
+    output_device: str | torch.device = None,
+    card_0_threshold: float = 0.9,
 ):
     """
     Automatically sets the device map for the block based on available GPUs and memory constraints.
