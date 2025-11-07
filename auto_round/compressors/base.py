@@ -32,6 +32,7 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.utils.device import parse_all_available_device
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
@@ -1954,17 +1955,25 @@ class BaseCompressor(object):
                         self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
                     else:
                         # Change this if new device is supported
-                        if str(self.model.device) == "cpu" and (
-                            self.device.startswith("xpu") or self.device.startswith("cuda")
-                        ):
+                        if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
+                            devices = parse_all_available_device(self.device_map)
                             max_memory = get_balanced_memory(
                                 self.model,
                                 max_memory=None,
                                 no_split_module_classes=no_split_modules,
                             )
+                            new_max_memory = {}
+                            for device in devices:
+                                if ":" in device:
+                                    device = int(device.split(":")[-1])
+                                elif device == "cpu":
+                                    device = "cpu"
+                                else:
+                                    raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
+                                new_max_memory[device] = max_memory[device]
                             device_map = infer_auto_device_map(
-                                self.model, max_memory=max_memory, no_split_module_classes=no_split_modules
+                                self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )
 
                             self.model = dispatch_model(self.model, device_map=device_map)

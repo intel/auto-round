@@ -20,6 +20,7 @@ from auto_round.auto_scheme import AutoScheme
 from auto_round.utils import LazyImport
 
 
+
 def __getattr__(name):
     if name == "AutoHfQuantizer":
         from auto_round.inference.auto_quantizer import AutoHfQuantizer
