@@ -412,13 +412,14 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         del tensor
     gc.collect()
     if torch.cuda.is_available():
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
     if torch.xpu.is_available():
         torch.xpu.empty_cache()
 
 
 @torch._dynamo.disable()
-def clear_memory(tensor=None):
+def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, devices: tuple | None = None):
     from auto_round.utils.device import is_hpex_available
 
     if is_hpex_available():
