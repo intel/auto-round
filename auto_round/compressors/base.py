@@ -307,8 +307,6 @@ class BaseCompressor(object):
 
         self.device_list = parse_available_devices(device_map)
 
-        # Get device list
-
         if isinstance(scheme, AutoScheme):
             self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
