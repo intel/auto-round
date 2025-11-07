@@ -355,7 +355,7 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
 
 
-def is_auto_device_mapping(device_map):
+def is_auto_device_mapping(device_map:str|int|dict|None):
     if device_map is None or isinstance(device_map, int):
         return False
     elif device_map == "auto":
@@ -404,7 +404,7 @@ def bytes_to_gigabytes(bytes) -> int:
     return bytes / 1024 / 1024 / 1024
 
 
-def _clear_memory_for_cpu_and_cuda(tensor=None, device_list=None):
+def _clear_memory_for_cpu_and_cuda(tensor:torch.Tensor | list[torch.Tensor] | None=None, device_list:tuple|list|None=None):
     if isinstance(tensor, list):
         for i in range(len(tensor)):
             tensor[i] = None
@@ -414,6 +414,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None, device_list=None):
     if torch.cuda.is_available():
         if device_list is None:
             torch.cuda.synchronize()
+            #Fix https://github.com/intel/auto-round/issues/1004
             torch.cuda.empty_cache()
 
         elif len(device_list) > 1:
