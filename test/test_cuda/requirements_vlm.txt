@@ -22,3 +22,4 @@ triton
 tqdm
 transformers
 xformers
+timm
