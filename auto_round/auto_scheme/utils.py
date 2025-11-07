@@ -26,7 +26,8 @@ from auto_round.utils import (
     get_block_names,
     get_layer_features,
     get_module,
-    is_hpex_available, parse_all_available_device,
+    is_hpex_available,
+    parse_all_available_device,
 )
 
 
@@ -202,9 +203,6 @@ def compute_layer_bits(
     total_bits = weight_bits * n_param + aux_total_bits
     avg_bits = total_bits / n_param
     return total_bits, avg_bits
-
-
-
 
 
 # Important Notice This dispatch does not follow dict device_map, just extract all available devices and use them

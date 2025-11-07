@@ -32,7 +32,6 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.utils.device import parse_all_available_device
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
@@ -97,6 +96,7 @@ from auto_round.utils import (
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
     get_major_device,
+    parse_all_available_device,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
 )
