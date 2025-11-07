@@ -416,7 +416,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None, device_list=None):
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
 
-        elif device_list and len(device_list) > 1:
+        elif len(device_list) > 1:
             devices = []
             for device in device_list:
                 if not device.startswith("cuda"):
