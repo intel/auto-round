@@ -417,7 +417,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None, device_list=None):
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
 
-        if device_list:
+        elif device_list and len(device_list)>1:
             devices = []
             for device in device_list:
                 if not device.startswith("cuda"):
@@ -429,7 +429,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None, device_list=None):
                 devices.append(int(device))
             for device in devices:
                 torch.cuda.synchronize(device)
-        torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
     if torch.xpu.is_available():
         torch.xpu.empty_cache()
 
@@ -1255,7 +1255,6 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
         devices = []
         for pair in pairs:
             try:
-                # 支持 "layer1:cuda:0" 这样的格式
                 key, *value_parts = pair.split(":")
                 value = ":".join(value_parts).strip()
                 if is_digit(value) and device_types[0] != "cpu":
