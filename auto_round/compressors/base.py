@@ -81,7 +81,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_module,
     htcore,
-    is_complex_device_mapping,
+    is_auto_device_mapping,
     is_debug_mode,
     is_fp8_linear,
     is_fp8_model,
@@ -1459,12 +1459,12 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if len(self.device_list) > 1:
+                if is_auto_device_mapping(self.device_map):
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
-                if len(self.device_list) > 1:
+                if len(self.device_list)>0:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
