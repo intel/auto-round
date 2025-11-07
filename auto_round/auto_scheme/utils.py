@@ -27,7 +27,7 @@ from auto_round.utils import (
     get_layer_features,
     get_module,
     is_hpex_available,
-    parse_all_available_device,
+    parse_available_devices,
 )
 
 
@@ -223,7 +223,7 @@ def dispatch_model_by_all_available_devices(
         model = dispatch_model(model, device_map=device_map)
         return model
 
-    devices = parse_all_available_device(device_map)
+    devices = parse_available_devices(device_map)
 
     if len(devices) == 1:
         model.to(devices[0])

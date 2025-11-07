@@ -97,7 +97,7 @@ from auto_round.utils import (
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
     get_major_device,
-    parse_all_available_device,
+    parse_available_devices,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
 )
@@ -304,6 +304,10 @@ class BaseCompressor(object):
         self.device_map = device_map
         if isinstance(self.device_map, str):
             self.device_map = self.device_map.replace(" ", "")
+
+        self.device_list = parse_available_devices(device_map)
+
+        # Get device list
 
         if isinstance(scheme, AutoScheme):
             self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
@@ -1108,7 +1112,7 @@ class BaseCompressor(object):
             self.layer_config.setdefault(name, {}).update(config)
 
             # Release memory
-            clear_memory()
+            clear_memory(device_list=self.device_list)
 
         return is_quantized
 
@@ -1177,7 +1181,7 @@ class BaseCompressor(object):
 
                 accelerate.hooks.remove_hook_from_submodules(model)
             model = model.to("cpu")
-            clear_memory()
+            clear_memory(device_list=self.device_list)
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         except torch.OutOfMemoryError:
             cuda_error_msg = traceback.format_exc()
@@ -1189,7 +1193,7 @@ class BaseCompressor(object):
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
                 model = model.to("cpu")
-                clear_memory()
+                clear_memory(device_list=self.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
 
@@ -1361,7 +1365,7 @@ class BaseCompressor(object):
             except torch.OutOfMemoryError:
                 logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
                 self.model = self.model.to("cpu")
-                clear_memory()
+                clear_memory(device_list=self.device_list)
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     import accelerate
 
@@ -1383,7 +1387,7 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing {name}")
                 self._quantize_layer_via_rtn(name)
                 if cnt % clear_mem_freq == 0:
-                    clear_memory()
+                    clear_memory(device_list=self.device_list)
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8
@@ -1432,7 +1436,7 @@ class BaseCompressor(object):
                 )
             inputs["input_ids"] = inputs.pop(input_keys[0])
 
-            clear_memory(self.inputs)
+            clear_memory(self.inputs,device_list=self.device_list)
 
             total_samples = len(inputs["input_ids"])
             if total_samples < self.batch_size:
@@ -1457,12 +1461,12 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if is_complex_device_mapping(self.device_map):
+                if len(self.device_list)>1:
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
-                if is_complex_device_mapping(self.device_map):
+                if len(self.device_list)>1:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -1480,7 +1484,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
-                if is_complex_device_mapping(self.device_map):
+                if len(self.device_list)>1:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
@@ -1509,7 +1513,7 @@ class BaseCompressor(object):
         for name in all_to_quantized_module_names:
             self._quantize_layer_via_rtn(name)
             if cnt % clear_mem_freq == 0:
-                clear_memory()
+                clear_memory(device_list=self.device_list)
                 cnt = 1
             cnt += 1
 
@@ -1609,12 +1613,12 @@ class BaseCompressor(object):
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
-            clear_memory(self.inputs)
+            clear_memory(self.inputs,device_list=self.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 all_first_block_names, self.nsamples, layer_names=layer_names
             )
         self.model = mv_module_from_gpu(self.model)
-        clear_memory()
+        clear_memory(device_list=self.device_list)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model)
@@ -1634,7 +1638,7 @@ class BaseCompressor(object):
 
             inputs, q_inputs = self._update_inputs(inputs, q_inputs)
 
-            clear_memory(self.inputs)
+            clear_memory(self.inputs,device_list=self.device_list)
 
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
@@ -1751,7 +1755,7 @@ class BaseCompressor(object):
                 )  ##self.model.hf_device_map has not been changed
         if not self.immediate_saving:
             self.model = mv_module_from_gpu(self.model)
-        clear_memory()
+        clear_memory(device_list=self.device_list)
         quant_layer = self._quantize_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
@@ -1766,7 +1770,7 @@ class BaseCompressor(object):
                 m = get_module(self.model, layer_name)
                 immediate_saving(self, m, name=layer_name, last_group=True)
             del layer_input
-            clear_memory(q_layer_input)
+            clear_memory(q_layer_input,devcie_list=self.device_list)
 
     @torch.no_grad()
     def _get_block_outputs(
@@ -1811,7 +1815,7 @@ class BaseCompressor(object):
                 else:
                     output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
         if self.low_gpu_mem_usage:
-            clear_memory()
+            clear_memory(device_list=self.device_list)
 
         return output
 
@@ -1983,7 +1987,7 @@ class BaseCompressor(object):
                         # Change this if new device is supported
                         if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
-                            devices = parse_all_available_device(self.device_map)
+                            devices = parse_available_devices(self.device_map)
                             max_memory = get_balanced_memory(
                                 self.model,
                                 max_memory=None,
@@ -2026,7 +2030,7 @@ class BaseCompressor(object):
                             self.model
                         )  # self.model.hf_device_map has not been changed
                     self.model = mv_module_from_gpu(self.model)
-                    clear_memory()
+                    clear_memory(device_list=self.device_list)
                     # Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
                     all_inputs = self.cache_inter_data(
                         block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
@@ -2504,7 +2508,7 @@ class BaseCompressor(object):
             block = block.to(device)
             card_0_in_high_risk, loss_device = False, device
 
-        if is_complex_device_mapping(self.device_map):
+        if len(self.device_list)>1:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
@@ -2543,9 +2547,9 @@ class BaseCompressor(object):
 
         if q_input is not None:
             if input_ids is not q_input:
-                clear_memory(input_ids)
+                clear_memory(input_ids,device_list=self.device_list)
             else:
-                clear_memory()
+                clear_memory(device_list=self.device_list)
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
@@ -2716,7 +2720,7 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if is_complex_device_mapping(self.device_map):
+            if len(self.device_list)>1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
@@ -2724,7 +2728,7 @@ class BaseCompressor(object):
             return q_outputs, output
 
         else:
-            if is_complex_device_mapping(self.device_map):
+            if len(self.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
