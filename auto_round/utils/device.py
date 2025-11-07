@@ -1256,7 +1256,7 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
             try:
                 key, *value_parts = pair.split(":")
                 value = ":".join(value_parts).strip()
-                if is_digit(value) and device_types[0] != "cpu":
+                if value.isdigit() and device_types[0] != "cpu":
                     value = device_types[0] + ":" + value
                 devices.append(value)
             except ValueError:
