@@ -317,7 +317,7 @@ class DiffusionCompressor(BaseCompressor):
         ):
             logger.error(
                 "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or move the pipeline object to GPU/XPU before passing them into API"
+                "Please use model path for quantization or move the pipeline object to GPU/XPU before passing them into API."
             )
             exit(-1)
 
