@@ -1143,8 +1143,7 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     for device in device_list:
         if device.startswith("cpu") or device.startswith("hpu"):
             continue
-        else:
-            gpu_devices.append(device)
+        gpu_devices.append(device)
     num_devices = len(gpu_devices)
     if num_devices < 1:
         return
