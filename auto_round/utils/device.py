@@ -623,6 +623,8 @@ def set_non_auto_device_map(
         infos = device_map.split(",")
         device_map_dict = {}
         for info in infos:
+            if ":" not in info:
+                continue
             index = info.find(":")
             key = info[:index]
             value = info[index + 1 :]
