@@ -25,7 +25,6 @@ from lm_eval.tasks.score.math.math_grader import is_digit
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
-
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -406,7 +405,7 @@ def bytes_to_gigabytes(bytes) -> int:
     return bytes / 1024 / 1024 / 1024
 
 
-def _clear_memory_for_cpu_and_cuda(tensor=None,device_list=None):
+def _clear_memory_for_cpu_and_cuda(tensor=None, device_list=None):
     if isinstance(tensor, list):
         for i in range(len(tensor)):
             tensor[i] = None
@@ -426,7 +425,7 @@ def _clear_memory_for_cpu_and_cuda(tensor=None,device_list=None):
                 if ":" in device:
                     device = device.split(":")[-1]
                 else:
-                    device=0
+                    device = 0
                 devices.append(int(device))
             for device in devices:
                 torch.cuda.synchronize(device)
@@ -434,18 +433,19 @@ def _clear_memory_for_cpu_and_cuda(tensor=None,device_list=None):
     if torch.xpu.is_available():
         torch.xpu.empty_cache()
 
+
 @torch._dynamo.disable()
-def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None,device_list:list|tuple|None=None):
+def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
     from auto_round.utils.device import is_hpex_available
 
     if is_hpex_available():
         # hpu does not have empty_cache
         return
     else:
-        _clear_memory_for_cpu_and_cuda(tensor,device_list)
+        _clear_memory_for_cpu_and_cuda(tensor, device_list)
 
 
-def clear_memory_if_reached_threshold(threshold=0.85,device_list=None):
+def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
     """Check all available devices and clear memory if any device is using close to the threshold.
 
     Args:
@@ -1145,7 +1145,7 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
         else:
             gpu_devices.append(device)
     num_devices = len(gpu_devices)
-    if num_devices<1:
+    if num_devices < 1:
         return
 
     for block_names in block_name_list:
@@ -1249,7 +1249,6 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
         device_type = device_types[0]
         return [f"{device_type}:{device_map}"] if device_type != "cpu" else ["cpu"]
 
-
     # ---- dict-like string ----
     if isinstance(device_map, str) and ":" in device_map and "," in device_map:
         pairs = [p.strip() for p in device_map.split(",") if ":" in p]
@@ -1260,7 +1259,7 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
                 key, *value_parts = pair.split(":")
                 value = ":".join(value_parts).strip()
                 if is_digit(value) and device_types[0] != "cpu":
-                    value = device_types[0]+":"+value
+                    value = device_types[0] + ":" + value
                 devices.append(value)
             except ValueError:
                 continue
@@ -1283,7 +1282,6 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
             else:
                 parsed.append(p)
         return parsed
-
 
     if isinstance(device_map, dict):
         # Extract all devices recursively from dict values

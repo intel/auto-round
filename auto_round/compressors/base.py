@@ -1436,7 +1436,7 @@ class BaseCompressor(object):
                 )
             inputs["input_ids"] = inputs.pop(input_keys[0])
 
-            clear_memory(self.inputs,device_list=self.device_list)
+            clear_memory(self.inputs, device_list=self.device_list)
 
             total_samples = len(inputs["input_ids"])
             if total_samples < self.batch_size:
@@ -1461,12 +1461,12 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if len(self.device_list)>1:
+                if len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
-                if len(self.device_list)>1:
+                if len(self.device_list) > 1:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -1484,7 +1484,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
-                if len(self.device_list)>1:
+                if len(self.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
@@ -1613,7 +1613,7 @@ class BaseCompressor(object):
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
-            clear_memory(self.inputs,device_list=self.device_list)
+            clear_memory(self.inputs, device_list=self.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 all_first_block_names, self.nsamples, layer_names=layer_names
             )
@@ -1638,7 +1638,7 @@ class BaseCompressor(object):
 
             inputs, q_inputs = self._update_inputs(inputs, q_inputs)
 
-            clear_memory(self.inputs,device_list=self.device_list)
+            clear_memory(self.inputs, device_list=self.device_list)
 
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
@@ -1770,7 +1770,7 @@ class BaseCompressor(object):
                 m = get_module(self.model, layer_name)
                 immediate_saving(self, m, name=layer_name, last_group=True)
             del layer_input
-            clear_memory(q_layer_input,devcie_list=self.device_list)
+            clear_memory(q_layer_input, device_list=self.device_list)
 
     @torch.no_grad()
     def _get_block_outputs(
@@ -2508,7 +2508,7 @@ class BaseCompressor(object):
             block = block.to(device)
             card_0_in_high_risk, loss_device = False, device
 
-        if len(self.device_list)>1:
+        if len(self.device_list) > 1:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
@@ -2547,7 +2547,7 @@ class BaseCompressor(object):
 
         if q_input is not None:
             if input_ids is not q_input:
-                clear_memory(input_ids,device_list=self.device_list)
+                clear_memory(input_ids, device_list=self.device_list)
             else:
                 clear_memory(device_list=self.device_list)
             input_ids = q_input
@@ -2720,7 +2720,7 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if len(self.device_list)>1:
+            if len(self.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
             clear_memory(input_ids)
