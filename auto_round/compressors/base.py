@@ -2662,13 +2662,13 @@ class BaseCompressor(object):
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5,device_list=self.device_list)
+                    clear_memory_if_reached_threshold(threshold=0.5, device_list=self.device_list)
 
                 self._scale_loss_and_backward(scaler, loss)
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8,device_list=self.device_list)
+                    clear_memory_if_reached_threshold(threshold=0.8, device_list=self.device_list)
 
             if i == 0:
                 init_loss = total_loss
@@ -2760,12 +2760,12 @@ class BaseCompressor(object):
         Returns:
         None
         """
-        clear_memory(device_list = self.device_list)
+        clear_memory(device_list=self.device_list)
         for n, m in model.named_parameters():
             m.requires_grad_(False)
 
         input_ids, input_others = self._split_inputs(inputs)
-        clear_memory(device_list = self.device_list)
+        clear_memory(device_list=self.device_list)
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
