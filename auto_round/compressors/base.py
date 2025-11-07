@@ -144,12 +144,12 @@ class BaseCompressor(object):
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool = False,
         seed: int = 42,
+        low_cpu_mem_usage: bool = False,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -247,7 +247,7 @@ class BaseCompressor(object):
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
-        self.low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
+        self.low_cpu_mem_usage = low_cpu_mem_usage
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")

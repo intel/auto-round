@@ -78,7 +78,6 @@ class AutoRound:
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
@@ -86,6 +85,7 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
+        low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -185,10 +185,10 @@ class AutoRound:
             batch_size=batch_size,
             gradient_accumulate_steps=gradient_accumulate_steps,
             low_gpu_mem_usage=low_gpu_mem_usage,
-            low_cpu_mem_usage=low_cpu_mem_usage,
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
             **kwargs,
         )
         return ar
