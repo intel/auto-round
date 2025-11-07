@@ -78,6 +78,7 @@ class AutoRound:
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
@@ -105,6 +106,7 @@ class AutoRound:
             lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
             minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
             low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.
@@ -183,6 +185,7 @@ class AutoRound:
             batch_size=batch_size,
             gradient_accumulate_steps=gradient_accumulate_steps,
             low_gpu_mem_usage=low_gpu_mem_usage,
+            low_cpu_mem_usage=low_cpu_mem_usage,
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,

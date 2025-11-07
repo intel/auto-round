@@ -822,8 +822,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             dataset=self.llm_dataloader,
-            is_packing_immediate=True,
-            save_block_immediate=True,
+            low_cpu_mem_usage=True,
             device_map="cpu",
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
