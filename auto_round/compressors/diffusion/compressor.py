@@ -309,7 +309,12 @@ class DiffusionCompressor(BaseCompressor):
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
 
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 0 and self.pipe.device != self.model.device and torch.device(self.model.device).type in ["cuda", "xpu"]:
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 0
+            and self.pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
             logger.error(
                 "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
                 "Please use model path for quantization or move the pipeline object to GPU/XPU before passing them into API"
