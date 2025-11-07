@@ -39,6 +39,7 @@ from auto_round.compressors.utils import (
     collect_best_params,
     get_shared_keys,
     gguf_args_check,
+    immediate_saving,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
@@ -148,6 +149,7 @@ class BaseCompressor(object):
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool = False,
         seed: int = 42,
+        low_cpu_mem_usage: bool = False,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -168,6 +170,7 @@ class BaseCompressor(object):
             lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
             minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
             low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.
@@ -244,6 +247,7 @@ class BaseCompressor(object):
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
+        self.low_cpu_mem_usage = low_cpu_mem_usage
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -336,7 +340,10 @@ class BaseCompressor(object):
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
-        self.is_packing_immediate = False  # whether to pack the layer immediately after tuning
+
+        # Whether to pack the layer immediately after tuning
+        self.immediate_packing = False
+        self.immediate_saving = False
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1205,7 +1212,7 @@ class BaseCompressor(object):
         `rtn_*` version if supported, then wraps and unwraps the module to apply
         quantization. If GPU memory is insufficient, it falls back to CPU.
 
-        If packing is enabled (`is_packing_immediate`), the function will also export
+        If packing is enabled (`immediate_packing`), the function will also export
         the quantized layer to the appropriate backend format.
 
         Args:
@@ -1222,7 +1229,7 @@ class BaseCompressor(object):
 
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
+        if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
@@ -1259,33 +1266,44 @@ class BaseCompressor(object):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.is_packing_immediate:
-            from auto_round.export import PACKING_LAYER_WITH_FORMAT
-
-            if check_to_quantized(m):
-                target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                has_gguf = any("gguf" in fmt for fmt in self.formats)
-
-                if has_gguf:
-                    from auto_round.export.export_to_gguf.export import pack_gguf_layer
-
-                    output_dir = self._get_save_folder_name(self.formats[0])
-                    model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-                    pack_gguf_layer(
-                        name,
-                        self.model,
-                        self.formats[0],
-                        output_dir,
-                        self.layer_config,
-                        self.tokenizer,
-                        processor=self.processor if hasattr(self, "processor") else None,
-                        image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                        model_type=model_type,
-                    )
-                else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
+        if self.immediate_packing:
+            self._immediate_pack(name)
         else:
             set_module(self.model, name, m)
+
+        if self.immediate_saving:
+            all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+            last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
+            m = get_module(self.model, name)
+            immediate_saving(self, m, name, last_module)
+
+    def _immediate_pack(self, name: str):
+        m = get_module(self.model, name)
+        if not check_to_quantized(m):
+            return
+        from auto_round.export import PACKING_LAYER_WITH_FORMAT
+
+        target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+        has_gguf = any("gguf" in fmt for fmt in self.formats)
+
+        if has_gguf:
+            from auto_round.export.export_to_gguf.export import pack_gguf_layer
+
+            output_dir = self._get_save_folder_name(self.formats[0])
+            model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
+            pack_gguf_layer(
+                name,
+                self.model,
+                self.formats[0],
+                output_dir,
+                self.layer_config,
+                self.tokenizer,
+                processor=self.processor if hasattr(self, "processor") else None,
+                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                model_type=model_type,
+            )
+        else:
+            PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1301,7 +1319,6 @@ class BaseCompressor(object):
             self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-
         if is_nv_fp(self.data_type):
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -1477,8 +1494,8 @@ class BaseCompressor(object):
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name)
                         all_to_quantized_module_names.remove(m.tmp_name)
-
-                mv_module_from_gpu(block)
+                if not self.immediate_saving:
+                    mv_module_from_gpu(block)
                 pbar.update(1)
 
         pbar.close()
@@ -1556,7 +1573,12 @@ class BaseCompressor(object):
                 )
                 and self.inplace
             ):
-                self.is_packing_immediate = True
+                self.immediate_packing = True
+                if "gguf" not in formats[0] and self.low_cpu_mem_usage:
+                    self.immediate_saving = True
+        if self.immediate_saving and "int" not in self.data_type:
+            logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.immediate_saving = False
         if self.iters == 0:
             return self._quantize_rtn()
 
@@ -1628,15 +1650,14 @@ class BaseCompressor(object):
                 device=self.device,
                 pbar=pbar,
             )
-            if self.is_packing_immediate and len(self.formats) != 1:
+            if self.immediate_packing and len(self.formats) != 1:
                 raise ValueError(
-                    f"Expected exactly one packing format when 'is_packing_immediate' is True, "
+                    f"Expected exactly one packing format when 'immediate_packing' is True, "
                     f"but got {len(self.formats)} formats."
                 )
         pbar.set_description("Quantizing done")
         pbar.close()
-
-        self._quantize_layers(layer_names, all_inputs)  ##TODO pack layer immediately
+        self._quantize_layers(layer_names, all_inputs)
 
         if is_fp8_model(self.model):
             for n, m in self.model.named_modules():
@@ -1714,7 +1735,7 @@ class BaseCompressor(object):
         has_gguf = False
         if hasattr(self, "formats"):
             has_gguf = any("gguf" in format_ for format_ in self.formats)
-        if has_gguf and self.is_packing_immediate:
+        if has_gguf and self.immediate_packing:
             enable_quanted_input = False
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
@@ -1727,8 +1748,8 @@ class BaseCompressor(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
                 )  ##self.model.hf_device_map has not been changed
-
-        self.model = mv_module_from_gpu(self.model)
+        if not self.immediate_saving:
+            self.model = mv_module_from_gpu(self.model)
         clear_memory()
         quant_layer = self._quantize_layer
         for layer_name in layer_names:
@@ -1737,6 +1758,12 @@ class BaseCompressor(object):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
+            if self.immediate_packing:
+                self._immediate_pack(layer_name)
+
+            if self.immediate_saving:
+                m = get_module(self.model, layer_name)
+                immediate_saving(self, m, name=layer_name, last_group=True)
             del layer_input
             clear_memory(q_layer_input)
 
@@ -1937,7 +1964,6 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
-
         if self.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
@@ -2732,6 +2758,7 @@ class BaseCompressor(object):
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         input_ids = to_dtype(input_ids, tmp_dtype)
 
@@ -2808,38 +2835,20 @@ class BaseCompressor(object):
             )
             if hasattr(model, "config"):
                 del m.config
-            if self.is_packing_immediate:
-                from auto_round.export import PACKING_LAYER_WITH_FORMAT
-
+            if self.immediate_packing:
                 for _, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
-                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    has_gguf = any("gguf" in format_ for format_ in self.formats)
-                    if has_gguf:
-                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
+                    self._immediate_pack(tmp_m.tmp_name)
 
-                        output_dir = self._get_save_folder_name(self.formats[0])
-                        model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-                        pack_gguf_layer(
-                            tmp_m.tmp_name,
-                            self.model,
-                            self.formats[0],
-                            output_dir,
-                            self.layer_config,
-                            self.tokenizer,
-                            processor=self.processor if hasattr(self, "processor") else None,
-                            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                            model_type=model_type,
-                        )
-                    else:
-                        PACKING_LAYER_WITH_FORMAT[target_backend](
-                            tmp_m.tmp_name, self.model, self.formats[0], device=self.device
-                        )
+            if self.immediate_saving:
+                last_group = (i + nblocks) >= len(block_names)
+                immediate_saving(self, m, last_group=last_group)
         if pbar is not None:
             pbar.update(1)
 
-        self.model = mv_module_from_gpu(self.model)
+        if not self.immediate_saving:
+            self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
                 delattr(m, "name")
