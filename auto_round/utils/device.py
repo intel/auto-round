@@ -20,7 +20,6 @@ from typing import Callable, Union
 
 import cpuinfo
 import torch
-from lm_eval.tasks.score.math.math_grader import is_digit
 
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
