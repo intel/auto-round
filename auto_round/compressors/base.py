@@ -238,7 +238,7 @@ class BaseCompressor(object):
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
-
+        self.batch_dim = kwargs.pop("batch_dim", None)
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
@@ -352,8 +352,6 @@ class BaseCompressor(object):
         # Some helpers
         if "hpu" in str(self.device):
             self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
-        # TODO: check with heng/weiwei
-        self.batch_dim = kwargs.pop("batch_dim", None)
         self.infer_bs_coeff = 1
 
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
