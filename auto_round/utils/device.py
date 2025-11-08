@@ -355,7 +355,7 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
 
 
-def is_complex_device_mapping(device_map):
+def is_auto_device_mapping(device_map: str | int | dict | None):
     if device_map is None or isinstance(device_map, int):
         return False
     elif device_map == "auto":
@@ -363,7 +363,7 @@ def is_complex_device_mapping(device_map):
     elif isinstance(device_map, str) and "," in device_map:
         return True
     elif isinstance(device_map, dict):
-        return True
+        return False
     else:
         return False
 
@@ -404,7 +404,9 @@ def bytes_to_gigabytes(bytes) -> int:
     return bytes / 1024 / 1024 / 1024
 
 
-def _clear_memory_for_cpu_and_cuda(tensor=None):
+def _clear_memory_for_cpu_and_cuda(
+    tensor: torch.Tensor | list[torch.Tensor] | None = None, device_list: tuple | list | None = None
+):
     if isinstance(tensor, list):
         for i in range(len(tensor)):
             tensor[i] = None
@@ -412,23 +414,40 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         del tensor
     gc.collect()
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        if device_list is None:
+            torch.cuda.synchronize()
+            # Fix https://github.com/intel/auto-round/issues/1004
+            torch.cuda.empty_cache()
+
+        elif len(device_list) > 1:
+            devices = []
+            for device in device_list:
+                if not device.startswith("cuda"):
+                    continue
+                if ":" in device:
+                    device = device.split(":")[-1]
+                else:
+                    device = 0
+                devices.append(int(device))
+            for device in devices:
+                torch.cuda.synchronize(device)
+            torch.cuda.empty_cache()
     if torch.xpu.is_available():
         torch.xpu.empty_cache()
 
 
 @torch._dynamo.disable()
-def clear_memory(tensor=None):
+def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
     from auto_round.utils.device import is_hpex_available
 
     if is_hpex_available():
         # hpu does not have empty_cache
         return
     else:
-        _clear_memory_for_cpu_and_cuda(tensor)
+        _clear_memory_for_cpu_and_cuda(tensor, device_list)
 
 
-def clear_memory_if_reached_threshold(threshold=0.85):
+def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
     """Check all available devices and clear memory if any device is using close to the threshold.
 
     Args:
@@ -463,7 +482,7 @@ def clear_memory_if_reached_threshold(threshold=0.85):
                     "To alleviate high memory usage on the major device, consider reducing the `batch_size` "
                     + "(and correspondingly increasing `gradient_accumulation_steps) or shortening the seqlen."
                 )
-                clear_memory()
+                clear_memory(device_list=device_list)
                 return True
         except Exception as e:
             logger.warning_once(f"Failed to check memory for {name}:{i}: {e}")
@@ -1122,24 +1141,15 @@ def partition_dict_numbers(number_dict, n):
 
 def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     block_name_list = get_block_names(model)
-    device_list = None
-    if torch.cuda.is_available():
-        num_devices = torch.cuda.device_count()
-        device_name = "cuda"
-    elif torch.xpu.is_available():
-        num_devices = torch.xpu.device_count()
-        device_name = "xpu"
-    else:
+    device_list = parse_available_devices(device_map)
+    gpu_devices = []
+    for device in device_list:
+        if device.startswith("cpu") or device.startswith("hpu"):
+            continue
+        gpu_devices.append(device)
+    num_devices = len(gpu_devices)
+    if num_devices < 1:
         return
-
-    if isinstance(device_map, str) and "," in device_map:
-        device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-        num_devices = len(device_list)
-
-    if device_list:
-        gpu_devices = [f"{device_name}:{i}" for i in device_list]
-    else:
-        gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
 
     for block_names in block_name_list:
         for block_name in block_names:
@@ -1184,7 +1194,7 @@ if __name__ == "__main__":
         print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
 
 
-def parse_all_available_device(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
+def parse_available_devices(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
     """
     Parse the device map and return a list of all available devices.
 
@@ -1242,6 +1252,21 @@ def parse_all_available_device(device_map: Union[str, torch.device, int, dict, N
         device_type = device_types[0]
         return [f"{device_type}:{device_map}"] if device_type != "cpu" else ["cpu"]
 
+    # ---- dict-like string ----
+    if isinstance(device_map, str) and ":" in device_map and "," in device_map:
+        pairs = [p.strip() for p in device_map.split(",") if ":" in p]
+        devices = []
+        for pair in pairs:
+            try:
+                key, *value_parts = pair.split(":")
+                value = ":".join(value_parts).strip()
+                if value.isdigit() and device_types[0] != "cpu":
+                    value = device_types[0] + ":" + value
+                devices.append(value)
+            except ValueError:
+                continue
+        return devices
+
     if isinstance(device_map, str):
         # Remove whitespace
         device_map = device_map.strip()
@@ -1264,7 +1289,7 @@ def parse_all_available_device(device_map: Union[str, torch.device, int, dict, N
         # Extract all devices recursively from dict values
         devices = set()
         for v in device_map.values():
-            devices.update(parse_all_available_device(v))
+            devices.update(parse_available_devices(v))
         return sorted(devices)
 
     raise TypeError(f"Unsupported device_map type: {type(device_map)}")
