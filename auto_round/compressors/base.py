@@ -2752,7 +2752,7 @@ class BaseCompressor(object):
             clear_memory(input_ids)
             return None, output
 
-    def _split_inputs(self, inputs: dict):
+    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
