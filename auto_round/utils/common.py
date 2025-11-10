@@ -299,7 +299,8 @@ def get_reciprocal(tensor):
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
 
-def normalize_input(cur_inputs):
+def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
+    """Normalize the decoding layer inputs into input_ids and other inputs."""
     input_ids = []
     input_others = {}
     positional_inputs = []
@@ -307,7 +308,7 @@ def normalize_input(cur_inputs):
     position_ids = None
     cache_position = None
     position_embeddings = (None, None)
-    for cur_inp in cur_inputs:
+    for cur_inp in decoding_layer_inputs:
         input_ids.append(cur_inp[0][0][0])
         for key, val in cur_inp[0][1].items():
             if key == "position_ids":
