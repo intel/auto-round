@@ -303,23 +303,10 @@ def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch
     """Normalize the decoding layer inputs into input_ids and other inputs."""
     input_ids = []
     input_others = {}
-    positional_inputs = []
-    attention_mask = None
-    position_ids = None
-    cache_position = None
-    position_embeddings = (None, None)
+    input_others["positional_inputs"] = []
     for cur_inp in decoding_layer_inputs:
         input_ids.append(cur_inp[0][0][0])
         for key, val in cur_inp[0][1].items():
-            if key == "position_ids":
-                position_ids = val
-            elif key == "position_embeddings":
-                position_embeddings = val
-            elif key == "cache_position":
-                cache_position = val
-    input_others["position_ids"] = position_ids
-    input_others["positional_inputs"] = positional_inputs
-    input_others["attention_mask"] = attention_mask
-    input_others["position_embeddings"] = position_embeddings
-    input_others["cache_position"] = cache_position
+            input_others[key] = val
+
     return input_ids, input_others

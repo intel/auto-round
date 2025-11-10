@@ -2428,7 +2428,18 @@ class BaseCompressor(object):
         block: torch.nn.Module,
         inputs: tuple[Union[list[torch.Tensor], dict, Any], Optional[dict]],
         q_input: Union[torch.Tensor, dict, None] = None,
-        normalize_inputs: bool = False,
+        device: Union[str, torch.device] = "cpu",
+        auto_offload=True,
+    ):
+        input_ids, input_others = normalize_input(inputs)
+        return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
+
+    def _quantize_block(
+        self,
+        block: torch.nn.Module,
+        input_ids: Union[list[torch.Tensor], dict],
+        input_others: dict,
+        q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload=True,
     ):
@@ -2449,10 +2460,6 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
-        if normalize_inputs:
-            input_ids, input_others = normalize_input(inputs)
-        else:
-            input_ids, input_others = inputs
         if auto_offload:
             if self.device_map == "auto" or (isinstance(self.device_map, str) and "," in self.device_map):
                 set_auto_device_map_for_block_with_tuning(
@@ -2573,7 +2580,6 @@ class BaseCompressor(object):
         best_params = {}
         total_loss = 0
         for i in range(self.iters):
-            logger.trace(f"Quant block iteration {i}/{self.iters}, best loss so far: {best_loss}")
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
@@ -2736,9 +2742,9 @@ class BaseCompressor(object):
                 else:
                     logger.info("using algorithm extension for quantization.")
             except (ImportError, ModuleNotFoundError):
-                quantize_block = self.quantize_block
+                quantize_block = self._quantize_block
         else:
-            quantize_block = self.quantize_block
+            quantize_block = self._quantize_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
@@ -2759,7 +2765,8 @@ class BaseCompressor(object):
             m = m.to(device)
             q_input, input_ids = quantize_block(
                 m,
-                (input_ids, input_others),
+                input_ids,
+                input_others,
                 q_input=q_input,
                 device=device,
             )
