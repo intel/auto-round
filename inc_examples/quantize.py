@@ -6,6 +6,29 @@ from auto_round import AutoRound
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+
+recipes = {
+    "ds_mxfp8": {
+        "scheme": "MXFP8",
+        "fp_layers": "lm_head,mlp.gate",
+    },
+    "ds_mxfp4": {
+        "scheme": "MXFP4",
+        "fp_layers": "lm_head,mlp.gate,self_attn",
+    },
+    "qwen_mxfp8": {
+        "scheme": "MXFP8",
+        "fp_layers": "lm_head,mlp.gate",
+    },
+    "qwen_mxfp4": {
+        "scheme": "MXFP4",
+        "fp_layers": "lm_head,mlp.gate,self_attn",
+        "iters": 200,
+    },
+}
+
+
 def quant_model(args):
     fp_layers = "shared_experts,lm_head,mlp.gate"
     if args.skip_attn:
