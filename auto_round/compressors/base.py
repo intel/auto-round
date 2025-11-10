@@ -2483,7 +2483,7 @@ class BaseCompressor(object):
         device: Union[str, torch.device] = "cpu",
         auto_offload=True,
     ):
-        # TODO: relase below assertion after supporting MLLM and diffusion model quantization with quantize_block
+        # TODO: release below assertion after supporting MLLM and diffusion model quantization with quantize_block
         assert self.__class__.__name__ not in [
             "DiffusionCompressor",
             "MLLMCompressor",
