@@ -1464,7 +1464,7 @@ class BaseCompressor(object):
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
-                if len(self.device_list) > 0:
+                if len(self.device_list) > 1:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
