@@ -16,7 +16,7 @@ topologies_config = {
     },
     "ds_mxfp4": {
         "scheme": "MXFP4",
-        "fp_layers": "lm_head,mlp.gate,self_attn",
+        "fp_layers": "lm_head,self_attn",
         "iters": 0,
     },
     "qwen_mxfp8": {
