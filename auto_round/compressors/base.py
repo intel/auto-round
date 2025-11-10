@@ -2512,24 +2512,26 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
-        # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
-        # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
-            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
-            )
+        if auto_offload:
+            # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
+            # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
+            if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
+                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                    block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
+                )
+            else:
+                block = block.to(device)
+                card_0_in_high_risk, loss_device = False, device
         else:
-            block = block.to(device)
             card_0_in_high_risk, loss_device = False, device
 
-        if len(self.device_list) > 1:
+        if len(self.device_list) > 1 and auto_offload:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                    hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                    add_hook_to_module(m, hook, True)
+                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+                add_hook_to_module(m, hook, True)
 
         if q_input is None:
             hook_handles = self._register_act_max_hook(block)
@@ -2537,9 +2539,8 @@ class BaseCompressor(object):
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
-            if auto_offload:
-                for handle in hook_handles:
-                    handle.remove()
+            for handle in hook_handles:
+                handle.remove()
         else:
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
@@ -2664,7 +2665,7 @@ class BaseCompressor(object):
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
-                    with autocast(device_type=loss_device.split(":")[0], dtype=self.amp_dtype):
+                    with autocast(device_type=str(loss_device).split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
@@ -2673,9 +2674,11 @@ class BaseCompressor(object):
                         output_q.to(torch.float32) * tmp_attention_mask,
                         current_output.to(torch.float32) * tmp_attention_mask,
                     )
+                total_loss += loss.item() / num_elm
 
+                if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
-
+                    clear_memory_if_reached_threshold(threshold=0.5, device_list=self.device_list)
                 self._scale_loss_and_backward(scaler, loss)
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
@@ -2731,19 +2734,25 @@ class BaseCompressor(object):
                 cache_device=self.cache_device,
             )
 
-            if len(self.device_list) > 1:
+            if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
-        clear_memory(input_ids)
+                mv_module_from_gpu(block)
+            clear_memory(input_ids)
+            return q_outputs, output
         else:
-            if len(self.device_list) > 1:
+            if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
+                mv_module_from_gpu(block)
             clear_memory(input_ids)
             return None, output
 
-
     def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
+        input_ids = inputs["input_ids"]
+        inputs.pop("input_ids", None)
+        input_others = inputs
+        return input_ids, input_others
+
+    def _quantize_blocks(
         self,
         model: torch.nn.Module,
         inputs: dict,
@@ -2752,7 +2761,7 @@ class BaseCompressor(object):
         nblocks: int = 1,
         device: str = "cpu",
         pbar: tqdm = None,
-    ):
+    ) -> tuple[torch.Tensor, dict]:
         """Quantize and dequantize the weights of the specified blocks in the model.
 
         Args:
