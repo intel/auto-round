@@ -2674,11 +2674,13 @@ class BaseCompressor(object):
                         output_q.to(torch.float32) * tmp_attention_mask,
                         current_output.to(torch.float32) * tmp_attention_mask,
                     )
+
                 total_loss += loss.item() / num_elm
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.5, device_list=self.device_list)
+
                 self._scale_loss_and_backward(scaler, loss)
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
@@ -2746,7 +2748,7 @@ class BaseCompressor(object):
             clear_memory(input_ids)
             return None, output
 
-    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
+    def _split_inputs(self, inputs: dict):
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
