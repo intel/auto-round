@@ -2751,6 +2751,7 @@ class BaseCompressor(object):
 
             if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
+            if auto_offload:
                 mv_module_from_gpu(block)
 
             clear_memory(input_ids)
@@ -2759,6 +2760,7 @@ class BaseCompressor(object):
         else:
             if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
+            if auto_offload:
                 mv_module_from_gpu(block)
             clear_memory(input_ids)
             return None, output
