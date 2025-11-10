@@ -2729,7 +2729,7 @@ class BaseCompressor(object):
             if len(self.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
-            clear_memory(input_ids,self.device_list)
+            clear_memory(input_ids, self.device_list)
             return None, output
 
     def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
