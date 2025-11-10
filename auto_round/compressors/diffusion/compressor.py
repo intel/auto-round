@@ -191,6 +191,7 @@ class DiffusionCompressor(BaseCompressor):
         input_others: dict,
         indices: list[int],
         device: str,
+        cache_device: str = "cpu",
     ) -> torch.Tensor:
         output_config = output_configs.get(block.__class__.__name__, [])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
@@ -207,7 +208,7 @@ class DiffusionCompressor(BaseCompressor):
             current_input_others.update(current_input_ids)
             current_input_ids = hidden_states
         output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx)
-        return output_q
+        return output_q.to(cache_device)
 
     @torch.no_grad()
     def _get_block_outputs(

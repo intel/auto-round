@@ -1460,12 +1460,12 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if is_auto_device_mapping(self.device_map):
+                if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
                 # Dispatch model if needed
-                if len(self.device_list) > 0:
+                if len(self.device_list) > 1:
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                     for _, m in block.named_modules():
@@ -2523,6 +2523,7 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
+
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
             # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
@@ -2729,7 +2730,7 @@ class BaseCompressor(object):
         )
         logger.info(dump_info)
         if self.low_gpu_mem_usage:
-            clear_memory()  # clear cached memory during training
+            clear_memory(self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -2756,6 +2757,7 @@ class BaseCompressor(object):
 
             clear_memory(input_ids)
 
+
             return q_outputs, output
         else:
             if len(self.device_list) > 1 and auto_offload:
@@ -2763,6 +2765,7 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
             clear_memory(input_ids)
+
             return None, output
 
     def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
