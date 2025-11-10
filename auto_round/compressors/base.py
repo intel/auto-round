@@ -2483,6 +2483,13 @@ class BaseCompressor(object):
         device: Union[str, torch.device] = "cpu",
         auto_offload=True,
     ):
+        """
+        This function quantizes a specific decoded block of a model.
+        It is primarily used by LLM-Compressor. For more details, please refer to the following PR:
+        https://github.com/vllm-project/llm-compressor/pull/1994
+        """
+    
+    
         # TODO: relase below assertion after supporting MLLM and diffusion model quantization with quantize_block
         assert self.__class__.__name__ not in [
             "DiffusionCompressor",
