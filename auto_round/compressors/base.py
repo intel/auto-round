@@ -249,7 +249,6 @@ class BaseCompressor(object):
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
-        self.batch_dim = kwargs.pop("batch_dim", None)
         self.low_cpu_mem_usage = low_cpu_mem_usage
 
         if kwargs:
