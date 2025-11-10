@@ -308,5 +308,8 @@ def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch
         input_ids.append(cur_inp[0][0][0])
         for key, val in cur_inp[0][1].items():
             input_others[key] = val
-
+    # Force 'use_cache' to be False
+    if "use_cache" in input_others and input_others["use_cache"] is True:
+        logger.warning_once("Forcing 'use_cache' to be False during calibration.")
+        input_others["use_cache"] = False
     return input_ids, input_others
