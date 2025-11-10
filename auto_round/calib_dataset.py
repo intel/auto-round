@@ -863,6 +863,6 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
-    dataset_final = get_dataset(tokenizer, seqlen, dataset_name, seed, bs, nsamples)
+    dataset_final = get_dataset(tokenizer, seqlen, dataset_name, seed, nsamples)
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
