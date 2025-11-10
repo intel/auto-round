@@ -2767,7 +2767,7 @@ class BaseCompressor(object):
         nblocks: int = 1,
         device: str = "cpu",
         pbar: tqdm = None,
-    ) -> tuple[torch.Tensor, dict]:
+    ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
         Args:
