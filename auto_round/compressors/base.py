@@ -1459,7 +1459,7 @@ class BaseCompressor(object):
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
-                if is_auto_device_mapping(self.device_map):
+                if is_auto_device_mapping(self.device_map) and len(self.device_list)>1:
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
@@ -2498,7 +2498,7 @@ class BaseCompressor(object):
                     set_module(block, n, new_layer)
         # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
         # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-        if self.device_map == "auto" or ((isinstance(self.device_map, str) and "," in self.device_map)):
+        if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
             card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                 block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
             )
