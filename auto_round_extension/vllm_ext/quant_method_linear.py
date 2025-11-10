@@ -58,7 +58,7 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
         # TODO: use a more robust way to map layer names
         if prefix.endswith("gate_up_proj"):
             # update gate_up_proj to gate_proj, assume both gate and up share the same quantization scheme
-            prefix = prefix.replace("gate_up_proj", "gate_proj")
+            prefix = prefix.replace("gate_up_proj", "up_proj")
         if prefix.endswith("qkv_proj"):
             # update qkv_proj to q_proj, assume all qkv share the same quantization scheme
             prefix = prefix.replace("qkv_proj", "q_proj")

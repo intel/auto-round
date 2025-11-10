@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 topologies_config = {
     "ds_mxfp8": {
         "scheme": "MXFP8",
-        "fp_layers": "lm_head,mlp.gate",
+        "fp_layers": "lm_head",
         "iters": 0,
     },
     "ds_mxfp4": {

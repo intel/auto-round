@@ -6,7 +6,8 @@ export VLLM_ENABLE_V1_MULTIPROCESSING=0
 model_path="quantized_models/DeepSeek-V2-Lite-Chat-MXFP4/"
 model_path="quantized_models/DeepSeek-V2-Lite-Chat-MXFP4"
 model_path="quantized_model_qwen_mxfp8"
-model_path="quantized_model_qwen_mxfp4"
+model_path="quantized_model_ds_mxfp8"
+# model_path="quantized_model_qwen_mxfp4"
 # model_path="quantized_models/Qwen3-235B-A22B-MXFP4"
 # model_path="quantized_models/Qwen3-30B-A3B-Base-MXFP4"
 
