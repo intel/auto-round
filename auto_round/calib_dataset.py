@@ -632,7 +632,7 @@ def select_dataset(dataset, indices):
         return dataset
 
 
-def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512):
+def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
     """Generate a dataset for calibration.
 
     Args:
@@ -643,7 +643,6 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, b
                                      Defaults to "NeelNanda/pile-10k".
         split (str, optional): The data split to use. Defaults to None.
         seed (int, optional): The random seed for reproducibility. Defaults to 42.
-        bs (int, optional): The batch size. Defaults to 4.
         nsamples (int, optional): The total number of samples to include. Defaults to 512.
         apply_chat_template: Whether to apply chat template in tokenization.
 
