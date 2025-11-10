@@ -2483,6 +2483,11 @@ class BaseCompressor(object):
         device: Union[str, torch.device] = "cpu",
         auto_offload=True,
     ):
+        # TODO: relase below assertion after supporting MLLM and diffusion model quantization with quantize_block
+        assert self.__class__.__name__ not in [
+            "DiffusionCompressor",
+            "MLLMCompressor",
+        ], f"Currently, {self.__class__.__name__} does not support support quantize block with this function."
         input_ids, input_others = normalize_input(inputs)
         return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
 
