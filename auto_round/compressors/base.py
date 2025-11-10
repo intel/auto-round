@@ -2699,7 +2699,7 @@ class BaseCompressor(object):
         )
         logger.info(dump_info)
         if self.low_gpu_mem_usage:
-            clear_memory(self.device_list)  # clear cached memory during training
+            clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
