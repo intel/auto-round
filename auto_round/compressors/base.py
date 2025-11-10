@@ -367,6 +367,7 @@ class BaseCompressor(object):
         # Some helpers
         if "hpu" in str(self.device):
             self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
+        self.batch_dim = None
         self.infer_bs_coeff = 1
 
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
