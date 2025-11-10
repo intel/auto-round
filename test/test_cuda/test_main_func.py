@@ -212,7 +212,6 @@ class TestMainFunc(unittest.TestCase):
             group_size=group_size,
             iters=2,
             seqlen=10,
-            dataset=self.llm_dataloader,
             low_cpu_mem_usage=True,
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
