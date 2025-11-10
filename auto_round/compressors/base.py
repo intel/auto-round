@@ -1528,7 +1528,7 @@ class BaseCompressor(object):
             q_inputs = q_inputs.pop(input_id_str[0], None)
         return inputs, q_inputs
 
-    def configure_layer_config(self, enable_gguf_official_mixed: None | bool = False):
+    def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
         self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model,
             self.layer_config,
