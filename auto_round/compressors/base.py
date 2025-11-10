@@ -20,7 +20,7 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
-from typing import Any, Callable, Union
+from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
@@ -88,6 +88,7 @@ from auto_round.utils import (
     is_hpex_available,
     llm_load_model,
     mv_module_from_gpu,
+    normalize_input,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -1528,6 +1529,21 @@ class BaseCompressor(object):
             q_inputs = q_inputs.pop(input_id_str[0], None)
         return inputs, q_inputs
 
+    def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
+            self.model,
+            self.layer_config,
+            self.scheme,
+            self.scale_dtype,
+            self.supported_types,
+            self.inner_supported_types,
+            self.quant_block_list,
+            self.fp_layers,
+            self.quant_lm_head,
+            enable_gguf_official_mixed=enable_gguf_official_mixed,
+            is_mllm=self.mllm,
+        )
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
@@ -1546,20 +1562,8 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = True
         else:
             enable_gguf_official_mixed = False
-        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-            self.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.fp_layers,
-            self.quant_lm_head,
-            enable_gguf_official_mixed=enable_gguf_official_mixed,
-            is_mllm=self.mllm,
-        )
 
+        self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
@@ -2471,6 +2475,28 @@ class BaseCompressor(object):
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
+    def quantize_block(
+        self,
+        block: torch.nn.Module,
+        inputs: tuple[Union[list[torch.Tensor], dict, Any], Optional[dict]],
+        q_input: Union[torch.Tensor, dict, None] = None,
+        device: Union[str, torch.device] = "cpu",
+        auto_offload=True,
+    ):
+        """
+        This function quantizes a specific decoded block of a model.
+        It is primarily used by LLM-Compressor. For more details, please refer to the following PR:
+        https://github.com/vllm-project/llm-compressor/pull/1994
+        """
+
+        # TODO: release below assertion after supporting MLLM and diffusion model quantization with quantize_block
+        assert self.__class__.__name__ not in [
+            "DiffusionCompressor",
+            "MLLMCompressor",
+        ], f"Currently, {self.__class__.__name__} does not support support quantize block with this function."
+        input_ids, input_others = normalize_input(inputs)
+        return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
+
     def _quantize_block(
         self,
         block: torch.nn.Module,
@@ -2478,6 +2504,7 @@ class BaseCompressor(object):
         input_others: dict,
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
+        auto_offload=True,
     ):
         """Quantize the weights of a given block of the model.
 
@@ -2496,17 +2523,21 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
-        # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
-        # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-        if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
-            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
-            )
+
+        if auto_offload:
+            # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
+            # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
+            if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
+                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                    block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
+                )
+            else:
+                block = block.to(device)
+                card_0_in_high_risk, loss_device = False, device
         else:
-            block = block.to(device)
             card_0_in_high_risk, loss_device = False, device
 
-        if len(self.device_list) > 1:
+        if len(self.device_list) > 1 and auto_offload:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
@@ -2648,7 +2679,7 @@ class BaseCompressor(object):
                 else:
                     tmp_attention_mask = 1.0
                 if self.amp:
-                    with autocast(device_type=loss_device.split(":")[0], dtype=self.amp_dtype):
+                    with autocast(device_type=str(loss_device).split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q * tmp_attention_mask, current_output * tmp_attention_mask
                         )
@@ -2718,18 +2749,22 @@ class BaseCompressor(object):
                 device,
                 cache_device=self.cache_device,
             )
-            if len(self.device_list) > 1:
+
+            if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
-            clear_memory(input_ids, self.device_list)
+            if auto_offload:
+                mv_module_from_gpu(block)
+
+            clear_memory(input_ids)
 
             return q_outputs, output
-
         else:
-            if len(self.device_list) > 1:
+            if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
-            clear_memory(input_ids, self.device_list)
+            if auto_offload:
+                mv_module_from_gpu(block)
+            clear_memory(input_ids)
+
             return None, output
 
     def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
