@@ -2757,7 +2757,6 @@ class BaseCompressor(object):
 
             clear_memory(input_ids)
 
-
             return q_outputs, output
         else:
             if len(self.device_list) > 1 and auto_offload:
