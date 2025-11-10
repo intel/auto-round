@@ -47,6 +47,7 @@ class DiffusionCompressor(BaseCompressor):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         guidance_scale (float): Control how much the image generation process follows the text prompt.
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).
@@ -81,6 +82,7 @@ class DiffusionCompressor(BaseCompressor):
         self,
         model: Union[object, str],
         tokenizer=None,
+        platform: str = "hf",
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator_seed: int = None,
@@ -99,6 +101,7 @@ class DiffusionCompressor(BaseCompressor):
         **kwargs,
     ):
         logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        model_dtype = kwargs.pop("model_dtype", None)
 
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
@@ -110,7 +113,7 @@ class DiffusionCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            pipe, model = diffusion_load_model(model, device=self.device)
+            pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
         elif isinstance(model, pipeline_utils.DiffusionPipeline):
             pipe = model
             model = pipe.transformer
@@ -145,6 +148,7 @@ class DiffusionCompressor(BaseCompressor):
         super(DiffusionCompressor, self).__init__(
             model=model,
             tokenizer=None,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -304,6 +308,20 @@ class DiffusionCompressor(BaseCompressor):
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
+
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 0
+            and self.pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.error(
+                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+                "Please use model path for quantization or "
+                "move the pipeline object to GPU/XPU before passing them into API."
+            )
+            exit(-1)
+
         if self.pipe.device != self.model.device:
             self.pipe.to(self.model.device)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:

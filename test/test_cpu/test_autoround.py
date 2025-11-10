@@ -716,6 +716,9 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
+    def test_alg_ext_import(self):
+        from auto_round.alg_ext import quantize_block_ext
+
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
@@ -740,8 +743,20 @@ class TestAutoRound(unittest.TestCase):
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
-        ar = AutoRound(model_name, quant_lm_head=True, iters=1, nsamples=1, seqlen=32)
-        ar.quantize()
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
+
+    def test_quant_lm_head_layer_config(self):
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
+        layer_config = {"lm_head": {"bits": 4}}
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True, layer_config=layer_config)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
     def test_compressor(self):
         model_name = "Qwen/Qwen2-VL-2B-Instruct"
@@ -792,6 +807,32 @@ class TestAutoRound(unittest.TestCase):
 
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
+
+    def test_low_cpu_mem_usage(self):
+        bits, group_size = 4, 32
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        quantized_model_path = self.save_folder
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            iters=2,
+            seqlen=10,
+            dataset=self.llm_dataloader,
+            low_cpu_mem_usage=True,
+            device_map="cpu",
+        )
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_create_adam(self):
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        from auto_round import AutoRound
+
+        ar = AutoRound(model=model_name, enable_adam=True)
 
 
 if __name__ == "__main__":

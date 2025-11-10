@@ -27,6 +27,7 @@ from auto_round.compressors.mllm.template import Template, get_template
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
+    MISTRAL_3_2_MODELS,
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SUPPORT_ONLY_TEXT_MODELS,
     _handle_special_model,
@@ -87,6 +88,7 @@ class MLLMCompressor(BaseCompressor):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
+        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         processor: Any multi-modal model will require an object to encode or
                    decode the data that groups several modalities (among text, vision and audio).
         image_processor: Image processor for special model like llava.
@@ -145,6 +147,7 @@ class MLLMCompressor(BaseCompressor):
         self,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        platform: str = "hf",
         processor=None,
         image_processor=None,
         scheme: Union[str, dict, QuantizationScheme] = "W4A16",
@@ -162,8 +165,10 @@ class MLLMCompressor(BaseCompressor):
         seed: int = 42,
         **kwargs,
     ):
+
         extra_data_dir = kwargs.pop("extra_data_dir", None)
         template = kwargs.pop("template", None)
+        model_dtype = kwargs.pop("model_dtype", None)
 
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         if device_map is None:
@@ -171,7 +176,9 @@ class MLLMCompressor(BaseCompressor):
         self._set_device(device_map)
 
         if isinstance(model, str):
-            model, processor, tokenizer, image_processor = mllm_load_model(model, device=self.device)
+            model, processor, tokenizer, image_processor = mllm_load_model(
+                model, platform=platform, device=self.device, model_dtype=model_dtype
+            )
 
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
@@ -187,7 +194,7 @@ class MLLMCompressor(BaseCompressor):
 
         if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
             template = "default"
-        if hasattr(model, "name_or_path") and "Mistral-Small-3.2" in model.name_or_path:
+        if hasattr(model, "name_or_path") and any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
             template = "mistral3_2"
         if iters > 0:
             self.template = template if template is not None else model.config.model_type
@@ -258,6 +265,7 @@ class MLLMCompressor(BaseCompressor):
         super(MLLMCompressor, self).__init__(
             model=model,
             tokenizer=tokenizer,
+            platform=platform,
             scheme=scheme,
             layer_config=layer_config,
             dataset=dataset,
@@ -374,6 +382,7 @@ class MLLMCompressor(BaseCompressor):
                     continue
                 try:
                     if isinstance(data_new, torch.Tensor):
+                        data_new = data_new.to(self.model.device)
                         self.model(data_new)
                     elif isinstance(data_new, tuple) or isinstance(data_new, list):
                         self.model(*data_new)

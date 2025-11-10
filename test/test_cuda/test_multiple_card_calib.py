@@ -36,7 +36,7 @@ class TestAutoRound(unittest.TestCase):
 
         ##test llm script
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model /models/Meta-Llama-3.1-8B-Instruct --devices '0,1' --quant_lm_head --disable_eval --iters 1 --nsamples 1 --output_dir None"
+            f"cd ../.. && {python_path} -m auto_round --model /models/Meta-Llama-3.1-8B-Instruct --devices '0,1' --quant_lm_head --iters 1 --nsamples 1 --output_dir None"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

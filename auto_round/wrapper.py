@@ -425,7 +425,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the linear layer.
         """
-        return F.linear(x, weight, bias)
+        return F.linear(x, weight, bias)  # pylint: disable=E1102
 
     def all_reduce_linear_forward(self, x, weight, bias):
         """Performs the forward pass for a linear layer.
@@ -550,7 +550,7 @@ class WrapperLayerNorm(torch.nn.Module):
     def unwrapper(self, best_params):
         if best_params is None:
             return self.orig_layer
-        v = best_params["v"]
+        v = best_params["v"].to(self.device)
         weight_q, _, _ = self.quant_func(
             self.orig_layer.weight, self.bits, self.group_size, v, q_scale_thresh=self.q_scale_thresh
         )
@@ -601,7 +601,7 @@ class WrapperLlamaNorm(torch.nn.Module):
     def unwrapper(self, best_params):
         if best_params is None:
             return self.orig_layer
-        v = best_params["v"]
+        v = best_params["v"].to(self.device)
         weight_q, _, _ = self.quant_func(
             self.orig_layer.weight, self.bits, self.group_size, v, q_scale_thresh=self.q_scale_thresh
         )

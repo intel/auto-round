@@ -70,6 +70,7 @@ from auto_round.utils import (
     matches_any_regex,
     set_module,
     to_standard_regex,
+    unsupported_meta_device,
 )
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
@@ -258,17 +259,17 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
-    if not dynamic:  # Only uniform precision
-        for block_names in all_blocks:
-            first_block = get_module(model, block_names[0])
-            for n, m in first_block.named_modules():
-                if m.tmp_name not in layer_config:
-                    continue
-                if not check_to_quantized(layer_config[m.tmp_name]):
-                    all_to_quantized = False
-                else:
-                    modules_in_block_to_quantize.append(n)
-        modules_in_block_to_quantize = [modules_in_block_to_quantize]
+    # for backward compatibility
+    for block_names in all_blocks:
+        first_block = get_module(model, block_names[0])
+        for n, m in first_block.named_modules():
+            if m.tmp_name not in layer_config:
+                continue
+            if not check_to_quantized(layer_config[m.tmp_name]):
+                all_to_quantized = False
+            else:
+                modules_in_block_to_quantize.append(n)
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]
 
     if all_to_quantized:
         modules_in_block_to_quantize = None
@@ -283,18 +284,18 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+    if not unsupported_meta_device(model):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with tqdm(total=len(names), leave=True) as pbar:
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
+                def wrapper(name):
+                    pbar.set_description(f"packing {name}")
+                    with tctl.threadpool_limits(limits=1):
+                        pack_layer(name, model, backend, device)
+                    pbar.update(1)
 
-            def wrapper(name):
-                pbar.set_description(f"packing {name}")
-                with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend, device)
-                pbar.update(1)
-
-            for _ in executor.map(wrapper, names):
-                pass
+                for _ in executor.map(wrapper, names):
+                    pass
     if output_dir is None:
         return model
     quantization_config["lm_head"] = lm_head_quantized
