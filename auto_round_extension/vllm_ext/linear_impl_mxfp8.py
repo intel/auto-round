@@ -113,6 +113,7 @@ class AutoRoundMXFP8LinearImpl(AutoRoundQuantImpl):
             weight_fp8=weight.data,
             scale_e8m0=weight_scale.data,
             block_size=self.group_size,
+            target_dtype=x.dtype,
         )
         dequnat_weight = dequnat_weight.to(x.dtype)
         # if not envs.VLLM_AR_MXFP8_DISABLE_INPUT_QDQ:
@@ -122,6 +123,7 @@ class AutoRoundMXFP8LinearImpl(AutoRoundQuantImpl):
             weight_fp8=x_quant,
             scale_e8m0=x_scale,
             block_size=self.group_size,
+            target_dtype=x.dtype,
         )
         x = dequant_x.to(x.dtype)
 

@@ -41,7 +41,7 @@ def get_fp_scale(scale_e8m0):
     return s_fp
 
 
-def dequant_mx_fp8(weight_fp8, scale_e8m0, block_size):
+def dequant_mx_fp8(weight_fp8, scale_e8m0, block_size, target_dtype):
     scale_float = get_fp_scale(scale_e8m0)
     weight_bf16 = weight_fp8.to(torch.bfloat16)
     weight_original_shape = weight_bf16.shape
@@ -49,7 +49,7 @@ def dequant_mx_fp8(weight_fp8, scale_e8m0, block_size):
     scale_float = scale_float.reshape(-1, 1)
     dequant_weight = weight_bf16 * scale_float
     dequant_weight = dequant_weight.reshape(weight_original_shape)
-    return dequant_weight
+    return dequant_weight.to(target_dtype)
 
 
 def quant_mx_fp8(tensor):

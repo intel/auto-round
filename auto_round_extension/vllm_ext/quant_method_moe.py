@@ -56,6 +56,11 @@ class AutoRoundMoEMethod(FusedMoEMethodBase):
 
                 return AutoRoundMoEMethodMXFp4Impl(quant_config, layer.moe_config)
 
+            elif _is_mxfp8_w8a8(scheme):
+                from auto_round_extension.vllm_ext.moe_impl_mxfp8 import AutoRoundMoEMethodMXFp8Impl
+
+                return AutoRoundMoEMethodMXFp8Impl(quant_config, layer.moe_config)
+
             raise ValueError(f"Unsupported FusedMoe scheme: {scheme}")
 
         layer_scheme = get_scheme(quant_config, prefix)
