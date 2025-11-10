@@ -31,7 +31,6 @@ class AutoRoundMXFP8LinearImpl(AutoRoundQuantImpl):
         self.quant_scheme = quant_scheme
         self.strategy = "TENSOR_GROUP"
         self.out_dtype = torch.get_default_dtype()
-        self.is_static_input_scheme = False
         self.group_size = 32
 
     @classmethod
@@ -69,36 +68,18 @@ class AutoRoundMXFP8LinearImpl(AutoRoundQuantImpl):
         layer.register_parameter("weight", weight)
 
         # WEIGHT SCALE
-        # TODO: update create_xxx_parameter functions to return
-        # the newly added parameters
-        if self.strategy == "TENSOR_GROUP":
-            # Per Group Weight Scale
-            weight_scale = GroupQuantScaleParameter(
-                data=torch.empty(
-                    sum(output_partition_sizes),
-                    input_size_per_partition // self.group_size,
-                    dtype=torch.uint8,  # E8M0 for MXFP8 scale
-                ),
-                input_dim=1,
-                output_dim=0,
-                weight_loader=weight_loader,
-            )
-        else:
-            raise NotImplementedError(f"Strategy {self.strategy} is not supported for W8A8-MXFp8")
-
-        # min requirement for fp8 kernels
-        # weight_scale[:] = torch.finfo(torch.float32).min
-        # weight_scale.fill_(torch.finfo(torch.float32).min)
+        # Per Group Weight Scale
+        weight_scale = GroupQuantScaleParameter(
+            data=torch.empty(
+                sum(output_partition_sizes),
+                input_size_per_partition // self.group_size,
+                dtype=torch.uint8,  # E8M0 for MXFP8 scale
+            ),
+            input_dim=1,
+            output_dim=0,
+            weight_loader=weight_loader,
+        )
         layer.register_parameter("weight_scale", weight_scale)
-
-        # INPUT SCALE
-        if self.is_static_input_scheme:
-            input_scale = PerTensorScaleParameter(
-                data=torch.empty(len(output_partition_sizes), dtype=torch.float32),
-                weight_loader=weight_loader,
-            )
-            input_scale[:] = torch.finfo(torch.float32).min
-            layer.register_parameter("input_scale", input_scale)
 
     def apply_weights(
         self,
