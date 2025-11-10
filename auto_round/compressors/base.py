@@ -2530,6 +2530,7 @@ class BaseCompressor(object):
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
                 hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                 add_hook_to_module(m, hook, True)
 
@@ -2539,6 +2540,7 @@ class BaseCompressor(object):
             output = self._get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
+
             for handle in hook_handles:
                 handle.remove()
         else:
@@ -2725,7 +2727,7 @@ class BaseCompressor(object):
         if is_nv_fp(self.act_data_type):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
-        q_outputs = None
+
         if self.enable_quanted_input:
             q_outputs = self._get_block_outputs(
                 block,
