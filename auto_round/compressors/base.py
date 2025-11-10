@@ -2699,7 +2699,7 @@ class BaseCompressor(object):
         )
         logger.info(dump_info)
         if self.low_gpu_mem_usage:
-            clear_memory()  # clear cached memory during training
+            clear_memory(self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -2721,7 +2721,7 @@ class BaseCompressor(object):
             if len(self.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
-            clear_memory(input_ids)
+            clear_memory(input_ids, self.device_list)
 
             return q_outputs, output
 
@@ -2729,7 +2729,7 @@ class BaseCompressor(object):
             if len(self.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block)
-            clear_memory(input_ids)
+            clear_memory(input_ids,self.device_list)
             return None, output
 
     def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
