@@ -2741,7 +2741,9 @@ class BaseCompressor(object):
             if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
                 mv_module_from_gpu(block)
+
             clear_memory(input_ids)
+
             return q_outputs, output
         else:
             if len(self.device_list) > 1 and auto_offload:
