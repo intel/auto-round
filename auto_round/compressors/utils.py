@@ -685,17 +685,21 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     n_layer = None
     if model_type != ModelType.TEXT:
         n_layer_vision = None
-    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
+    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
-            break
         if model_type != ModelType.TEXT:
-            if hasattr(model.config, "text_config"):
+            if n_layer is not None and hasattr(model.config, "text_config"):
                 if hasattr(getattr(model.config, "text_config"), name):
                     n_layer = getattr(getattr(model.config, "text_config"), name)
-            if hasattr(model.config, "vision_config"):
-                if hasattr(getattr(model.config, "vision_config"), name):
-                    n_layer_vision = getattr(getattr(model.config, "vision_config"), name)
+            for config_name in ["vision_config", "vision_encoder"]:
+                if hasattr(model.config, config_name):
+                    if hasattr(getattr(model.config, config_name), name):
+                        n_layer_vision = getattr(getattr(model.config, config_name), name)
+                        break
+            if n_layer and n_layer_vision:
+                break
+
     if n_layer is None:
         return layer_config, {}
 
