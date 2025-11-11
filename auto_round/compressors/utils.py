@@ -111,7 +111,7 @@ def block_forward(
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
     if amp:
-        with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
+        with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)
     else:
         output = block(input_ids, *input_tuple, **input_others)
