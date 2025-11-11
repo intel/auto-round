@@ -661,7 +661,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.utils.common import LazyImport
+    from auto_round.utils.common import MM_KEYS, LazyImport
     from auto_round.utils.model import get_lm_head_name, get_module
 
     # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
@@ -671,24 +671,37 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         hparams=model.config.to_dict(), model_type=model_type
     )
     try:
-        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        if model_type != ModelType.TEXT:
+            model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
+                model_architecture, model_type=model_type
+            )
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
+            model_architecture, model_type=ModelType.TEXT
+        )
+
     except NotImplementedError:
         return layer_config, {}
 
     n_layer = None
+    if model_type != ModelType.TEXT:
+        n_layer_vision = None
     for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
-        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
             break
-        if hasattr(model.config, sub_attr):
-            if hasattr(getattr(model.config, sub_attr), name):
-                n_layer = getattr(getattr(model.config, sub_attr), name)
-                break
+        if model_type != ModelType.TEXT:
+            if hasattr(model.config, "text_config"):
+                if hasattr(getattr(model.config, "text_config"), name):
+                    n_layer = getattr(getattr(model.config, "text_config"), name)
+            if hasattr(model.config, "vision_config"):
+                if hasattr(getattr(model.config, "vision_config"), name):
+                    n_layer_vision = getattr(getattr(model.config, "vision_config"), name)
     if n_layer is None:
         return layer_config, {}
 
     tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
+    if model_type != ModelType.TEXT:
+        tensor_map_vision = gguf.get_tensor_name_map(model_class_vision.model_arch, n_layer_vision)
 
     def _set_config(config, target_config):
         for k, v in target_config.items():
@@ -744,7 +757,17 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1)
             )
 
-        gguf_name = tensor_map.get_name(layer_name)
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_KEYS]):
+            gguf_name = tensor_map_vision.get_name(layer_name)
+            if gguf_name is None:
+                for key in MM_KEYS:
+                    gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
+                    if gguf_name is not None:
+                        break
+        else:
+            gguf_name = tensor_map.get_name(layer_name)
+            if gguf_name is None:
+                gguf_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
         bits_index = 6
         if config.get("fixed_by_user", False):
             if "bits" not in config:
