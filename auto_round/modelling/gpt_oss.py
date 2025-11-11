@@ -13,8 +13,6 @@
 # limitations under the License.
 
 
-from typing import Any
-
 import torch
 from torch import nn
 from transformers.modeling_utils import no_init_weights as skip_weights_initialize
