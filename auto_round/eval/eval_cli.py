@@ -108,16 +108,15 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help=(
                 "Optional per-task configuration in JSON or simplified format. "
                 "Example JSON: "
-                "'{\"gsm8k_llama\": {\"apply_chat_template\": true, \"fewshot_as_multiturn\": true}, "
-                " \"hellaswag\": {\"num_fewshot\": 10}}' "
+                '\'{"gsm8k_llama": {"apply_chat_template": true, "fewshot_as_multiturn": true}, '
+                ' "hellaswag": {"num_fewshot": 10}}\' '
                 "You can also provide a JSON file path like 'task_configs.json'."
             ),
         )
         self.add_argument(
             "--disable_thinking",
             action="store_true",
-            help=("wheather to disable thinking mode of chat_template."
-            ),
+            help=("wheather to disable thinking mode of chat_template."),
         )
         self.add_argument("--max_length", default=None, type=int, help="max generation length for eval")
 
@@ -242,7 +241,7 @@ def eval_task_by_task(
     mllm=False,
     task_configs=None,  # e.g. {"gsm8k": {"apply_chat_template": True, "fewshot_as_multiturn": True}}
     disable_thinking=False,
-    max_length=None, # default to algin with model's original setting
+    max_length=None,  # default to align with model's original setting
 ):
     """
     Evaluate each LM-eval task sequentially, with optional per-task overrides.
@@ -315,17 +314,15 @@ def eval_task_by_task(
         )
         model.eval()
         parallelism = False
-    
+
     # -------------------------------
     # Build LM-eval model wrapper
     # -------------------------------
-    if disable_thinking: ## align with fp-quant
+    if disable_thinking:  ## align with fp-quant
         from functools import partial
-        tokenizer.apply_chat_template = partial(
-            tokenizer.apply_chat_template, 
-            enable_thinking=False
-        )
-    # check the max_lentgh
+
+        tokenizer.apply_chat_template = partial(tokenizer.apply_chat_template, enable_thinking=False)
+    # check the max_length
     init_kwargs = {}
     if max_length is not None:
         init_kwargs["max_length"] = max_length
@@ -375,12 +372,19 @@ def eval_task_by_task(
         batch_size = task_cfg.get("batch_size", batch_size)
         fewshot_as_multiturn = task_cfg.get("fewshot_as_multiturn", False)
         logger.info(f"=== Running task: {task} ===")
-        logger.info(f"Task config: fewshot={num_fewshot}, apply_chat_template={apply_chat_template}," \
-                 f"fewshot_as_multiturn={fewshot_as_multiturn}, batch_size={batch_size}")
+        logger.info(
+            f"Task config: fewshot={num_fewshot}, apply_chat_template={apply_chat_template},"
+            f"fewshot_as_multiturn={fewshot_as_multiturn}, batch_size={batch_size}"
+        )
         while retry_times:
             try:
                 res = lm_simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit,
+                    model=hflm,
+                    model_args=None,
+                    device=device_str,
+                    tasks=task,
+                    batch_size=batch_size,
+                    limit=limit,
                     num_fewshot=num_fewshot,
                     apply_chat_template=apply_chat_template,
                     fewshot_as_multiturn=fewshot_as_multiturn,
@@ -395,7 +399,12 @@ def eval_task_by_task(
                             hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1, limit=limit,
+                            model=hflm,
+                            model_args=None,
+                            device=device_str,
+                            tasks=task,
+                            batch_size=1,
+                            limit=limit,
                             num_fewshot=num_fewshot,
                             apply_chat_template=apply_chat_template,
                             fewshot_as_multiturn=fewshot_as_multiturn,

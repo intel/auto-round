@@ -374,16 +374,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help=(
                 "Optional per-task configuration in JSON or simplified format. "
                 "Example JSON: "
-                "'{\"gsm8k_llama\": {\"apply_chat_template\": true, \"fewshot_as_multiturn\": true}, "
-                " \"hellaswag\": {\"num_fewshot\": 10}}' "
+                '\'{"gsm8k_llama": {"apply_chat_template": true, "fewshot_as_multiturn": true}, '
+                ' "hellaswag": {"num_fewshot": 10}}\' '
                 "You can also provide a JSON file path like 'task_configs.json'."
             ),
         )
         eval_args.add_argument(
             "--disable_thinking",
             action="store_true",
-            help=("wheather to disable thinking mode of chat_template."
-            ),
+            help=("wheather to disable thinking mode of chat_template."),
         )
         eval_args.add_argument("--max_length", default=None, type=int, help="Random seed for reproducibility.")
 
@@ -881,4 +880,3 @@ def run_fast():
 
 if __name__ == "__main__":
     run()
-
