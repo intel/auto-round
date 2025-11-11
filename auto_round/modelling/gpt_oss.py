@@ -19,7 +19,9 @@ from transformers.modeling_utils import no_init_weights as skip_weights_initiali
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-__all__ = ["get_replacement_info"]
+from auto_round.modelling.replace_modules import ReplacementModule
+
+# __all__ = ["get_replacement_info"]
 
 
 def _update_parameter(
@@ -52,13 +54,13 @@ class GPTOssSingleExpert(nn.Module):
         return self.down_proj(act)
 
 
-class SequentialGPTOSSMoE(nn.Module):
+class SequentialGPTOSSMoE(ReplacementModule):
     """
     Replaces GPT-OSS fused-expert MoE with per-expert `GPTOssSingleExpert` modules.
     Copies weights from fused tensors and reuses the original router and optional shared_expert.
     """
 
-    def __init__(self, config: GptOssConfig, original: GptOssMLP):
+    def __init__(self, original: GptOssMLP, config: GptOssConfig):
         super().__init__()
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
@@ -103,9 +105,7 @@ class SequentialGPTOSSMoE(nn.Module):
         # Use the original router (it returns scores and indices already softmaxed over top-k)
         router_scores, router_indices = self.router(x)  # scores: [tokens, E], indices: [tokens, k]
 
-        final_hidden_states = (
-            torch.Tensorself.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
-        )
+        final_hidden_states = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
         num_all_tokens, total_num_experts = x.size(0), self.num_experts
         mask_weights = torch.zeros((num_all_tokens, total_num_experts), dtype=x.dtype, device=x.device)
         topk_ids, experts_mask = router_indices, router_scores
@@ -127,10 +127,25 @@ class SequentialGPTOSSMoE(nn.Module):
             final_hidden_states += expert_output
         return final_hidden_states.view(B, T, H), router_scores.view(B * T, -1)
 
+    @classmethod
+    def original_module_class(cls) -> str:
+        """Return the class name of the module this replaces."""
+        return "GptOssMLP"
 
-def get_replacement_info(config):
-    return (
-        SequentialGPTOSSMoE,
-        config.get_text_config(),
-        GptOssMLP.__name__,
-    )
+    @classmethod
+    def from_original(
+        cls,
+        original: GptOssMLP,
+        config: GptOssConfig,
+        **kwargs,
+    ) -> "SequentialGPTOSSMoE":
+        """Create an instance from the original module."""
+        return cls(original, config)
+
+
+# def get_replacement_info(config):
+#     return (
+#         SequentialGPTOSSMoE,
+#         config.get_text_config(),
+#         GptOssMLP.__name__,
+#     )

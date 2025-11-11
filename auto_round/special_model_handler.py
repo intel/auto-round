@@ -37,7 +37,10 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
-CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
+CONVERT_EXPERT_TO_LINEAR_MODELS = [
+    "llama4",
+    #    "gpt_oss"
+]
 
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
@@ -45,7 +48,7 @@ MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 def _get_moe_converter(config):
     # Dispatch table for model_type to replacement_info functions
     moe_converters = {
-        "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
+        # "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
         "llama4": LazyImport("auto_round.modelling.llama4.get_replacement_info"),
     }
 
@@ -90,7 +93,10 @@ def _handle_moe_model(model, formats=None):
         logger.warning(
             f"{model.config.model_type} experts are converted, the quantized model can not run on transformers."
         )
-    return model
+
+    from auto_round.modelling.replace_modules import apply_replacements
+
+    return apply_replacements(model)
 
 
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
