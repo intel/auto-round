@@ -19,7 +19,7 @@ from transformers.modeling_utils import no_init_weights as skip_weights_initiali
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-from auto_round.modelling.replace_modules import ReplacementModule
+from auto_round.modelling.replace_modules import ReplacementModuleBase
 
 # __all__ = ["get_replacement_info"]
 
@@ -54,7 +54,7 @@ class GPTOssSingleExpert(nn.Module):
         return self.down_proj(act)
 
 
-class SequentialGPTOSSMoE(ReplacementModule):
+class SequentialGPTOSSMoE(ReplacementModuleBase):
     """
     Replaces GPT-OSS fused-expert MoE with per-expert `GPTOssSingleExpert` modules.
     Copies weights from fused tensors and reuses the original router and optional shared_expert.
