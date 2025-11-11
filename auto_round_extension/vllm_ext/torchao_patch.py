@@ -121,6 +121,7 @@ def to_mx(
         torch.float,
     ), f"{data_hp.dtype} is not supported yet"
     # TODO(future PR): consider supporting padding
+    data_hp = data_hp.contiguous()
     assert data_hp.numel() % block_size == 0, "unsupported"
     assert data_hp.is_contiguous(), "unsupported"
     assert elem_dtype in SUPPORTED_ELEM_DTYPES, "unsupported"

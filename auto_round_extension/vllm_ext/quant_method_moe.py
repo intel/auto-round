@@ -65,6 +65,7 @@ class AutoRoundMoEMethod(FusedMoEMethodBase):
 
         layer_scheme = get_scheme(quant_config, prefix)
         impl = get_impl(layer_scheme)
+        layer._prefix = prefix
         logger.debug("Apply %s to %s", impl.__class__.__name__, prefix)
         return impl
 

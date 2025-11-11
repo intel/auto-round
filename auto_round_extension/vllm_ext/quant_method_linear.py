@@ -55,6 +55,12 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
 
             raise ValueError(f"Unsupported Linear scheme: {scheme}, layer: {prefix}")
 
+        packed_modules_mapping = quant_config.packed_modules_mapping
+        for packed_name, child_names in packed_modules_mapping.items():
+            if prefix.endswith(packed_name):
+                prefix = prefix.replace(packed_name, child_names[0])
+                break
+        
         # TODO: use a more robust way to map layer names
         if prefix.endswith("gate_up_proj"):
             # update gate_up_proj to gate_proj, assume both gate and up share the same quantization scheme

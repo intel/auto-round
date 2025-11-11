@@ -47,7 +47,7 @@ def quant_model(args):
     format_type = "auto_round" if args.use_autoround_format else "llm_compressor"
     autoround.quantize_and_save(
         format=format_type,
-        output_dir=f"quantized_model_{args.t}",
+        output_dir=f"/storage/yiliu7/quantized_model_{args.t}",
     )
 
 

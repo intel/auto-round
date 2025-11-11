@@ -160,7 +160,21 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             from vllm.model_executor.layers.fused_moe.config import (
                 ocp_mx_moe_quant_config,
             )
-
+            if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
+                self.input_dtype = "mxfp8_e4m3"
+                self.weight_dtype = "mxfp8_e4m3"
+                return ocp_mx_moe_quant_config(
+                    quant_dtype=self.input_dtype,
+                    weight_dtype=self.weight_dtype,
+                    w1_scale=layer.w13_weight_scale,
+                    w2_scale=layer.w2_weight_scale,
+                    a1_scale=None,
+                    a2_scale=None,
+                    w1_bias=layer.w13_bias if self.has_bias else None,
+                    w2_bias=layer.w2_bias if self.has_bias else None,
+                    block_shape=None,
+                )
+                
             self.input_dtype = "mxfp4"
             self.weight_dtype = "mxfp4"
             return ocp_mx_moe_quant_config(
@@ -176,53 +190,60 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             )
         return None
 
+    def _dequant_fp4_to_fp8(self, layer):
+        weight_name_lst = ["w13_weight", "w2_weight"]
+
+        for weight_name_prefix in weight_name_lst:
+            weight_name = f"{weight_name_prefix}_packed"
+            weight = getattr(layer, weight_name)
+            weight_scale_name = f"{weight_name_prefix}_scale"
+            weight_scale = getattr(layer, weight_scale_name)
+            new_weight_name = f"{weight_name_prefix}_unpacked"
+            new_scale_name = weight_scale_name
+            num_experts, _, _ = weight.shape
+            unpacked_weight_lst = []
+            scale_list = []
+            for expert_index in range(num_experts):
+                weight_fp8, scale_bf16 = dequant_mxfp4_to_fp8(
+                    data_lp=weight[expert_index],
+                    scale_e8m0=weight_scale[expert_index],
+                )
+
+                unpacked_weight_lst.append(weight_fp8)
+                scale_list.append(scale_bf16)
+            unpacked_weight_fp8 = torch.stack(unpacked_weight_lst, dim=0)
+            scale_bf16 = torch.stack(scale_list, dim=0)
+            assert unpacked_weight_fp8.shape[0] == num_experts, (
+                f"Expected {num_experts} unpacked weights, got " f"{unpacked_weight_fp8.shape[0]}"
+            )
+            delattr(layer, weight_name)
+            delattr(layer, weight_scale_name)
+            layer.register_parameter(
+                new_weight_name,
+                torch.nn.Parameter(
+                    unpacked_weight_fp8,
+                    requires_grad=False,
+                ),
+            )
+            layer.register_parameter(
+                new_scale_name,
+                torch.nn.Parameter(
+                    scale_bf16,
+                    requires_grad=False,
+                ),
+            )
+
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        logger.info(f"Processing weights after loading for layer: {layer._prefix}")
         if envs.VLLM_ENABLE_STATIC_MOE:
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
-                weight_name_lst = ["w13_weight", "w2_weight"]
-
-                for weight_name_prefix in weight_name_lst:
-                    weight_name = f"{weight_name_prefix}_packed"
-                    weight = getattr(layer, weight_name)
-                    weight_scale_name = f"{weight_name_prefix}_scale"
-                    weight_scale = getattr(layer, weight_scale_name)
-                    new_weight_name = f"{weight_name_prefix}_unpacked"
-                    new_scale_name = weight_scale_name
-                    num_experts, _, _ = weight.shape
-                    unpacked_weight_lst = []
-                    scale_list = []
-                    for expert_index in range(num_experts):
-                        weight_fp8, scale_bf16 = dequant_mxfp4_to_fp8(
-                            data_lp=weight[expert_index],
-                            scale_e8m0=weight_scale[expert_index],
-                        )
-
-                        unpacked_weight_lst.append(weight_fp8)
-                        scale_list.append(scale_bf16)
-                    unpacked_weight_fp8 = torch.stack(unpacked_weight_lst, dim=0)
-                    scale_bf16 = torch.stack(scale_list, dim=0)
-                    assert unpacked_weight_fp8.shape[0] == num_experts, (
-                        f"Expected {num_experts} unpacked weights, got " f"{unpacked_weight_fp8.shape[0]}"
-                    )
-                    delattr(layer, weight_name)
-                    delattr(layer, weight_scale_name)
-                    layer.register_parameter(
-                        new_weight_name,
-                        torch.nn.Parameter(
-                            unpacked_weight_fp8,
-                            requires_grad=False,
-                        ),
-                    )
-                    layer.register_parameter(
-                        new_scale_name,
-                        torch.nn.Parameter(
-                            scale_bf16,
-                            requires_grad=False,
-                        ),
-                    )
-
+                self._dequant_fp4_to_fp8(layer)
+                return
         elif envs.VLLM_AR_MXFP4_MODULAR_MOE:
-
+            if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
+                self._dequant_fp4_to_fp8(layer)
+                return
+            
             def revert_interleaved_bias(bias):
                 """
                 Convert from blocked bias format to interleaved format.
@@ -354,6 +375,23 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
         if envs.VLLM_AR_MXFP4_MODULAR_MOE:
             from vllm.model_executor.layers.fused_moe import fused_experts
 
+            if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
+                w1 = layer.w13_weight_unpacked
+                w2 = layer.w2_weight_unpacked
+                out = fused_experts(
+                    x,
+                    w1,
+                    w2,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    inplace=True,
+                    activation=activation,
+                    global_num_experts=global_num_experts,
+                    apply_router_weight_on_input=apply_router_weight_on_input,
+                    expert_map=expert_map,
+                    quant_config=self.moe_quant_config,
+                )
+                return out
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
                 w1 = layer.w13_weight_unpacked
                 w2 = layer.w2_weight_unpacked
