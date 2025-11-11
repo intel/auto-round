@@ -103,9 +103,7 @@ class SequentialGPTOSSMoE(nn.Module):
         # Use the original router (it returns scores and indices already softmaxed over top-k)
         router_scores, router_indices = self.router(x)  # scores: [tokens, E], indices: [tokens, k]
 
-        final_hidden_states = (
-            torch.Tensorself.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
-        )
+        final_hidden_states = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
         num_all_tokens, total_num_experts = x.size(0), self.num_experts
         mask_weights = torch.zeros((num_all_tokens, total_num_experts), dtype=x.dtype, device=x.device)
         topk_ids, experts_mask = router_indices, router_scores
