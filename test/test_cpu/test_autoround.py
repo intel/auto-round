@@ -716,8 +716,12 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        ar = AutoRound(model_name, scheme="gguf:q4_k_s", iters=1, nsamples=1, enable_alg_ext=True)
+        ar.quantize()
+
     def test_alg_ext_import(self):
-        from auto_round.alg_ext import quantize_block_ext
+        from auto_round.alg_ext import dq_quantize_block_ext, quantize_block_ext
 
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
