@@ -124,6 +124,24 @@ if deepspeed_exists:
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
+MM_KEYS = [
+    "multi_modal_projector",
+    "vision_tower",
+    "multimodal_projector",
+    "thinker",
+    "visual",
+    "audio",
+    "talker",
+    "token2wav",
+    "vision_model",
+    "audio_tower",
+    "vision_encoder",
+    "vision_language_adapter",
+    "patch_merger",
+    "pre_mm_projector_norm",
+    "vision",
+]
+
 
 def is_debug_mode():
     """Checks if the Python interpreter is running in debug mode.

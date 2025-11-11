@@ -133,8 +133,8 @@ def pack_gguf_layer(
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
-    if output_dir is not None and os.path.exists(output_dir):
-        logger.warning_once(f"{output_dir} already exists, this may cause model conflict")
+    # if output_dir is not None and os.path.exists(output_dir):
+    #     logger.warning_once(f"{output_dir} already exists, this may cause model conflict")
     if "gguf_model_instance_global" not in globals():
         config = model.config
 

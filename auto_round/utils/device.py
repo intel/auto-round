@@ -193,6 +193,8 @@ def detect_device_count():
     """
     if torch.cuda.is_available():
         return torch.cuda.device_count()
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.xpu.device_count()
     else:
         try:
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
@@ -1144,11 +1146,13 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     device_list = parse_available_devices(device_map)
     gpu_devices = []
     for device in device_list:
+        if device.startswith("hpu") and len(device_list) > 1:
+            logger.warning_once("Auto-scheme does not support multiple HPUs.")
         if device.startswith("cpu") or device.startswith("hpu"):
             continue
         gpu_devices.append(device)
     num_devices = len(gpu_devices)
-    if num_devices < 1:
+    if num_devices <= 1:
         return
 
     for block_names in block_name_list:
@@ -1272,7 +1276,16 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
         device_map = device_map.strip()
         if device_map.lower() == "cpu":
             return ["cpu"]
-
+        if device_map.lower() == "auto":
+            device_count = detect_device_count()
+            if "cuda" in device_types:
+                return [f"cuda:{i}" for i in range(device_count)]
+            elif "xpu" in device_types:
+                return [f"xpu:{i}" for i in range(device_count)]
+            elif "hpu" in device_types:
+                return [f"hpu:{i}" for i in range(device_count)]
+            else:
+                return ["cpu"]
         # Split by commas
         parts = [x.strip() for x in device_map.split(",") if x.strip()]
         parsed = []
@@ -1283,7 +1296,7 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
                 parsed.append(f"{device_type}:{p}" if device_type != "cpu" else "cpu")
             else:
                 parsed.append(p)
-        return parsed
+        return list(set(parsed))
 
     if isinstance(device_map, dict):
         # Extract all devices recursively from dict values

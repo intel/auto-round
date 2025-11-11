@@ -118,6 +118,17 @@ class TestAutoRound(unittest.TestCase):
             if n == "model.decoder.layers.4.self_attn.k_proj":
                 self.assertEqual(m.group_size, 64)
 
+    def test_parse_available_devices(self):
+        from auto_round.utils.device import parse_available_devices
+
+        device_list = parse_available_devices("auto")
+        self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
+        device_list = parse_available_devices("a:cuda:0,b:cuda:1,c:cpu")
+        self.assertTrue(len(device_list) == 3)
+        self.assertEqual(device_list, ["cuda:0", "cuda:1", "cpu"])
+        device_list = parse_available_devices("0,1")
+        self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
+
 
 if __name__ == "__main__":
     unittest.main()

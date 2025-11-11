@@ -323,9 +323,20 @@ def set_layer_config(
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
+    embedding_types = (torch.nn.Embedding,)
     gguf_name = get_gguf_scheme(default_scheme)
-    if gguf_name and torch.nn.Embedding not in supported_types:
-        supported_types = (*supported_types, torch.nn.Embedding)
+    if gguf_name:
+        if torch.nn.Embedding not in supported_types:
+            supported_types = (*supported_types, torch.nn.Embedding)
+
+        # for some Embedding which type() is not torch.nn.Embedding
+        # for example: transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding
+        model_module_name = model.__class__.__module__
+        module_cls = sys.modules[model_module_name]
+        for name in module_cls.__dict__:
+            if name.endswith("Embedding") and not name.endswith("RotaryEmbedding"):
+                embedding_types = (*embedding_types, getattr(module_cls, name))
+        supported_types = (*supported_types, *embedding_types)
 
     all_supported_layer_names, embedding_layer_names = [], []
     all_module_names = []
@@ -338,7 +349,7 @@ def set_layer_config(
         if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:
             continue
         all_supported_layer_names.append(n)
-        if isinstance(m, torch.nn.Embedding):
+        if isinstance(m, embedding_types) or m.__class__.__name__.endswith("Embedding"):
             embedding_layer_names.append(n)
 
     # 6. expand regex configs
@@ -650,7 +661,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.utils.common import LazyImport
+    from auto_round.utils.common import MM_KEYS, LazyImport
     from auto_round.utils.model import get_lm_head_name, get_module
 
     # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
@@ -660,24 +671,41 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         hparams=model.config.to_dict(), model_type=model_type
     )
     try:
-        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        if model_type != ModelType.TEXT:
+            model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
+                model_architecture, model_type=model_type
+            )
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
+            model_architecture, model_type=ModelType.TEXT
+        )
+
     except NotImplementedError:
         return layer_config, {}
 
     n_layer = None
-    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
-        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
+    if model_type != ModelType.TEXT:
+        n_layer_vision = None
+    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
-            break
-        if hasattr(model.config, sub_attr):
-            if hasattr(getattr(model.config, sub_attr), name):
-                n_layer = getattr(getattr(model.config, sub_attr), name)
+        if model_type != ModelType.TEXT:
+            if n_layer is not None and hasattr(model.config, "text_config"):
+                if hasattr(getattr(model.config, "text_config"), name):
+                    n_layer = getattr(getattr(model.config, "text_config"), name)
+            for config_name in ["vision_config", "vision_encoder"]:
+                if hasattr(model.config, config_name):
+                    if hasattr(getattr(model.config, config_name), name):
+                        n_layer_vision = getattr(getattr(model.config, config_name), name)
+                        break
+            if n_layer and n_layer_vision:
                 break
+
     if n_layer is None:
         return layer_config, {}
 
     tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
+    if model_type != ModelType.TEXT:
+        tensor_map_vision = gguf.get_tensor_name_map(model_class_vision.model_arch, n_layer_vision)
 
     def _set_config(config, target_config):
         for k, v in target_config.items():
@@ -733,7 +761,17 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1)
             )
 
-        gguf_name = tensor_map.get_name(layer_name)
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_KEYS]):
+            gguf_name = tensor_map_vision.get_name(layer_name)
+            if gguf_name is None:
+                for key in MM_KEYS:
+                    gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
+                    if gguf_name is not None:
+                        break
+        else:
+            gguf_name = tensor_map.get_name(layer_name)
+            if gguf_name is None:
+                gguf_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
         bits_index = 6
         if config.get("fixed_by_user", False):
             if "bits" not in config:
