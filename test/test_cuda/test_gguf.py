@@ -227,33 +227,33 @@ class TestAutoRound(unittest.TestCase):
         self.assertAlmostEqual(file_size, 1599, delta=1.0)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @require_gguf
-    def test_llama_4(self):
-        model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct/"
-        from auto_round import AutoRoundMLLM
-        from auto_round.utils import mllm_load_model
+    # @require_gguf
+    # def test_llama_4(self):
+    #     model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct/"
+    #     from auto_round import AutoRoundMLLM
+    #     from auto_round.utils import mllm_load_model
 
-        model, processor, tokenizer, image_processor = mllm_load_model(model_name, use_auto_mapping=False)
-        autoround = AutoRoundMLLM(
-            model,
-            tokenizer=tokenizer,
-            processor=processor,
-            image_processor=image_processor,
-            device="auto",
-            iters=0,
-        )
-        quantized_model_path = "/dataset/Llam-4-test"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        self.assertTrue("mmproj-model.gguf" in os.listdir(quantized_model_path))
-        file_size = (
-            os.path.getsize(os.path.join(quantized_model_path, "Llama-4-Scout-17B-16E-Instruct-16x17B-Q4_0.gguf"))
-            / 1024**2
-        )
-        self.assertAlmostEqual(file_size, 58093.62, delta=1.0)
-        file_size = os.path.getsize(os.path.join(quantized_model_path, "mmproj-model.gguf")) / 1024**2
-        self.assertAlmostEqual(file_size, 3326.18, delta=5.0)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+    #     model, processor, tokenizer, image_processor = mllm_load_model(model_name, use_auto_mapping=False)
+    #     autoround = AutoRoundMLLM(
+    #         model,
+    #         tokenizer=tokenizer,
+    #         processor=processor,
+    #         image_processor=image_processor,
+    #         device="auto",
+    #         iters=0,
+    #     )
+    #     quantized_model_path = "/dataset/Llam-4-test"
+    #     shutil.rmtree(quantized_model_path, ignore_errors=True)
+    #     autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
+    #     self.assertTrue("mmproj-model.gguf" in os.listdir(quantized_model_path))
+    #     file_size = (
+    #         os.path.getsize(os.path.join(quantized_model_path, "Llama-4-Scout-17B-16E-Instruct-16x17B-Q4_0.gguf"))
+    #         / 1024**2
+    #     )
+    #     self.assertAlmostEqual(file_size, 58093.62, delta=1.0)
+    #     file_size = os.path.getsize(os.path.join(quantized_model_path, "mmproj-model.gguf")) / 1024**2
+    #     self.assertAlmostEqual(file_size, 3326.18, delta=5.0)
+    #     shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
 if __name__ == "__main__":

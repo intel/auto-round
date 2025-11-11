@@ -15,10 +15,8 @@
 import math
 from logging import getLogger
 
-import numpy as np
 import torch
 import torch.nn as nn
-import transformers
 
 from auto_round_extension.triton.triton_utils_zp.mixin import TritonModuleMixin
 
