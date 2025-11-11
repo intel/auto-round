@@ -229,7 +229,6 @@ def eval_task_by_task(
     import traceback
 
     from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
-    from lm_eval.models.hf_vlms import HFMultimodalLM
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -269,6 +268,8 @@ def eval_task_by_task(
         if batch_size is None or batch_size == "auto":
             logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
             batch_size = 16
+        from lm_eval.models.hf_vlms import HFMultimodalLM
+
         hflm = HFMultimodalLM(
             pretrained=model,
             tokenizer=tokenizer,
@@ -333,7 +334,10 @@ def eval_task_by_task(
             res_all = res
         else:
             for key in res_keys:
-                res_all[key].update(res[key])
+                if key not in res_all:
+                    continue
+                else:
+                    res_all[key].update(res[key])
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
