@@ -323,9 +323,20 @@ def set_layer_config(
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
+    embedding_types = (torch.nn.Embedding,)
     gguf_name = get_gguf_scheme(default_scheme)
-    if gguf_name and torch.nn.Embedding not in supported_types:
-        supported_types = (*supported_types, torch.nn.Embedding)
+    if gguf_name:
+        if torch.nn.Embedding not in supported_types:
+            supported_types = (*supported_types, torch.nn.Embedding)
+
+        # for some Embedding which type() is not torch.nn.Embedding
+        # for example: transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding
+        model_module_name = model.__class__.__module__
+        module_cls = sys.modules[model_module_name]
+        for name in module_cls.__dict__:
+            if name.endswith("Embedding") and not name.endswith("RotaryEmbedding"):
+                embedding_types = (*embedding_types, getattr(module_cls, name))
+        supported_types = (*supported_types, *embedding_types)
 
     all_supported_layer_names, embedding_layer_names = [], []
     all_module_names = []
@@ -338,7 +349,7 @@ def set_layer_config(
         if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:
             continue
         all_supported_layer_names.append(n)
-        if isinstance(m, torch.nn.Embedding):
+        if isinstance(m, embedding_types) or m.__class__.__name__.endswith("Embedding"):
             embedding_layer_names.append(n)
 
     # 6. expand regex configs

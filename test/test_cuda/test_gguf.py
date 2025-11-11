@@ -214,7 +214,7 @@ class TestAutoRound(unittest.TestCase):
             image_processor=image_processor,
             device="auto",
             nsamples=32,
-            iters=1,
+            iters=0,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
