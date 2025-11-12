@@ -88,8 +88,6 @@ class SupportedFormats:
             "auto_round:gptqmodel",
             "auto_round:auto_awq",
             "auto_round:llm_compressor",
-            "itrex",
-            "itrex_xpu",
             "fake",
             "llm_compressor",
         )

@@ -13,7 +13,6 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound  # pylint: disable=E0401
-from auto_round.export.export_to_itrex.export import pack_model  # pylint: disable=E0401
 
 
 class LLMDataLoader:
