@@ -7,20 +7,20 @@
 | deepseek-ai/DeepSeek-R1 | ✅     | ✅     |
 
 ### Quantize Model
-
-- MXFP8
+- Export model path
 ```bash
 export QWEN_MODEL=Qwen/Qwen3-235B-A22B
 export DS_MODEL=deepseek-ai/DeepSeek-R1
+```
 
+- MXFP8
+```bash
 python quantize.py --model $QWEN_MODEL -t qwen_mxfp8 --use_autoround_format  
 python quantize.py --model $DS_MODEL -t ds_mxfp8 --use_autoround_format  
 ```
 
 - MXFP4
 ```bash
-export QWEN_MODEL=Qwen/Qwen3-235B-A22B
-export DS_MODEL=deepseek-ai/DeepSeek-R1
 python quantize.py --model $QWEN_MODEL -t qwen_mxfp4 --use_autoround_format 
 python quantize.py --model $DS_MODEL -t qwen_mxfp4 --use_autoround_format 
 ```
