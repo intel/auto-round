@@ -14,6 +14,8 @@ model_path="quantized_model_qwen_mxfp8"
 # model_path="quantized_models/Qwen3-30B-A3B-Base-MXFP4"
 model_path="/storage/yiliu7/quantized_model_ds_mxfp8"
 model_path="/storage/yiliu7/quantized_model_ds_mxfp4"
+model_path="/storage/yiliu7/quantized_model_qwen_mxfp4"
+tp_size=4
 # /home/yiliu7/workspace/torchutils/examples
 
 # VLLM_ATTENTION_BACKEND=TRITON_ATTN \
@@ -64,10 +66,12 @@ VLLM_USE_DEEP_GEMM=0 \
 VLLM_ENABLE_V1_MULTIPROCESSING=0 \
     python generate.py \
     --model ${model_path} \
-    --tensor_parallel_size 8 \
+    --tensor_parallel_size $tp_size \
     --max-tokens 16 \
     --max-num-seqs 2  \
-    --gpu_memory_utilization 0.75 
+    --gpu_memory_utilization 0.75 \
+    --no-enable-prefix-caching \
+    --enable_expert_parallel
     # \
     # --enforce-eager
     # --tensor_parallel_size 4
