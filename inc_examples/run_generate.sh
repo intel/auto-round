@@ -1,4 +1,3 @@
-#!/bin/bash
 
 # Model Testing Script
 # Usage: ./run_generate.sh -s [mxfp4|mxfp8] -m [model_path] -tp [tensor_parallel_size]
@@ -22,33 +21,32 @@ usage() {
 }
 
 # Parse command line arguments
-while getopts "s:m:tp:h" opt; do
-    case $opt in
-        s)
-            QUANT_TYPE="$OPTARG"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -s)
+            QUANT_TYPE="$2"
+            shift 2
             ;;
-        m)
-            MODEL_PATH="$OPTARG"
+        -m)
+            MODEL_PATH="$2"
+            shift 2
             ;;
-        tp)
-            TP_SIZE="$OPTARG"
+        -tp)
+            TP_SIZE="$2"
+            shift 2
             ;;
-        h)
+        -h)
             usage
             exit 0
             ;;
-        \?)
-            echo "Invalid option: -$OPTARG" >&2
-            usage
-            exit 1
-            ;;
-        :)
-            echo "Option -$OPTARG requires an argument." >&2
+        *)
+            echo "Invalid option: $1" >&2
             usage
             exit 1
             ;;
     esac
 done
+
 
 # Validate quantization type
 QUANT_TYPE_UPPER=$(echo "$QUANT_TYPE" | tr '[:lower:]' '[:upper:]')
