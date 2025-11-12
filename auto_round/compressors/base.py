@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional, Union
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_balanced_memory
+from accelerate.utils import get_max_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -1992,11 +1992,7 @@ class BaseCompressor(object):
                         if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
                             devices = parse_available_devices(self.device_map)
-                            max_memory = get_balanced_memory(
-                                self.model,
-                                max_memory=None,
-                                no_split_module_classes=no_split_modules,
-                            )
+                            max_memory = get_max_memory()
                             new_max_memory = {}
                             for device in devices:
                                 if ":" in device:
