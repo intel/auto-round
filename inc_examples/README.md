@@ -15,14 +15,14 @@ export DS_MODEL=deepseek-ai/DeepSeek-R1
 
 - MXFP8
 ```bash
-python quantize.py --model $QWEN_MODEL -t qwen_mxfp8 --use_autoround_format  
-python quantize.py --model $DS_MODEL -t ds_mxfp8 --use_autoround_format  
+python quantize.py --model $QWEN_MODEL -t qwen_mxfp8 --use_autoround_format --output_dir ./qmodels
+python quantize.py --model $DS_MODEL -t ds_mxfp8 --use_autoround_format ----output_dir ./qmodels
 ```
 
 - MXFP4
 ```bash
-python quantize.py --model $QWEN_MODEL -t qwen_mxfp4 --use_autoround_format 
-python quantize.py --model $DS_MODEL -t qwen_mxfp4 --use_autoround_format 
+python quantize.py --model $QWEN_MODEL -t qwen_mxfp4 --use_autoround_format --output_dir ./qmodels
+python quantize.py --model $DS_MODEL -t qwen_mxfp4 --use_autoround_format --output_dir ./qmodels
 ```
 
 
