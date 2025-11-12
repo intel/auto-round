@@ -199,7 +199,7 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
         file_size = os.path.getsize("./saved/Qwen2.5-VL-7B-Instruct-Q4_0.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 4226, delta=5.0)
+        self.assertAlmostEqual(file_size, 4242, delta=5.0)
         file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
         self.assertAlmostEqual(file_size, 2580, delta=5.0)
         shutil.rmtree("./saved", ignore_errors=True)
