@@ -382,7 +382,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         eval_args.add_argument(
             "--disable_thinking",
             action="store_true",
-            help=("wheather to disable thinking mode of chat_template."),
+            help=("whether to disable thinking mode of chat_template."),
         )
         eval_args.add_argument("--max_length", default=None, type=int, help="Random seed for reproducibility.")
 

@@ -117,7 +117,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--disable_thinking",
             action="store_true",
-            help=("wheather to disable thinking mode of chat_template."),
+            help=("whether to disable thinking mode of chat_template."),
         )
         self.add_argument("--max_length", default=None, type=int, help="max generation length for eval")
 
