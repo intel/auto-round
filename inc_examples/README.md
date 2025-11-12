@@ -30,7 +30,7 @@ python quantize.py --model $DS_MODEL -t qwen_mxfp4 --use_autoround_format
 
 Usage: 
 ```bash
-./run_generate.sh -s [mxfp4|mxfp8] -m [model_path] -tp [tensor_parallel_size]
+bash ./run_generate.sh -s [mxfp4|mxfp8] -m [model_path] -tp [tensor_parallel_size]
 ```
 
 - MXFP8
