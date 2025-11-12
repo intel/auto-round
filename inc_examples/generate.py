@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copied from https://github.com/vllm-project/vllm/
 
 try:
     from auto_round_extension.vllm_ext import apply as apply_auto_round_extension

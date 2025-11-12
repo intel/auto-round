@@ -7,7 +7,7 @@ export DS_MODEL=deepseek-ai/DeepSeek-R1
 
 python quantize.py --model $QWEN_MODEL -t qwen_mxfp8 --use_autoround_format  
 python quantize.py --model $DS_MODEL -t ds_mxfp8 --use_autoround_format  
-
+```
 
 - MXFP4
 ```bash
