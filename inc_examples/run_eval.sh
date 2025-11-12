@@ -14,7 +14,7 @@ fi
 tp_size=4
 model_name=$(basename ${model_path})
 output_dir="${model_name}-tp${tp_size}-gsm8k-acc"
-task_name="mmlu"
+task_name="gsm8k"
 
 echo "Evaluating model: ${model_path} on task: ${task_name}, output dir: ${output_dir}"
 # VLLM_ATTENTION_BACKEND=TRITON_ATTN \
@@ -83,7 +83,8 @@ mkdir -p ${output_dir}
 #     --seed 42 \
 #     --output_path ${output_dir} \
 #     --show_config 2>&1 | tee ${output_dir}/log.txt
- 
+
+# /storage/yiliu7/quantized_model_qwen_mxfp8 4x200
 VLLM_ENABLE_AR_EXT=1 \
 VLLM_AR_MXFP4_MODULAR_MOE=1 \
 VLLM_ENABLE_AR_EXT=1 \
@@ -95,6 +96,8 @@ VLLM_ENABLE_V1_MULTIPROCESSING=1 \
 lm_eval --model vllm \
   --model_args "pretrained=${model_path},tensor_parallel_size=${tp_size},max_model_len=8192,max_num_batched_tokens=32768,max_num_seqs=128,add_bos_token=True,gpu_memory_utilization=0.8,dtype=bfloat16,max_gen_toks=2048,enable_prefix_caching=False,enable_expert_parallel=True" \
   --tasks $task_name  \
+    --batch_size 16 \
+    --limit 256 \
     --log_samples \
     --seed 42 \
     --output_path ${output_dir} \
