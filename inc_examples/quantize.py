@@ -3,9 +3,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import transformers
 import logging
 from auto_round import AutoRound
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 
 topologies_config = {
@@ -27,20 +27,20 @@ topologies_config = {
     "qwen_mxfp4": {
         "scheme": "MXFP4",
         "fp_layers": "lm_head,mlp.gate,self_attn",
-        "iters": 0, # TODO: set to 200 before merge
+        "iters": 0,  # TODO: set to 200 before merge
     },
 }
 
 
 def quant_model_ar(args):
     config = topologies_config[args.t]
-    
+
     logger.info(f"Using fp_layers: {config['fp_layers']}")
     autoround = AutoRound(
         model=args.model,
         scheme=config["scheme"],
         enable_torch_compile=args.enable_torch_compile,
-        iters=config['iters'],
+        iters=config["iters"],
         fp_layers=config["fp_layers"],
     )
     logger.info(f"Save quantized model to {args.output_dir}")
@@ -49,7 +49,7 @@ def quant_model_ar(args):
         format=format_type,
         output_dir=f"{args.output_dir}/quantized_model_{args.t}",
     )
-    
+
 
 def get_model_and_tokenizer(model_name):
     # Load model and tokenizer
@@ -63,13 +63,15 @@ def get_model_and_tokenizer(model_name):
         trust_remote_code=True,
     )
     return fp32_model, tokenizer
-    
+
+
 def quant_model(args):
     from neural_compressor.torch.quantization import (
         AutoRoundConfig,
         convert,
         prepare,
     )
+
     config = topologies_config[args.t]
     export_format = "auto_round" if args.use_autoround_format else "llm_compressor"
     output_dir = f"{args.output_dir}/quantized_model_{args.t}"
@@ -83,7 +85,7 @@ def quant_model(args):
         # scale_dtype="fp16",
         scheme=config["scheme"],
         enable_torch_compile=args.enable_torch_compile,
-        iters=config['iters'],
+        iters=config["iters"],
         fp_layers=config["fp_layers"],
         export_format=export_format,
         output_dir=output_dir,
@@ -93,6 +95,7 @@ def quant_model(args):
     model = prepare(model=fp32_model, quant_config=quant_config)
     inc_model = convert(model)
     logger.info(f"Quantized model saved to {output_dir}")
+
 
 if __name__ == "__main__":
     import argparse
