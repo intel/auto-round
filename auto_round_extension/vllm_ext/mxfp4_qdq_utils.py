@@ -157,8 +157,8 @@ def dequant_mxfp4_to_fp8(data_lp, scale_e8m0):
     )
     return data_fp8, scale_float
 
-
 def mxfp4_fp8_weight_to_bf16(weight_fp8, scale_bf16):
+    
     origin_shape = weight_fp8.shape
     weight_fp8 = weight_fp8.reshape(-1, 32)
     scale_bf16 = scale_bf16.reshape(-1, 1)
