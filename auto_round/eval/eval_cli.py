@@ -14,6 +14,7 @@
 import argparse
 import os
 import time
+import json
 
 from auto_round.utils import (
     clear_memory,
