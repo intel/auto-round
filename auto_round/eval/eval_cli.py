@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import json
 import os
 import time
-import json
 
 from auto_round.utils import (
     clear_memory,
