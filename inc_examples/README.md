@@ -1,3 +1,11 @@
+
+## Support Matrix
+
+| Model Family | MXFP4 | MXFP8 |
+|-------------|-------|-------|
+| Qwen/Qwen3-235B-A22B | ✅ | ✅ |
+| deepseek-ai/DeepSeek-R1 | ✅ | ✅ |
+
 ### Quantize Model
 
 - MXFP8
