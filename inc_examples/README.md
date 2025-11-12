@@ -1,10 +1,10 @@
 
 ## Support Matrix
 
-| Model Family | MXFP4 | MXFP8 |
-|-------------|-------|-------|
-| Qwen/Qwen3-235B-A22B | ✅ | ✅ |
-| deepseek-ai/DeepSeek-R1 | ✅ | ✅ |
+| Model Family            | MXFP4 | MXFP8 |
+| ----------------------- | ----- | ----- |
+| Qwen/Qwen3-235B-A22B    | ✅     | ✅     |
+| deepseek-ai/DeepSeek-R1 | ✅     | ✅     |
 
 ### Quantize Model
 
@@ -27,48 +27,22 @@ python quantize.py --model $DS_MODEL -t qwen_mxfp4 --use_autoround_format
 
 
 ### Prompt Tests
+
+Usage: 
+```bash
+./run_generate.sh -s [mxfp4|mxfp8] -m [model_path] -tp [tensor_parallel_size]
+```
+
 - MXFP8
 ```bash
-export model_path=/path/to/quantized_model
-tp_size=8
-VLLM_AR_MXFP4_MODULAR_MOE=0 \
-VLLM_ENABLE_AR_EXT=1 \
-VLLM_MXFP4_PRE_UNPACK_TO_FP8=0 \
-VLLM_ENABLE_STATIC_MOE=0 \
-VLLM_MXFP4_PRE_UNPACK_WEIGHTS=0 \
-VLLM_USE_DEEP_GEMM=0 \
-VLLM_ENABLE_V1_MULTIPROCESSING=1 \
-    python generate.py \
-    --model ${model_path} \
-    --tensor_parallel_size $tp_size \
-    --max-tokens 16 \
-    --max-num-seqs 4  \
-    --gpu_memory_utilization 0.75 \
-    --no-enable-prefix-caching \
-    --enable_expert_parallel
+bash ./run_generate.sh -s mxfp8 -m /path/to/qwen_mxfp8 -tp 4 
+bash ./run_generate.sh -s mxfp8 -m /path/to/ds_mxfp8 -tp 8
 ```
-
 - MXFP4
 ```bash
-export model_path=/path/to/quantized_model
-tp_size=8
-VLLM_AR_MXFP4_MODULAR_MOE=1 \
-VLLM_ENABLE_AR_EXT=1 \
-VLLM_MXFP4_PRE_UNPACK_TO_FP8=1 \
-VLLM_ENABLE_STATIC_MOE=0 \
-VLLM_MXFP4_PRE_UNPACK_WEIGHTS=0 \
-VLLM_USE_DEEP_GEMM=0 \
-VLLM_ENABLE_V1_MULTIPROCESSING=1 \
-    python generate.py \
-    --model ${model_path} \
-    --tensor_parallel_size $tp_size \
-    --max-tokens 16 \
-    --max-num-seqs 4 \
-    --gpu_memory_utilization 0.75 \
-    --no-enable-prefix-caching \
-    --enable_expert_parallel
+bash ./run_generate.sh -s mxfp4 -m /path/to/qwen_mxfp4 -tp 4 
+bash ./run_generate.sh -s mxfp4 -m /path/to/ds_mxfp4 -tp 8 
 ```
-
 ### Evaluation Tests
 
 WIP
