@@ -316,4 +316,3 @@ class WQLinear_GEMM(nn.Module):
             self.w_bit,
             self.group_size,
         )
-
