@@ -166,6 +166,7 @@ def eval(args):
                 if file.endswith(".gguf"):
                     is_gguf_file = True
                     gguf_file = file
+            model = args.model
     eval_model_dtype = get_model_dtype(args.eval_model_dtype)
     if is_gguf_file:
         import torch

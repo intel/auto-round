@@ -1994,6 +1994,8 @@ class BaseCompressor(object):
                             devices = parse_available_devices(self.device_map)
                             max_memory = get_max_memory()
                             new_max_memory = {}
+                            if "cpu" not in devices:
+                                devices.append("cpu")
                             for device in devices:
                                 if ":" in device:
                                     device = int(device.split(":")[-1])
@@ -2005,8 +2007,25 @@ class BaseCompressor(object):
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )
+                            if len(devices) > 1 and "cpu" in device_map:
+                                logger.warning(
+                                    "Not enough memory cause the CPU to be used, which may severely impact speed."
+                                    " Please consider using more cards."
+                                )
 
-                            self.model = dispatch_model(self.model, device_map=device_map)
+                            try:
+                                self.model = dispatch_model(self.model, device_map=device_map)
+                            except ValueError as e:
+                                if "offload_dir" in e.__str__():
+                                    logger.warning(
+                                        f"Due to insufficient resources, disk is used to store the model."
+                                        f" `offload_dir={envs.AR_WORK_SPACE}`"
+                                    )
+                                    self.model = dispatch_model(
+                                        self.model, device_map=device_map, offload_dir=envs.AR_WORK_SPACE
+                                    )
+                                else:
+                                    raise
                         else:
                             self.model = self.model.to(self.device)
 
