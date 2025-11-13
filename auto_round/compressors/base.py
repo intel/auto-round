@@ -381,10 +381,10 @@ class BaseCompressor(object):
 
         self.attention_mask = []
 
+        self.wrapper_block = wrapper_block
         if self.enable_alg_ext:
             try:
                 logger.warning_once("using algorithm extension for quantization.")
-                self.wrapper_block = wrapper_block
                 from auto_round.alg_ext import wrapper_autoround
 
                 wrapper_autoround(self)
@@ -2615,7 +2615,7 @@ class BaseCompressor(object):
                 clear_memory(device_list=self.device_list)
             input_ids = q_input
 
-        quantized_layer_names, unquantized_layer_names = wrapper_block(
+        quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
