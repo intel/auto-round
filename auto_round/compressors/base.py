@@ -152,6 +152,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
+        momentum = 0.0,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -250,6 +251,7 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.momentum = momentum
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -2625,10 +2627,10 @@ class BaseCompressor(object):
         minmax_lr = torch.tensor(self.minmax_lr)
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0, momentum=self.momentum
             )
         else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0,momentum=self.momentum)
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
