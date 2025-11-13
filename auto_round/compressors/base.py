@@ -152,7 +152,6 @@ class BaseCompressor(object):
         disable_opt_rtn: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
-        momentum=0.0,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -194,7 +193,7 @@ class BaseCompressor(object):
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
-                  disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms
+                  disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms,momentum
         Raises:
             ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
             RuntimeError: If model parameters are on meta device.
@@ -235,6 +234,7 @@ class BaseCompressor(object):
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
+        self.momentum = kwargs.pop("momentum", 0.0)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         model_dtype = kwargs.pop("model_dtype", None)
         device = kwargs.pop("device", None)
@@ -251,7 +251,7 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        self.momentum = momentum
+
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
