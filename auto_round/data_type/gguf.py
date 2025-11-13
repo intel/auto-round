@@ -17,11 +17,11 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.utils.device import clear_memory
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
 from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
+from auto_round.utils.device import clear_memory
 
 
 @register_dtype("int_sym_dq")
@@ -321,7 +321,7 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
 
 
 @torch.no_grad()
-def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None,split_num=1):
+def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
     group_size = 16 if bits == 2 else 32
@@ -349,7 +349,7 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             nstep=params["nstep"],
             use_mad=params["use_mad"],
             weights=quant_weights,
-            split_num=split_num
+            split_num=split_num,
         )
         scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
@@ -448,15 +448,17 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
-    if tensor.shape[-1] > 20000: # trick setting, for embedding and lm-head
-        split_num=16
+    if tensor.shape[-1] > 20000:  # trick setting, for embedding and lm-head
+        split_num = 16
     else:
-        split_num=1
+        split_num = 1
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
     tensor = tensor.to(torch.float32)
     if scale is None:
-        scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(tensor, bits, scale_dtype, imatrix,split_num=split_num)
+        scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(
+            tensor, bits, scale_dtype, imatrix, split_num=split_num
+        )
 
     inverse_scale = get_reciprocal(scale)
     int_w = torch.clamp(round_ste((tensor + wmin) * inverse_scale + v), 0, maxq)
@@ -465,7 +467,9 @@ def quant_tensor_gguf_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
-def iterative_wls_quant_search_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=8):
+def iterative_wls_quant_search_chunk(
+    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=8
+):
     dtype = torch.float32
     data = data.to(dtype)
     maxq = 2**bits - 1
@@ -474,7 +478,7 @@ def iterative_wls_quant_search_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep
 
     results_scale = []
     results_rmin = []
-    chunk_size = (data.shape[0]+split_num-1)//split_num
+    chunk_size = (data.shape[0] + split_num - 1) // split_num
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]
@@ -488,7 +492,9 @@ def iterative_wls_quant_search_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep
         iscale = get_reciprocal(scale)
         quant_data = torch.clamp(torch.round(iscale * (chunk - rmin)), minq, maxq)
         diff = scale * quant_data + rmin - chunk
-        best_mad = torch.sum((chunk_weights * torch.abs(diff)) if use_mad else chunk_weights * torch.pow(diff, 2), dim=1, keepdim=True)
+        best_mad = torch.sum(
+            (chunk_weights * torch.abs(diff)) if use_mad else chunk_weights * torch.pow(diff, 2), dim=1, keepdim=True
+        )
 
         for is_ in range(nstep):
             factor = rrmin + rdelta * is_ + maxq - minq
@@ -507,20 +513,26 @@ def iterative_wls_quant_search_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep
             reverse_this_scale = get_reciprocal(this_scale)
             quant_data = torch.clamp(torch.round(reverse_this_scale * (chunk - this_min)), minq, maxq)
             diff = this_scale * quant_data + this_min - chunk
-            mad = torch.sum((chunk_weights * torch.abs(diff)) if use_mad else chunk_weights * torch.pow(diff, 2), dim=-1, keepdim=True)
+            mad = torch.sum(
+                (chunk_weights * torch.abs(diff)) if use_mad else chunk_weights * torch.pow(diff, 2),
+                dim=-1,
+                keepdim=True,
+            )
             idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
             best_mad[idx_to_replace] = mad[idx_to_replace]
             scale[idx_to_replace] = this_scale[idx_to_replace]
             rmin[idx_to_replace] = this_min[idx_to_replace]
         results_scale.append(scale.to(torch.float32))
         results_rmin.append(-rmin.to(torch.float32))
-        if split_num>1:
+        if split_num > 1:
             clear_memory(device_list=[data.device])
 
     return torch.cat(results_scale, dim=0), torch.cat(results_rmin, dim=0)
 
 
-def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None,split_num=1):
+def iterative_wls_quant_search(
+    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1
+):
     """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
     Args:
@@ -535,9 +547,16 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     Returns:
         Tuple: (Optimal scale tensor, optimal minimum value tensor)
     """
-    return iterative_wls_quant_search_chunk(data=data, bits=bits, rrmin=rrmin,
-                                            rdelta=rdelta, nstep=nstep, use_mad=use_mad,
-                                            weights=weights, split_num=split_num)
+    return iterative_wls_quant_search_chunk(
+        data=data,
+        bits=bits,
+        rrmin=rrmin,
+        rdelta=rdelta,
+        nstep=nstep,
+        use_mad=use_mad,
+        weights=weights,
+        split_num=split_num,
+    )
 
 
 @torch.no_grad()

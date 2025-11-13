@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
-from auto_round.utils import get_reciprocal, clear_memory
+from auto_round.utils import clear_memory, get_reciprocal
 
 GGML_QUANT_TYPE = {}
 

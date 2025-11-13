@@ -1317,10 +1317,8 @@ def gpu_synchronize(devices):
         elif torch.xpu.is_available():
             torch.xpu.synchronize(device)
 
-    if isinstance(devices,(list,tuple)):
+    if isinstance(devices, (list, tuple)):
         for device in devices:
             _gpu_synchronize(device)
     else:
         _gpu_synchronize(devices)
-
-
