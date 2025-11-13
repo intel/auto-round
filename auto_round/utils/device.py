@@ -1308,17 +1308,3 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
         return sorted(devices)
 
     raise TypeError(f"Unsupported device_map type: {type(device_map)}")
-
-
-def gpu_synchronize(devices):
-    def _gpu_synchronize(device):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize(device)
-        elif torch.xpu.is_available():
-            torch.xpu.synchronize(device)
-
-    if isinstance(devices, (list, tuple)):
-        for device in devices:
-            _gpu_synchronize(device)
-    else:
-        _gpu_synchronize(devices)
