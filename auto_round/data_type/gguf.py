@@ -448,10 +448,11 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
-    if tensor.shape[-1] > 20000: # trick setting, for embedding and lm-head
-        split_num=16
-    else:
-        split_num=1
+    split_num = 1
+    for dim in tensor.shape:
+        if dim > 100_000:
+            split_num = 16
+            break
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
     tensor = tensor.to(torch.float32)
@@ -535,6 +536,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     Returns:
         Tuple: (Optimal scale tensor, optimal minimum value tensor)
     """
+    # TODO this one should change to try catch later
     return iterative_wls_quant_search_chunk(data=data, bits=bits, rrmin=rrmin,
                                             rdelta=rdelta, nstep=nstep, use_mad=use_mad,
                                             weights=weights, split_num=split_num)

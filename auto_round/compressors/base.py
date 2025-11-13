@@ -2630,7 +2630,7 @@ class BaseCompressor(object):
                 [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0, momentum=self.momentum
             )
         else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0,momentum=self.momentum)
+            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0, momentum=self.momentum)
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
