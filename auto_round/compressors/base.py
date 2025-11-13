@@ -1551,13 +1551,15 @@ class BaseCompressor(object):
         Returns:
         The quantized model and layer configurations.
         """
-        for n, m in self.model.named_modules():  # TODO check if could removed
-            m.tmp_name = n
+
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
+
+        for n, m in self.model.named_modules():  # TODO check if could removed
+            m.tmp_name = n
 
         # TODO check scale_dtype
         if not self.is_auto_scheme:
