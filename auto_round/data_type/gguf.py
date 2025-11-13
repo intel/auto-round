@@ -460,7 +460,74 @@ def quant_tensor_gguf_asym_dq(
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
+def iterative_wls_quant_search_non_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):
+    """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
+    Args:
+        data (torch.Tensor): Input tensor to quantize.
+        bits (int): Number of quantization bits.
+        rrmin (float): Initial range scaling factor.
+        rdelta (float): Step size for range scaling.
+        nstep (int): Number of search steps.
+        use_mad (bool): Whether to use mean absolute deviation instead of squared error.
+        weights (torch.Tensor): Weight matrix for each element.
+
+    Returns:
+        Tuple: (Optimal scale tensor, optimal minimum value tensor)
+    """
+    dtype = torch.float32
+    data = data.to(dtype)
+    maxq = 2**bits - 1
+    minq = 0
+    weights = 1.0 if weights is None else weights.to(dtype)
+
+    rmin = torch.min(data, dim=1, keepdim=True)[0]
+    rmax = torch.max(data, dim=1, keepdim=True)[0]
+
+    sum_w = torch.sum(weights, dim=1, keepdim=True)
+    sum_x = torch.sum(weights * data, dim=1, keepdim=True)
+
+    # scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
+    scale = (rmax - rmin) / (maxq - minq)
+    iscale = get_reciprocal(scale)
+    # quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)
+    diff = scale * quant_data + rmin - data
+
+    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * torch.pow(diff, 2), dim=1, keepdim=True)
+
+    for is_ in range(nstep):
+        factor = rrmin + rdelta * is_ + maxq - minq
+        # iscale_new = factor / (rmax - rmin + 1e-8)
+        scale_new = (rmax - rmin) / factor
+        iscale_new = get_reciprocal(scale_new)
+        quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)
+
+        mul_weights_quant_data = weights * quant_data_new
+        sum_l = torch.sum(mul_weights_quant_data, dim=-1, keepdim=True)
+        sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=-1, keepdim=True)
+        sum_xl = torch.sum(mul_weights_quant_data * data, dim=-1, keepdim=True)
+
+        D = sum_w * sum_l2 - torch.pow(sum_l, 2)
+        this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
+        this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
+        this_min[this_min > 0] = 0
+        this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
+        reverse_this_scale = get_reciprocal(this_scale)
+
+        quant_data = torch.clamp(torch.round(reverse_this_scale * (data - this_min)), minq, maxq)
+        diff = this_scale * quant_data + this_min - data
+        # diff = this_scale * quant_data_new + this_min - data
+        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * torch.pow(diff, 2), dim=-1, keepdim=True)
+
+        idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
+        best_mad[idx_to_replace] = mad[idx_to_replace]
+        scale[idx_to_replace] = this_scale[idx_to_replace]
+        rmin[idx_to_replace] = this_min[idx_to_replace]
+
+    return scale.to(torch.float32), -rmin.to(torch.float32)
+
+# TODO consolidate iterative_wls_quant_search_chunk and non-chunk
 def iterative_wls_quant_search_chunk(
     data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=8
 ):
@@ -543,16 +610,28 @@ def iterative_wls_quant_search(
     """
 
     # TODO this one should change to try catch later
-    return iterative_wls_quant_search_chunk(
-        data=data,
-        bits=bits,
-        rrmin=rrmin,
-        rdelta=rdelta,
-        nstep=nstep,
-        use_mad=use_mad,
-        weights=weights,
-        split_num=split_num,
-    )
+    if split_num>1:
+        return iterative_wls_quant_search_chunk(
+            data=data,
+            bits=bits,
+            rrmin=rrmin,
+            rdelta=rdelta,
+            nstep=nstep,
+            use_mad=use_mad,
+            weights=weights,
+            split_num=split_num,
+        )
+    else:
+        return iterative_wls_quant_search_non_chunk(
+            data=data,
+            bits=bits,
+            rrmin=rrmin,
+            rdelta=rdelta,
+            nstep=nstep,
+            use_mad=use_mad,
+            weights=weights,
+        )
+
 
 
 @torch.no_grad()
