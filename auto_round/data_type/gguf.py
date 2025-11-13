@@ -460,6 +460,7 @@ def quant_tensor_gguf_asym_dq(
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
+
 def iterative_wls_quant_search_non_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):
     """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
@@ -526,6 +527,7 @@ def iterative_wls_quant_search_non_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, n
         rmin[idx_to_replace] = this_min[idx_to_replace]
 
     return scale.to(torch.float32), -rmin.to(torch.float32)
+
 
 # TODO consolidate iterative_wls_quant_search_chunk and non-chunk
 def iterative_wls_quant_search_chunk(
@@ -610,7 +612,7 @@ def iterative_wls_quant_search(
     """
 
     # TODO this one should change to try catch later
-    if split_num>1:
+    if split_num > 1:
         return iterative_wls_quant_search_chunk(
             data=data,
             bits=bits,
@@ -631,7 +633,6 @@ def iterative_wls_quant_search(
             use_mad=use_mad,
             weights=weights,
         )
-
 
 
 @torch.no_grad()
