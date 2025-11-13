@@ -2007,7 +2007,7 @@ class BaseCompressor(object):
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )
-                            if len(devices) > 1 and "cpu" in device_map:
+                            if len(devices) > 1 and "cpu" in device_map.values():
                                 logger.warning(
                                     "Not enough memory cause the CPU to be used, which may severely impact speed."
                                     " Please consider using more cards."
