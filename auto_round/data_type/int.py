@@ -72,6 +72,7 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
     else:
         imatrix = imatrix.reshape(1, -1)
 
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
         imatrix = imatrix.reshape(tensor.shape)
 
