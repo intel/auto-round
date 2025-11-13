@@ -234,7 +234,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             )
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        logger.info(f"Processing weights after loading for layer: {layer._prefix}")
+        logger.debug(f"Processing weights after loading for layer: {layer._prefix}")
         if envs.VLLM_ENABLE_STATIC_MOE:
             if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
                 self._dequant_fp4_to_fp8(layer)
