@@ -2009,7 +2009,7 @@ class BaseCompressor(object):
                             )
                             if len(devices) > 1 and "cpu" in device_map.values():
                                 logger.warning(
-                                    "Not enough memory cause the CPU to be used, which may severely impact speed."
+                                    "Not enough vram cause the ram to be used, which may severely impact speed."
                                     " Please consider using more cards."
                                 )
 
