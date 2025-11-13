@@ -380,6 +380,9 @@ def set_layer_config(
     if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
         tie_word_embeddings = model.config.tie_word_embeddings
 
+    if lm_head_name in layer_config:
+        quant_lm_head = True
+
     if quant_lm_head and tie_word_embeddings and not gguf_name:
         quant_lm_head = False
         logger.warning(
