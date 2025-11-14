@@ -46,8 +46,7 @@ refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and
  for some accuracy results. 
 
 [2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
-  all bits other than 3 bits. **A more advanced algorithm** tailored for specific configurations may be available in
-  v0.8.1.
+  all bits other than 3 bits. 
 
 [2025/05] AutoRound has been integrated into **Transformers** and **vLLM**. 
 
