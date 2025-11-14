@@ -1564,7 +1564,6 @@ class BaseCompressor(object):
         for n, m in self.model.named_modules():
             m.tmp_name = n
 
-
         if not self.is_auto_scheme:
             enable_gguf_official_mixed = True
         else:
