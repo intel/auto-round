@@ -2626,7 +2626,6 @@ class BaseCompressor(object):
         minmax_lr = torch.tensor(self.minmax_lr)
         is_adam = "adam" in self.__class__.__name__.lower()
 
-
         extra_kwargs = {} if is_adam else {"momentum": self.momentum}
 
         if self.enable_minmax_tuning:
