@@ -55,7 +55,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int, val: f
         return data, orig_shape, pad_len
     else:
         pad_len = (data.shape[1] + group_size - 1) // group_size * group_size - data.shape[1]
-        data_new = torch.nn.functional.pad(data, (val, pad_len))
+        data_new = torch.nn.functional.pad(data, (0, pad_len), value=val)
         data_new = data_new.reshape(-1, group_size)
         return data_new, orig_shape, pad_len
 
