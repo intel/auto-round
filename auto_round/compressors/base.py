@@ -105,6 +105,29 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
+
+def dump_elapsed_time(customized_msg=""):
+    """Get the elapsed time for decorated functions.
+
+    Args:
+        customized_msg (string, optional): The parameter passed to decorator. Defaults to None.
+    """
+
+    def f(func):
+        def fi(*args, **kwargs):
+            start = time.time()
+            res = func(*args, **kwargs)
+            end = time.time()
+            logger.info(
+                "%s elapsed time: %s ms"
+                % (customized_msg if customized_msg else func.__qualname__, round((end - start) * 1000, 2))
+            )
+            return res
+
+        return fi
+
+    return f
+        
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -1321,7 +1344,8 @@ class BaseCompressor(object):
             )
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
-
+    
+    @dump_elapsed_time()
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
@@ -1603,6 +1627,7 @@ class BaseCompressor(object):
             logger.warning("immediate_saving is only supported for int quantization, set to False")
             self.immediate_saving = False
         if self.iters == 0:
+            logger.info(f"self.device: {self.device}")
             return self._quantize_rtn()
 
         if bool(self.quant_block_list):
@@ -1790,6 +1815,7 @@ class BaseCompressor(object):
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
 
+    @torch.compile(backend="hpu_backend")
     @torch.no_grad()
     def _get_block_outputs(
         self,
@@ -1819,6 +1845,7 @@ class BaseCompressor(object):
         output = []
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):
+            logger.trace(f"Processing samples {i}/{nsamples} for block")
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = self._sampling_inputs(
@@ -1983,6 +2010,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
+        # breakpoint()
         if is_fp8_model(self.model):
             layer_names = []
         if layer_names is None:

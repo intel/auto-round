@@ -24,6 +24,9 @@ from auto_round.data_type.utils import (
 )
 
 
+from functools import partial
+# hpu_compile = 
+# @torch.compile(backend="hpu_backend")
 @register_dtype(("fp8_sym", "fp8", "fp8_e4m3"))
 def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):
     """Symmetric quantization using float8 format.
