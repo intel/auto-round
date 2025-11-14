@@ -1558,11 +1558,13 @@ class BaseCompressor(object):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
-        # Assign temporary names after replacing modules
-        for n, m in self.model.named_modules():  # TODO check if could removed
+
+        # Temporary names must be assigned after handle_moe_model;
+        # placing them earlier would cause them to be removed when the module is replaced.
+        for n, m in self.model.named_modules():
             m.tmp_name = n
 
-        # TODO check scale_dtype
+
         if not self.is_auto_scheme:
             enable_gguf_official_mixed = True
         else:
