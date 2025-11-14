@@ -59,7 +59,6 @@ def ggml_quant(
             blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original
         )
     except Exception:
-        clear_memory()
         device = "cpu"
         blocks = blocks.to(device)
         scale = scale.to(device) if scale is not None else scale
@@ -68,6 +67,7 @@ def ggml_quant(
         d_scale = d_scale.to(device) if d_scale is not None else d_scale
         d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
         imatrix = imatrix.to(device) if imatrix is not None else imatrix
+        clear_memory()
         new_data = quant_func(
             blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original
         )
