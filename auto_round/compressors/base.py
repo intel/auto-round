@@ -381,6 +381,16 @@ class BaseCompressor(object):
 
         self.attention_mask = []
 
+        self.wrapper_block = wrapper_block
+        if self.enable_alg_ext:
+            try:
+                logger.warning_once("using algorithm extension for quantization.")
+                from auto_round.alg_ext import wrapper_autoround
+
+                wrapper_autoround(self)
+            except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
+
     def _gen_auto_scheme(
         self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
     ) -> dict[str, dict]:
@@ -2516,6 +2526,32 @@ class BaseCompressor(object):
         input_ids, input_others = normalize_input(inputs)
         return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
 
+    def _get_loss(
+        self,
+        output_q: torch.Tensor,
+        current_output: torch.Tensor,
+        indices: torch.Tensor,
+        mse_loss: Callable,
+        device: Union[str, torch.device] = "cpu",
+    ):
+        if self.attention_mask:
+            tmp_attention_mask = [self.attention_mask[i] for i in indices]
+            tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+            tmp_attention_mask.unsqueeze_(-1)
+        else:
+            tmp_attention_mask = 1.0
+        if self.amp:
+            with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                loss = mse_loss(  # pylint: disable=not-callable
+                    output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                )
+        else:
+            loss = mse_loss(  # pylint: disable=not-callable
+                output_q.to(torch.float32) * tmp_attention_mask,
+                current_output.to(torch.float32) * tmp_attention_mask,
+            )
+        return loss
+
     def _quantize_block(
         self,
         block: torch.nn.Module,
@@ -2600,7 +2636,7 @@ class BaseCompressor(object):
                 clear_memory(device_list=self.device_list)
             input_ids = q_input
 
-        quantized_layer_names, unquantized_layer_names = wrapper_block(
+        quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
@@ -2675,6 +2711,9 @@ class BaseCompressor(object):
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
         for i in range(self.iters):
+            if self.enable_alg_ext and self.data_type.endswith("dq"):
+                for n, m in block.named_modules():
+                    m.cur_iter = i
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:global_batch_size]
@@ -2688,25 +2727,7 @@ class BaseCompressor(object):
 
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
 
-                if self.attention_mask:
-                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(loss_device)
-                    tmp_attention_mask.unsqueeze_(-1)
-                    num_elm = torch.sum(tmp_attention_mask).item()
-                    if num_elm == 0:
-                        num_elm = 1
-                else:
-                    tmp_attention_mask = 1.0
-                if self.amp:
-                    with autocast(device_type=str(loss_device).split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            output_q * tmp_attention_mask, current_output * tmp_attention_mask
-                        )
-                else:
-                    loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32) * tmp_attention_mask,
-                        current_output.to(torch.float32) * tmp_attention_mask,
-                    )
+                loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
 
                 total_loss += loss.item() / num_elm
 
@@ -2836,44 +2857,6 @@ class BaseCompressor(object):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
 
-        if (
-            self.sym
-            and self.enable_alg_ext
-            and self.super_group_size is None
-            and (
-                (self.data_type.startswith("int") and self.act_bits >= 8)
-                or self.data_type.startswith("mx")
-                or self.data_type.startswith("nv")
-            )
-        ):
-            try:
-                from auto_round.alg_ext import quantize_block_ext
-
-                BaseCompressor.quantize_block_ext = quantize_block_ext
-                quantize_block = self.quantize_block_ext  # must use self.quantize_block_ext
-                if self.bits > 2 and (not self.data_type.startswith("mx") or not self.data_type.startswith("nv")):
-                    logger.warning(
-                        "algorithm extension has only undergone limited validation on "
-                        "INT2,mxfp4 and nvfp4; use with caution."
-                    )
-                else:
-                    logger.info("using algorithm extension for quantization.")
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
-                quantize_block = self._quantize_block
-        elif self.enable_alg_ext and self.data_type.endswith("dq"):
-            try:
-                from auto_round.alg_ext import dq_quantize_block_ext
-
-                BaseCompressor.dq_quantize_block_ext = dq_quantize_block_ext
-                quantize_block = self.dq_quantize_block_ext
-                logger.info("using algorithm extension for quantization.")
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
-                quantize_block = self._quantize_block
-        else:
-            quantize_block = self._quantize_block
-
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -2891,7 +2874,7 @@ class BaseCompressor(object):
                 m = WrapperMultiblock(modules)
 
             m.config = model.config if hasattr(model, "config") else None
-            q_input, input_ids = quantize_block(
+            q_input, input_ids = self._quantize_block(
                 m,
                 input_ids,
                 input_others,
