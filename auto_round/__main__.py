@@ -176,7 +176,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--momentum",
             default=0,
             type=float,
-            help="",
+            help="Momentum factor for the optimizer. Default is 0 (no momentum).",
         )
         tuning.add_argument(
             "--gradient_accumulate_steps",
