@@ -1,21 +1,32 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # SPDX-License-Identifier: Apache-2.0
 from typing import Callable, Optional
 
 import torch
-from torch.nn.parameter import Parameter
-
 import vllm.envs as envs
+from torch.nn.parameter import Parameter
 from vllm.logger import init_logger
-
-
 from vllm.model_executor.parameter import GroupQuantScaleParameter, ModelWeightParameter, PerTensorScaleParameter
+from vllm.platforms import current_platform
 
 from auto_round_extension.vllm_ext.mxfp4_qdq_utils import (
     dequant_mxfp4_to_fp8,
     mxfp4_gemm_with_unpacked_weight,
     run_mxfp4_emulations,
 )
-from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
@@ -121,4 +132,3 @@ class AutoRoundMXFP4LinearImpl(AutoRoundQuantImpl):
                 bias=bias,
             )
             return out
-

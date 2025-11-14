@@ -24,7 +24,7 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
-from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, need_quantize, get_scheme
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, get_scheme, need_quantize
 
 logger = init_logger(__name__)
 
