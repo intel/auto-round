@@ -193,7 +193,7 @@ class BaseCompressor(object):
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
-                  disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms
+                  disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms,momentum
         Raises:
             ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
             RuntimeError: If model parameters are on meta device.
@@ -234,6 +234,7 @@ class BaseCompressor(object):
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
+        self.momentum = kwargs.pop("momentum", 0.0)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         model_dtype = kwargs.pop("model_dtype", None)
         device = kwargs.pop("device", None)
@@ -1567,11 +1568,12 @@ class BaseCompressor(object):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = _handle_moe_model(self.model, formats=formats)
-        # Assign temporary names after replacing modules
-        for n, m in self.model.named_modules():  # TODO check if could removed
+
+        # Temporary names must be assigned after handle_moe_model;
+        # placing them earlier would cause them to be removed when the module is replaced.
+        for n, m in self.model.named_modules():
             m.tmp_name = n
 
-        # TODO check scale_dtype
         if not self.is_auto_scheme:
             enable_gguf_official_mixed = True
         else:
@@ -2661,12 +2663,24 @@ class BaseCompressor(object):
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
+        is_adam = "adam" in self.__class__.__name__.lower()
+
+        extra_kwargs = {} if is_adam else {"momentum": self.momentum}
+
         if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
-            )
+            params = [
+                {"params": round_params},
+                {"params": minmax_params, "lr": minmax_lr},
+            ]
         else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+            params = round_params
+
+        optimizer = self.optimizer(
+            params,
+            lr=lr,
+            weight_decay=0,
+            **extra_kwargs,
+        )
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
