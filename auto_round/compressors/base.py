@@ -2625,15 +2625,25 @@ class BaseCompressor(object):
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
+        is_adam = "adam" in self.__class__.__name__.lower()
+
+
+        extra_kwargs = {} if is_adam else {"momentum": self.momentum}
+
         if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}],
-                lr=lr,
-                weight_decay=0,
-                momentum=self.momentum,
-            )
+            params = [
+                {"params": round_params},
+                {"params": minmax_params, "lr": minmax_lr},
+            ]
         else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0, momentum=self.momentum)
+            params = round_params
+
+        optimizer = self.optimizer(
+            params,
+            lr=lr,
+            weight_decay=0,
+            **extra_kwargs,
+        )
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
