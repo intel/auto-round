@@ -620,9 +620,9 @@ class BaseCompressor(object):
                 "Enabling it can reduce tuning cost by 20%%, but it might throw an exception."
             )
 
-        if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        # if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
