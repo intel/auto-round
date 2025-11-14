@@ -9,14 +9,14 @@ if [ -z "$1" ]; then
     model_path="/storage/yiliu7/quantized_model_ds_mxfp4"
     model_path="/storage/yiliu7/quantized_model_ds_mxfp8"
     # model_path="qmodels/quantized_model_ds_mxfp8"
-    model_path="./small-qmodels/quantized_model_qwen_mxfp8/"
+    # model_path="./small-qmodels/quantized_model_qwen_mxfp8/"
     # model_path="/storage/yiliu7/quantized_model_qwen_mxfp4"
-    model_path="/storage/yiliu7/quantized_model_qwen_mxfp8"
+    # model_path="/storage/yiliu7/quantized_model_qwen_mxfp8"
 else
   model_path="$1"
 fi
 
-tp_size=4
+tp_size=8
 model_name=$(basename ${model_path})
 output_dir="${model_name}-tp${tp_size}-gsm8k-acc"
 # task_name="gsm8k"
