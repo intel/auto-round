@@ -373,6 +373,24 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Options: 'float16', 'bfloat16', 'float32'. "
             "Should match your hardware capabilities for best performance.",
         )
+        eval_args.add_argument(
+            "--task_configs",
+            type=str,
+            default=None,
+            help=(
+                "Optional per-task configuration in JSON or simplified format. "
+                "Example JSON: "
+                '\'{"gsm8k_llama": {"apply_chat_template": true, "fewshot_as_multiturn": true}, '
+                ' "hellaswag": {"num_fewshot": 10}}\' '
+                "You can also provide a JSON file path like 'task_configs.json'."
+            ),
+        )
+        eval_args.add_argument(
+            "--disable_thinking",
+            action="store_true",
+            help=("whether to disable thinking mode of chat_template."),
+        )
+        eval_args.add_argument("--max_length", default=None, type=int, help="Random seed for reproducibility.")
 
         ## ======================= MLLM =======================
         mllm_args = self.add_argument_group("Multimodal Large Language Model(MLLM) arguments")
@@ -742,6 +760,9 @@ def tune(args):
                 limit=args.limit,
                 batch_size=args.eval_bs,
                 eval_model_dtype=eval_model_dtype,
+                task_configs=args.task_configs,
+                disable_thinking=args.disable_thinking,
+                max_length=args.max_length,
             )
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
@@ -770,11 +791,15 @@ def tune(args):
             eval_task_by_task(
                 eval_folder,
                 device=device_str,
+                tokenizer=tokenizer,
                 tasks=args.tasks,
                 batch_size=args.eval_bs,
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
                 mllm=autoround.mllm,  # pylint: disable=E1101
+                task_configs=args.task_configs,
+                disable_thinking=args.disable_thinking,
+                max_length=args.max_length,
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -828,6 +853,9 @@ def run_eval():
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
+            task_configs=args.task_configs,
+            disable_thinking=args.disable_thinking,
+            max_length=args.max_length,
         )
     else:
         eval(args)
