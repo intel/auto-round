@@ -28,7 +28,7 @@ class TestAutoRound(unittest.TestCase):
     @require_optimum
     def test_diffusion_tune(self):
         ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
+        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name).to("cuda")
         model = pipe.transformer
 
         layer_config = {}

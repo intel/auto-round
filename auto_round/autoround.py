@@ -85,6 +85,7 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
+        low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -105,6 +106,7 @@ class AutoRound:
             lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
             minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
             low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.
@@ -186,6 +188,7 @@ class AutoRound:
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
             **kwargs,
         )
         return ar

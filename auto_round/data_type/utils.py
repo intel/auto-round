@@ -23,7 +23,7 @@ from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import logger
 
 
-def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
+def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int, val: float = 0.0):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
     This function adjusts the
@@ -55,7 +55,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
         return data, orig_shape, pad_len
     else:
         pad_len = (data.shape[1] + group_size - 1) // group_size * group_size - data.shape[1]
-        data_new = torch.nn.functional.pad(data, (0, pad_len))
+        data_new = torch.nn.functional.pad(data, (0, pad_len), value=val)
         data_new = data_new.reshape(-1, group_size)
         return data_new, orig_shape, pad_len
 

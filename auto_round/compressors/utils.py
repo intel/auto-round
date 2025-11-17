@@ -26,7 +26,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model
+from auto_round.utils import check_to_quantized, copy_python_files_from_model_cache, is_fp8_linear, is_fp8_model
 
 
 class BackendDataType(str, Enum):
@@ -111,7 +111,7 @@ def block_forward(
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
     if amp:
-        with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
+        with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)
     else:
         output = block(input_ids, *input_tuple, **input_others)
@@ -199,13 +199,14 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     return True, ""
 
 
-def collect_best_params(block):
+def collect_best_params(block, cache_device="cpu"):
+    """Collect the best parameters from the block to the specified device."""
     params = {}
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             params[n] = {}
             for key in m.params.keys():
-                params[n][key] = copy.deepcopy(m.params[key].data)
+                params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
 
 
@@ -322,9 +323,20 @@ def set_layer_config(
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
+    embedding_types = (torch.nn.Embedding,)
     gguf_name = get_gguf_scheme(default_scheme)
-    if gguf_name and torch.nn.Embedding not in supported_types:
-        supported_types = (*supported_types, torch.nn.Embedding)
+    if gguf_name:
+        if torch.nn.Embedding not in supported_types:
+            supported_types = (*supported_types, torch.nn.Embedding)
+
+        # for some Embedding which type() is not torch.nn.Embedding
+        # for example: transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding
+        model_module_name = model.__class__.__module__
+        module_cls = sys.modules[model_module_name]
+        for name in module_cls.__dict__:
+            if name.endswith("Embedding") and not name.endswith("RotaryEmbedding"):
+                embedding_types = (*embedding_types, getattr(module_cls, name))
+        supported_types = (*supported_types, *embedding_types)
 
     all_supported_layer_names, embedding_layer_names = [], []
     all_module_names = []
@@ -337,7 +349,7 @@ def set_layer_config(
         if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:
             continue
         all_supported_layer_names.append(n)
-        if isinstance(m, torch.nn.Embedding):
+        if isinstance(m, embedding_types) or m.__class__.__name__.endswith("Embedding"):
             embedding_layer_names.append(n)
 
     # 6. expand regex configs
@@ -368,6 +380,9 @@ def set_layer_config(
     if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
         tie_word_embeddings = model.config.tie_word_embeddings
 
+    if lm_head_name in layer_config:
+        quant_lm_head = True
+
     if quant_lm_head and tie_word_embeddings and not gguf_name:
         quant_lm_head = False
         logger.warning(
@@ -376,6 +391,9 @@ def set_layer_config(
 
     if lm_head_name not in layer_config and quant_lm_head:
         layer_config[lm_head_name] = copy.deepcopy(default_dict)
+
+    if not quant_lm_head and not gguf_name:
+        layer_config.pop(lm_head_name, None)
 
     # 8. enforce shape divisibility for int weight-only
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
@@ -646,7 +664,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.utils.common import LazyImport
+    from auto_round.utils.common import MM_KEYS, LazyImport
     from auto_round.utils.model import get_lm_head_name, get_module
 
     # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
@@ -656,24 +674,41 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         hparams=model.config.to_dict(), model_type=model_type
     )
     try:
-        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        if model_type != ModelType.TEXT:
+            model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
+                model_architecture, model_type=model_type
+            )
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
+            model_architecture, model_type=ModelType.TEXT
+        )
+
     except NotImplementedError:
         return layer_config, {}
 
     n_layer = None
-    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
-        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
+    if model_type != ModelType.TEXT:
+        n_layer_vision = None
+    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
-            break
-        if hasattr(model.config, sub_attr):
-            if hasattr(getattr(model.config, sub_attr), name):
-                n_layer = getattr(getattr(model.config, sub_attr), name)
+        if model_type != ModelType.TEXT:
+            if n_layer is not None and hasattr(model.config, "text_config"):
+                if hasattr(getattr(model.config, "text_config"), name):
+                    n_layer = getattr(getattr(model.config, "text_config"), name)
+            for config_name in ["vision_config", "vision_encoder"]:
+                if hasattr(model.config, config_name):
+                    if hasattr(getattr(model.config, config_name), name):
+                        n_layer_vision = getattr(getattr(model.config, config_name), name)
+                        break
+            if n_layer and n_layer_vision:
                 break
+
     if n_layer is None:
         return layer_config, {}
 
     tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
+    if model_type != ModelType.TEXT:
+        tensor_map_vision = gguf.get_tensor_name_map(model_class_vision.model_arch, n_layer_vision)
 
     def _set_config(config, target_config):
         for k, v in target_config.items():
@@ -729,7 +764,17 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1)
             )
 
-        gguf_name = tensor_map.get_name(layer_name)
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_KEYS]):
+            gguf_name = tensor_map_vision.get_name(layer_name)
+            if gguf_name is None:
+                for key in MM_KEYS:
+                    gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
+                    if gguf_name is not None:
+                        break
+        else:
+            gguf_name = tensor_map.get_name(layer_name)
+            if gguf_name is None:
+                gguf_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
         bits_index = 6
         if config.get("fixed_by_user", False):
             if "bits" not in config:
@@ -1027,3 +1072,241 @@ def reset_params(inputs):
     """
     if "use_cache" in inputs.keys():  # Not storing kv cache
         inputs["use_cache"] = False
+
+
+def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
+    """
+    Shard-saves the parameters of a model block (or group of blocks) immediately into disk,
+    accumulating tensors into size-limited shards, optionally finalizing all remaining
+    model weights when processing the last group.
+
+    Args:
+        rounder (object): The object of compressor.
+        m (torch.nn.Module): The current block (or composite module) whose parameters will be added to the shard set.
+        name (str): Override module name used as prefix for saved parameter keys. If None, falls back to m.tmp_name.
+        last_group (bool): If True, triggers final pass over the entire model to include unsaved weights,
+            writes shard index, renames shard files, copies source files, and releases temporary state.
+    """
+    import json
+    import os
+    from collections import OrderedDict
+
+    from auto_round.utils import clear_memory, get_module
+
+    # User configurable (can be preset on rounder)
+    max_shard_size = getattr(rounder, "max_shard_size", "5GB")
+    safe_serialization = getattr(rounder, "safe_serialization", True)
+    layer_names = rounder._get_quantized_layer_names_outside_blocks()
+    if len(layer_names) > 0 and name != layer_names[-1]:
+        last_group = False
+
+    def _parse_size(size_str: str) -> int:
+        s = size_str.strip().upper()
+        if s.endswith("GB"):
+            return int(s[:-2]) * (1024**3)
+        if s.endswith("MB"):
+            return int(s[:-2]) * (1024**2)
+        if s.endswith("KB"):
+            return int(s[:-2]) * 1024
+        return int(s)
+
+    # Init global accumulators (once)
+    if not hasattr(rounder, "_shard_init_done"):
+        rounder._shard_init_done = True
+        rounder._max_shard_bytes = _parse_size(str(max_shard_size))
+        rounder._use_safetensors = False
+        if safe_serialization:
+            try:
+                from safetensors.torch import save_file as _sf  # noqa
+
+                rounder._use_safetensors = True
+            except ImportError:
+                logger.warning("safe_serialization=True but safetensors not installed; fallback to torch.save.")
+        rounder._current_shard_tensors = OrderedDict()
+        rounder._current_shard_size = 0
+        rounder._shard_meta = []  # list of dicts: {file, params}
+        rounder._global_weight_map = {}  # param_name -> final shard file (filled after finalize)
+        rounder._shard_counter = 0
+        rounder._shard_suffix = "safetensors" if rounder._use_safetensors else "bin"
+        # new global counters
+        rounder._total_param_elems = 0
+        rounder._total_param_size_bytes = 0
+        # Directory
+        rounder._packed_blocks_root = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
+        os.makedirs(rounder._packed_blocks_root, exist_ok=True)
+
+    # Collect tensors directly from current (multi)block `m`
+    flat_tensors = OrderedDict()
+    for k, v in m.state_dict().items():
+        tmp_name = name if name is not None else m.tmp_name
+        if isinstance(v, torch.Tensor):
+            flat_tensors[f"{tmp_name}.{k}"] = v
+
+    # Append tensors into the running shard(s)
+    def _flush_current_shard():
+        if len(rounder._current_shard_tensors) == 0:
+            return
+        rounder._shard_counter += 1
+        tmp_name = f"model-shard-{rounder._shard_counter:05d}.{rounder._shard_suffix}"  # temporary name
+        tmp_path = os.path.join(rounder._packed_blocks_root, tmp_name)
+        if rounder._use_safetensors:
+            from safetensors.torch import save_file
+
+            save_file(rounder._current_shard_tensors, tmp_path)
+        else:
+            torch.save(rounder._current_shard_tensors, tmp_path)
+        params = list(rounder._current_shard_tensors.keys())
+        rounder._shard_meta.append({"tmp_file": tmp_name, "params": params})
+        for param in params:
+            free_module_name = param.rsplit(".", 1)[0]
+            free_module = get_module(rounder.model, free_module_name)
+
+            # free module only when all its parameters have been saved
+            free_flag = True
+            free_module_state_dict = free_module.state_dict()
+            already_saved_name = []
+            for _meta in rounder._shard_meta:
+                already_saved_name += _meta.get("params", [])
+            for free_module_key in free_module_state_dict:
+                free_module_key_full_name = f"{free_module_name}.{free_module_key}"
+                if free_module_key_full_name not in already_saved_name:
+                    free_flag = False
+            if free_flag:
+                free_module.to("meta")
+                del rounder._current_shard_tensors[param]
+        rounder._current_shard_tensors = OrderedDict()
+        rounder._current_shard_size = 0
+        clear_memory()
+
+    for pname, tensor in flat_tensors.items():
+        t_elems = tensor.numel()
+        t_size = t_elems * tensor.element_size()
+        # accumulate global stats
+        rounder._total_param_elems += t_elems
+        rounder._total_param_size_bytes += t_size
+        if t_size > rounder._max_shard_bytes:
+            _flush_current_shard()
+            rounder._current_shard_tensors[pname] = tensor
+            rounder._current_shard_size = t_size
+            _flush_current_shard()
+            continue
+        if rounder._current_shard_size + t_size > rounder._max_shard_bytes and rounder._current_shard_size > 0:
+            _flush_current_shard()
+        rounder._current_shard_tensors[pname] = tensor
+        rounder._current_shard_size += t_size
+
+    if last_group:
+
+        # 1) Add the remaining (unsaved) model weights into new shard(s),
+        # do not overwrite the already saved weights.
+        try:
+            full_sd = rounder.model.state_dict()
+        except Exception as e:
+            logger.warning(f"failed to obtain full state_dict for remaining weights: {e}")
+            full_sd = {}
+        tie_word_embeddings: bool = getattr(getattr(rounder.model, "config", None), "tie_word_embeddings", True)
+        for pname, tensor in full_sd.items():
+            if "lm_head" in pname and tie_word_embeddings:
+                continue
+            if not isinstance(tensor, torch.Tensor):
+                continue
+            # Check whether pname already stored in previous shards via _shard_meta
+            already_saved = False
+            for _meta in rounder._shard_meta:
+                if pname in _meta.get("params", []):
+                    already_saved = True
+                    break
+            if already_saved:
+                continue  # skip weights already saved
+            # Size accounting
+            t_elems = tensor.numel()
+            t_size = t_elems * tensor.element_size()
+
+            # Update global stats (these counters may already include earlier packed weights)
+            rounder._total_param_elems += t_elems
+            rounder._total_param_size_bytes += t_size
+
+            # If this tensor alone exceeds shard size -> dedicated shard
+            if t_size > rounder._max_shard_bytes:
+                _flush_current_shard()
+                rounder._current_shard_tensors[pname] = tensor.detach().cpu()
+                rounder._current_shard_size = t_size
+                _flush_current_shard()
+                continue
+
+            # If adding this tensor would overflow current shard -> flush current first
+            if rounder._current_shard_size + t_size > rounder._max_shard_bytes and rounder._current_shard_size > 0:
+                _flush_current_shard()
+
+            # Add to current shard
+            rounder._current_shard_tensors[pname] = tensor.detach().cpu()
+            rounder._current_shard_size += t_size
+
+        # 2) Flush any remaining unsaved leftover tensors
+        _flush_current_shard()
+
+        # 3) Finalize: rename temp shard files to HF-style names and build index
+        total_shards = rounder._shard_counter
+        if total_shards == 0:
+            logger.warning("no tensors saved across all blocks")
+        else:
+            final_names = []
+            for idx, meta in enumerate(rounder._shard_meta, start=1):
+                old_tmp = meta["tmp_file"]
+                old_path = os.path.join(rounder._packed_blocks_root, old_tmp)
+                if total_shards == 1:
+                    new_name = f"model.{rounder._shard_suffix}"
+                else:
+                    new_name = f"model-{idx:05d}-of-{total_shards:05d}.{rounder._shard_suffix}"
+                new_path = os.path.join(rounder._packed_blocks_root, new_name)
+                os.rename(old_path, new_path)
+                final_names.append(new_name)
+                for p in meta["params"]:
+                    rounder._global_weight_map[p] = new_name
+
+            index_fname = "model.safetensors.index.json" if rounder._use_safetensors else "model.bin.index.json"
+            index_path = os.path.join(rounder._packed_blocks_root, index_fname)
+            index_data = {
+                "metadata": {
+                    "format": "safetensors" if rounder._use_safetensors else "pytorch",
+                    "total_shards": total_shards,
+                    "total_parameters": int(getattr(rounder, "_total_param_elems", 0)),
+                    "total_size": int(getattr(rounder, "_total_param_size_bytes", 0)),
+                },
+                "weight_map": rounder._global_weight_map,
+            }
+            if total_shards > 1:
+                with open(index_path, "w", encoding="utf-8") as f:
+                    json.dump(index_data, f, indent=2)
+            logger.info(
+                f"saved {total_shards} shard(s) (HF-style, including remaining unsaved weights) to "
+                f"{rounder._packed_blocks_root} (index: {index_fname})"
+            )
+
+            try:
+                copy_python_files_from_model_cache(rounder.model, rounder._get_save_folder_name(rounder.formats[0]))
+            except Exception as e:
+                logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+        # 4) Cleanup attributes to release memory after final shard is written
+        try:
+            attrs_to_cleanup = [
+                "_current_shard_tensors",
+                "_current_shard_size",
+                "_shard_counter",
+                "_max_shard_bytes",
+                "_use_safetensors",
+                "_shard_suffix",
+                "_packed_blocks_root",
+                "_total_param_elems",
+                "_total_param_size_bytes",
+                "_shard_init_done",
+                "_shard_meta",
+                "_global_weight_map",
+            ]
+            for _attr in attrs_to_cleanup:
+                if hasattr(rounder, _attr):
+                    delattr(rounder, _attr)
+            clear_memory()
+        except Exception as _cleanup_err:
+            logger.warning(f"shard cleanup warning: {_cleanup_err}")
