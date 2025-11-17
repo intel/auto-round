@@ -173,7 +173,7 @@ class QuantizedKVParameterCache(DynamicCache):
             scales = self.v_scales
 
         qdq_tensor, scale = fp8_per_tensor_qdq(tensor)
-        _pad_and_append_at_idx_(scales, layer_idx, scale)
+        _pad_and_append_at_idx_(scales, layer_idx, scale.squeeze(0))
         return qdq_tensor
 
 

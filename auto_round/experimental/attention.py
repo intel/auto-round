@@ -147,6 +147,7 @@ def initialize_hooked_attention(module: Module, config):
 
 def prep_attention_module_for_calibration(module: torch.nn.Module, config):
     if is_attention_module(module):
+        logger.trace(f"Preparing attention module {module.__class__.__name__} for calibration")
         initialize_hooked_attention(module, config)
 
 

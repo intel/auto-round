@@ -329,3 +329,34 @@ def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch
         logger.warning_once("Forcing 'use_cache' to be False during calibration.")
         input_others["use_cache"] = False
     return input_ids, input_others
+
+
+def getattr_chain(obj: Any, chain_str: str, *args, **kwargs) -> Any:
+    """
+    Chain multiple getattr calls, separated by `.`
+
+    :param obj: base object whose attributes are being retrieved
+    :param chain_str: attribute names separated by `.`
+    :param default: default value, throw error otherwise
+    """
+    if len(args) >= 1:
+        has_default = True
+        default = args[0]
+    elif "default" in kwargs:
+        has_default = True
+        default = kwargs["default"]
+    else:
+        has_default = False
+
+    attr_names = chain_str.split(".")
+
+    res = obj
+    for attr_name in attr_names:
+        if not hasattr(res, attr_name):
+            if has_default:
+                return default
+            else:
+                raise AttributeError(f"{res} object has no attribute {attr_name}")
+        res = getattr(res, attr_name)
+
+    return res
