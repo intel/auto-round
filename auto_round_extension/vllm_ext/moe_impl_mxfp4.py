@@ -160,6 +160,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             from vllm.model_executor.layers.fused_moe.config import (
                 ocp_mx_moe_quant_config,
             )
+
             if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
                 self.input_dtype = "mxfp8_e4m3"
                 self.weight_dtype = "mxfp8_e4m3"
@@ -254,7 +255,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
                 self._dequant_fp4_to_fp8(layer)
                 return
-            
+
             def revert_interleaved_bias(bias):
                 """
                 Convert from blocked bias format to interleaved format.
@@ -305,6 +306,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                     new_w1[:, ::2, :] = w1[:, : N // 2, :]
                     new_w1[:, 1::2, :] = w1[:, N // 2 :, :]
                     return new_w1
+
                 if envs.VLLM_AR_POST_PROCESS_GPTOSS:
                     w1 = revert_interleaved_w1(w1)
 

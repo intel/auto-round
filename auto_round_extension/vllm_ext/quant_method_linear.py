@@ -20,7 +20,7 @@ from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, Unqu
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
-from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, need_quantize, get_scheme
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, get_scheme, need_quantize
 
 logger = init_logger(__name__)
 
@@ -60,7 +60,7 @@ class AutoRoundQuantLinearMethod(LinearMethodBase):
             if prefix.endswith(packed_name):
                 prefix = prefix.replace(packed_name, child_names[0])
                 break
-        
+
         # TODO: use a more robust way to map layer names
         if prefix.endswith("gate_up_proj"):
             # update gate_up_proj to gate_proj, assume both gate and up share the same quantization scheme
