@@ -2543,7 +2543,8 @@ class BaseCompressor(object):
             if self.amp:
                 with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
-                        (output_q * tmp_attention_mask).to(torch.float32), (current_output * tmp_attention_mask).to(torch.float32)
+                        (output_q * tmp_attention_mask).to(torch.float32),
+                        (current_output * tmp_attention_mask).to(torch.float32),
                     )
             else:
                 loss = mse_loss(  # pylint: disable=not-callable
