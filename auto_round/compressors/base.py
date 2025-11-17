@@ -2385,13 +2385,13 @@ class BaseCompressor(object):
                             output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                             loss = mse_loss(  # pylint: disable=not-callable
                                 (output_q * tmp_attention_mask).to(torch.float32),
-                                (current_output * tmp_attention_mask).to(torch.float32)
+                                (current_output * tmp_attention_mask).to(torch.float32),
                             )
                     else:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
                             (output_q * tmp_attention_mask).to(torch.float32),
-                            (current_output * tmp_attention_mask).to(torch.float32)
+                            (current_output * tmp_attention_mask).to(torch.float32),
                         )
                 else:
                     if self.amp:
@@ -2399,15 +2399,13 @@ class BaseCompressor(object):
                             output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                             loss = mse_loss(  # pylint: disable=not-callable
                                 output_q.to(torch.float32),
-                                current_output.to(torch.float32) # mul 1.0 will copy the output
+                                current_output.to(torch.float32),  # mul 1.0 will copy the output
                             )
                     else:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
-                            output_q.to(torch.float32),
-                            current_output.to(torch.float32)
+                            output_q.to(torch.float32), current_output.to(torch.float32)
                         )
-
 
                 total_loss += loss.item() / num_elm
 
