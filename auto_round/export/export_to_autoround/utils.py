@@ -12,36 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-REQUIRED_CONFIG_KEYS = (
-    "data_type",
-    "bits",
-    "group_size",
-    "sym",
-    "act_bits",
-    "act_data_type",
-    "act_group_size",
-    "act_sym",
-    "act_dynamic",
-)
+from dataclasses import fields
+from typing import List
+
+from auto_round.schemes import QuantizationScheme
 
 
-def check_neq_config(config: dict, **expected) -> dict[str, tuple]:
+def check_neq_config(config: dict, **expected) -> List[str]:
     """
     Compare a config dict against expected values.
     Ensures all required keys are present in both config and expected.
 
     Returns:
-        dict[str, tuple]: {key: (actual, expected)} for mismatched values.
+        List[str]: [keys] for mismatched values.
     """
+    scheme_keys = [f.name for f in fields(QuantizationScheme)]
     # 1. Check missing from expected
-    missing_expected = [k for k in REQUIRED_CONFIG_KEYS if k not in expected]
+    missing_expected = [k for k in scheme_keys if k not in expected]
     if missing_expected:
         raise ValueError(f"Missing expected values for keys: {missing_expected}")
 
     # 2. Check missing from layer config
-    missing_config = [k for k in REQUIRED_CONFIG_KEYS if k not in config]
+    missing_config = [k for k in scheme_keys if k not in config]
     if missing_config:
         raise ValueError(f"Missing config values for keys: {missing_config}")
 
     # 3. Collect mismatches
-    return {key: (config[key], expected[key]) for key in REQUIRED_CONFIG_KEYS if config[key] != expected[key]}
+    return [key for key in scheme_keys if config[key] != expected[key] and config[key] is not None]

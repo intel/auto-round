@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import math
 from logging import getLogger
 
@@ -21,7 +20,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.utils import _get_packing_device
+from auto_round.utils import get_packing_device
 
 logger = getLogger(__name__)
 
@@ -91,7 +90,7 @@ class QuantLinear(nn.Module):
 
     # @torch.compile()
     def pack_248_bits(self, linear, scales, zeros, g_idx=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
@@ -149,7 +148,7 @@ class QuantLinear(nn.Module):
             self.qzeros = qzeros.cpu()
 
     def pack_3bits(self, linear, scales, zeros, g_idx=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()

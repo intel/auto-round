@@ -14,11 +14,9 @@
 import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from typing import Iterable, Optional, Union
+from typing import Optional, Union
 
-import torch
-
-__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme", "AutoScheme"]
+__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
 
 @dataclass
@@ -285,22 +283,3 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
         if equal:
             return key
     return ""
-
-
-@dataclass
-class AutoScheme:
-    avg_bits: float
-    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str], ...]]
-    shared_layers: Optional[Iterable[Iterable[str]]] = None
-    method: str = "default"
-    ignore_scale_zp_bits: bool = False
-    nsamples: Optional[int] = None
-    seqlen: Optional[int] = None
-    dataset: Optional[str] = None  # Import Notice no comma for each item
-    device_map: Optional[Union[str, torch.device, int, dict]] = None
-    enable_torch_compile: Optional[bool] = None
-
-    def __post_init__(self):
-        if isinstance(self.options, str):
-            options = self.options.upper().replace(" ", "")
-            self.options = options.split(",")

@@ -89,7 +89,7 @@ class TestMainFunc(unittest.TestCase):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        from auto_round.utils import get_fp_layer_names
+        from auto_round.compressors.utils import get_fp_layer_names
 
         layer_names = get_fp_layer_names(model, "model.decoder.layers.0,model.decoder.layers.1")
         layer_configs = {}
@@ -114,7 +114,7 @@ class TestMainFunc(unittest.TestCase):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        from auto_round.utils import get_fp_layer_names
+        from auto_round.compressors.utils import get_fp_layer_names
 
         layer_names = get_fp_layer_names(model, "model.decoder.layers.0,model.decoder.layers.1")
         layer_configs = {}
@@ -178,6 +178,44 @@ class TestMainFunc(unittest.TestCase):
         accuracy = get_accuracy(res)
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_attention_mask_lm_head(self):
+        from transformers import AutoTokenizer
+
+        model_name = "/models/Qwen3-8B"
+        # model_name = "/models/Qwen3-0.6B"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        text = ["haha", "hello world"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data = [res.data]
+
+        text = ["qudd", "hfd"]
+        res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
+        res.data.pop("attention_mask")
+        data.append(res.data)
+        from auto_round import AutoRound
+
+        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8, quant_lm_head=True)
+        ar.quantize()
+
+    def test_low_cpu_mem_usage(self):
+        bits, group_size = 4, 32
+        model_name = "/models/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        quantized_model_path = "./saved"
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            iters=2,
+            seqlen=10,
+            low_cpu_mem_usage=True,
+        )
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
 if __name__ == "__main__":

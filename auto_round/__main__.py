@@ -15,9 +15,10 @@ import argparse
 import os
 import sys
 
+from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
-from auto_round.schemes import PRESET_SCHEMES, AutoScheme
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -35,14 +36,28 @@ RECIPES = {
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.add_argument(
+            "model",
+            default=None,
+            nargs="?",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
         basic = self.add_argument_group("Basic Arguments")
         basic.add_argument(
-            "--model",
             "--model_name",
+            "--model",
             "--model_name_or_path",
             default="facebook/opt-125m",
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
+        basic.add_argument("--model_dtype", default=None, help="model dtype used to load the pre-trained model")
+        basic.add_argument(
+            "--platform",
+            default="hf",
+            help="Platform to load the pre-trained model. Options: [hf, model_scope]."
+            " hf stands for huggingface and model_scope stands for model scope.",
         )
         basic.add_argument(
             "--scheme",
@@ -158,12 +173,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
         )
         tuning.add_argument(
-            "--mem_per_param_scale",
-            default=13,
+            "--momentum",
+            default=0,
             type=float,
-            help="Memory scaling factor for parameter memory estimation. "
-            "Adjust this if you need to control memory usage during tuning. "
-            "Lower values reduce memory usage but may affect accuracy.",
+            help="Momentum factor for the optimizer. Default is 0 (no momentum).",
         )
         tuning.add_argument(
             "--gradient_accumulate_steps",
@@ -434,6 +447,9 @@ def setup_parser(recipe="default"):
 
 
 def tune(args):
+    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+    if args.model is None:
+        args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -522,7 +538,6 @@ def tune(args):
         enable_deterministic_algorithms=args.enable_deterministic_algorithms,
         lr=args.lr,
         minmax_lr=args.minmax_lr,
-        mem_per_param_scale=args.mem_per_param_scale,
         nblocks=args.nblocks,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
@@ -565,6 +580,7 @@ def tune(args):
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
+        platform=args.platform,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,
@@ -580,6 +596,8 @@ def tune(args):
         enable_adam=args.adam,
         extra_config=extra_config,
         layer_config=layer_config,
+        model_dtype=args.model_dtype,
+        momentum=args.momentum,
     )
 
     model_name = args.model.rstrip("/")
@@ -756,6 +774,7 @@ def tune(args):
                 batch_size=args.eval_bs,
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
+                mllm=autoround.mllm,  # pylint: disable=E1101
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -766,8 +785,15 @@ def tune(args):
             st = time.time()
             if "llama" in args.model.lower():
                 model_args += ",add_bos_token=True"
+            if autoround.mllm:  # pylint: disable=E1101
+                model_type = "hf-multimodal"
+                if args.eval_bs is None or args.eval_bs == "auto":
+                    logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
+                    args.eval_bs = 16
+            else:
+                model_type = "hf"
             res = simple_evaluate(
-                model="hf",
+                model=model_type,
                 model_args=model_args,
                 tasks=tasks,
                 device=device_str,
@@ -785,11 +811,19 @@ def setup_eval_parser():
 
 
 def run_eval():
+    from auto_round.utils import is_mllm_model
+
     args = setup_eval_parser()
+    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+    if args.model is None:
+        args.model = args.model_name
+    if is_mllm_model(args.model):
+        args.mllm = True
+
     if args.eval_task_by_task:
         eval_task_by_task(
             model=args.model,
-            device=args.device,
+            device=args.device_map,
             tasks=args.tasks,
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,

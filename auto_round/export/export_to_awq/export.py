@@ -31,17 +31,17 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
-from auto_round.export.utils import save_model
+from auto_round.export.utils import filter_quantization_config, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     copy_python_files_from_model_cache,
     extract_block_names_to_str,
-    filter_quantization_config,
     get_block_names,
     get_module,
     set_module,
+    unsupported_meta_device,
 )
 
 
@@ -111,10 +111,13 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if image_processor is not None and output_dir is not None:
         image_processor.save_pretrained(output_dir)
 
-    if inplace:
-        compressed_model = model.to("cpu")
+    if not unsupported_meta_device(model):
+        if inplace:
+            compressed_model = model.to("cpu")
+        else:
+            compressed_model = copy.deepcopy(model.to("cpu"))
     else:
-        compressed_model = copy.deepcopy(model.to("cpu"))
+        compressed_model = model
 
     names = list(layer_config.keys())
 
@@ -122,21 +125,23 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
+    if not unsupported_meta_device(model):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with tqdm(total=len(names), leave=True) as pbar:
 
-            def wrapper(name):
-                pbar.set_description(f"packing {name}")
-                with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, compressed_model, backend, device)
-                pbar.update(1)
+                def wrapper(name):
+                    pbar.set_description(f"packing {name}")
+                    with tctl.threadpool_limits(limits=1):
+                        pack_layer(name, compressed_model, backend, device)
+                    pbar.update(1)
 
-            for _ in executor.map(wrapper, names):
-                pass
+                for _ in executor.map(wrapper, names):
+                    pass
     if output_dir is None:
         return model
 
     quantization_config = kwargs["serialization_dict"]
+    regex_config = quantization_config.pop("regex_config", {})  # awq do not support mixed bits config saving
 
     if output_dir is None:
         return compressed_model
@@ -145,11 +150,16 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
+    for key, cfg in regex_config.items():
+        bits = cfg.get("bits")
+        if bits > 8:  # save fp_layer regexs
+            modules_to_not_convert.append(key)
+
     quantization_config["provider"] = "auto-round"
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
-    quantization_config["modules_to_not_convert"] = modules_to_not_convert
+    quantization_config["modules_to_not_convert"] = list(dict.fromkeys(modules_to_not_convert))
     ##check module quantized in block, this may have bug for mixed precision quantization
     filter_quantization_config(quantization_config)
     if hasattr(compressed_model, "config"):

@@ -16,7 +16,7 @@ import os
 
 import torch.nn as nn
 
-from auto_round.utils import copy_python_files_from_model_cache, logger
+from auto_round.utils import copy_python_files_from_model_cache, logger, unsupported_meta_device
 
 
 def save_model(
@@ -47,12 +47,19 @@ def save_model(
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
-    try:
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    except ValueError as e:
-        if hasattr(model, "generation_config"):
-            setattr(model.generation_config, "do_sample", True)
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    if unsupported_meta_device(model):
+        if hasattr(model, "config") and model.config is not None:
+            model.config.save_pretrained(save_dir)
+
+        if hasattr(model, "generation_config") and model.generation_config is not None:
+            model.generation_config.save_pretrained(save_dir)
+    else:
+        try:
+            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+        except ValueError as e:
+            if hasattr(model, "generation_config"):
+                setattr(model.generation_config, "do_sample", True)
+            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
@@ -70,3 +77,118 @@ def save_model(
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+
+def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
+    """
+    Configures and returns a QuantLinear class based on the specified backend and parameters.
+
+    Args:
+        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
+                       "exllama", and "cuda".
+        bits (int, optional): The number of bits for quantization. Default is 4.
+        group_size (int, optional): The group size for quantization. Default is 128.
+        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
+
+    Returns:
+        class: The dynamically imported QuantLinear class configured according to the specified parameters.
+    """
+    use_triton = True
+    if bits not in [2, 4, 8]:
+        use_triton = False
+    disable_exllamav2 = True
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    if "qigen" in backend:
+        use_triton = False
+        use_qigen = True
+    elif "triton" in backend:
+        use_triton = True
+    elif "marlin" in backend and sym:
+        use_triton = False
+        disable_marlin = False
+    elif "exllama" in backend:  ##need v1 code to export
+        use_triton = True  ##same with triton
+        disable_marlin = True
+    elif "cuda" in backend:
+        use_triton = False
+        disable_marlin = True
+        disable_exllamav2 = True
+        disable_exllamav1 = True
+    if use_triton:
+        from auto_round.export.export_to_autogptq.qlinear_triton import QuantLinear
+
+        return QuantLinear
+    try:
+        import auto_gptq  # pylint: disable=E0401
+    except:
+        logger.error(f"please install auto_gptq via 'pip install auto-gptq' to support exporting to {backend}")
+        exit()
+
+    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+
+    from auto_round.utils.common import get_library_version
+
+    version = get_library_version("auto_gptq")
+    from packaging.version import Version
+
+    if Version(version) < Version("0.7.2"):
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+    else:
+        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            use_marlin=not disable_marlin,
+        )
+    return QuantLinear
+
+
+def filter_quantization_config(quantization_config):
+    default_dict = {
+        "amp": True,
+        "batch_size": 8,
+        "data_type": int,
+        "dataset": "NeelNanda/pile-10k",
+        "enable_minmax_tuning": True,
+        "enable_norm_bias_tuning": False,
+        "enable_quanted_input": True,
+        "gradient_accumulate_steps": 1,
+        "iters": 200,
+        "low_gpu_mem_usage": False,
+        "nsamples": 128,
+        "scale_dtype": "torch.float16",
+        "seqlen": 2048,
+    }
+    iters = quantization_config.get("iters", 200)
+
+    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
+    default_dict["minmax_lr"] = default_dict["lr"]
+
+    for key in default_dict:
+        if key in quantization_config and default_dict[key] == quantization_config[key]:
+            quantization_config.pop(key)
+    for k in list(quantization_config.keys()):
+        if quantization_config[k] is None:
+            quantization_config.pop(k)
+
+    if quantization_config.get("act_bits", 16) >= 16:
+        quantization_config.pop("act_bits", None)
+        quantization_config.pop("act_data_type", None)
+        quantization_config.pop("act_dynamic", None)
+        quantization_config.pop("act_sym", None)
+        quantization_config.pop("act_group_size", None)

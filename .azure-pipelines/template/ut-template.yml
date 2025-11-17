@@ -26,7 +26,7 @@ steps:
     parameters:
       dockerConfigName: ${{ parameters.dockerConfigName }}
       repoName: "auto-round"
-      repoTag: "py310"
+      repoTag: "py312"
       dockerFileName: "Dockerfile"
       containerName: ${{ parameters.utContainerName }}
       repo: ${{ parameters.repo }}
@@ -35,9 +35,10 @@ steps:
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cpu \
-          && pip install intel-extension-for-pytorch==2.7.0 \
-          && pip install .[cpu] \
+          && pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu \
+          && pip install intel-extension-for-pytorch==2.8.0 \
+          && pip install -r requirements-cpu.txt \
+          && pip install . \
           && pip list"
       displayName: "Env Setup"
 
@@ -55,7 +56,7 @@ steps:
     displayName: "Run UT"
 
   - task: PublishPipelineArtifact@1
-    condition: succeededOrFailed()
+    condition: succeeded()
     inputs:
       targetPath: ${{ parameters.uploadPath }}
       artifact: ${{ parameters.utArtifact }}_coverage
