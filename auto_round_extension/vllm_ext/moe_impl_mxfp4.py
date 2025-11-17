@@ -163,7 +163,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
             if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
                 self.input_dtype = "mxfp8_e4m3"
                 self.weight_dtype = "mxfp8_e4m3"
-                return ocp_mx_moe_quant_config(
+                ocp_config = ocp_mx_moe_quant_config(
                     quant_dtype=self.input_dtype,
                     weight_dtype=self.weight_dtype,
                     w1_scale=layer.w13_weight_scale,
@@ -174,6 +174,17 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                     w2_bias=layer.w2_bias if self.has_bias else None,
                     block_shape=None,
                 )
+                from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import (
+                    OCP_MX_DTYPES,
+                    OCP_MX_Scheme,
+                )
+                ocp_config.ocp_mx_scheme = OCP_MX_Scheme.from_quant_dtype(
+                    input_dtype="mxfp8_e4m3",
+                    weight_dtype="mxfp8_e4m3",
+                    original_dtype="mxfp4",
+                )
+                logger.warning_once(f"Set OCP_MX_Scheme to {ocp_config.ocp_mx_scheme}")
+                return ocp_config
                 
             self.input_dtype = "mxfp4"
             self.weight_dtype = "mxfp4"
