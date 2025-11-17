@@ -285,6 +285,9 @@ class BaseCompressor(object):
             )
         check_and_mark_fp8_model(model)
         self.model = model.eval()
+        from auto_round.replace_lm_head import wrap_lm_head
+
+        wrap_lm_head(self.model)
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
@@ -3024,7 +3027,9 @@ class BaseCompressor(object):
         serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
+        from auto_round.replace_lm_head import clean_norm_in_fake_decoding_layer
 
+        clean_norm_in_fake_decoding_layer(self.model)
         compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
