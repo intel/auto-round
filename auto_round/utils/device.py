@@ -436,6 +436,7 @@ def _clear_memory_for_cpu_and_cuda(
                 torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
     if torch.xpu.is_available():
+        torch.xpu.synchronize()
         torch.xpu.empty_cache()
 
 
