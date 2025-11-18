@@ -22,7 +22,7 @@ export AR_LOG_LEVEL=DEBUG
 - **Description**: Enables compile packing optimization
 - **Default**: `False` (equivalent to `"0"`)
 - **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
-- **Usage**: Enable this for performance optimizations during compilation
+- **Usage**: Enable this for performance optimizations during packing FP4 tensors into `uint8`.
 
 ```bash
 export AR_ENABLE_COMPILE_PACKING=1
