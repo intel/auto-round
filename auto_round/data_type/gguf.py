@@ -408,6 +408,8 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         d_wmin = d_wmin.unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
         wmin = (d_wmin * q_wmin).view(-1, 1)
+    if split_num > 1:
+        clear_memory([tensor.device])
     return scale, wmin, d_scale, d_wmin
 
 
@@ -455,10 +457,12 @@ def quant_tensor_gguf_asym_dq(
         )
 
     inverse_scale = get_reciprocal(scale)
-    int_w = torch.clamp(round_ste((tensor + wmin) * inverse_scale + v), 0, maxq)
-    qdq_result = (scale * int_w - wmin).to(orig_dtype)
-    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
+    tensor = tensor.add_(wmin)
+    tensor = torch.round(tensor.mul_(inverse_scale)).clamp_(0,maxq)
+    tensor = tensor.mul_(scale)
+    tensor = tensor.subtract_(wmin).to(orig_dtype)
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
+    return tensor, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
 def iterative_wls_quant_search_non_chunk(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):

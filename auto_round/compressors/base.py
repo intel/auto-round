@@ -1050,7 +1050,7 @@ class BaseCompressor(object):
 
         return self.orig_output_dir
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def _quantize_embedding_layer(self):
         """Quantizes embedding layers in the model according to the configuration.
 
@@ -1122,9 +1122,12 @@ class BaseCompressor(object):
 
             # Update config
             self.layer_config.setdefault(name, {}).update(config)
+            del weight
+            del scale
+            del zp
+            clear_memory(self.device_list)
 
-            # Release memory
-            clear_memory(device_list=self.device_list)
+
 
         return is_quantized
 
@@ -1354,10 +1357,14 @@ class BaseCompressor(object):
         has_gguf_k = (
             any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
         )
+        if has_gguf_k:
+            self.model.to(torch.float32)
 
         self._quantize_embedding_layer()
 
         self.model.to("cpu")
+        # Release memory
+        clear_memory(device_list=self.device_list)
 
         enable_imatrix = False
         if not self.disable_opt_rtn:
@@ -1628,6 +1635,7 @@ class BaseCompressor(object):
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self._quantize_embedding_layer()
+        clear_memory(device_list=self.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
