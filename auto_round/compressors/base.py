@@ -1129,7 +1129,7 @@ class BaseCompressor(object):
             del weight
             del scale
             del zp
-            clear_memory(device_list = self.device_list)
+            clear_memory(device_list=self.device_list)
 
         return is_quantized
 
@@ -2849,7 +2849,7 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
 
-            clear_memory(input_ids,device_list=self.device_list)
+            clear_memory(input_ids, device_list=self.device_list)
 
             return q_outputs, output
         else:
@@ -2857,7 +2857,7 @@ class BaseCompressor(object):
                 accelerate.hooks.remove_hook_from_submodules(block)
             if auto_offload:
                 mv_module_from_gpu(block)
-            clear_memory(input_ids,device_list=self.device_list)
+            clear_memory(input_ids, device_list=self.device_list)
 
             return None, output
 

@@ -675,7 +675,7 @@ def iterative_wls_quant_search(
 def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
-            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True) #TODO split num
+            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)  # TODO split num
             ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
             scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num)
@@ -688,7 +688,7 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights, split_num=split_num)
-    if split_num>1:
+    if split_num > 1:
         clear_memory(device_list=[tensor.device])
     return scale
 
