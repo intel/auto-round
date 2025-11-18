@@ -18,7 +18,7 @@ import torch
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
-from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants
+from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants, make_qx_quants_chunk
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 from auto_round.utils.device import clear_memory
@@ -162,6 +162,37 @@ def double_quant_tensor_sym(tensor, bits):
     scale = wmax / -maxq
     inverse_scale = get_reciprocal(scale)
     qdq_tensor = torch.clip((round_ste(tensor * inverse_scale)), -maxq, maxq - 1) * scale
+    return qdq_tensor, scale
+
+
+def double_quant_tensor_sym_rtn(tensor, bits):
+    """
+    Inplace-optimized symmetric double quantization.
+    - Uses float32 inplace where possible
+    - Minimizes temporary tensor allocations
+    """
+    # Ensure tensor is float32 inplace (if tensor already float32, no copy)
+    if tensor.dtype != torch.float32:
+        tensor = tensor.float()  # .float() creates a copy if needed
+
+    maxq = 2 ** (bits - 1)
+
+    # Compute absolute max along last dim
+    # abs_() is inplace
+    tensor_abs = tensor.abs()  # cannot inplace abs on original if we need original sign
+    imax = tensor_abs.argmax(dim=-1, keepdim=True)
+    wmax = torch.take_along_dim(tensor, imax, dim=-1)
+
+    # Compute scale inplace
+    scale = wmax / -maxq
+    inverse_scale = get_reciprocal(scale)
+
+    # Inplace quantization
+    qdq_tensor = tensor.mul_(inverse_scale)        # tensor * inverse_scale inplace
+    qdq_tensor = torch.round(qdq_tensor)           # round inplace
+    qdq_tensor.clamp_(-maxq, maxq - 1)             # clamp inplace
+    qdq_tensor.mul_(scale)                          # multiply scale inplace
+
     return qdq_tensor, scale
 
 
@@ -324,7 +355,7 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
 def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
-    group_size = 16 if bits == 2 else 32
+
     if bits not in [2, 4, 5]:
         raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     quant_weights = None
@@ -409,7 +440,7 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         scale = (d_scale * q_scale).view(-1, 1)
         wmin = (d_wmin * q_wmin).view(-1, 1)
     if split_num > 1:
-        clear_memory([tensor.device])
+        clear_memory(device_list=[tensor.device])
     return scale, wmin, d_scale, d_wmin
 
 
@@ -458,9 +489,9 @@ def quant_tensor_gguf_asym_dq(
 
     inverse_scale = get_reciprocal(scale)
     tensor = tensor.add_(wmin)
-    tensor = torch.round(tensor.mul_(inverse_scale)).clamp_(0, maxq)
+    tensor = (tensor.mul_(inverse_scale)).round_().clamp_(0, maxq)
     tensor = tensor.mul_(scale)
-    tensor = tensor.subtract_(wmin).to(orig_dtype)
+    tensor = tensor.sub_(wmin).to(orig_dtype)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
@@ -640,17 +671,13 @@ def iterative_wls_quant_search(
 
 
 @torch.no_grad()
-def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
-
-    group_size = 16
-
+def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype,split_num):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
             scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
             ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
-            scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
+            scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None,split_num=split_num)
     else:
         imatrix = imatrix.to(tensor.device)
         weights = imatrix.reshape(1, -1)
@@ -659,7 +686,7 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype):
 
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
-        scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+        scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights,split_num=split_num)
     return scale
 
 
@@ -697,6 +724,12 @@ def quant_tensor_gguf_sym_dq(
 
     maxq = 2 ** (bits - 1)
     group_size = 16
+    split_num=1
+    for dim in tensor.shape:
+        if dim > 100_000:
+            split_num = 16
+            break
+
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype
     super_bits = 6 if bits == 3 else 8
@@ -708,18 +741,20 @@ def quant_tensor_gguf_sym_dq(
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
     if scale is None and d_scale is None:
-        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype)
+        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype,split_num=split_num)
 
     scale = scale.to(scale_dtype)
     scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
     # conduct double quant
-    scale, d_scale = double_quant_tensor_sym(scale, super_bits)
+    scale, d_scale = double_quant_tensor_sym_rtn(scale, super_bits)
 
     scale = scale.unsqueeze(-1)
-    zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
+    # zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     inverse_scale = get_reciprocal(scale)
-    int_w = round_ste(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
-    qdq_result = (scale * (int_w - zp)).to(orig_dtype)
-    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    # int_w = round_ste(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
+    # qdq_result = (scale * (int_w - zp)).to(orig_dtype)
+    tensor = tensor.mul_(inverse_scale).round_().clamp_(-maxq, maxq - 1)
+    tensor = tensor.mul_(scale).to(orig_dtype)
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
 
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
+    return tensor, {"scale": scale, "d_scale": d_scale}, maxq

@@ -1050,7 +1050,7 @@ class BaseCompressor(object):
 
         return self.orig_output_dir
 
-    # @torch.inference_mode()
+    @torch.inference_mode()
     def _quantize_embedding_layer(self):
         """Quantizes embedding layers in the model according to the configuration.
 
@@ -1085,11 +1085,15 @@ class BaseCompressor(object):
                 dtype = f"rtn_{dtype}"
 
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
+            dtype = module.weight.dtype
+            # As typically float32 are used in RTN to search scale zp, to avoid cache a bf16 copy we'd better use float32
+            if config["super_group_size"] is not None:
+                dtype = torch.float32
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(self.device),
+                    module.weight.to(dtype).to(self.device), #
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except torch.OutOfMemoryError:
@@ -1223,7 +1227,7 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
-    def _quantize_layer_via_rtn(self, name: str) -> None:
+    def _quantize_layer_via_rtn(self, name: str, dtype:torch.dtype=None) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
         This function attempts to quantize a layer by switching its data type to a
@@ -1240,13 +1244,14 @@ class BaseCompressor(object):
             RuntimeError: If quantization fails for reasons unrelated to memory.
         """
         m = get_module(self.model, name)
+        if dtype is not None:
+            m = m.to(dtype)
 
         if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
             set_module(self.model, name, m)
 
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
-        # if only export gguf, using gguf-packing instead of rtn
         if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
@@ -1355,8 +1360,6 @@ class BaseCompressor(object):
         has_gguf_k = (
             any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
         )
-        if has_gguf_k:
-            self.model.to(torch.float32)
 
         self._quantize_embedding_layer()
 
@@ -1471,6 +1474,12 @@ class BaseCompressor(object):
                     input_others[key] = val.to(tmp_dtype)
                 elif isinstance(val, list):
                     input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+            # for name in ["lm_head"]:
+            #     dtype = None
+            #     if self.super_group_size is not None:
+            #         dtype = torch.float32
+            #     self._quantize_layer_via_rtn(name, dtype=dtype)
+            #     clear_memory(device_list=self.device_list)
 
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
@@ -1501,6 +1510,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
+
                 if len(self.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
@@ -1508,6 +1518,8 @@ class BaseCompressor(object):
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
+                if self.low_gpu_mem_usage:
+                    clear_memory(device_list=self.device_list)
                 for _, m in block.named_modules():
                     # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
                     # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
@@ -1521,18 +1533,13 @@ class BaseCompressor(object):
                 pbar.update(1)
 
         pbar.close()
-        cnt = 1
-        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-        if clear_mem_freq == 0:
-            clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
-            self._quantize_layer_via_rtn(name)
-            if cnt % clear_mem_freq == 0:
-                clear_memory(device_list=self.device_list)
-                cnt = 1
-            cnt += 1
+            dtype=None
+            if self.super_group_size is not None:
+                dtype=torch.float32
+            self._quantize_layer_via_rtn(name, dtype=dtype)
+            clear_memory(device_list=self.device_list)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()

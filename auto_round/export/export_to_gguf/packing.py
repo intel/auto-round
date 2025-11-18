@@ -85,6 +85,99 @@ def torch_roundf(n):
     return torch.sign(n) * b
 
 
+def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
+    """
+    Extreme VRAM-optimized version of quantization.
+
+    - Processes data in chunks along the batch dimension (dim=0) to reduce peak memory usage.
+    - Uses inplace operations to avoid unnecessary tensor copies.
+    - Reuses buffers for temporary calculations wherever possible.
+    """
+    nmax = 2 ** (bits - 1)
+    scales_list = []
+    L_list = []
+    chunk_size = (data.shape[0]+split_num-1)//split_num
+    for start in range(0, data.shape[0], chunk_size):
+        end = min(start + chunk_size, data.shape[0])
+        chunk = data[start:end]  # Slice a batch chunk to reduce memory footprint
+
+        # Compute absolute values inplace to avoid extra tensor allocation
+        chunk_abs = chunk.abs()
+        imax = chunk_abs.argmax(dim=-1, keepdim=True)
+        group_max = torch.take_along_dim(chunk, imax, dim=-1)
+
+        # Compute scale factors (inverse max) without extra tensor
+
+        iscales = -nmax *get_reciprocal(group_max)
+
+        # L buffer stores quantized values, modified inplace to save memory
+        L = (chunk * iscales).round_().clamp_(-nmax, nmax - 1)
+
+        # Simple case: rmse_type == 0
+        if rmse_type == 0:
+            L.add_(nmax)  # Shift to unsigned representation inplace
+            scales = (1 / iscales).reshape(iscales.shape[:2])
+            scales_list.append(scales)
+            L_list.append(L.to(torch.uint8))
+            continue
+
+        return_early = False
+        if rmse_type < 0:
+            rmse_type = -rmse_type
+            return_early = True
+
+        # Compute weighting tensor w based on rmse_type
+        if qw is not None:
+            w = qw
+        elif rmse_type == 1:
+            w = chunk * chunk
+        elif rmse_type == 2:
+            w = torch.ones_like(chunk)
+        elif rmse_type == 3:
+            w = chunk.abs()
+        else:
+            w = chunk.abs().sqrt()
+
+        # Compute sumlx and suml2 using the pre-allocated L buffer
+        sumlx = (w * chunk * L).sum(dim=-1)
+        suml2 = (w * L * L).sum(dim=-1)
+        scales = sumlx / suml2
+
+        if return_early:
+            iscales_inv = (1 / iscales).reshape(iscales.shape[:2])
+            # Mix the current scale with inverse scale if suml2 > 0
+            scales = torch.where(suml2 > 0, 0.5 * (scales + iscales_inv), iscales_inv)
+            L.add_(nmax)
+            scales_list.append(scales)
+            L_list.append(L.to(torch.uint8))
+            continue
+
+        # Iteratively refine scales and quantized values
+        best = scales * sumlx
+        for _is in range(-9, 10):
+            if _is == 0:
+                continue
+            iscales_tmp = -(nmax + -0.1 * _is) / group_max
+            # Use a temporary L buffer to avoid creating new large tensor
+            L_tmp = (chunk * iscales_tmp).round_().clamp_(-nmax, nmax - 1)
+            sumlx_tmp = (w * chunk * L_tmp).sum(dim=-1)
+            suml2_tmp = (w * L_tmp * L_tmp).sum(dim=-1)
+            # Determine which elements should be replaced
+            replace_id = (suml2_tmp > 0) & (sumlx_tmp * sumlx_tmp > best * suml2_tmp)
+            # Inplace update of L and scales
+            L[replace_id] = L_tmp[replace_id]
+            scales[replace_id] = sumlx_tmp[replace_id] / suml2_tmp[replace_id]
+            best[replace_id] = scales[replace_id] * sumlx_tmp[replace_id]
+
+        L.add_(nmax)  # Final shift to unsigned
+        scales_list.append(scales)
+        L_list.append(L.to(torch.uint8))
+
+    # Concatenate all chunks along batch dimension
+    scales = torch.cat(scales_list, dim=0)
+    L = torch.cat(L_list, dim=0)
+    return scales, L
+
 def make_qx_quants(data, bits, rmse_type=0, qw=None):
     """
     adapted from llmacpp
@@ -246,10 +339,6 @@ def make_qkx2_quants(data, bits, weights=None, rmin=-1.0, rdelta=0.1, nstep=20, 
 
     the_mins = -group_min
     return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
-
-
-def make_qkx3_quants(data, bits, weights, rmin=-1.0, rdelta=0.1, nstep=20, use_mad=False):
-    return make_qkx2_quants(data, bits, weights, rmin=rmin, rdelta=rdelta, nstep=nstep, use_mad=use_mad)
 
 
 def make_qp_quants(nmax, data, quant_weights):
