@@ -307,9 +307,6 @@ def json_serialize(obj: Any):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-
-
-
 def get_reciprocal(tensor):
     """
     Memory-frugal reciprocal:

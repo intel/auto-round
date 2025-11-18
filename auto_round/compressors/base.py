@@ -1093,7 +1093,7 @@ class BaseCompressor(object):
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(dtype).to(self.device), #
+                    module.weight.to(dtype).to(self.device),  #
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except torch.OutOfMemoryError:
@@ -1227,7 +1227,7 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
-    def _quantize_layer_via_rtn(self, name: str, dtype:torch.dtype=None) -> None:
+    def _quantize_layer_via_rtn(self, name: str, dtype: torch.dtype = None) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
         This function attempts to quantize a layer by switching its data type to a
@@ -1535,9 +1535,9 @@ class BaseCompressor(object):
         pbar.close()
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
-            dtype=None
+            dtype = None
             if self.super_group_size is not None:
-                dtype=torch.float32
+                dtype = torch.float32
             self._quantize_layer_via_rtn(name, dtype=dtype)
             clear_memory(device_list=self.device_list)
 

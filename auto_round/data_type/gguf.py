@@ -188,10 +188,10 @@ def double_quant_tensor_sym_rtn(tensor, bits):
     inverse_scale = get_reciprocal(scale)
 
     # Inplace quantization
-    qdq_tensor = tensor.mul_(inverse_scale)        # tensor * inverse_scale inplace
-    qdq_tensor = torch.round(qdq_tensor)           # round inplace
-    qdq_tensor.clamp_(-maxq, maxq - 1)             # clamp inplace
-    qdq_tensor.mul_(scale)                          # multiply scale inplace
+    qdq_tensor = tensor.mul_(inverse_scale)  # tensor * inverse_scale inplace
+    qdq_tensor = torch.round(qdq_tensor)  # round inplace
+    qdq_tensor.clamp_(-maxq, maxq - 1)  # clamp inplace
+    qdq_tensor.mul_(scale)  # multiply scale inplace
 
     return qdq_tensor, scale
 
@@ -671,13 +671,13 @@ def iterative_wls_quant_search(
 
 
 @torch.no_grad()
-def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype,split_num):
+def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
             scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
             ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
-            scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None,split_num=split_num)
+            scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num)
     else:
         imatrix = imatrix.to(tensor.device)
         weights = imatrix.reshape(1, -1)
@@ -686,7 +686,7 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype,split_num):
 
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
-        scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights,split_num=split_num)
+        scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights, split_num=split_num)
     return scale
 
 
@@ -724,7 +724,7 @@ def quant_tensor_gguf_sym_dq(
 
     maxq = 2 ** (bits - 1)
     group_size = 16
-    split_num=1
+    split_num = 1
     for dim in tensor.shape:
         if dim > 100_000:
             split_num = 16
@@ -741,7 +741,7 @@ def quant_tensor_gguf_sym_dq(
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
     if scale is None and d_scale is None:
-        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype,split_num=split_num)
+        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=split_num)
 
     scale = scale.to(scale_dtype)
     scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)

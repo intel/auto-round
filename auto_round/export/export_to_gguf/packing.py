@@ -96,7 +96,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
     nmax = 2 ** (bits - 1)
     scales_list = []
     L_list = []
-    chunk_size = (data.shape[0]+split_num-1)//split_num
+    chunk_size = (data.shape[0] + split_num - 1) // split_num
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]  # Slice a batch chunk to reduce memory footprint
@@ -108,7 +108,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
 
         # Compute scale factors (inverse max) without extra tensor
 
-        iscales = -nmax *get_reciprocal(group_max)
+        iscales = -nmax * get_reciprocal(group_max)
 
         # L buffer stores quantized values, modified inplace to save memory
         L = (chunk * iscales).round_().clamp_(-nmax, nmax - 1)
@@ -177,6 +177,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
     scales = torch.cat(scales_list, dim=0)
     L = torch.cat(L_list, dim=0)
     return scales, L
+
 
 def make_qx_quants(data, bits, rmse_type=0, qw=None):
     """
