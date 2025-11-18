@@ -89,6 +89,10 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 
 ## Installation
 
+### Environment Configuration
+
+AutoRound supports various environment variables for configuration. For detailed information about available environment variables and their usage, please refer to the [Environment Variables Guide](./docs/environments.md).
+
 ### Install from pypi
 
 ```bash
@@ -252,17 +256,17 @@ results.
 
 **This feature is experimental and may be subject to changes**.
 
-By default, AutoRoundMLLM only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
+By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
-is limited. For more information, please refer to the AutoRoundMLLM [readme](./auto_round/mllm/README.md).
+is limited. For more information, please refer to the AutoRound [readme](./auto_round/mllm/README.md).
 
 ```python
-from auto_round import AutoRoundMLLM
+from auto_round import AutoRound
 
 # Load the model
 model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
 # Quantize the model
-ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
+ar = AutoRound(model_name_or_path, scheme="W4A16")
 output_dir = "./qmodel"
 ar.quantize_and_save(output_dir)
 ```

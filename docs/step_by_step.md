@@ -50,6 +50,10 @@ Install auto-round or install from source
 pip install auto-round
 ```
 
+### Environment Configuration
+
+Before starting quantization, you may want to configure AutoRound's environment variables for optimal performance. For detailed information about available environment variables (logging levels, ModelScope integration, workspace settings, etc.), please refer to the [Environment Variables Guide](./environments.md).
+
 ## 2 Prepare Calibration Dataset
 
 ### Default Dataset
