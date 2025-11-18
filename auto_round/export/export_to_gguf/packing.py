@@ -535,6 +535,7 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
     # (n_blocks, block_size)
     qs = qs.cpu().numpy().astype(np.int8).view(np.uint8)
 
+
     return np.concatenate([d, qs], axis=1)
 
 
