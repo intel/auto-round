@@ -2380,21 +2380,33 @@ class BaseCompressor(object):
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                     tmp_attention_mask.unsqueeze_(-1)
-                else:
-                    tmp_attention_mask = 1.0
-
-                if self.amp:
-                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                    if self.amp:
+                        with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                            output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                            loss = mse_loss(  # pylint: disable=not-callable
+                                (output_q * tmp_attention_mask).to(torch.float32),
+                                (current_output * tmp_attention_mask).to(torch.float32),
+                            )
+                    else:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
-                            output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                            (output_q * tmp_attention_mask).to(torch.float32),
+                            (current_output * tmp_attention_mask).to(torch.float32),
                         )
                 else:
-                    output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                    loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32) * tmp_attention_mask,
-                        current_output.to(torch.float32) * tmp_attention_mask,
-                    )
+                    if self.amp:
+                        with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                            output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                            loss = mse_loss(  # pylint: disable=not-callable
+                                output_q.to(torch.float32),
+                                current_output.to(torch.float32),  # mul 1.0 will copy the output
+                            )
+                    else:
+                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                        loss = mse_loss(  # pylint: disable=not-callable
+                            output_q.to(torch.float32), current_output.to(torch.float32)
+                        )
+
                 total_loss += loss.item() / num_elm
 
                 self._scale_loss_and_backward(scaler, loss)
@@ -2540,18 +2552,29 @@ class BaseCompressor(object):
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
-        else:
-            tmp_attention_mask = 1.0
-        if self.amp:
-            with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+            if self.amp:
+                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                    loss = mse_loss(  # pylint: disable=not-callable
+                        (output_q * tmp_attention_mask).to(torch.float32),
+                        (current_output * tmp_attention_mask).to(torch.float32),
+                    )
+            else:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    output_q * tmp_attention_mask, current_output * tmp_attention_mask
+                    output_q.to(torch.float32) * tmp_attention_mask,
+                    current_output.to(torch.float32) * tmp_attention_mask,
                 )
+
         else:
-            loss = mse_loss(  # pylint: disable=not-callable
-                output_q.to(torch.float32) * tmp_attention_mask,
-                current_output.to(torch.float32) * tmp_attention_mask,
-            )
+            if self.amp:
+                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                    loss = mse_loss(  # pylint: disable=not-callable
+                        output_q.to(torch.float32), current_output.to(torch.float32)
+                    )
+            else:
+                loss = mse_loss(  # pylint: disable=not-callable
+                    output_q.to(torch.float32),
+                    current_output.to(torch.float32),
+                )
         return loss
 
     def _quantize_block(
