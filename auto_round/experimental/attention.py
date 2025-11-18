@@ -77,8 +77,10 @@ class QuantizedAttentionImpl(torch.nn.Module):
         self.attn_module = ref(attn_module)  # avoid circular references
         # register query max
         device = next(attn_module.parameters()).device
-        initial_max = torch.tensor(0.0, device=device)
+        initial_max = torch.tensor([float("-inf")], device=device)
         update_parameter_data(attn_module, initial_max, QUERY_MAX_NAME)
+        initial_scale = torch.tensor([0.0], device=device)
+        update_parameter_data(attn_module, initial_scale, QUERY_SCALE_NAME)
 
     def forward(
         self,
@@ -89,12 +91,13 @@ class QuantizedAttentionImpl(torch.nn.Module):
         *args,
         **kwargs,
     ):
+
         # quantization
         # quant_args_attr = "quantization_scheme.input_activations"
         # quant_args = getattr_chain(module, quant_args_attr, None)
         # quant_enabled = getattr(module, "quantization_enabled", True)
-        RuntimeStats.cur_layer_idx = self.attn_module().layer_idx
-        logger.trace(f"Starting quantized attention forward for layer {RuntimeStats.cur_layer_idx}")
+        # RuntimeStats.cur_layer_idx = self.attn_module().layer_idx
+        # logger.trace(f"Starting quantized attention forward for layer {RuntimeStats.cur_layer_idx}")
         cur_query_max = query.abs().max()
         query_max = torch.max(
             getattr(module, QUERY_MAX_NAME).data,
@@ -102,9 +105,10 @@ class QuantizedAttentionImpl(torch.nn.Module):
         )
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
         query, query_scale = fp8_per_tensor_qdq(query, tensor_max=query_max)
-        update_parameter_data(module, query_scale, QUERY_SCALE_NAME)
+        logger.trace(f"query max: {query_max.item()}, scale: {query_scale.item()}")
+        update_parameter_data(module, query_scale.squeeze(0), QUERY_SCALE_NAME)
         # original attention
-        return ALL_ATTENTION_FUNCTIONS[_original_impl](
+        res = ALL_ATTENTION_FUNCTIONS[_original_impl](
             module,
             query,
             key,
@@ -112,6 +116,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
             *args,
             **kwargs,
         )
+        return res
 
 
 # ----- initialize ----- #

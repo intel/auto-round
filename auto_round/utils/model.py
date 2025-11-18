@@ -255,7 +255,8 @@ def llm_load_model(
         model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
             torch_dtype=torch_dtype,
-            attn_implementation="eager",
+            # TODO: Add note
+            # attn_implementation="eager",
             trust_remote_code=trust_remote_code,
             device_map="auto" if use_auto_mapping else None,
         )
