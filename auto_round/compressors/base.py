@@ -1256,6 +1256,7 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
+    @torch.compile(backend="hpu_backend", dynamic=False)  # type: ignore
     def _quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
@@ -1356,7 +1357,7 @@ class BaseCompressor(object):
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
     
-    @dump_elapsed_time()
+
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
@@ -1826,7 +1827,7 @@ class BaseCompressor(object):
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
 
-    @torch.compile(backend="hpu_backend")
+    @dump_elapsed_time()
     @torch.no_grad()
     def _get_block_outputs(
         self,
@@ -1852,7 +1853,9 @@ class BaseCompressor(object):
         Returns:
         The output tensor of the block.
         """
-
+        block =  torch.compile(block, backend="hpu_backend", dynamic=False)
+        torch._dynamo.config.recompile_limit = 8888
+        # torch._dynamo.config.accumulated_recompile_limit = 8888
         output = []
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):
@@ -2026,6 +2029,7 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
+        logger.trace(f"layer_names: {layer_names}")
         if self.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
