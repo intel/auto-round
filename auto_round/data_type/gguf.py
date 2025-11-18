@@ -458,7 +458,7 @@ def quant_tensor_gguf_asym_dq(
 
     inverse_scale = get_reciprocal(scale)
     tensor = tensor.add_(wmin)
-    tensor = torch.round(tensor.mul_(inverse_scale)).clamp_(0,maxq)
+    tensor = torch.round(tensor.mul_(inverse_scale)).clamp_(0, maxq)
     tensor = tensor.mul_(scale)
     tensor = tensor.subtract_(wmin).to(orig_dtype)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)

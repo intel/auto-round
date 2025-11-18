@@ -1127,8 +1127,6 @@ class BaseCompressor(object):
             del zp
             clear_memory(self.device_list)
 
-
-
         return is_quantized
 
     def _quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
