@@ -416,14 +416,15 @@ def _clear_memory_for_cpu_and_cuda(
         del tensor
     gc.collect()
     if torch.cuda.is_available():
-        if device_list is None:
+        if  not device_list:
             torch.cuda.synchronize()
             # Fix https://github.com/intel/auto-round/issues/1004
             torch.cuda.empty_cache()
 
-        elif len(device_list) > 1:
+        elif len(device_list) >= 1:
             devices = []
             for device in device_list:
+                device = str(device)
                 if not device.startswith("cuda"):
                     continue
                 if ":" in device:
@@ -440,6 +441,7 @@ def _clear_memory_for_cpu_and_cuda(
 
 @torch._dynamo.disable()
 def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
+    logger.info("call")
     from auto_round.utils.device import is_hpex_available
 
     if is_hpex_available():
