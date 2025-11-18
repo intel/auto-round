@@ -118,7 +118,7 @@ pip install auto-round-lib
 Here we list some of the most commonly used environment variables:
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `AR_LOG_LEVEL` | `INFO` | Controls logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
+| `AR_LOG_LEVEL` | `INFO` | Controls logging verbosity (`TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `AR_USE_MODELSCOPE` | `False` | Use ModelScope for model downloads (useful for Chinese users) |
 
 For detailed configuration options and usage examples, see the [Environment Variables Guide](./docs/environments.md).
