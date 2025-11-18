@@ -11,7 +11,7 @@ AutoRound uses a centralized environment variable management system through the 
 ### AR_LOG_LEVEL
 - **Description**: Controls the default logging level for AutoRound
 - **Default**: `"INFO"`
-- **Valid Values**: `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`, `"CRITICAL"`
+- **Valid Values**: `"TRACE"`,  `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`, `"CRITICAL"`
 - **Usage**: Set this to control the verbosity of AutoRound logs
 
 ```bash
