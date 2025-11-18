@@ -416,7 +416,7 @@ def _clear_memory_for_cpu_and_cuda(
         del tensor
     gc.collect()
     if torch.cuda.is_available():
-        if  not device_list:
+        if not device_list:
             torch.cuda.synchronize()
             # Fix https://github.com/intel/auto-round/issues/1004
             torch.cuda.empty_cache()
