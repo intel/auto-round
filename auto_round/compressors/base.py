@@ -1086,14 +1086,15 @@ class BaseCompressor(object):
 
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
             dtype = module.weight.dtype
-            # As typically float32 are used in RTN to search scale zp, to avoid cache a bf16 copy we'd better use float32
+            # As typically float32 are used in RTN to search scale zp,
+            # to avoid cache a bf16 copy we'd better use float32
             if config["super_group_size"] is not None:
                 dtype = torch.float32
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(dtype).to(self.device),  #
+                    module.weight.to(dtype).to(self.device),
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except torch.OutOfMemoryError:
@@ -1474,12 +1475,6 @@ class BaseCompressor(object):
                     input_others[key] = val.to(tmp_dtype)
                 elif isinstance(val, list):
                     input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
-            # for name in ["lm_head"]:
-            #     dtype = None
-            #     if self.super_group_size is not None:
-            #         dtype = torch.float32
-            #     self._quantize_layer_via_rtn(name, dtype=dtype)
-            #     clear_memory(device_list=self.device_list)
 
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
