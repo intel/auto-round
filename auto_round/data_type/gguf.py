@@ -188,12 +188,12 @@ def double_quant_tensor_sym_rtn(tensor, bits):
     inverse_scale = get_reciprocal(scale)
 
     # Inplace quantization
-    qdq_tensor = tensor.mul_(inverse_scale)  # tensor * inverse_scale inplace
-    qdq_tensor = torch.round(qdq_tensor)  # round inplace
-    qdq_tensor.clamp_(-maxq, maxq - 1)  # clamp inplace
-    qdq_tensor.mul_(scale)  # multiply scale inplace
+    tensor = tensor.mul_(inverse_scale)  # tensor * inverse_scale inplace
+    tensor = tensor.round_()  # round inplace
+    tensor.clamp_(-maxq, maxq - 1)  # clamp inplace
+    tensor.mul_(scale)  # multiply scale inplace
 
-    return qdq_tensor, scale
+    return tensor, scale
 
 
 def make_qp_quants(nmax, data, quant_weights):
@@ -448,13 +448,13 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
 def quant_tensor_gguf_asym_dq(
     tensor: torch.Tensor,
     bits: int = 4,
-    v=0,
     scale_dtype=torch.float16,
     imatrix=None,
     scale=None,
     wmin=None,
     d_scale=None,
     d_wmin=None,
+    split_num=None,
     **kwargs,
 ):
     """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
@@ -473,11 +473,12 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
-    split_num = 1
-    for dim in tensor.shape:
-        if dim > 100_000:
-            split_num = 16
-            break
+    if split_num is None:
+        split_num = 1
+        for dim in tensor.shape:
+            if dim > 100_000:
+                split_num = 16
+                break
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -674,7 +675,7 @@ def iterative_wls_quant_search(
 def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
-            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
+            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True) #TODO split num
             ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
             scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num)
@@ -687,6 +688,8 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights, split_num=split_num)
+    if split_num>1:
+        clear_memory(device_list=[tensor.device])
     return scale
 
 
@@ -698,6 +701,7 @@ def quant_tensor_gguf_sym_dq(
     scale=None,
     d_scale=None,
     scale_dtype=torch.float16,
+    split_num=None,
     **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
@@ -724,11 +728,12 @@ def quant_tensor_gguf_sym_dq(
 
     maxq = 2 ** (bits - 1)
     group_size = 16
-    split_num = 1
-    for dim in tensor.shape:
-        if dim > 100_000:
-            split_num = 16
-            break
+    if split_num is None:
+        split_num = 1
+        for dim in tensor.shape:
+            if dim > 100_000:
+                split_num = 16
+                break
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype

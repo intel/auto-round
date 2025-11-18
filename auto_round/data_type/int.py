@@ -53,11 +53,6 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
         group_size: Number of elements to share scale for quantization
         v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for tensor
-        max_scale: Maximum scale coefficient for tensor
-        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
-        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
-        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
         q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
@@ -79,7 +74,7 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    int_w = round_ste(tensor / scale + v)
+    int_w = torch.round(tensor / scale)
     q = torch.clamp(int_w, -maxq, maxq - 1)
     qdq_result = (scale * q).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
