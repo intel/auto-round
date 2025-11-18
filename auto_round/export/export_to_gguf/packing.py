@@ -530,7 +530,7 @@ def q2_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, i
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         output_scale = (scales * get_reciprocal(output_d)).round_().clamp_(0, 15).to(torch.uint8)
         output_scale |= (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 15).to(torch.uint8) << 4
-        all_L = blocks.add_(mins.unsqueeze(-1)).div_(scales.unsqueeze(-1)).clamp_(0,3).to(torch.uint8)
+        all_L = blocks.add_(mins.unsqueeze(-1)).div_(scales.unsqueeze(-1)).clamp_(0, 3).to(torch.uint8)
     elif original:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
@@ -556,7 +556,10 @@ def q2_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, i
 
         replace_ids = d_tmp != 0
         all_L[replace_ids] = (
-            blocks[replace_ids].add_(dm_tmp[replace_ids].unsqueeze(-1)).round_().div_(d_tmp[replace_ids].unsqueeze(-1))
+            blocks[replace_ids]
+            .add_(dm_tmp[replace_ids].unsqueeze(-1))
+            .round_()
+            .div_(d_tmp[replace_ids].unsqueeze(-1))
             .clamp_(0, 3)
             .to(torch.uint8)
         )

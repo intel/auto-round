@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, get_module, get_packing_device, is_fp8_model, logger, clear_memory
+from auto_round.utils import LazyImport, clear_memory, get_module, get_packing_device, is_fp8_model, logger
 
 gguf = LazyImport("gguf")
 
