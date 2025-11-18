@@ -110,7 +110,7 @@ else:
 
 ## Configuration Best Practices
 
-1. **Development Environment**: Set `AR_LOG_LEVEL=DEBUG` for detailed logging during development
+1. **Development Environment**: Set `AR_LOG_LEVEL=TRACE` or `AR_LOG_LEVEL=DEBUG` for detailed logging during development
 2. **Production Environment**: Use `AR_LOG_LEVEL=WARNING` or `AR_LOG_LEVEL=ERROR` to reduce log noise
 3. **Chinese Users**: Consider setting `AR_USE_MODELSCOPE=true` for better model download performance
 4. **Performance Optimization**: Enable `AR_ENABLE_COMPILE_PACKING=1` if you have sufficient computational resources
