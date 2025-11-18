@@ -178,7 +178,7 @@ def pack_gguf_layer(
             last_layer_name_to_block_name = {v: k for k, v in block_name_to_last_layer_name.items()}
             model.last_layer_name_to_block_name = last_layer_name_to_block_name
     if name in model.last_layer_name_to_block_name:
-        ##packing block
+        # Packing block
         for gguf_model in gguf_model_instance_global:
             gguf_model.current_packing_block = model.last_layer_name_to_block_name[name]
             gguf_model.prepare_tensors()
@@ -189,7 +189,6 @@ def pack_gguf_layer(
                 m.weight = None
             if hasattr(m, "bias"):
                 m.bias = None
-        clear_memory()
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             for gguf_model in gguf_model_instance_global:

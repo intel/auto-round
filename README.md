@@ -191,7 +191,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
 
 ##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: [Experimental Feature] Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0` Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
 - **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
 
 ##### Tuning Process Parameters
@@ -212,7 +212,8 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 </details>
 
-### AutoScheme Usage 
+### Adaptive Bits/Dtype Usage 
+AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes. For some accuracy result, please refer to this [doc](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc.md). 
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
 from auto_round import AutoRound, AutoScheme
@@ -294,7 +295,7 @@ for output in outputs:
 
 
 ### SGLang (Intel GPU/CUDA)
-Please note that support for the MoE models and visual language models is currently limited.
+**Please note that support for the MoE models and visual language models is currently limited.**
 
 ```python
 import sglang as sgl

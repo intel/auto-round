@@ -1530,6 +1530,7 @@ class BaseCompressor(object):
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
+                clear_memory(device_list=self.device_list)
                 pbar.update(1)
 
         pbar.close()
@@ -1539,7 +1540,7 @@ class BaseCompressor(object):
             if self.super_group_size is not None:
                 dtype = torch.float32
             self._quantize_layer_via_rtn(name, dtype=dtype)
-            clear_memory(device_list=self.device_list)
+            # clear_memory(device_list=self.device_list)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()

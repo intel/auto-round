@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, get_module, get_packing_device, is_fp8_model, logger
+from auto_round.utils import LazyImport, get_module, get_packing_device, is_fp8_model, logger, clear_memory
 
 gguf = LazyImport("gguf")
 
@@ -598,6 +598,8 @@ def prepare_tensors(cls):
             logger.info(
                 f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}" f" --> {data_qtype.name}, shape = {shape_str}"
             )
+            if not (hasattr(cls, "current_packing_block") and cls.current_packing_block is not None):
+                clear_memory(device_list=[orig_device])
 
             cls.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
