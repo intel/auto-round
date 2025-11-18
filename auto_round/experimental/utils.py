@@ -26,6 +26,7 @@ def fp8_per_tensor_qdq(
     return qdq_tensor, scale
 
 
+# @torch.compiler.disable
 def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: str):
     """
     Update the data of a parameter in a module.
@@ -34,7 +35,7 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
     if hasattr(module, name):
         param = getattr(module, name)
         if isinstance(param, torch.nn.Parameter):
-            param.data = new_val
+            param.data.copy_(new_val)
         else:
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:

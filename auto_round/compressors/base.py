@@ -1828,6 +1828,7 @@ class BaseCompressor(object):
         """
 
         output = []
+        # block = torch.compile(block)
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
