@@ -4,15 +4,15 @@ Step-by-Step
 This document presents step-by-step instructions for auto-round llm quantization. You can refer to [vlms user guide](../auto_round/compressors/mllm/README.md) for vlms quantization and [diffusions user guide](../auto_round/compressors/diffusion/README.md) for diffusions quantization.
 
 * [1 Prerequisite](#1-prerequisite)
-  + [Environment Configuration](#environment-configuration)
 * [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
   + [Default Dataset](#default-dataset)
   + [Customized Dataset](#customized-dataset)
   + [Dataset operations](#dataset-operations)
 * [3 Quantization](#3-quantization)
   + [Supported Quantization Configurations](#supported-quantization-configurations)
-  + [Hardware Compatibility](#hardware-compatibility)
   + [Supported Export Formats](#supported-export-formats)
+  + [Hardware Compatibility](#hardware-compatibility)
+  + [Environment Configuration](#environment-configuration)
   + [Command Line Usage](#command-line-usage)
   + [API usage](#api-usage)
     - [AutoRound API Usage](#autoround-api-usage)
@@ -50,10 +50,6 @@ Install auto-round or install from source
 ```bash
 pip install auto-round
 ```
-
-### Environment Configuration
-
-Before starting quantization, you may want to configure AutoRound's environment variables for optimal performance. For detailed information about available environment variables (logging levels, ModelScope integration, workspace settings, etc.), please refer to the [Environment Variables Guide](./environments.md).
 
 ## 2 Prepare Calibration Dataset
 
@@ -153,6 +149,10 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 ### Hardware Compatibility
 
 CPU, Intel GPU, HPU and CUDA for both quantization and inference.
+
+### Environment Configuration
+
+Before starting quantization, you may want to configure AutoRound's environment variables for optimal performance. For detailed information about available environment variables (logging levels, ModelScope integration, workspace settings, etc.), please refer to the [Environment Variables Guide](./environments.md).
 
 ### Command Line Usage
 

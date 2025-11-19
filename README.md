@@ -134,6 +134,8 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
+By setting `AR_USE_MODELSCOPE=1`, ModelScope is used for model downloads.
+
 We offer another two recipes, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>
