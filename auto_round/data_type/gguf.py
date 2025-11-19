@@ -351,13 +351,12 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
     return imatrix.reshape(weight.shape)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
 
-    if bits not in [2, 4, 5]:
-        raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
+
     quant_weights = None
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         search_kwargs = {
@@ -470,6 +469,8 @@ def quant_tensor_gguf_asym_dq(
     Returns:
         Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
     """
+    if bits not in [2, 4, 5]:
+        raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     orig_dtype = tensor.dtype
     maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
@@ -602,7 +603,6 @@ def iterative_wls_quant_search_chunk(
         results_scale.append(scale.to(torch.float32))
         results_rmin.append(-rmin.to(torch.float32))
 
-        # YOUR ORIGINAL LOGIC — kept unchanged
         if split_num > 1:
             clear_memory(device_list=[data.device])
 
@@ -641,8 +641,7 @@ def iterative_wls_quant_search(
     )
 
 
-
-@torch.no_grad()
+@torch.inference_mode()
 def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:

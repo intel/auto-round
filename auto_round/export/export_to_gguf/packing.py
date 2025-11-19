@@ -259,34 +259,78 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
 
 
 def make_q3_quants(data, bits, do_rmse=False):
-    nmax = pow(2, bits - 1)
+    # Maximum absolute integer value for symmetric quantization
+    nmax = 1 << (bits - 1)  # equivalent to pow(2, bits-1)
+
+    # Find per-group max indices along last dim
     imax = abs(data).argmax(axis=-1, keepdims=True)
+
+    # Gather group-wise maximum values
     group_max = torch.take_along_dim(data, imax, dim=-1)
+
+    # Compute inverse scale in-place (multiplying by -nmax)
     iscale = -nmax * get_reciprocal(group_max)
+
     if do_rmse:
-        L = torch.round(iscale * data).clip(-nmax, nmax - 1)
-        w = torch.pow(data, 2)
+        # Initial quantization L (in-place round and clamp)
+        L = torch.empty_like(data)
+        torch.round(iscale * data, out=L)
+        L.clamp_(-nmax, nmax - 1)
+
+        # Weight for RMSE = x^2 (in-place)
+        w = data.clone().pow_(2)
+
+        # Precompute sums
         sumlx = torch.sum(w * data * L, dim=-1)
         suml2 = torch.sum(w * L * L, dim=-1)
 
-        for itry in range(5):
+        # Iterative RMSE refinement
+        for _ in range(5):
             for i in range(sumlx.shape[-1]):
-                w_tmp, data_tmp, L_tmp = w[:, :, i], data[:, :, i], L[:, :, i]
+                # Extract current slice
+                w_tmp = w[:, :, i]
+                data_tmp = data[:, :, i]
+                L_tmp = L[:, :, i]
+
+                # Exclude current slice from sums
                 slx = sumlx - w_tmp * data_tmp * L_tmp
                 replace_idx = slx > 0
-                sl2 = suml2 - w_tmp * torch.pow(L_tmp, 2)
-                new_L = torch.round(data_tmp * sl2 / slx).clip(-nmax, nmax - 1)
+                sl2 = suml2 - w_tmp * L_tmp * L_tmp
+
+                # Compute new L candidate (in-place round and clamp)
+                new_L = torch.empty_like(L_tmp)
+                torch.round(data_tmp * sl2 / slx, out=new_L)
+                new_L.clamp_(-nmax, nmax - 1)
+
+                # Identify positions to update
                 tmp_replace_idx = replace_idx & (new_L != L_tmp)
+
+                # Update sums where L changes
                 slx[tmp_replace_idx] += w_tmp[tmp_replace_idx] * data_tmp[tmp_replace_idx] * new_L[tmp_replace_idx]
                 sl2[tmp_replace_idx] += w_tmp[tmp_replace_idx] * new_L[tmp_replace_idx] * new_L[tmp_replace_idx]
+
+                # Further check condition for improvement
                 replace_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
-                L[:, :, i][replace_idx] = new_L[replace_idx]
+
+                # Update L in-place
+                L_tmp[replace_idx] = new_L[replace_idx]
+
+                # Update global sums
                 sumlx = slx
                 suml2 = sl2
+
+        # Compute final scale and return quantized L
         return sumlx * get_reciprocal(suml2), L.to(torch.uint8)
 
-    L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
+    # Fast path: quantize without RMSE (in-place round, clamp, shift)
+    L = torch.empty_like(data)
+    torch.round(iscale * data, out=L)
+    L.clamp_(-nmax, nmax - 1)
+    L.add_(nmax)
+
+    # Compute scales (reciprocal of iscale)
     scales = get_reciprocal(iscale).reshape(iscale.shape[:2])
+
     return scales, L.to(torch.uint8)
 
 
