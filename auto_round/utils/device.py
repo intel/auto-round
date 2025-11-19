@@ -408,7 +408,7 @@ def bytes_to_gigabytes(bytes) -> int:
 
 def _clear_memory_for_cpu_and_cuda(
     tensor: torch.Tensor | list[torch.Tensor] | None = None,
-    device_list: tuple | list | str | torch.device | None = None
+    device_list: tuple | list | str | torch.device | None = None,
 ):
     # ------------------------
     # Clear CPU-side references
@@ -459,9 +459,6 @@ def _clear_memory_for_cpu_and_cuda(
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
-
-
-
 
 
 @torch._dynamo.disable()
