@@ -1094,7 +1094,7 @@ class BaseCompressor(object):
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(dtype).to(self.device),
+                    module.weight.to(dtype=dtype, device=self.device),
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except torch.OutOfMemoryError:
