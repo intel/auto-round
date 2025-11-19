@@ -109,7 +109,7 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    int_w =tensor.div_(scale).round_().clamp_(-maxq, maxq - 1)
+    int_w = tensor.div_(scale).round_().clamp_(-maxq, maxq - 1)
     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, maxq

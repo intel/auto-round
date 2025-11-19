@@ -356,7 +356,6 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
 
-
     quant_weights = None
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         search_kwargs = {
