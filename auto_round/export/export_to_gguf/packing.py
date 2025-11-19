@@ -770,7 +770,7 @@ def q4_k_quant_block(
         output_d = max_scales / 63
         output_dmin = max_mins / 63
         q_scales = (id_scales * scales).round_().clamp_(0, 63).to(torch.uint8)
-        q_mins = (id_mins * mins).round_().clip(0, 63).to(torch.uint8)
+        q_mins = (id_mins * mins).round_().clamp_(0, 63).to(torch.uint8)
 
         d_tmp = output_d * q_scales
         dm_tmp = output_dmin * q_mins
