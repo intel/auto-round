@@ -51,6 +51,8 @@ IMPL_ATTR = "impl"
 HOOKED_ATTENTION_NAME = "ct_hooked_attention"
 QUERY_SCALE_NAME = "q_scale"
 QUERY_MAX_NAME = "q_max"
+ATTEN_OUT_SCALE_NAME = "o_scale"
+ATTEN_OUT_MAX_NAME = "o_max"
 
 
 class QuantizedAttentionImpl(torch.nn.Module):
@@ -79,8 +81,10 @@ class QuantizedAttentionImpl(torch.nn.Module):
         device = next(attn_module.parameters()).device
         initial_max = torch.tensor([float("-inf")], device=device)
         update_parameter_data(attn_module, initial_max, QUERY_MAX_NAME)
+        update_parameter_data(attn_module, initial_max, ATTEN_OUT_MAX_NAME)
         initial_scale = torch.tensor([0.0], device=device)
         update_parameter_data(attn_module, initial_scale, QUERY_SCALE_NAME)
+        update_parameter_data(attn_module, initial_scale, ATTEN_OUT_SCALE_NAME)
 
     def forward(
         self,
@@ -106,9 +110,9 @@ class QuantizedAttentionImpl(torch.nn.Module):
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
         query, query_scale = fp8_per_tensor_qdq(query, tensor_max=query_max)
         logger.trace(f"query max: {query_max.item()}, scale: {query_scale.item()}")
-        update_parameter_data(module, query_scale, QUERY_SCALE_NAME)
+        update_parameter_data(module, query_scale.squeeze(0), QUERY_SCALE_NAME)
         # original attention
-        res = ALL_ATTENTION_FUNCTIONS[_original_impl](
+        attn_out_and_weight = ALL_ATTENTION_FUNCTIONS[_original_impl](
             module,
             query,
             key,
@@ -116,7 +120,18 @@ class QuantizedAttentionImpl(torch.nn.Module):
             *args,
             **kwargs,
         )
-        return res
+        out = attn_out_and_weight[0]
+        cur_out_max = out.abs().max()
+        out_max = torch.max(
+            getattr(module, ATTEN_OUT_MAX_NAME).data,
+            cur_out_max.detach().to(getattr(module, ATTEN_OUT_MAX_NAME).data.device),
+        )
+        # !! Note: Not apply qdq on out
+        update_parameter_data(module, out_max, ATTEN_OUT_MAX_NAME)
+        qdq_out, out_scale = fp8_per_tensor_qdq(out, tensor_max=out_max)
+        # logger.trace(f"query max: {query_max.item()}, scale: {query_scale.item()}")
+        update_parameter_data(module, out_scale.squeeze(), ATTEN_OUT_SCALE_NAME)
+        return attn_out_and_weight
 
 
 # ----- initialize ----- #
