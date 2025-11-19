@@ -956,7 +956,7 @@ def q6_k_quant_block(
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         rd = get_reciprocal(output_d)
         output_scale = scales.mul(rd).round_().clamp_(max=127).to(torch.int8)
-        rs = get_reciprocal(scales).unsqueeze_(-1)  # inplace unsqueeze
+        rs = get_reciprocal(scales).unsqueeze_(-1)  # unsqueeze for broadcasting
         all_L = blocks.mul(rs).add_(32).round_().clamp_(0, 63).to(torch.uint8)
     elif original:
         scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
