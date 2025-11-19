@@ -115,7 +115,7 @@ def _ct_hooked_attention(module: Module, *args, **kwargs):
     if hasattr(module, IMPL_ATTR):
         return module.impl(module, *args, **kwargs)
     else:
-        return ALL_ATTENTION_FUNCTIONS[_original_impl](module, *args, **kwargs)
+        return ALL_ATTENTION_FUNCTIONS[_original_impl](module, *args, **kwargs)  # pylint: disable=E0601
 
 
 def initialize_hooked_attention(module: Module, config):
