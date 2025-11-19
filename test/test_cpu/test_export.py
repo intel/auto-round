@@ -325,13 +325,13 @@ class TestAutoRound(unittest.TestCase):
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
-        self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
-        self.assertIn("model.decoder.layers.8.self_attn.v_scale", f.keys())
-        self.assertIn("model.decoder.layers.8.self_attn.q_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1]))
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1]))
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.q_scale").shape, torch.Size([1]))
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype, torch.float32)
+        check_attrs = ["k_scale", "v_scale", "q_scale"]
+        for attr in check_attrs:
+            weight_name = f"model.decoder.layers.8.self_attn.{attr}"
+            self.assertIn(weight_name, f.keys())
+            self.assertEqual(f.get_tensor(weight_name).shape, torch.Size([1]))
+            self.assertEqual(f.get_tensor(weight_name).dtype, torch.float32)
+
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
