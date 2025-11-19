@@ -910,7 +910,7 @@ def q5_k_quant_block(
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
-        q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp(0, 63).to(torch.uint8)
+        q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
         all_L = (
             blocks.add_(mins.unsqueeze(-1))
             .mul_(get_reciprocal(scales.unsqueeze(-1)))
