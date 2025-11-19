@@ -498,7 +498,6 @@ def quant_tensor_gguf_asym_dq(
     return tensor, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
-
 # TODO consolidate iterative_wls_quant_search_chunk and non-chunk
 def iterative_wls_quant_search_chunk(
     data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=8
