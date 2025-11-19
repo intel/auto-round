@@ -36,7 +36,7 @@ from auto_round.experimental.utils import (
     normalize_static_kv_dtype,
     update_parameter_data,
 )
-from auto_round.utils import getattr_chain, logger
+from auto_round.utils import logger
 
 __all__ = [
     "QuantizedAttentionImpl",
@@ -89,12 +89,6 @@ class QuantizedAttentionImpl(torch.nn.Module):
         *args,
         **kwargs,
     ):
-        # quantization
-        # quant_args_attr = "quantization_scheme.input_activations"
-        # quant_args = getattr_chain(module, quant_args_attr, None)
-        # quant_enabled = getattr(module, "quantization_enabled", True)
-        # RuntimeStats.cur_layer_idx = self.attn_module().layer_idx
-        # logger.trace(f"Starting quantized attention forward for layer {RuntimeStats.cur_layer_idx}")
         cur_query_max = query.abs().max()
         query_max = torch.max(
             getattr(module, QUERY_MAX_NAME).data,
