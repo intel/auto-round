@@ -968,8 +968,8 @@ def q6_k_quant_block(
         output_scale = (iscales * scales).round_().clamp_(max=127).to(torch.int8)
         d_tmp = output_d * output_scale.to(torch.float32)
         replace_ids = d_tmp != 0
-        all_L[replace_ids] = (blocks[replace_ids].div_(d_tmp[replace_ids]).
-                              reshape(-1, 1).add_(32).round_().clamp_(0, 63).to(torch.uint8)
+        all_L[replace_ids] = (
+            blocks[replace_ids].div_(d_tmp[replace_ids]).reshape(-1, 1).add_(32).round_().clamp_(0, 63).to(torch.uint8)
         )
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq

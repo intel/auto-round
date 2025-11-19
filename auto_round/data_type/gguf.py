@@ -489,7 +489,7 @@ def quant_tensor_gguf_asym_dq(
         )
 
     inverse_scale = get_reciprocal(scale)
-    tensor = tensor+wmin
+    tensor = tensor + wmin
     tensor = (tensor.mul_(inverse_scale)).round_().clamp_(0, maxq)
     tensor = tensor.mul_(scale)
     tensor = tensor.sub_(wmin).to(orig_dtype)
