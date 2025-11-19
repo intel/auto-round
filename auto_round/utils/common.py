@@ -354,7 +354,7 @@ def getattr_chain(obj: Any, chain_str: str, *args, **kwargs) -> Any:
     for attr_name in attr_names:
         if not hasattr(res, attr_name):
             if has_default:
-                return default
+                return default  # pylint: disable=E0601
             else:
                 raise AttributeError(f"{res} object has no attribute {attr_name}")
         res = getattr(res, attr_name)

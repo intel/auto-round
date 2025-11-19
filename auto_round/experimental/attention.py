@@ -29,7 +29,6 @@ from torch.utils.hooks import RemovableHandle
 from transformers import AttentionInterface, PretrainedConfig, PreTrainedModel
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-from auto_round.experimental.attn_patches.llama import RuntimeStats
 from auto_round.experimental.kv_cache import kvcache_quant_context
 from auto_round.experimental.utils import (
     fp8_per_tensor_qdq,
@@ -105,7 +104,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
         query, query_scale = fp8_per_tensor_qdq(query, tensor_max=query_max)
         update_parameter_data(module, query_scale.squeeze(0), QUERY_SCALE_NAME)
         # original attention
-        return ALL_ATTENTION_FUNCTIONS[_original_impl](
+        return ALL_ATTENTION_FUNCTIONS[self._original_impl](
             module,
             query,
             key,

@@ -204,7 +204,6 @@ def calibrate_kv_cache_input_hook(
     kv_cache quantization. Will update the passed in
     kv_cache to singleton QuantizedKVParameterCache.
     """
-    # logger.debug(f"calibrate kv_cache input hook for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     kv_cache = getattr(module, "kv_cache")
     #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
     # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
