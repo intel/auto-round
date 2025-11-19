@@ -803,8 +803,13 @@ def q5_k_quant_block(
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
         q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
-        all_L  = (blocks.add_(mins.unsqueeze(-1)).mul_(get_reciprocal(scales.unsqueeze(-1))).
-                  round_().clamp_(0, 31).to(torch.uint8))
+        all_L = (
+            blocks.add_(mins.unsqueeze(-1))
+            .mul_(get_reciprocal(scales.unsqueeze(-1)))
+            .round_()
+            .clamp_(0, 31)
+            .to(torch.uint8)
+        )
 
     elif original:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=5, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=False)
@@ -820,8 +825,14 @@ def q5_k_quant_block(
         d_tmp = output_d * q_scales
         dm_tmp = output_dmin * q_mins
         replace_ids = d_tmp != 0
-        all_L[replace_ids]=(blocks[replace_ids].add_(dm_tmp[replace_ids].unsqueeze(-1)).
-                            div_(d_tmp[replace_ids].unsqueeze(-1)).round_().clamp_(0,31).to(torch.int8))
+        all_L[replace_ids] = (
+            blocks[replace_ids]
+            .add_(dm_tmp[replace_ids].unsqueeze(-1))
+            .div_(d_tmp[replace_ids].unsqueeze(-1))
+            .round_()
+            .clamp_(0, 31)
+            .to(torch.int8)
+        )
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
@@ -845,7 +856,10 @@ def q5_k_quant_block(
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
         q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp(0, 63).to(torch.uint8)
-        all_L = (blocks.add_(mins.unsqueeze(-1)).mul_(get_reciprocal(scales.unsqueeze(-1))).round_()
+        all_L = (
+            blocks.add_(mins.unsqueeze(-1))
+            .mul_(get_reciprocal(scales.unsqueeze(-1)))
+            .round_()
             .clamp_(0, 31)
             .to(torch.uint8)
         )
