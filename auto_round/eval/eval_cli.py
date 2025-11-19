@@ -101,6 +101,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             choices=["hf", "vllm"],
             help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
         )
+        self.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
 
         # vllm related arguments
         vllm_args = self.add_argument_group("vllm backend arguments")
@@ -110,7 +111,6 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--tokenizer_mode", default="auto", type=str, help="tokenizer mode for vllm (e.g. auto/fast/slow)"
         )
         vllm_args.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
-        vllm_args.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
         vllm_args.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
         vllm_args.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
         vllm_args.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
@@ -187,7 +187,13 @@ def eval(args):
         model.eval()
         st = time.time()
         res = simple_evaluate_user_model(
-            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit
+            model,
+            tokenizer,
+            tasks=tasks,
+            batch_size=batch_size,
+            device=device_str,
+            limit=args.limit,
+            add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -196,6 +202,7 @@ def eval(args):
         if "auto" in str(batch_size) and args.mllm:
             logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
             batch_size = 16
+        model_args += f",add_bos_token={args.add_bos_token}"
         res = simple_evaluate(
             model="hf" if not args.mllm else "hf-multimodal",
             model_args=model_args,
@@ -222,6 +229,7 @@ def eval_task_by_task(
     eval_model_dtype=None,
     retry_times=3,
     mllm=False,
+    add_bos_token=False,
 ):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
@@ -280,6 +288,7 @@ def eval_task_by_task(
             parallelize=parallelism,
             trust_remote_code=trust_remote_code,
             dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
         )
     else:
         hflm = HFLM(
@@ -291,6 +300,7 @@ def eval_task_by_task(
             parallelize=parallelism,
             trust_remote_code=trust_remote_code,
             dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
         )
 
     if isinstance(tasks, str):

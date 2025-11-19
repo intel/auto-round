@@ -691,6 +691,10 @@ def tune(args):
 
     import time
 
+    add_bos_token = False
+    if "llama" in args.model.lower():
+        logger.warning("set add_bos_token=True for llama model.")
+        add_bos_token = True
     if (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
@@ -742,6 +746,7 @@ def tune(args):
                 limit=args.limit,
                 batch_size=args.eval_bs,
                 eval_model_dtype=eval_model_dtype,
+                add_bos_token=add_bos_token,
             )
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
@@ -750,9 +755,7 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate_user_model
 
             st = time.time()
-            add_bos_token = False
-            if "llama" in args.model.lower():
-                add_bos_token = True
+
             res = simple_evaluate_user_model(
                 model,
                 tokenizer,
@@ -775,6 +778,7 @@ def tune(args):
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
                 mllm=autoround.mllm,  # pylint: disable=E1101
+                add_bos_token=add_bos_token,
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -783,8 +787,7 @@ def tune(args):
                 args.tasks, eval_folder, args.device_map, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
-            if "llama" in args.model.lower():
-                model_args += ",add_bos_token=True"
+            model_args += f",add_bos_token={add_bos_token}"
             if autoround.mllm:  # pylint: disable=E1101
                 model_type = "hf-multimodal"
                 if args.eval_bs is None or args.eval_bs == "auto":
@@ -811,12 +814,19 @@ def setup_eval_parser():
 
 
 def run_eval():
+    from auto_round.logger import logger
     from auto_round.utils import is_mllm_model
 
     args = setup_eval_parser()
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+
     if args.model is None:
         args.model = args.model_name
+    add_bos_token = False
+    if "llama" in args.model.lower() and not args.add_bos_token:
+        logger.warning("set add_bos_token=True for llama model.")
+        add_bos_token = True
+    args.add_bos_token = add_bos_token
     if is_mllm_model(args.model):
         args.mllm = True
 
@@ -828,6 +838,7 @@ def run_eval():
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
+            add_bos_token=add_bos_token,
         )
     else:
         eval(args)
