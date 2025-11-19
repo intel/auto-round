@@ -643,9 +643,10 @@ def iterative_wls_quant_search(
 def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
-            # Note: make_q3_quants does not support split_num/chunking; 3-bit quantization is performed in a single chunk.
+            # Note: make_q3_quants does not support split_num/chunking;
+            # 3-bit quantization is performed in a single chunk.
             scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
-            ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
+            # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
             scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num)
     else:
