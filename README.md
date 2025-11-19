@@ -117,6 +117,8 @@ pip install auto-round-lib
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
+> **ModelScope is supported for model downloads, simply set `AR_USE_MODELSCOPE=1`.**
+
 ```bash
 auto-round \
     --model Qwen/Qwen3-0.6B \
@@ -124,6 +126,7 @@ auto-round \
     --format "auto_round" \
     --output_dir ./tmp_autoround
 ```
+
 
 We offer another two recipes, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
@@ -252,17 +255,17 @@ results.
 
 **This feature is experimental and may be subject to changes**.
 
-By default, AutoRoundMLLM only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
+By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
-is limited. For more information, please refer to the AutoRoundMLLM [readme](./auto_round/mllm/README.md).
+is limited. For more information, please refer to the AutoRound [readme](./auto_round/mllm/README.md).
 
 ```python
-from auto_round import AutoRoundMLLM
+from auto_round import AutoRound
 
 # Load the model
 model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
 # Quantize the model
-ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
+ar = AutoRound(model_name_or_path, scheme="W4A16")
 output_dir = "./qmodel"
 ar.quantize_and_save(output_dir)
 ```
