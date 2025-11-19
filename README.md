@@ -184,14 +184,14 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 <summary>Important Hyperparameters</summary>
 
 ##### Quantization Scheme & Configuration
-- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`.
+- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`. For MXFP4/NVFP4, we recommend exporting to LLM-Compressor format.
 - **`bits` (int)**: Number of bits for quantization (default is `None`). If not None, it will override the scheme setting.
 - **`group_size` (int)**: Size of the quantization group (default is `None`). If not None, it will override the scheme setting.
 - **`sym` (bool)**: Whether to use symmetric quantization (default is `None`). If not None, it will override the scheme setting.
-- **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
+- **`layer_config` (dict)**: Configuration for layer_wise scheme (default is `None`), mainly for customized mixed schemes.
 
 ##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0` Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
 - **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
 
 ##### Tuning Process Parameters
