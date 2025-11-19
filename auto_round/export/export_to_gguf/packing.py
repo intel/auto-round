@@ -770,7 +770,7 @@ def q4_k_quant_block(
         output_d = max_scales / 63
         output_dmin = max_mins / 63
         q_scales = (id_scales * scales).round_().clamp_(0, 63).to(torch.uint8)
-        q_mins = (id_mins * mins).round_().clip(0, 63).to(torch.uint8)
+        q_mins = (id_mins * mins).round_().clamp_(0, 63).to(torch.uint8)
 
         d_tmp = output_d * q_scales
         dm_tmp = output_dmin * q_mins
@@ -779,6 +779,7 @@ def q4_k_quant_block(
             blocks[replace_ids]
             .add_(dm_tmp[replace_ids].unsqueeze(-1))
             .div_(d_tmp[replace_ids].unsqueeze(-1))
+            .round_()
             .clamp_(0, 15)
             .to(torch.uint8)
         )
@@ -885,7 +886,7 @@ def q5_k_quant_block(
             .div_(d_tmp[replace_ids].unsqueeze(-1))
             .round_()
             .clamp_(0, 31)
-            .to(torch.int8)
+            .to(torch.uint8)
         )
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
@@ -909,7 +910,7 @@ def q5_k_quant_block(
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
-        q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp(0, 63).to(torch.uint8)
+        q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
         all_L = (
             blocks.add_(mins.unsqueeze(-1))
             .mul_(get_reciprocal(scales.unsqueeze(-1)))
@@ -955,7 +956,7 @@ def q6_k_quant_block(
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         rd = get_reciprocal(output_d)
         output_scale = scales.mul(rd).round_().clamp_(max=127).to(torch.int8)
-        rs = get_reciprocal(scales).unsqueeze_(-1)  # inplace unsqueeze
+        rs = get_reciprocal(scales).unsqueeze_(-1)  # unsqueeze for broadcasting
         all_L = blocks.mul(rs).add_(32).round_().clamp_(0, 63).to(torch.uint8)
     elif original:
         scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
