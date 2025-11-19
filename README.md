@@ -114,15 +114,6 @@ pip install auto-round-lib
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
-### Environment Configuration 
-Here we list some of the most commonly used environment variables:
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `AR_LOG_LEVEL` | `INFO` | Controls logging verbosity (`TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-| `AR_USE_MODELSCOPE` | `False` | Use ModelScope for model downloads (useful for Chinese users) |
-
-For detailed configuration options and usage examples, see the [Environment Variables Guide](./docs/environments.md).
-
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
