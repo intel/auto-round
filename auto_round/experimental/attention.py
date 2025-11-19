@@ -68,7 +68,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
     :param attn_module: parent attention module
     """
 
-    _original_impl = "eager"
+    _original_impl = "sdpa"
 
     def __init__(self, config: PretrainedConfig, attn_module: Module):
         super().__init__()
