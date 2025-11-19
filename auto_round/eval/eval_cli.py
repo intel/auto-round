@@ -101,7 +101,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             choices=["hf", "vllm"],
             help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
         )
-        self.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
+        self.add_argument("--add_bos_token", action="store_true", help="add BOS token")
 
         # vllm related arguments
         vllm_args = self.add_argument_group("vllm backend arguments")

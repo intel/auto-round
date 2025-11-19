@@ -373,6 +373,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Options: 'float16', 'bfloat16', 'float32'. "
             "Should match your hardware capabilities for best performance.",
         )
+        eval_args.add_argument("--add_bos_token", action="store_true", help="add BOS token")
 
         ## ======================= MLLM =======================
         mllm_args = self.add_argument_group("Multimodal Large Language Model(MLLM) arguments")
@@ -691,10 +692,9 @@ def tune(args):
 
     import time
 
-    add_bos_token = False
-    if "llama" in args.model.lower():
+    if "llama" in args.model.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
-        add_bos_token = True
+        args.add_bos_token = True
     if (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
@@ -746,7 +746,7 @@ def tune(args):
                 limit=args.limit,
                 batch_size=args.eval_bs,
                 eval_model_dtype=eval_model_dtype,
-                add_bos_token=add_bos_token,
+                add_bos_token=args.add_bos_token,
             )
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
@@ -764,7 +764,7 @@ def tune(args):
                 limit=args.limit,
                 device=device_str,
                 eval_model_dtype=eval_model_dtype,
-                add_bos_token=add_bos_token,
+                add_bos_token=args.add_bos_token,
             )
             print(make_table(res))
             print("evaluation running time=%ds" % (time.time() - st))
@@ -778,7 +778,7 @@ def tune(args):
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
                 mllm=autoround.mllm,  # pylint: disable=E1101
-                add_bos_token=add_bos_token,
+                add_bos_token=args.add_bos_token,
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -787,7 +787,7 @@ def tune(args):
                 args.tasks, eval_folder, args.device_map, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
-            model_args += f",add_bos_token={add_bos_token}"
+            model_args += f",add_bos_token={args.add_bos_token}"
             if autoround.mllm:  # pylint: disable=E1101
                 model_type = "hf-multimodal"
                 if args.eval_bs is None or args.eval_bs == "auto":
@@ -822,11 +822,9 @@ def run_eval():
 
     if args.model is None:
         args.model = args.model_name
-    add_bos_token = False
     if "llama" in args.model.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
-        add_bos_token = True
-    args.add_bos_token = add_bos_token
+        args.add_bos_token = True
     if is_mllm_model(args.model):
         args.mllm = True
 
@@ -838,7 +836,7 @@ def run_eval():
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
-            add_bos_token=add_bos_token,
+            add_bos_token=args.add_bos_token,
         )
     else:
         eval(args)
