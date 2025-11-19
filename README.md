@@ -117,6 +117,8 @@ pip install auto-round-lib
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
+> **ModelScope is supported for model downloads, simply set `AR_USE_MODELSCOPE=1`.**
+
 ```bash
 auto-round \
     --model Qwen/Qwen3-0.6B \
@@ -125,7 +127,6 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-By setting `AR_USE_MODELSCOPE=1`, ModelScope is used for model downloads.
 
 We offer another two recipes, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
