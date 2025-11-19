@@ -886,7 +886,7 @@ def q5_k_quant_block(
             .div_(d_tmp[replace_ids].unsqueeze(-1))
             .round_()
             .clamp_(0, 31)
-            .to(torch.int8)
+            .to(torch.uint8)
         )
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
