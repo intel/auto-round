@@ -779,6 +779,7 @@ def q4_k_quant_block(
             blocks[replace_ids]
             .add_(dm_tmp[replace_ids].unsqueeze(-1))
             .div_(d_tmp[replace_ids].unsqueeze(-1))
+            .round_()
             .clamp_(0, 15)
             .to(torch.uint8)
         )
