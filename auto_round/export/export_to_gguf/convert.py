@@ -406,7 +406,10 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, name)
         orig_device = data_torch.device
-        import psutil, os
+        import os
+
+        import psutil
+
         process = psutil.Process(os.getpid())
         print(f"CPU RAM: {process.memory_info().rss / 1024 ** 2:.2f} MB")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
