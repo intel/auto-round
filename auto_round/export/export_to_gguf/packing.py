@@ -72,7 +72,8 @@ def ggml_quant(
             original=original,
             split_num=split_num,
         )
-    except Exception:
+    except torch.OutOfMemoryError:
+        orig_device = blocks.device
         device = "cpu"
         blocks = blocks.to(device)
         scale = scale.to(device) if scale is not None else scale
@@ -81,7 +82,7 @@ def ggml_quant(
         d_scale = d_scale.to(device) if d_scale is not None else d_scale
         d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
         imatrix = imatrix.to(device) if imatrix is not None else imatrix
-        clear_memory()
+        clear_memory(device_list=orig_device)
         new_data = quant_func(
             blocks,
             scale,
@@ -103,7 +104,7 @@ def ggml_quant(
 def torch_roundf(n):
     a = torch.abs(n)
     floored = torch.floor(a)
-    b = floored + torch.floor(2 * (a - floored))
+    b = floored + torch.floor((a - floored).mul_(2))
     return torch.sign(n) * b
 
 
@@ -528,13 +529,13 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
     else:
         d = torch.abs(blocks).max(dim=1, keepdim=True)[0] / 127
     id = get_reciprocal(d)
-    qs = torch.clip(torch_roundf(blocks * id), -128, 127)
+    blocks = blocks.mul_(id)
+    qs = torch_roundf(blocks).clamp_(-128, 127)
 
     # (n_blocks, 2)
     d = d.cpu().numpy().astype(np.float16).view(np.uint8)
     # (n_blocks, block_size)
     qs = qs.cpu().numpy().astype(np.int8).view(np.uint8)
-
 
     return np.concatenate([d, qs], axis=1)
 
@@ -587,11 +588,6 @@ def q2_k_quant_block(
             .to(torch.uint8)
         )
 
-        # all_L[replace_ids] = (
-        #     torch.round((blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1))
-        #     .clip(0, 3)
-        #     .to(torch.uint8)
-        # )
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
@@ -695,20 +691,17 @@ def q4_k_quant_block(
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 32, 32))
 
-    output_scale = torch.empty((nb, K_SCALE_SIZE), dtype=torch.uint8, device=blocks.device)
 
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 32)
         mins = wmin.reshape(-1, QK_K // 32)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
-        q_scales = torch.round(scales * get_reciprocal(output_d)).clip(0, 63).to(torch.uint8)
-        q_mins = torch.round(mins * get_reciprocal(output_dmin)).clip(0, 63).to(torch.uint8)
-        all_L = (
-            torch.round((blocks + mins.unsqueeze(-1)) * get_reciprocal(scales.unsqueeze(-1)))
-            .clip(0, 15)
-            .to(torch.uint8)
-        )
+        q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
+        q_mins = (mins * get_reciprocal(output_dmin)).round_().clam_(0, 63).to(torch.uint8)
+        all_L = (blocks.add_(mins.unsqueeze(-1)).mul_(get_reciprocal(scales.unsqueeze(-1))).
+                 round_().clamp_(0,15).to(torch.uint8))
+
     elif original:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=4, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
@@ -717,17 +710,15 @@ def q4_k_quant_block(
         id_mins = (63 * get_reciprocal(max_mins)).clamp(min=0)
         output_d = max_scales / 63
         output_dmin = max_mins / 63
-        q_scales = torch.round(id_scales * scales).clip(0, 63).to(torch.uint8)
-        q_mins = torch.round(id_mins * mins).clip(0, 63).to(torch.uint8)
+        q_scales = (id_scales * scales).round_().clamp_(0, 63).to(torch.uint8)
+        q_mins = (id_mins * mins).round_().clip(0, 63).to(torch.uint8)
 
         d_tmp = output_d * q_scales
         dm_tmp = output_dmin * q_mins
         replace_ids = d_tmp != 0
-        all_L[replace_ids] = (
-            torch.round((blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1))
-            .clip(0, 15)
-            .to(torch.uint8)
-        )
+        all_L[replace_ids] = (blocks[replace_ids].add_(dm_tmp[replace_ids].unsqueeze(-1)).
+                              div_(d_tmp[replace_ids].unsqueeze(-1)).clamp_(0,15).to(torch.uint8))
+
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
@@ -737,20 +728,28 @@ def q4_k_quant_block(
         )
         scales, d_scale = scales["scale"], scales["d_scale"]
         mins, d_wmin = mins["wmin"], mins["d_wmin"]
+        if split_num > 1:
+            orig_device = blocks.device
+            blocks = blocks.to("cpu")
+            scales = scales.to("cpu")
+            d_scale = d_scale.to("cpu")
+            mins = mins.to("cpu")
+            d_wmin = d_wmin.to("cpu")
+
 
         blocks = blocks.reshape((nb, QK_K // 32, 32))
         scales = scales.reshape((-1, QK_K // 32))
         mins = mins.reshape((-1, QK_K // 32))
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
-        q_scales = torch.round(scales * get_reciprocal(output_d)).clip(0, 63).to(torch.uint8)
-        q_mins = torch.round(mins * get_reciprocal(output_dmin)).clip(0, 63).to(torch.uint8)
+        q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
+        q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
         all_L = (
-            torch.round((blocks + mins.unsqueeze(-1)) * get_reciprocal(scales.unsqueeze(-1)))
-            .clip(0, 15)
+            blocks.add_(mins.unsqueeze(-1)).mul_(get_reciprocal(scales.unsqueeze(-1))).round_()
+            .clamp(0, 15)
             .to(torch.uint8)
         )
-
+    output_scale = torch.empty((nb, K_SCALE_SIZE), dtype=torch.uint8, device=blocks.device)
     output_scale[:, :4] = q_scales[:, :4]
     output_scale[:, 4:8] = q_mins[:, :4]
 
@@ -906,7 +905,6 @@ def q6_k_quant_block(
             blocks = blocks.to("cpu")
             scales = scales.to("cpu")
             d_scale = d_scale.to("cpu")
-            clear_memory(device_list=[device])
 
         blocks = blocks.reshape((nb, QK_K // 16, 16))
         scales = scales.reshape((-1, QK_K // 16))

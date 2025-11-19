@@ -407,37 +407,61 @@ def bytes_to_gigabytes(bytes) -> int:
 
 
 def _clear_memory_for_cpu_and_cuda(
-    tensor: torch.Tensor | list[torch.Tensor] | None = None, device_list: tuple | list | None = None
+    tensor: torch.Tensor | list[torch.Tensor] | None = None,
+    device_list: tuple | list | str | torch.device | None = None
 ):
+    # ------------------------
+    # Clear CPU-side references
+    # ------------------------
     if isinstance(tensor, list):
         for i in range(len(tensor)):
             tensor[i] = None
-    if tensor is not None:
-        del tensor
+    tensor = None
     gc.collect()
+
+    # ------------------------
+    # Normalize device_list
+    # ------------------------
+    if isinstance(device_list, (str, torch.device)):
+        device_list = [device_list]
+
+    # -----------------------------------
+    # CUDA-specific clearing
+    # -----------------------------------
     if torch.cuda.is_available():
+        # No device_list → clear all GPUs
         if not device_list:
-            torch.cuda.synchronize()
             # Fix https://github.com/intel/auto-round/issues/1004
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        else:
+            # Parse valid CUDA device IDs
+            devices = []
+            for dev in device_list:
+                dev = str(dev)
+                if not dev.startswith("cuda"):
+                    continue
+                # cuda / cuda:0 / cuda:1
+                if ":" in dev:
+                    devid = int(dev.split(":")[-1])
+                else:
+                    devid = 0
+                devices.append(devid)
+
+            for d in devices:
+                torch.cuda.synchronize(d)
+
             torch.cuda.empty_cache()
 
-        elif len(device_list) >= 1:
-            devices = []
-            for device in device_list:
-                device = str(device)
-                if not device.startswith("cuda"):
-                    continue
-                if ":" in device:
-                    device = device.split(":")[-1]
-                else:
-                    device = 0
-                devices.append(int(device))
-            for device in devices:
-                torch.cuda.synchronize(device)
-            torch.cuda.empty_cache()
-    if torch.xpu.is_available():
+    # -----------------------------------
+    # XPU-specific clearing
+    # -----------------------------------
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
+
+
+
 
 
 @torch._dynamo.disable()
