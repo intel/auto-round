@@ -106,7 +106,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
         query, query_scale = fp8_per_tensor_qdq(query, tensor_max=query_max)
         logger.trace(f"query max: {query_max.item()}, scale: {query_scale.item()}")
-        update_parameter_data(module, query_scale.squeeze(0), QUERY_SCALE_NAME)
+        update_parameter_data(module, query_scale, QUERY_SCALE_NAME)
         # original attention
         res = ALL_ATTENTION_FUNCTIONS[_original_impl](
             module,
