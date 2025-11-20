@@ -1317,6 +1317,7 @@ class MemoryMonitor:
 
     _instance = None
     _lock = Lock()
+    _initialized = False
 
     def __new__(cls):
         if cls._instance is None:
@@ -1358,7 +1359,10 @@ class MemoryMonitor:
             if torch.cuda.is_available():
                 current_vram = torch.cuda.memory_reserved(device)  /1024**3 # GB
             elif torch.xpu.is_available():
-                current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+                current_vram = torch.xpu.memory_reserved(device) / 1024**3 # GB
+            else:
+                return
+
             device = str(device).split(":")[-1]
             if device not in self.peak_vram:
                 self.peak_vram[device] = 0.0
