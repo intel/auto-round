@@ -200,5 +200,6 @@ class TestAutoRound(unittest.TestCase):
         block_names = get_block_names(model, quant_vision=True)
         self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
 
+
 if __name__ == "__main__":
     unittest.main()
