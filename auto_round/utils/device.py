@@ -14,9 +14,9 @@
 import gc
 import os
 import re
-from threading import Lock
 from functools import lru_cache
 from itertools import combinations
+from threading import Lock
 from typing import Callable, Union
 
 import cpuinfo
@@ -443,6 +443,7 @@ def _clear_memory_for_cpu_and_cuda(
 @torch._dynamo.disable()
 def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
     from auto_round.utils.device import is_hpex_available
+
     memory_monitor.update(device_list=device_list)
     if is_hpex_available():
         # hpu does not have empty_cache
@@ -1340,10 +1341,10 @@ class MemoryMonitor:
             return
         # Track RAM
         process = psutil.Process()
-        current_ram = process.memory_info().rss /1024 / 1024 / 1024 #GB
+        current_ram = process.memory_info().rss / 1024 / 1024 / 1024  # GB
         self.peak_ram = max(self.peak_ram, current_ram)
         if device_list is not None:
-            if not isinstance(device_list, (list,tuple)):
+            if not isinstance(device_list, (list, tuple)):
                 device_list = [device_list]
         else:
             if torch.cuda.is_available():
@@ -1351,12 +1352,11 @@ class MemoryMonitor:
             elif torch.xpu.is_available():
                 device_list = list(range(torch.xpu.device_count()))
 
-
         for device in device_list:
-            if device=="cpu":
+            if device == "cpu":
                 continue
             if torch.cuda.is_available():
-                current_vram = torch.cuda.memory_reserved(device)  /1024**3 # GB
+                current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
             elif torch.xpu.is_available():
                 current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
             device = str(device).split(":")[-1]
@@ -1379,8 +1379,8 @@ class MemoryMonitor:
     def get_summary(self):
         """Get summary of peak memory usage."""
         summary = {
-            'peak_ram_gb': round(self.peak_ram, 2),
-            'peak_vram_gb': {f'device:{k}': round(v, 2) for k, v in self.peak_vram.items()}
+            "peak_ram_gb": round(self.peak_ram, 2),
+            "peak_vram_gb": {f"device:{k}": round(v, 2) for k, v in self.peak_vram.items()},
         }
         return summary
 
@@ -1388,7 +1388,7 @@ class MemoryMonitor:
         """Log memory usage summary."""
         summary = self.get_summary()
         logger.info(f"Peak RAM usage: {summary['peak_ram_gb']:.2f} GB")
-        for device, vram in summary['peak_vram_gb'].items():
+        for device, vram in summary["peak_vram_gb"].items():
             logger.info(f"Peak VRAM usage ({device}): {vram:.2f} GB")
         return summary
 

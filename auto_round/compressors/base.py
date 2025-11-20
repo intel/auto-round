@@ -2808,7 +2808,6 @@ class BaseCompressor(object):
 
         from auto_round.utils.device import memory_monitor
 
-
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
