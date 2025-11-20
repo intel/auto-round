@@ -1770,7 +1770,7 @@ class BaseCompressor(object):
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
-                )  ##self.model.hf_device_map has not been changed
+                )  # self.model.hf_device_map has not been changed
         if not self.immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.device_list)
@@ -1794,8 +1794,8 @@ class BaseCompressor(object):
     def _get_block_outputs(
         self,
         block: torch.nn.Module,
-        input_ids: torch.Tensor,
-        input_others: torch.Tensor,
+        input_ids: torch.Tensor | list[torch.Tensor],
+        input_others: torch.Tensor | dict,
         bs: int,
         device: Union[str, torch.device],
         cache_device: Union[str, torch.device],
@@ -2805,7 +2805,10 @@ class BaseCompressor(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.info(dump_info)
+
+        from auto_round.utils.device import memory_monitor
+
+
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
@@ -2833,7 +2836,8 @@ class BaseCompressor(object):
                 mv_module_from_gpu(block)
 
             clear_memory(input_ids)
-
+            logger.info(dump_info)
+            memory_monitor.log_summary()
             return q_outputs, output
         else:
             if len(self.device_list) > 1 and auto_offload:
@@ -2841,7 +2845,8 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
             clear_memory(input_ids)
-
+            logger.info(dump_info)
+            memory_monitor.log_summary()
             return None, output
 
     def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
@@ -3174,7 +3179,7 @@ class BaseCompressor(object):
         cls,
         input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
-        indices: list[int],
+        indices: list[int] | torch.Tensor,
         seqlen: int,
         batch_dim: int = 0,
         share_cache_keys: tuple = (),
