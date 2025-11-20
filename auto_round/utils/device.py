@@ -1359,7 +1359,7 @@ class MemoryMonitor:
             if torch.cuda.is_available():
                 current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
             elif torch.xpu.is_available():
-                current_vram = torch.xpu.memory_reserved(device) / 1024**3 # GB
+                current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
             else:
                 return
 
