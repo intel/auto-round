@@ -1342,7 +1342,7 @@ class MemoryMonitor:
             return
         # Track RAM
         process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024 / 1024 / 1024  # GB
+        current_ram = process.memory_info().rss / 1024 **3 # GB
         self.peak_ram = max(self.peak_ram, current_ram)
         if device_list is not None:
             if not isinstance(device_list, (list, tuple)):

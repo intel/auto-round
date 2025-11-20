@@ -1754,6 +1754,7 @@ class BaseCompressor(object):
                 layer.cpu()
                 layer_names.remove(layer_name)
         if len(layer_names) == 0:
+
             return
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
