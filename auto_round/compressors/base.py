@@ -713,8 +713,8 @@ class BaseCompressor(object):
                 raise ValueError("Gguf format is not compatible with other formats, please choose only one of them")
             if has_gguf and self.iters != 0 and self.bits != 3 and not self.enable_alg_ext:
                 logger.warning(
-                    "`iters=0` is recommended when exporting to GGUF format except for bits 3,"
-                    " or add `enable_alg_ext` for better accuracy with much more tuning cost"
+                    "`iters=0` is recommended when exporting to current GGUF format"
+                    " or add `enable_alg_ext` for better accuracy with much more tuning cost."
                     " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                     " to check the acc."
                 )
