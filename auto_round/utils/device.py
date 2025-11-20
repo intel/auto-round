@@ -1344,6 +1344,8 @@ class MemoryMonitor:
         process = psutil.Process()
         current_ram = process.memory_info().rss / 1024 **3 # GB
         self.peak_ram = max(self.peak_ram, current_ram)
+        if device_list is None: # TODO this have issue, wait for clean memory all pass devcie_list
+            device_list = [0]
         if device_list is not None:
             if not isinstance(device_list, (list, tuple)):
                 device_list = [device_list]
@@ -1364,9 +1366,11 @@ class MemoryMonitor:
                 return
 
             device = str(device).split(":")[-1]
-            if device not in self.peak_vram:
-                self.peak_vram[device] = 0.0
-            self.peak_vram[device] = max(self.peak_vram[device], current_vram)
+            if current_vram > 0:
+                if device not in self.peak_vram:
+                    self.peak_vram[device] = 0.0
+
+                self.peak_vram[device] = max(self.peak_vram[device], current_vram)
 
     def update_cpu(self):
         if not self.enabled:

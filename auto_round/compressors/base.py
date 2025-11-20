@@ -87,6 +87,7 @@ from auto_round.utils import (
     is_fp8_model,
     is_hpex_available,
     llm_load_model,
+    memory_monitor,
     mv_module_from_gpu,
     normalize_input,
     set_amax_for_all_moe_layers,
@@ -1025,6 +1026,7 @@ class BaseCompressor(object):
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
 
             folders.append(save_folder)
+        memory_monitor.log_summary()
 
         return model, folders
 
@@ -1513,6 +1515,7 @@ class BaseCompressor(object):
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
+                memory_monitor.log_summary()
                 pbar.update(1)
 
         pbar.close()
@@ -1752,7 +1755,8 @@ class BaseCompressor(object):
                 layer.cpu()
                 layer_names.remove(layer_name)
         if len(layer_names) == 0:
-
+            memory_monitor.update()
+            memory_monitor.log_summary()
             return
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
@@ -1790,6 +1794,7 @@ class BaseCompressor(object):
                 immediate_saving(self, m, name=layer_name, last_group=True)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
+            memory_monitor.log_summary()
 
     @torch.no_grad()
     def _get_block_outputs(
@@ -2806,8 +2811,6 @@ class BaseCompressor(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-
-        from auto_round.utils.device import memory_monitor
 
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
