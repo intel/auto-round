@@ -1378,18 +1378,17 @@ class MemoryMonitor:
 
     def get_summary(self):
         """Get summary of peak memory usage."""
-        summary = {
-            'peak_ram_gb': round(self.peak_ram, 2),
-            'peak_vram_gb': {f'device:{k}': round(v, 2) for k, v in self.peak_vram.items()}
-        }
+        summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
+        if len(self.peak_vram) > 0:
+            sorted_items = sorted(self.peak_vram.items())
+            items_str = ", ".join([f"'{k}': {round(v, 2)}GB" for k, v in sorted_items])
+            summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
     def log_summary(self):
         """Log memory usage summary."""
         summary = self.get_summary()
-        logger.info(f"Peak RAM usage: {summary['peak_ram_gb']:.2f} GB")
-        for device, vram in summary['peak_vram_gb'].items():
-            logger.info(f"Peak VRAM usage ({device}): {vram:.2f} GB")
+        logger.info(summary)
         return summary
 
 

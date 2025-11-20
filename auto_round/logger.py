@@ -53,8 +53,15 @@ def trace(self, message, *args):
 
 
 # Add the trace method to the Logger class
-logging.Logger.trace = trace
 
+logging.Logger.trace = trace
+INFOCLEAN_LEVEL = 21
+logging.addLevelName(INFOCLEAN_LEVEL, "INFOCLEAN")
+def infoclean(self, message, *args, **kwargs):
+    if self.isEnabledFor(INFOCLEAN_LEVEL):
+        self._log(INFOCLEAN_LEVEL, message, args, **kwargs)
+
+logging.Logger.infoclean = infoclean
 
 class AutoRoundFormatter(logging.Formatter):
     grey = "\x1b[38;20m"
@@ -65,10 +72,11 @@ class AutoRoundFormatter(logging.Formatter):
     cyan = "\x1b[36;1m"
     blue = "\x1b[34;1m"
     _format = "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s"
-
+    _format_clean = "%(message)s"
     FORMATS = {
         logging.DEBUG: blue + _format + reset,
         logging.INFO: grey + _format + reset,
+        INFOCLEAN_LEVEL: grey + _format_clean + reset,
         logging.WARNING: yellow + _format + reset,
         logging.ERROR: bold_red + _format + reset,
         logging.CRITICAL: bold_red + _format + reset,
@@ -114,3 +122,53 @@ def deprecated(future_name: Optional[str] = None, message: Optional[str] = None)
         return wrapped
 
     return decorator
+
+
+class LoggerHandlerManager:
+    def __init__(self, logger_name=None):
+        self.logger = logging.getLogger(logger_name)
+        self.original_handlers = []
+        self.backup_handlers = []
+
+    def replace_handlers(self, new_handlers):
+        """替换所有handler"""
+        # 备份原始handlers
+        self.original_handlers = self.logger.handlers.copy()
+
+        # 移除所有现有handlers
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+
+        # 添加新handlers
+        for handler in new_handlers:
+            self.logger.addHandler(handler)
+
+        self.backup_handlers = new_handlers
+
+    def restore_handlers(self):
+        """恢复原始handlers"""
+        # 移除当前handlers
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+
+        # 恢复原始handlers
+        for handler in self.original_handlers:
+            self.logger.addHandler(handler)
+
+        self.original_handlers = []
+
+    def temporary_replace(self, new_handlers):
+
+        return self.TemporaryReplacer(self, new_handlers)
+
+    class TemporaryReplacer:
+        def __init__(self, manager, new_handlers):
+            self.manager = manager
+            self.new_handlers = new_handlers
+
+        def __enter__(self):
+            self.manager.replace_handlers(self.new_handlers)
+            return self.manager.logger
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.manager.restore_handlers()
