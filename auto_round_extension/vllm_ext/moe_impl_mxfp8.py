@@ -66,7 +66,6 @@ class AutoRoundMoEMethodMXFp8Impl(AutoRoundMoEMethod):
         self.quant_config = quant_config
         self.has_bias = self.moe.has_bias
 
-
     def create_weights(
         self,
         layer: torch.nn.Module,
@@ -132,13 +131,9 @@ class AutoRoundMoEMethodMXFp8Impl(AutoRoundMoEMethod):
         )
         layer.register_parameter("w2_weight_scale", w2_weight_scale)
         # Add PER-TENSORGROUP quantization for FusedMoE.weight_loader.
-        extra_weight_attrs.update(
-            {"quant_method": FusedMoeWeightScaleSupported.GROUP.value}
-        )
+        extra_weight_attrs.update({"quant_method": FusedMoeWeightScaleSupported.GROUP.value})
         set_weight_attrs(w13_weight_scale, extra_weight_attrs)
         set_weight_attrs(w2_weight_scale, extra_weight_attrs)
-
-
 
     def get_fused_moe_quant_config(self, layer: torch.nn.Module) -> Optional[FusedMoEQuantConfig]:
         from vllm.model_executor.layers.fused_moe.config import (
@@ -161,7 +156,7 @@ class AutoRoundMoEMethodMXFp8Impl(AutoRoundMoEMethod):
         return None
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        return 
+        return
 
     @torch.inference_mode()
     def apply(
