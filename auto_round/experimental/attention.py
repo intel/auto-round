@@ -29,7 +29,6 @@ from torch.utils.hooks import RemovableHandle
 from transformers import AttentionInterface, PretrainedConfig, PreTrainedModel
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-from auto_round.experimental.attn_patches.llama import RuntimeStats
 from auto_round.experimental.kv_cache import kvcache_quant_context
 from auto_round.experimental.utils import (
     fp8_per_tensor_qdq,
