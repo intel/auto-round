@@ -196,6 +196,8 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
         self.assertTrue(any(["context_embedder" not in n for n in block_names]))
 
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
 
 if __name__ == "__main__":
     unittest.main()
