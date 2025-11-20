@@ -1732,9 +1732,15 @@ class BaseCompressor(object):
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
+<<<<<<< Updated upstream
                     logger.error(
                         f"Due to insufficient resources: layer input cache for layer '{layer_name}' is unavailable. "
                         f"Static activation quantization is currently not supported for this layer."
+=======
+                    logger.warning(
+                        f"Due to insufficient resources: act_max hook for layer '{layer_name}' is unavailable. " \
+                        f"Static activation quantization is currently not supported or ineffective for this layer."
+>>>>>>> Stashed changes
                     )
                 logger.info(f"using rtn to quantize {layer_name}")
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
