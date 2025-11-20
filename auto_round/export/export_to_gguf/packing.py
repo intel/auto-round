@@ -42,6 +42,7 @@ def ggml_quant_core(quant_func, blocks, scale, zp, wmin, d_scale, d_wmin, imatri
             original=original,
         )
     except torch.OutOfMemoryError:
+        orig_device = blocks.device
         cpu_device = "cpu"
         blocks = blocks.to(cpu_device)
         scale = scale.to(cpu_device) if scale is not None else scale
@@ -50,7 +51,7 @@ def ggml_quant_core(quant_func, blocks, scale, zp, wmin, d_scale, d_wmin, imatri
         d_scale = d_scale.to(cpu_device) if d_scale is not None else d_scale
         d_wmin = d_wmin.to(cpu_device) if d_wmin is not None else d_wmin
         imatrix = imatrix.to(cpu_device) if imatrix is not None else imatrix
-        clear_memory(device_list=device)
+        clear_memory(device_list=orig_device)
         new_data = quant_func(
             blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original
         )
