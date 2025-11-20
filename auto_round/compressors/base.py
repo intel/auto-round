@@ -2851,7 +2851,7 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
 
-            clear_memory(input_ids，device_list=self.device_list)
+            clear_memory(input_ids, device_list=self.device_list)
             memory_info_summary = memory_monitor.get_summary()
             logger.infoclean(dump_info + "," + memory_info_summary)
 
