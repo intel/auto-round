@@ -51,8 +51,6 @@ __all__ = [
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
-        return
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
@@ -244,3 +242,4 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+

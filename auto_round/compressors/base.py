@@ -1224,6 +1224,7 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
+
     def _quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
@@ -1423,8 +1424,8 @@ class BaseCompressor(object):
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
         all_first_block_names = [block[0] for block in all_blocks]
-        if self.act_bits < 16 and not self.act_dynamic:
-            layer_names = self._get_quantized_layer_names_outside_blocks()
+        layer_names = self._get_quantized_layer_names_outside_blocks()
+        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0):
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
@@ -1731,6 +1732,11 @@ class BaseCompressor(object):
 
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
+                if self.act_bits < 16 and not self.act_dynamic:
+                    logger.error(
+                        f"Due to insufficient resources: layer input cache for layer '{layer_name}' is unavailable. " \
+                        f"Static activation quantization is currently not supported for this layer."
+                    )
                 logger.info(f"using rtn to quantize {layer_name}")
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
@@ -1761,6 +1767,7 @@ class BaseCompressor(object):
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
         has_gguf = False
+
         if hasattr(self, "formats"):
             has_gguf = any("gguf" in format_ for format_ in self.formats)
         if has_gguf and self.immediate_packing:
@@ -2282,6 +2289,66 @@ class BaseCompressor(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
+
+    def _register_act_max_hook(self, model):
+        def get_act_max_hook(module, input, output):
+            if isinstance(input, (tuple, list)):
+                input = input[0]
+            if input.numel() == 0:
+                return  # as no needs for act_max update
+            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+            else:
+                act_max = act_max.to(module.act_max.device)
+                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                    module.act_max = torch.max(
+                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
+                    )
+                else:
+                    module.act_max = torch.max(act_max, module.act_max)
+
+        hook_handles = []
+        # for single layers out of blocks, like lm_head
+        if isinstance(model, SUPPORTED_LAYER_TYPES):
+            m = model
+            if (
+                hasattr(m, "act_dynamic")
+                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
+                and check_to_quantized(m)
+            ):
+                hook = m.register_forward_hook(get_act_max_hook)
+                hook_handles.append(hook)
+            return hook_handles
+
+        for n, m in model.named_modules():
+            if (
+                hasattr(m, "act_dynamic")
+                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
+                and check_to_quantized(m)
+            ):
+                hook = m.register_forward_hook(get_act_max_hook)
+                hook_handles.append(hook)
+                continue
+
+            # for whole model, RTN
+            if n in self.layer_config:
+                config = self.layer_config[n]
+                act_dynamic = config.get("act_dynamic", True)
+                act_data_type = config.get("act_data_type", None)
+                act_bits = config.get("act_bits", 16)
+                if (
+                    config["bits"] <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                    and check_to_quantized(config)
+                ):
+                    hook = m.register_forward_hook(get_act_max_hook)
+                    hook_handles.append(hook)
+                    continue
+        return hook_handles
+
+    
     def _quantize_layer(
         self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
     ):
@@ -2306,6 +2373,19 @@ class BaseCompressor(object):
             inputs[i] = inputs[i].to(layer.weight.dtype)
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
+        
+        if q_inputs is None:
+            hook_handles = self._register_act_max_hook(layer)
+            with torch.no_grad():
+                layer(torch.cat(inputs, dim=0))
+            for handle in hook_handles:
+                handle.remove()
+        else:
+            hook_handles = self._register_act_max_hook(layer)
+            if hook_handles:
+                layer(torch.cat(q_inputs, dim=0))
+            for handle in hook_handles:
+                handle.remove()
 
         wrapper_linear = WrapperLinear(
             layer,
@@ -2443,53 +2523,6 @@ class BaseCompressor(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def _register_act_max_hook(self, model):
-
-        def get_act_max_hook(module, input, output):
-            if isinstance(input, (tuple, list)):
-                input = input[0]
-            if input.numel() == 0:
-                return  # as no needs for act_max update
-            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-            else:
-                act_max = act_max.to(module.act_max.device)
-                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    module.act_max = torch.max(
-                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
-                    )
-                else:
-                    module.act_max = torch.max(act_max, module.act_max)
-
-        hook_handles = []
-
-        for n, m in model.named_modules():
-            if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
-            ):
-                hook = m.register_forward_hook(get_act_max_hook)
-                hook_handles.append(hook)
-                continue
-
-            # for whole model, RTN
-            if n in self.layer_config:
-                config = self.layer_config[n]
-                act_dynamic = config.get("act_dynamic", True)
-                act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_bits", 16)
-                if (
-                    config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
-                    and check_to_quantized(config)
-                ):
-                    hook = m.register_forward_hook(get_act_max_hook)
-                    hook_handles.append(hook)
-                    continue
-        return hook_handles
 
     def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
         current_output = [output[x] for x in indices]
@@ -3235,3 +3268,4 @@ class BaseCompressor(object):
 
 class LLMCompressor(BaseCompressor):
     pass
+
