@@ -472,7 +472,7 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
-    split_num=1
+    split_num = 1
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -597,7 +597,7 @@ def iterative_wls_quant_search_chunk(
 
         if split_num > 1:
             clear_memory(device_list=data.device)
-    if len(results_scale)>1:
+    if len(results_scale) > 1:
         return torch.cat(results_scale, dim=0), torch.cat(results_rmin, dim=0)
     else:
         return results_scale[0], results_rmin[0]

@@ -94,14 +94,14 @@ def ggml_quant(
                 blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original
             )
         results.append(new_data)
-        if split_num>1:
-            print(f"!!!!!!!!!!!!!{orig_device}!!!!!!!!!!!!!!!!!!!!",flush=True)
+        if split_num > 1:
+            print(f"!!!!!!!!!!!!!{orig_device}!!!!!!!!!!!!!!!!!!!!", flush=True)
             clear_memory(device_list=orig_device)
 
     if len(results) == 1:
-        new_data= results[0]
+        new_data = results[0]
     else:
-        new_data =  np.concatenate(results, axis=0)
+        new_data = np.concatenate(results, axis=0)
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
     new_data = new_data.reshape(*shape[:-1], -1)
     return new_data
@@ -203,7 +203,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
         L_list.append(L.to(torch.uint8))
 
     # Concatenate all chunks along batch dimension
-    if len(scales_list)>1:
+    if len(scales_list) > 1:
         scales = torch.cat(scales_list, dim=0)
         L = torch.cat(L_list, dim=0)
         return scales, L
@@ -599,9 +599,7 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
 
 
 @register_qtype("q2_k")
-def q2_k_quant_block(
-    blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, imatrix=None, original=False, **kwargs
-):
+def q2_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, imatrix=None, original=False, **kwargs):
     nb = blocks.shape[0]
     device = blocks.device
     blocks = blocks.reshape((nb, QK_K // 16, 16))  # (nb, 16, 16)
@@ -651,9 +649,7 @@ def q2_k_quant_block(
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
         blocks.reshape(blocks.shape[0], -1)
-        blocks, scales, mins = quant_tensor_gguf_asym_dq(
-            blocks, bits=2, scale_dtype=torch.float32, imatrix=imatrix
-        )
+        blocks, scales, mins = quant_tensor_gguf_asym_dq(blocks, bits=2, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
         mins, d_wmin = mins["wmin"], mins["d_wmin"]
         blocks = blocks.reshape((nb, QK_K // 16, 16))
@@ -679,9 +675,7 @@ def q2_k_quant_block(
 
 
 @register_qtype("q3_k")
-def q3_k_quant_block(
-    blocks: np.array, scale=None, d_scale=None, original=False, imatrix=None, **kwargs
-):
+def q3_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False, imatrix=None, **kwargs):
     nb = blocks.shape[0]
     blocks = blocks.reshape(nb, QK_K // 16, 16)
 
@@ -705,9 +699,7 @@ def q3_k_quant_block(
         from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq
 
         blocks = blocks.reshape(blocks.shape[0], -1)
-        blocks, scales, _ = quant_tensor_gguf_sym_dq(
-            blocks, bits=3, scale_dtype=torch.float32, imatrix=imatrix
-        )
+        blocks, scales, _ = quant_tensor_gguf_sym_dq(blocks, bits=3, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
 
         blocks = blocks.reshape((nb, QK_K // 16, 16))
@@ -785,9 +777,7 @@ def q4_k_quant_block(
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
         blocks.reshape(blocks.shape[0], -1)
-        blocks, scales, mins = quant_tensor_gguf_asym_dq(
-            blocks, bits=4, scale_dtype=torch.float32, imatrix=imatrix
-        )
+        blocks, scales, mins = quant_tensor_gguf_asym_dq(blocks, bits=4, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
         mins, d_wmin = mins["wmin"], mins["d_wmin"]
 
@@ -882,9 +872,7 @@ def q5_k_quant_block(
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
         blocks.reshape(blocks.shape[0], -1)
-        blocks, scales, mins = quant_tensor_gguf_asym_dq(
-            blocks, bits=4, scale_dtype=torch.float32, imatrix=imatrix
-        )
+        blocks, scales, mins = quant_tensor_gguf_asym_dq(blocks, bits=4, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
         mins, d_wmin = mins["wmin"], mins["d_wmin"]
 
@@ -929,9 +917,7 @@ def q5_k_quant_block(
 
 
 @register_qtype("q6_k")
-def q6_k_quant_block(
-    blocks: np.array, scale=None, d_scale=None, original=False, imatrix=None, **kwargs
-):
+def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False, imatrix=None, **kwargs):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 16, 16))
     device = blocks.device
@@ -959,9 +945,7 @@ def q6_k_quant_block(
         from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq
 
         blocks = blocks.reshape(blocks.shape[0], -1)
-        blocks, scales, _ = quant_tensor_gguf_sym_dq(
-            blocks, bits=6, scale_dtype=torch.float32, imatrix=imatrix
-        )
+        blocks, scales, _ = quant_tensor_gguf_sym_dq(blocks, bits=6, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
 
         blocks = blocks.reshape((nb, QK_K // 16, 16))
