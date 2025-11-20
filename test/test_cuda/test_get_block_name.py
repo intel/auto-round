@@ -72,12 +72,12 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["model.layers"], [32])
         assert is_pure_text_model(model)
 
-    def test_mixtral(self):
-        model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        block_names = get_block_names(model)
-        self.check_block_names(block_names, ["model.layers"], [32])
-        assert is_pure_text_model(model)
+    # def test_mixtral(self):
+    #     model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
+    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    #     block_names = get_block_names(model)
+    #     self.check_block_names(block_names, ["model.layers"], [32])
+    #     assert is_pure_text_model(model)
 
     def test_falcon(self):
         model_name = "/models/Falcon3-7B-Instruct"

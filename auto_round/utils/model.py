@@ -497,23 +497,7 @@ def is_pure_text_model(model):
 
 
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
-    MM_KEYS = [
-        "multi_modal_projector",
-        "vision_tower",
-        "multimodal_projector",
-        "thinker",
-        "visual",
-        "audio",
-        "talker",
-        "token2wav",
-        "vision_model",
-        "audio_tower",
-        "vision_encoder",
-        "vision_language_adapter",
-        "patch_merger",
-        "pre_mm_projector_norm",
-        "vision",
-    ]
+    from auto_round.utils.common import MM_KEYS
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
     if not os.path.isdir(model_path):

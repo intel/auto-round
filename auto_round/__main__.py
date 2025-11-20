@@ -173,6 +173,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
         )
         tuning.add_argument(
+            "--momentum",
+            default=0,
+            type=float,
+            help="Momentum factor for the optimizer. Default is 0 (no momentum).",
+        )
+        tuning.add_argument(
             "--gradient_accumulate_steps",
             default=1,
             type=int,
@@ -591,6 +597,7 @@ def tune(args):
         extra_config=extra_config,
         layer_config=layer_config,
         model_dtype=args.model_dtype,
+        momentum=args.momentum,
     )
 
     model_name = args.model.rstrip("/")

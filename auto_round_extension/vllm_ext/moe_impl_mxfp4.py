@@ -179,6 +179,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                     OCP_MX_DTYPES,
                     OCP_MX_Scheme,
                 )
+
                 ocp_config.ocp_mx_scheme = OCP_MX_Scheme.from_quant_dtype(
                     input_dtype="mxfp8_e4m3",
                     weight_dtype="mxfp8_e4m3",
@@ -186,7 +187,7 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
                 )
                 logger.warning_once(f"Set OCP_MX_Scheme to {ocp_config.ocp_mx_scheme}")
                 return ocp_config
-                
+
             self.input_dtype = "mxfp4"
             self.weight_dtype = "mxfp4"
             return ocp_mx_moe_quant_config(
