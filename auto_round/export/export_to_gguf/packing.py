@@ -86,29 +86,29 @@ def ggml_quant(
     chunk_size = (n_blocks + split_num - 1) // split_num
     if split_num > 1:
         for i in range(split_num):
-                start = chunk_size * i
-                end = chunk_size * (i + 1)
-                tmp_blocks = blocks[start:end]
-                tmp_scale = scale[start:end] if scale is not None else scale
-                tmp_zp = zp[start:end] if zp is not None and isinstance(zp, torch.Tensor) else zp
-                tmp_wmin = wmin[start:end] if wmin is not None else wmin
-                tmp_d_scale = d_scale[start:end] if d_scale is not None else d_scale
-                tmp_d_wmin = d_wmin[start:end] if d_wmin is not None else d_wmin
-                new_data = ggml_quant_core(quant_func, tmp_blocks, tmp_scale, tmp_zp, tmp_wmin, tmp_d_scale, tmp_d_wmin,
-                                           imatrix, original)
-                results.append(new_data)
-                if split_num > 1:
-                    clear_memory(device_list=device)
+            start = chunk_size * i
+            end = chunk_size * (i + 1)
+            tmp_blocks = blocks[start:end]
+            tmp_scale = scale[start:end] if scale is not None else scale
+            tmp_zp = zp[start:end] if zp is not None and isinstance(zp, torch.Tensor) else zp
+            tmp_wmin = wmin[start:end] if wmin is not None else wmin
+            tmp_d_scale = d_scale[start:end] if d_scale is not None else d_scale
+            tmp_d_wmin = d_wmin[start:end] if d_wmin is not None else d_wmin
+            new_data = ggml_quant_core(
+                quant_func, tmp_blocks, tmp_scale, tmp_zp, tmp_wmin, tmp_d_scale, tmp_d_wmin, imatrix, original
+            )
+            results.append(new_data)
+            if split_num > 1:
+                clear_memory(device_list=device)
     else:
         new_data = ggml_quant_core(quant_func, blocks, scale, zp, wmin, d_scale, d_wmin, imatrix, original)
         results.append(new_data)
-
 
     if len(results) == 1:
         new_data = results[0]
     else:
         new_data = np.concatenate(results, axis=0)
-    new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size) # Check shape correctness
+    new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)  # Check shape correctness
     new_data = new_data.reshape(*shape[:-1], -1)
     return new_data
 
