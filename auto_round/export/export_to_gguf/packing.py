@@ -52,53 +52,62 @@ def ggml_quant(
 
     shape = data.shape
     n_blocks = data.nelement() // block_size
-    split_num = 1
-    for dim in data.shape:
-        if dim > 100_000:
-            split_num = 16
-            break
-
+    split_num = 16 if max(data.shape) > 100_000 else 1
     blocks = data.reshape((n_blocks, block_size))
     quant_func = GGML_QUANT_TYPE[ggml_type]
-    try:
-        new_data = quant_func(
-            blocks,
-            scale,
-            zp=zp,
-            wmin=wmin,
-            d_scale=d_scale,
-            d_wmin=d_wmin,
-            imatrix=imatrix,
-            original=original,
-            split_num=split_num,
-        )
-    except torch.OutOfMemoryError:
-        orig_device = blocks.device
-        device = "cpu"
-        blocks = blocks.to(device)
-        scale = scale.to(device) if scale is not None else scale
-        zp = zp.to(device) if zp is not None and isinstance(zp, torch.Tensor) else zp
-        wmin = wmin.to(device) if wmin is not None else wmin
-        d_scale = d_scale.to(device) if d_scale is not None else d_scale
-        d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
-        imatrix = imatrix.to(device) if imatrix is not None else imatrix
-        clear_memory(device_list=orig_device)
-        new_data = quant_func(
-            blocks,
-            scale,
-            zp=zp,
-            wmin=wmin,
-            d_scale=d_scale,
-            d_wmin=d_wmin,
-            imatrix=imatrix,
-            original=original,
-            split_num=split_num,
-        )
+    results = []
+    for i in range(split_num):
+        if split_num > 1:
+            start = (n_blocks * i) // split_num
+            end = (n_blocks * (i + 1)) // split_num
+            blocks = data.reshape((n_blocks, block_size))[start:end]
+            scale = scale[start:end] if scale is not None else scale
+            zp = zp[start:end] if zp is not None and isinstance(zp, torch.Tensor) else zp
+            wmin = wmin[start:end] if wmin is not None else wmin
+            d_scale = d_scale[start:end] if d_scale is not None else d_scale
+            d_wmin = d_wmin[start:end] if d_wmin is not None else d_wmin
+            # imatrix = imatrix[start:end] if imatrix is not None else imatrix
+        try:
+            new_data = quant_func(
+                blocks,
+                scale,
+                zp=zp,
+                wmin=wmin,
+                d_scale=d_scale,
+                d_wmin=d_wmin,
+                imatrix=imatrix,
+                original=original,
+            )
+        except torch.OutOfMemoryError:
+            orig_device = blocks.device
+            device = "cpu"
+            blocks = blocks.to(device)
+            scale = scale.to(device) if scale is not None else scale
+            zp = zp.to(device) if zp is not None and isinstance(zp, torch.Tensor) else zp
+            wmin = wmin.to(device) if wmin is not None else wmin
+            d_scale = d_scale.to(device) if d_scale is not None else d_scale
+            d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
+            imatrix = imatrix.to(device) if imatrix is not None else imatrix
+            clear_memory(device_list=orig_device)
+            new_data = quant_func(
+                blocks,
+                scale,
+                zp=zp,
+                wmin=wmin,
+                d_scale=d_scale,
+                d_wmin=d_wmin,
+                imatrix=imatrix,
+                original=original
+            )
 
-    assert new_data.shape[-1] == type_size
-    new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
-    new_data = new_data.reshape(*shape[:-1], -1)
-    return new_data
+        assert new_data.shape[-1] == type_size
+        new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
+        new_data = new_data.reshape(*shape[:-1], -1)
+        results.append(new_data)
+    if len(results)==1:
+        return results[0]
+    else:
+        return torch.cat(results, dim=0)
 
 
 def torch_roundf(n):
