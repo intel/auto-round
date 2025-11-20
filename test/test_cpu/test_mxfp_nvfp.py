@@ -46,7 +46,6 @@ class TestAutoRoundFP(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
     def test_nvfp4_moe_actmax_rtn(self):
         model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
         layer_config = {
@@ -54,7 +53,7 @@ class TestAutoRoundFP(unittest.TestCase):
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
             "experts.*2": {"bits": 16, "act_bits": 16},
             "experts.*5": {"bits": 16, "act_bits": 16},
-            "lm_head": {"bits": 4, "act_bits": 4} ## test lm_head quantization and exporting
+            "lm_head": {"bits": 4, "act_bits": 4},  ## test lm_head quantization and exporting
         }
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -69,9 +68,8 @@ class TestAutoRoundFP(unittest.TestCase):
         compressed_model, _ = autoround.quantize()
         assert hasattr(compressed_model.model.layers[1].mlp.experts[0].gate_proj.orig_layer, "act_max")
         lm_head = compressed_model.lm_head
-        assert (hasattr(lm_head, "act_max")), "Illegal NVFP4 quantization for lm_head layer"
+        assert hasattr(lm_head, "act_max"), "Illegal NVFP4 quantization for lm_head layer"
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
 
     def test_nvfp4_moe_actmax_ar(self):
         model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
@@ -80,7 +78,7 @@ class TestAutoRoundFP(unittest.TestCase):
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
             "experts.*2": {"bits": 16, "act_bits": 16},
             "experts.*5": {"bits": 16, "act_bits": 16},
-            "lm_head": {"bits": 4, "act_bits": 4} ## test lm_head quantization and exporting
+            "lm_head": {"bits": 4, "act_bits": 4},  ## test lm_head quantization and exporting
         }
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -92,7 +90,7 @@ class TestAutoRoundFP(unittest.TestCase):
             dataset=self.llm_dataloader,
             layer_config=layer_config,
         )
-        compressed_model,_ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
         lm_head = compressed_model.lm_head
         assert (
             hasattr(lm_head, "weight_scale")
@@ -105,11 +103,11 @@ class TestAutoRoundFP(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
+
         result = simple_evaluate_user_model(model, tokenizer, batch_size=4, tasks="piqa", limit=4)
         print(result["results"]["piqa"]["acc,none"])
         self.assertGreater(result["results"]["piqa"]["acc,none"], 0.7)
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
 
     def test_mxfp4_moe_ar(self):
         model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
@@ -118,7 +116,7 @@ class TestAutoRoundFP(unittest.TestCase):
             "mlp.shared_experts": {"bits": 16, "act_bits": 16, "data_type": "float"},
             "experts.*2": {"bits": 16, "act_bits": 16, "data_type": "float"},
             "experts.*5": {"bits": 16, "act_bits": 16, "data_type": "float"},
-            "lm_head": {"bits": 4, "act_bits": 4} ## test lm_head quantization and exporting
+            "lm_head": {"bits": 4, "act_bits": 4},  ## test lm_head quantization and exporting
         }
         scheme = "mxfp4"
         autoround = AutoRound(
@@ -130,7 +128,7 @@ class TestAutoRoundFP(unittest.TestCase):
             dataset=self.llm_dataloader,
             layer_config=layer_config,
         )
-        compressed_model,_ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
         lm_head = compressed_model.lm_head
         assert (
             hasattr(lm_head, "weight_scale")
@@ -138,7 +136,6 @@ class TestAutoRoundFP(unittest.TestCase):
             and lm_head.weight_scale.dtype is torch.uint8
         ), "Illegal MXFP4 packing for lm_head layer"
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
 
     def test_mxfp4_llmcompressor_format(self):
         model_name = self.model_name
@@ -180,7 +177,6 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_rtn_mxfp4_llmcompressor_format(self):
         model_name = self.model_name
         from transformers import AutoConfig
@@ -221,7 +217,6 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_mxfp8_llmcompressor_format(self):
         model_name = self.model_name
         from transformers import AutoConfig
@@ -258,7 +253,6 @@ class TestAutoRoundFP(unittest.TestCase):
             0.15 < folder_size_gb < 0.2
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.2 GB)"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_nvfp4_llmcompressor_format(self):
         model_name = self.model_name
@@ -297,10 +291,10 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.15 GB)"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_nvfp4_autoround_format(self):
         model_name = self.model_name
         from transformers import AutoConfig
+
         scheme = "NVFP4"
         autoround = AutoRound(
             model_name,
@@ -321,7 +315,6 @@ class TestAutoRoundFP(unittest.TestCase):
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_nvfp4_autoround_save_quantized(self):
         model_name = self.model_name
@@ -348,7 +341,6 @@ class TestAutoRoundFP(unittest.TestCase):
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_qwen_moe_quant_infer(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
@@ -379,4 +371,3 @@ class TestAutoRoundFP(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1224,7 +1224,6 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
-
     def _quantize_layer_via_rtn(self, name: str) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
@@ -1734,7 +1733,7 @@ class BaseCompressor(object):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
                     logger.error(
-                        f"Due to insufficient resources: layer input cache for layer '{layer_name}' is unavailable. " \
+                        f"Due to insufficient resources: layer input cache for layer '{layer_name}' is unavailable. "
                         f"Static activation quantization is currently not supported for this layer."
                     )
                 logger.info(f"using rtn to quantize {layer_name}")
@@ -2289,7 +2288,6 @@ class BaseCompressor(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
-
     def _register_act_max_hook(self, model):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
@@ -2348,7 +2346,6 @@ class BaseCompressor(object):
                     continue
         return hook_handles
 
-    
     def _quantize_layer(
         self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
     ):
@@ -2373,7 +2370,7 @@ class BaseCompressor(object):
             inputs[i] = inputs[i].to(layer.weight.dtype)
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
-        
+
         if q_inputs is None:
             hook_handles = self._register_act_max_hook(layer)
             with torch.no_grad():
@@ -2522,7 +2519,6 @@ class BaseCompressor(object):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-
 
     def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
         current_output = [output[x] for x in indices]
@@ -3268,4 +3264,3 @@ class BaseCompressor(object):
 
 class LLMCompressor(BaseCompressor):
     pass
-
