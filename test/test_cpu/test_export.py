@@ -272,8 +272,8 @@ class TestAutoRound(unittest.TestCase):
         if static_kv_dtype == "fp8":
             self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
             self.assertIn("model.decoder.layers.8.self_attn.v_scale", f.keys())
-            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1, 1]))
-            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1, 1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1]))
             self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype, torch.float32)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
