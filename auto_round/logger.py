@@ -57,11 +57,15 @@ def trace(self, message, *args):
 logging.Logger.trace = trace
 INFOCLEAN_LEVEL = 21
 logging.addLevelName(INFOCLEAN_LEVEL, "INFOCLEAN")
+
+
 def infoclean(self, message, *args, **kwargs):
     if self.isEnabledFor(INFOCLEAN_LEVEL):
         self._log(INFOCLEAN_LEVEL, message, args, **kwargs)
 
+
 logging.Logger.infoclean = infoclean
+
 
 class AutoRoundFormatter(logging.Formatter):
     grey = "\x1b[38;20m"
