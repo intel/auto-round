@@ -191,9 +191,9 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype)
     setattr(module, "kv_cache", quantized_kv_cache)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
-    init_scale = torch.tensor([1.0], device=next(module.parameters()).device)
-    update_parameter_data(module, init_scale, KVCacheScaleType.KEY.value)
-    update_parameter_data(module, init_scale, KVCacheScaleType.VALUE.value)
+    init_scale = torch.tensor([0.0], device=next(module.parameters()).device)
+    update_parameter_data(module, init_scale.clone(), KVCacheScaleType.KEY.value)
+    update_parameter_data(module, init_scale.clone(), KVCacheScaleType.VALUE.value)
 
 
 def calibrate_kv_cache_input_hook(

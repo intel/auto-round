@@ -76,9 +76,10 @@ class QuantizedAttentionImpl(torch.nn.Module):
         self.attn_module = ref(attn_module)  # avoid circular references
         # register query max
         device = next(attn_module.parameters()).device
-        initial_max = torch.tensor([0.0], device=device)
+        initial_max = torch.tensor([float("-inf")], device=device)
         update_parameter_data(attn_module, initial_max, QUERY_MAX_NAME)
-        update_parameter_data(attn_module, initial_max, QUERY_SCALE_NAME)
+        initial_scale = torch.tensor([0.0], device=device)
+        update_parameter_data(attn_module, initial_scale, QUERY_SCALE_NAME)
 
     def forward(
         self,
