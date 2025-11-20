@@ -452,7 +452,6 @@ def quant_tensor_gguf_asym_dq(
     wmin=None,
     d_scale=None,
     d_wmin=None,
-    split_num=None,
     **kwargs,
 ):
     """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
@@ -473,12 +472,7 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
-    if split_num is None:
-        split_num = 1
-        for dim in tensor.shape:
-            if dim > 100_000:
-                split_num = 16
-                break
+    split_num=1
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -499,7 +493,7 @@ def quant_tensor_gguf_asym_dq(
 
 # TODO consolidate iterative_wls_quant_search_chunk and non-chunk
 def iterative_wls_quant_search_chunk(
-    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=8
+    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1
 ):
     dtype = torch.float32
     data = data.to(dtype)
@@ -602,9 +596,11 @@ def iterative_wls_quant_search_chunk(
         results_rmin.append(-rmin.to(torch.float32))
 
         if split_num > 1:
-            clear_memory(device_list=[data.device])
-
-    return torch.cat(results_scale, dim=0), torch.cat(results_rmin, dim=0)
+            clear_memory(device_list=data.device)
+    if len(results_scale)>1:
+        return torch.cat(results_scale, dim=0), torch.cat(results_rmin, dim=0)
+    else:
+        return results_scale[0], results_rmin[0]
 
 
 def iterative_wls_quant_search(
@@ -671,7 +667,7 @@ def quant_tensor_gguf_sym_dq(
     scale=None,
     d_scale=None,
     scale_dtype=torch.float16,
-    split_num=None,
+    split_num=1,
     **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
@@ -698,13 +694,6 @@ def quant_tensor_gguf_sym_dq(
 
     maxq = 2 ** (bits - 1)
     group_size = 16
-    if split_num is None:
-        split_num = 1
-        for dim in tensor.shape:
-            if dim > 100_000:
-                split_num = 16
-                break
-
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype
     super_bits = 6 if bits == 3 else 8

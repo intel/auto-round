@@ -1367,7 +1367,7 @@ class MemoryMonitor:
         process = psutil.Process()
         current_ram = process.memory_info().rss / 1024**3  # GB
         self.peak_ram = max(self.peak_ram, current_ram)
-        if device_list is None:  # TODO this have issue, wait for clean memory all pass device_list
+        if device_list is None:  # TODO this has issue, wait for clean_memory all pass device_list
             device_list = [0]
         if device_list is not None:
             if not isinstance(device_list, (list, tuple)):
@@ -1379,7 +1379,7 @@ class MemoryMonitor:
                 device_list = list(range(torch.xpu.device_count()))
 
         for device in device_list:
-            if device == "cpu":
+            if str(device) == "cpu":
                 continue
             if torch.cuda.is_available():
                 current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
