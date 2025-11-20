@@ -1733,7 +1733,7 @@ class BaseCompressor(object):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
                     logger.warning(
-                        f"Due to insufficient resources: act_max hook for layer '{layer_name}' is unavailable. " \
+                        f"Due to insufficient resources: act_max hook for layer '{layer_name}' is unavailable. "
                         f"Static activation quantization is currently not supported or ineffective for this layer."
                     )
                 logger.info(f"using rtn to quantize {layer_name}")
