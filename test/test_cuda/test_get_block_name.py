@@ -30,6 +30,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def check_block_names(self, block_names, prefixs=[], n_layers=[]):
+        assert len(block_names) == len(prefixs) == len(n_layers)
         for i, block_name in enumerate(block_names):
             prefix = prefixs[i]
             n_layer = n_layers[i]
