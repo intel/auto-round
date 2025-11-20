@@ -58,16 +58,16 @@ def ggml_quant_core(quant_func, blocks, scale, zp, wmin, d_scale, d_wmin, imatri
 
 
 def ggml_quant(
-        data,
-        ggml_type,
-        scale=None,
-        zp=None,
-        wmin=None,
-        d_scale=None,
-        d_wmin=None,
-        imatrix=None,
-        device="cuda",
-        original=False,
+    data,
+    ggml_type,
+    scale=None,
+    zp=None,
+    wmin=None,
+    d_scale=None,
+    d_wmin=None,
+    imatrix=None,
+    device="cuda",
+    original=False,
 ):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
     data = data.to(torch.float32).to(device)
@@ -75,11 +75,11 @@ def ggml_quant(
     n_blocks = data.nelement() // block_size
     split_num = 16 if max(data.shape) > 100_000 else 1
     blocks = data.reshape((n_blocks, block_size))
-    scale = scale.to(device).reshape(blocks.shape[0],-1) if scale is not None else scale
-    zp = zp.to(device).reshape(blocks.shape[0],-1)  if zp is not None and isinstance(zp, torch.Tensor) else zp
-    wmin = wmin.to(device).reshape(blocks.shape[0],-1)  if wmin is not None else wmin
-    d_scale = d_scale.to(device).reshape(blocks.shape[0],-1)  if d_scale is not None else d_scale
-    d_wmin = d_wmin.to(device).reshape(blocks.shape[0],-1)  if d_wmin is not None else d_wmin
+    scale = scale.to(device).reshape(blocks.shape[0], -1) if scale is not None else scale
+    zp = zp.to(device).reshape(blocks.shape[0], -1) if zp is not None and isinstance(zp, torch.Tensor) else zp
+    wmin = wmin.to(device).reshape(blocks.shape[0], -1) if wmin is not None else wmin
+    d_scale = d_scale.to(device).reshape(blocks.shape[0], -1) if d_scale is not None else d_scale
+    d_wmin = d_wmin.to(device).reshape(blocks.shape[0], -1) if d_wmin is not None else d_wmin
 
     quant_func = GGML_QUANT_TYPE[ggml_type]
     results = []
@@ -95,8 +95,9 @@ def ggml_quant(
             tmp_d_scale = d_scale[start:end] if d_scale is not None else d_scale
             tmp_d_wmin = d_wmin[start:end] if d_wmin is not None else d_wmin
             shape = data.shape
-            new_data = ggml_quant_core(quant_func, tmp_blocks, tmp_scale, tmp_zp, tmp_wmin, tmp_d_scale, tmp_d_wmin,
-                                       imatrix, original)
+            new_data = ggml_quant_core(
+                quant_func, tmp_blocks, tmp_scale, tmp_zp, tmp_wmin, tmp_d_scale, tmp_d_wmin, imatrix, original
+            )
             # imatrix = imatrix[start:end] if imatrix is not None else imatrix
     else:
         new_data = ggml_quant_core(quant_func, blocks, scale, zp, wmin, d_scale, d_wmin, imatrix, original)
@@ -635,7 +636,7 @@ def q2_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, i
 
         replace_ids = (max_mins > 0).squeeze()
         output_scale[replace_ids] |= (
-                torch.round(id_mins[replace_ids] * mins[replace_ids]).clip(0, 15).to(torch.uint8) << 4
+            torch.round(id_mins[replace_ids] * mins[replace_ids]).clip(0, 15).to(torch.uint8) << 4
         )
 
         d_tmp = output_d * (output_scale & 0xF)
@@ -736,7 +737,7 @@ def q3_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
 
 @register_qtype("q4_k")
 def q4_k_quant_block(
-        blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, imatrix=None, original=False, split_num=1, **kwargs
+    blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, imatrix=None, original=False, split_num=1, **kwargs
 ):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 32, 32))
@@ -824,15 +825,15 @@ def q4_k_quant_block(
 
 @register_qtype("q5_k")
 def q5_k_quant_block(
-        blocks,
-        scale=None,
-        zp=None,
-        wmin=None,
-        d_scale=None,
-        d_wmin=None,
-        imatrix=None,
-        original=False,
-        **kwargs,
+    blocks,
+    scale=None,
+    zp=None,
+    wmin=None,
+    d_scale=None,
+    d_wmin=None,
+    imatrix=None,
+    original=False,
+    **kwargs,
 ):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 32, 32))
