@@ -90,21 +90,14 @@ def ggml_quant(
             imatrix = imatrix.to(device) if imatrix is not None else imatrix
             clear_memory(device_list=orig_device)
             new_data = quant_func(
-                blocks,
-                scale,
-                zp=zp,
-                wmin=wmin,
-                d_scale=d_scale,
-                d_wmin=d_wmin,
-                imatrix=imatrix,
-                original=original
+                blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original
             )
 
         assert new_data.shape[-1] == type_size
         new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
         new_data = new_data.reshape(*shape[:-1], -1)
         results.append(new_data)
-    if len(results)==1:
+    if len(results) == 1:
         return results[0]
     else:
         return torch.cat(results, dim=0)
