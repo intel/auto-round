@@ -173,6 +173,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Learning rate specifically for min-max tuning. " "If None, uses the same value as --lr. ",
         )
         tuning.add_argument(
+            "--momentum",
+            default=0,
+            type=float,
+            help="Momentum factor for the optimizer. Default is 0 (no momentum).",
+        )
+        tuning.add_argument(
             "--gradient_accumulate_steps",
             default=1,
             type=int,
@@ -367,6 +373,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Options: 'float16', 'bfloat16', 'float32'. "
             "Should match your hardware capabilities for best performance.",
         )
+        eval_args.add_argument("--add_bos_token", action="store_true", help="add BOS token")
 
         ## ======================= MLLM =======================
         mllm_args = self.add_argument_group("Multimodal Large Language Model(MLLM) arguments")
@@ -591,6 +598,7 @@ def tune(args):
         extra_config=extra_config,
         layer_config=layer_config,
         model_dtype=args.model_dtype,
+        momentum=args.momentum,
     )
 
     model_name = args.model.rstrip("/")
@@ -684,6 +692,9 @@ def tune(args):
 
     import time
 
+    if "llama" in args.model.lower() and not args.add_bos_token:
+        logger.warning("set add_bos_token=True for llama model.")
+        args.add_bos_token = True
     if (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
@@ -735,6 +746,7 @@ def tune(args):
                 limit=args.limit,
                 batch_size=args.eval_bs,
                 eval_model_dtype=eval_model_dtype,
+                add_bos_token=args.add_bos_token,
             )
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
@@ -743,9 +755,7 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate_user_model
 
             st = time.time()
-            add_bos_token = False
-            if "llama" in args.model.lower():
-                add_bos_token = True
+
             res = simple_evaluate_user_model(
                 model,
                 tokenizer,
@@ -754,7 +764,7 @@ def tune(args):
                 limit=args.limit,
                 device=device_str,
                 eval_model_dtype=eval_model_dtype,
-                add_bos_token=add_bos_token,
+                add_bos_token=args.add_bos_token,
             )
             print(make_table(res))
             print("evaluation running time=%ds" % (time.time() - st))
@@ -768,6 +778,7 @@ def tune(args):
                 limit=args.limit,
                 eval_model_dtype=eval_model_dtype,
                 mllm=autoround.mllm,  # pylint: disable=E1101
+                add_bos_token=args.add_bos_token,
             )
         else:
             from auto_round.eval.evaluation import simple_evaluate
@@ -776,8 +787,7 @@ def tune(args):
                 args.tasks, eval_folder, args.device_map, args.disable_trust_remote_code, dtype=eval_model_dtype
             )
             st = time.time()
-            if "llama" in args.model.lower():
-                model_args += ",add_bos_token=True"
+            model_args += f",add_bos_token={args.add_bos_token}"
             if autoround.mllm:  # pylint: disable=E1101
                 model_type = "hf-multimodal"
                 if args.eval_bs is None or args.eval_bs == "auto":
@@ -804,12 +814,17 @@ def setup_eval_parser():
 
 
 def run_eval():
+    from auto_round.logger import logger
     from auto_round.utils import is_mllm_model
 
     args = setup_eval_parser()
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
+
     if args.model is None:
         args.model = args.model_name
+    if "llama" in args.model.lower() and not args.add_bos_token:
+        logger.warning("set add_bos_token=True for llama model.")
+        args.add_bos_token = True
     if is_mllm_model(args.model):
         args.mllm = True
 
@@ -821,6 +836,7 @@ def run_eval():
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
+            add_bos_token=args.add_bos_token,
         )
     else:
         eval(args)

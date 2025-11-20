@@ -21,7 +21,6 @@ from auto_round.logger import logger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-from lm_eval.models.hf_vlms import HFMultimodalLM
 from lm_eval.models.huggingface import HFLM
 
 
@@ -37,6 +36,8 @@ def simple_evaluate_user_model(
     **kwargs
 ):
     if mllm:
+        from lm_eval.models.hf_vlms import HFMultimodalLM
+
         if batch_size is None or batch_size == "auto":
             logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
             batch_size = 16

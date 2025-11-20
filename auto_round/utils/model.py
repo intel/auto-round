@@ -497,23 +497,7 @@ def is_pure_text_model(model):
 
 
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
-    MM_KEYS = [
-        "multi_modal_projector",
-        "vision_tower",
-        "multimodal_projector",
-        "thinker",
-        "visual",
-        "audio",
-        "talker",
-        "token2wav",
-        "vision_model",
-        "audio_tower",
-        "vision_encoder",
-        "vision_language_adapter",
-        "patch_merger",
-        "pre_mm_projector_norm",
-        "vision",
-    ]
+    from auto_round.utils.common import MM_KEYS
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
     if not os.path.isdir(model_path):
@@ -647,18 +631,13 @@ def get_block_names(model, quant_vision=False):
         block_names = []
         target_modules = []
         vision_blocks_tuple = ("vision", "visual", "image", "img")
-        last_block_name = ""
-        for n, m in model.named_modules():
-            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                if quant_vision or all(key not in n.lower() for key in (vision_blocks_tuple)):
-                    if last_block_name and last_block_name in n:
-                        continue
-                    target_modules.append((n, m))
-                    last_block_name = n
+        target_modules = _search_block("", model)
+
         for i, target_m in enumerate(target_modules):
-            block_names.append([])
-            for n, m in target_m[1].named_children():
-                block_names[i].append(target_m[0] + "." + n)
+            if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+                block_names.append([])
+                for n, m in target_m[1].named_children():
+                    block_names[-1].append(target_m[0] + "." + n)
         return block_names
 
     if quant_vision or not is_pure_text_model(model):

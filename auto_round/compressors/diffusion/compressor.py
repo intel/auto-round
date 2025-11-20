@@ -191,6 +191,7 @@ class DiffusionCompressor(BaseCompressor):
         input_others: dict,
         indices: list[int],
         device: str,
+        cache_device: str = "cpu",
     ) -> torch.Tensor:
         output_config = output_configs.get(block.__class__.__name__, [])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
@@ -207,7 +208,7 @@ class DiffusionCompressor(BaseCompressor):
             current_input_others.update(current_input_ids)
             current_input_ids = hidden_states
         output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx)
-        return output_q
+        return output_q.to(cache_device)
 
     @torch.no_grad()
     def _get_block_outputs(
@@ -308,6 +309,20 @@ class DiffusionCompressor(BaseCompressor):
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
+
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 0
+            and self.pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.error(
+                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+                "Please use model path for quantization or "
+                "move the pipeline object to GPU/XPU before passing them into API."
+            )
+            exit(-1)
+
         if self.pipe.device != self.model.device:
             self.pipe.to(self.model.device)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:

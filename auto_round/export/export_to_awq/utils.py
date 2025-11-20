@@ -316,10 +316,3 @@ class WQLinear_GEMM(nn.Module):
             self.w_bit,
             self.group_size,
         )
-
-
-def clear_memory(weight=None):
-    if weight is not None:
-        del weight
-    gc.collect()
-    torch.cuda.empty_cache()

@@ -16,9 +16,11 @@ import os
 import re
 from functools import lru_cache
 from itertools import combinations
+from threading import Lock
 from typing import Callable, Union
 
 import cpuinfo
+import psutil
 import torch
 
 from auto_round.logger import logger
@@ -193,6 +195,8 @@ def detect_device_count():
     """
     if torch.cuda.is_available():
         return torch.cuda.device_count()
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.xpu.device_count()
     else:
         try:
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
@@ -355,7 +359,7 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
 
 
-def is_complex_device_mapping(device_map):
+def is_auto_device_mapping(device_map: str | int | dict | None):
     if device_map is None or isinstance(device_map, int):
         return False
     elif device_map == "auto":
@@ -363,7 +367,7 @@ def is_complex_device_mapping(device_map):
     elif isinstance(device_map, str) and "," in device_map:
         return True
     elif isinstance(device_map, dict):
-        return True
+        return False
     else:
         return False
 
@@ -404,7 +408,9 @@ def bytes_to_gigabytes(bytes) -> int:
     return bytes / 1024 / 1024 / 1024
 
 
-def _clear_memory_for_cpu_and_cuda(tensor=None):
+def _clear_memory_for_cpu_and_cuda(
+    tensor: torch.Tensor | list[torch.Tensor] | None = None, device_list: tuple | list | None = None
+):
     if isinstance(tensor, list):
         for i in range(len(tensor)):
             tensor[i] = None
@@ -412,23 +418,41 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
         del tensor
     gc.collect()
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        if device_list is None:
+            torch.cuda.synchronize()
+            # Fix https://github.com/intel/auto-round/issues/1004
+            torch.cuda.empty_cache()
+
+        elif len(device_list) > 1:
+            devices = []
+            for device in device_list:
+                if not device.startswith("cuda"):
+                    continue
+                if ":" in device:
+                    device = device.split(":")[-1]
+                else:
+                    device = 0
+                devices.append(int(device))
+            for device in devices:
+                torch.cuda.synchronize(device)
+            torch.cuda.empty_cache()
     if torch.xpu.is_available():
         torch.xpu.empty_cache()
 
 
 @torch._dynamo.disable()
-def clear_memory(tensor=None):
+def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
     from auto_round.utils.device import is_hpex_available
 
+    memory_monitor.update(device_list=device_list)
     if is_hpex_available():
         # hpu does not have empty_cache
         return
     else:
-        _clear_memory_for_cpu_and_cuda(tensor)
+        _clear_memory_for_cpu_and_cuda(tensor, device_list)
 
 
-def clear_memory_if_reached_threshold(threshold=0.85):
+def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
     """Check all available devices and clear memory if any device is using close to the threshold.
 
     Args:
@@ -463,7 +487,7 @@ def clear_memory_if_reached_threshold(threshold=0.85):
                     "To alleviate high memory usage on the major device, consider reducing the `batch_size` "
                     + "(and correspondingly increasing `gradient_accumulation_steps) or shortening the seqlen."
                 )
-                clear_memory()
+                clear_memory(device_list=device_list)
                 return True
         except Exception as e:
             logger.warning_once(f"Failed to check memory for {name}:{i}: {e}")
@@ -623,6 +647,8 @@ def set_non_auto_device_map(
         infos = device_map.split(",")
         device_map_dict = {}
         for info in infos:
+            if ":" not in info:
+                continue
             index = info.find(":")
             key = info[:index]
             value = info[index + 1 :]
@@ -924,10 +950,10 @@ def estimate_tuning_block_mem(
         # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
         xpu_additional_memory = 12  # GB
         additional_memory += xpu_additional_memory
-    logger.warning_once(
-        "[Memory Estimation]: If there is an abnormal memory issue, please collect log with "
-        + "AR_LOG_LEVEL=debug and raise issue to us."
-    )
+    # logger.warning_once(
+    #     "[Memory Estimation]: If there is an abnormal memory issue, please collect log with "
+    #     + "AR_LOG_LEVEL=debug and raise issue to us."
+    # )
 
     return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
 
@@ -966,12 +992,7 @@ def set_auto_device_map_for_block_with_tuning(
     Note:
         This function is intended for internal use in device memory management and tuning.
     """
-    if not (device_map == "auto" or ((isinstance(device_map, str) and "," in device_map))):
-        block = block.to(output_device)
-        card_0_in_high_risk = False  # card 0 contains weight, clear_memory will not help much
-        loss_device = output_device
-        return card_0_in_high_risk, loss_device
-
+    card_0_in_high_risk, loss_device = False, output_device
     if torch.cuda.is_available():
         num_devices = torch.cuda.device_count()
         device_name = "cuda"
@@ -979,7 +1000,14 @@ def set_auto_device_map_for_block_with_tuning(
         num_devices = torch.xpu.device_count()
         device_name = "xpu"
     else:
-        return
+        return card_0_in_high_risk, loss_device
+
+    if not (
+        device_map == "auto" or ((isinstance(device_map, str) and "," in device_map)) or num_devices > 1
+    ):  # Only 1 card is available or non-auto device map
+        block = block.to(output_device)
+        return card_0_in_high_risk, loss_device
+
     device_list = None
     if isinstance(device_map, str) and "," in device_map:
         device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
@@ -1028,8 +1056,7 @@ def set_auto_device_map_for_block_with_tuning(
     mem_per_param = total_available_memory / total_params
 
     # Initialize device memory tracking
-    device_memory = {}
-    device_memory[device_0] = card_0_left_memory
+    device_memory = {device_0: card_0_left_memory}
     for i in range(1, len(gpu_devices)):
         device_idx = device_list[i] if device_list else i
         device_memory[gpu_devices[i]] = get_device_memory(device_idx)
@@ -1121,24 +1148,17 @@ def partition_dict_numbers(number_dict, n):
 
 def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     block_name_list = get_block_names(model)
-    device_list = None
-    if torch.cuda.is_available():
-        num_devices = torch.cuda.device_count()
-        device_name = "cuda"
-    elif torch.xpu.is_available():
-        num_devices = torch.xpu.device_count()
-        device_name = "xpu"
-    else:
+    device_list = parse_available_devices(device_map)
+    gpu_devices = []
+    for device in device_list:
+        if device.startswith("hpu") and len(device_list) > 1:
+            logger.warning_once("Auto-scheme does not support multiple HPUs.")
+        if device.startswith("cpu") or device.startswith("hpu"):
+            continue
+        gpu_devices.append(device)
+    num_devices = len(gpu_devices)
+    if num_devices <= 1:
         return
-
-    if isinstance(device_map, str) and "," in device_map:
-        device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-        num_devices = len(device_list)
-
-    if device_list:
-        gpu_devices = [f"{device_name}:{i}" for i in device_list]
-    else:
-        gpu_devices = [f"{device_name}:{i}" for i in range(num_devices)]
 
     for block_names in block_name_list:
         for block_name in block_names:
@@ -1181,3 +1201,205 @@ if __name__ == "__main__":
     groups = partition_dict_numbers(number_dict, 2)
     for i, group in enumerate(groups):
         print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
+
+
+def parse_available_devices(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
+    """
+    Parse the device map and return a list of all available devices.
+
+    Supported input formats:
+        - None: Automatically detect all available devices
+        - int: A single device index (e.g., 0)
+        - str: Examples:
+            "cpu"
+            "cuda:0,cuda:1"
+            "0,1" (numeric device indices)
+        - dict: Extract all device values from the dictionary
+        - torch.device: e.g. torch.device("cuda:0")
+
+    Returns:
+        list[str]: Normalized device names, e.g., ["cuda:0", "cuda:1"] or ["cpu"]
+    """
+
+    # === Step 1. Detect available device types ===
+    device_types = []
+    if torch.cuda.is_available():
+        device_types.append("cuda")
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        device_types.append("xpu")
+    if hasattr(torch, "hpu") and is_hpex_available():
+        device_types.append("hpu")
+
+    # Always include CPU as a fallback
+    if not device_types:
+        device_types = ["cpu"]
+
+    # === Step 2. Parse different input formats ===
+    if device_map is None:
+        # Automatically detect one available device
+        if "cuda" in device_types:
+            return ["cuda:0"]
+        elif "xpu" in device_types:
+            return ["xpu:0"]
+        elif "hpu" in device_types:
+            return ["hpu:0"]
+        else:
+            return ["cpu"]
+
+    if isinstance(device_map, torch.device):
+        # Handle torch.device objects
+        dev_type = device_map.type
+        index = device_map.index
+        if dev_type == "cpu":
+            return ["cpu"]
+        if index is None:
+            index = 0
+        return [f"{dev_type}:{index}"]
+
+    if isinstance(device_map, int):
+        # Integer input → use primary available device type
+        device_type = device_types[0]
+        return [f"{device_type}:{device_map}"] if device_type != "cpu" else ["cpu"]
+
+    # ---- dict-like string ----
+    if isinstance(device_map, str) and ":" in device_map and "," in device_map:
+        pairs = [p.strip() for p in device_map.split(",") if ":" in p]
+        devices = []
+        for pair in pairs:
+            try:
+                key, *value_parts = pair.split(":")
+                value = ":".join(value_parts).strip()
+                if value.isdigit() and device_types[0] != "cpu":
+                    value = device_types[0] + ":" + value
+                devices.append(value)
+            except ValueError:
+                continue
+        return devices
+
+    if isinstance(device_map, str):
+        # Remove whitespace
+        device_map = device_map.strip()
+        if device_map.lower() == "cpu":
+            return ["cpu"]
+        if device_map.lower() == "auto":
+            device_count = detect_device_count()
+            if "cuda" in device_types:
+                return [f"cuda:{i}" for i in range(device_count)]
+            elif "xpu" in device_types:
+                return [f"xpu:{i}" for i in range(device_count)]
+            elif "hpu" in device_types:
+                return [f"hpu:{i}" for i in range(device_count)]
+            else:
+                return ["cpu"]
+        # Split by commas
+        parts = [x.strip() for x in device_map.split(",") if x.strip()]
+        parsed = []
+        for p in parts:
+            if p.isdigit():
+                # Numeric → assign to first available device type
+                device_type = device_types[0]
+                parsed.append(f"{device_type}:{p}" if device_type != "cpu" else "cpu")
+            else:
+                parsed.append(p)
+        return list(set(parsed))
+
+    if isinstance(device_map, dict):
+        # Extract all devices recursively from dict values
+        devices = set()
+        for v in device_map.values():
+            devices.update(parse_available_devices(v))
+        return sorted(devices)
+
+    raise TypeError(f"Unsupported device_map type: {type(device_map)}")
+
+
+class MemoryMonitor:
+    """Global memory monitor for tracking peak RAM and VRAM usage."""
+
+    _instance = None
+    _lock = Lock()
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self.peak_ram = 0.0  # GB
+        self.peak_vram = {}  # {device_id: peak_mb}
+        self.enabled = True
+
+    def update(self, device_list=None):
+        """Update current memory usage and track peaks."""
+        if not self.enabled:
+            return
+        # Track RAM
+        process = psutil.Process()
+        current_ram = process.memory_info().rss / 1024**3  # GB
+        self.peak_ram = max(self.peak_ram, current_ram)
+        if device_list is None:  # TODO this have issue, wait for clean memory all pass device_list
+            device_list = [0]
+        if device_list is not None:
+            if not isinstance(device_list, (list, tuple)):
+                device_list = [device_list]
+        else:
+            if torch.cuda.is_available():
+                device_list = list(range(torch.cuda.device_count()))
+            elif torch.xpu.is_available():
+                device_list = list(range(torch.xpu.device_count()))
+
+        for device in device_list:
+            if device == "cpu":
+                continue
+            if torch.cuda.is_available():
+                current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+            elif torch.xpu.is_available():
+                current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+            else:
+                return
+
+            device = str(device).split(":")[-1]
+            if current_vram > 0:
+                if device not in self.peak_vram:
+                    self.peak_vram[device] = 0.0
+
+                self.peak_vram[device] = max(self.peak_vram[device], current_vram)
+
+    def update_cpu(self):
+        if not self.enabled:
+            return
+        process = psutil.Process()
+        current_ram = process.memory_info().rss / 1024**3  # GB
+        self.peak_ram = max(self.peak_ram, current_ram)
+
+    def reset(self):
+        """Reset all statistics."""
+        self.peak_ram = 0.0
+        self.peak_vram = {}
+
+    def get_summary(self):
+        """Get summary of peak memory usage."""
+        summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
+        if len(self.peak_vram) > 0:
+            sorted_items = sorted(self.peak_vram.items())
+            items_str = ", ".join([f"'{k}': {round(v, 2)}GB" for k, v in sorted_items])
+            summary += f", 'peak_vram': {{{items_str}}}"
+        return summary
+
+    def log_summary(self):
+        """Log memory usage summary."""
+        summary = self.get_summary()
+        logger.info(summary)
+
+        return summary
+
+
+# Global singleton instance
+memory_monitor = MemoryMonitor()

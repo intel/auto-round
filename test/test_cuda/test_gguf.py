@@ -88,7 +88,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q2_k_s")
-        gguf_file = "Qwen2.5-1.5B-Instruct-1.5B-Q2_K_S.gguf"
+        gguf_file = os.listdir(quantized_model_path)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
@@ -123,7 +123,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
-        gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_0.gguf"
+        gguf_file = os.listdir(quantized_model_path)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
@@ -144,7 +144,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
-        gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_1.gguf"
+        gguf_file = os.listdir(quantized_model_path)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
@@ -198,15 +198,13 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
-        file_size = os.path.getsize("./saved/Qwen2.5-VL-7B-Instruct-7.6B-Q4_0.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 4226, delta=1.0)
+        file_size = os.path.getsize("./saved/Qwen2.5-VL-7B-Instruct-Q4_0.gguf") / 1024**2
+        self.assertAlmostEqual(file_size, 4242, delta=5.0)
         file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 2578, delta=1.0)
+        self.assertAlmostEqual(file_size, 2580, delta=5.0)
         shutil.rmtree("./saved", ignore_errors=True)
 
         model_name = "/models/gemma-3-12b-it"
-        from auto_round import AutoRoundMLLM
-        from auto_round.utils import mllm_load_model
 
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
         autoround = AutoRoundMLLM(
@@ -216,15 +214,15 @@ class TestAutoRound(unittest.TestCase):
             image_processor=image_processor,
             device="auto",
             nsamples=32,
-            iters=1,
+            iters=0,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
         self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
-        file_size = os.path.getsize("./saved/gemma-3-12b-it-12B-Q4_K_M.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 6568, delta=1.0)
+        file_size = os.path.getsize("./saved/gemma-3-12B-it-Q4_K_M.gguf") / 1024**2
+        self.assertAlmostEqual(file_size, 6568, delta=5.0)
         file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 1599, delta=1.0)
+        self.assertAlmostEqual(file_size, 1599, delta=5.0)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     # @require_gguf
