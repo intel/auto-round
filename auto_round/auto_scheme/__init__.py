@@ -1,7 +1,3 @@
-# Copyright (c) 2025 Intel Corporation
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
@@ -14,9 +10,16 @@
 from auto_round.logger import logger
 
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
+def __getattr__(name):
+    if name == "AUTO_SCHEME_METHODS":
+        try:
+            import auto_round.auto_scheme.default_alg
+        except ImportError:
+            logger.warning("AutoScheme is currently supported only on Linux.")
 
-try:
-    import auto_round.auto_scheme.default_alg
-except ImportError:
-    logger.warning("AutoScheme is currently supported only on Linux.")
+        from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
+        return AUTO_SCHEME_METHODS
+
+
+
+    raise AttributeError(f"auto-scheme has no attribute '{name}'")
