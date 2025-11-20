@@ -87,6 +87,7 @@ from auto_round.utils import (
     is_fp8_model,
     is_hpex_available,
     llm_load_model,
+    memory_monitor,
     mv_module_from_gpu,
     normalize_input,
     set_amax_for_all_moe_layers,
@@ -1025,6 +1026,7 @@ class BaseCompressor(object):
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
 
             folders.append(save_folder)
+        memory_monitor.log_summary()
 
         return model, folders
 
@@ -1529,6 +1531,8 @@ class BaseCompressor(object):
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
                     clear_memory(device_list=self.device_list)
+
+                memory_monitor.log_summary()
                 pbar.update(1)
 
         pbar.close()
@@ -1764,6 +1768,8 @@ class BaseCompressor(object):
                 layer.cpu()
                 layer_names.remove(layer_name)
         if len(layer_names) == 0:
+            memory_monitor.update()
+            memory_monitor.log_summary()
             return
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
@@ -1782,7 +1788,7 @@ class BaseCompressor(object):
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
-                )  ##self.model.hf_device_map has not been changed
+                )  # self.model.hf_device_map has not been changed
         if not self.immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.device_list)
@@ -1801,13 +1807,14 @@ class BaseCompressor(object):
                 immediate_saving(self, m, name=layer_name, last_group=True)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
+            memory_monitor.log_summary()
 
     @torch.no_grad()
     def _get_block_outputs(
         self,
         block: torch.nn.Module,
-        input_ids: torch.Tensor,
-        input_others: torch.Tensor,
+        input_ids: torch.Tensor | list[torch.Tensor],
+        input_others: torch.Tensor | dict,
         bs: int,
         device: Union[str, torch.device],
         cache_device: Union[str, torch.device],
@@ -2817,7 +2824,7 @@ class BaseCompressor(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.info(dump_info)
+
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
@@ -2844,7 +2851,9 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
 
-            clear_memory(input_ids, device_list=self.device_list)
+            clear_memory(input_ids，device_list=self.device_list)
+            memory_info_summary = memory_monitor.get_summary()
+            logger.infoclean(dump_info + "," + memory_info_summary)
 
             return q_outputs, output
         else:
@@ -2853,6 +2862,8 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
             clear_memory(input_ids, device_list=self.device_list)
+            memory_info_summary = memory_monitor.get_summary()
+            logger.infoclean(dump_info + "," + memory_info_summary)
 
             return None, output
 
@@ -3186,7 +3197,7 @@ class BaseCompressor(object):
         cls,
         input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
-        indices: list[int],
+        indices: list[int] | torch.Tensor,
         seqlen: int,
         batch_dim: int = 0,
         share_cache_keys: tuple = (),

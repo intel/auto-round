@@ -16,9 +16,11 @@ import os
 import re
 from functools import lru_cache
 from itertools import combinations
+from threading import Lock
 from typing import Callable, Union
 
 import cpuinfo
+import psutil
 import torch
 
 from auto_round.logger import logger
@@ -465,6 +467,7 @@ def _clear_memory_for_cpu_and_cuda(
 def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
     from auto_round.utils.device import is_hpex_available
 
+    memory_monitor.update(device_list=device_list)
     if is_hpex_available():
         # hpu does not have empty_cache
         return
@@ -1331,3 +1334,95 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
         return sorted(devices)
 
     raise TypeError(f"Unsupported device_map type: {type(device_map)}")
+
+
+class MemoryMonitor:
+    """Global memory monitor for tracking peak RAM and VRAM usage."""
+
+    _instance = None
+    _lock = Lock()
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self.peak_ram = 0.0  # GB
+        self.peak_vram = {}  # {device_id: peak_mb}
+        self.enabled = True
+
+    def update(self, device_list=None):
+        """Update current memory usage and track peaks."""
+        if not self.enabled:
+            return
+        # Track RAM
+        process = psutil.Process()
+        current_ram = process.memory_info().rss / 1024**3  # GB
+        self.peak_ram = max(self.peak_ram, current_ram)
+        if device_list is None:  # TODO this have issue, wait for clean memory all pass device_list
+            device_list = [0]
+        if device_list is not None:
+            if not isinstance(device_list, (list, tuple)):
+                device_list = [device_list]
+        else:
+            if torch.cuda.is_available():
+                device_list = list(range(torch.cuda.device_count()))
+            elif torch.xpu.is_available():
+                device_list = list(range(torch.xpu.device_count()))
+
+        for device in device_list:
+            if device == "cpu":
+                continue
+            if torch.cuda.is_available():
+                current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+            elif torch.xpu.is_available():
+                current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+            else:
+                return
+
+            device = str(device).split(":")[-1]
+            if current_vram > 0:
+                if device not in self.peak_vram:
+                    self.peak_vram[device] = 0.0
+
+                self.peak_vram[device] = max(self.peak_vram[device], current_vram)
+
+    def update_cpu(self):
+        if not self.enabled:
+            return
+        process = psutil.Process()
+        current_ram = process.memory_info().rss / 1024**3  # GB
+        self.peak_ram = max(self.peak_ram, current_ram)
+
+    def reset(self):
+        """Reset all statistics."""
+        self.peak_ram = 0.0
+        self.peak_vram = {}
+
+    def get_summary(self):
+        """Get summary of peak memory usage."""
+        summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
+        if len(self.peak_vram) > 0:
+            sorted_items = sorted(self.peak_vram.items())
+            items_str = ", ".join([f"'{k}': {round(v, 2)}GB" for k, v in sorted_items])
+            summary += f", 'peak_vram': {{{items_str}}}"
+        return summary
+
+    def log_summary(self):
+        """Log memory usage summary."""
+        summary = self.get_summary()
+        logger.info(summary)
+
+        return summary
+
+
+# Global singleton instance
+memory_monitor = MemoryMonitor()
