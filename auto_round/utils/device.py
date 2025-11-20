@@ -1342,9 +1342,9 @@ class MemoryMonitor:
             return
         # Track RAM
         process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024 **3 # GB
+        current_ram = process.memory_info().rss / 1024**3  # GB
         self.peak_ram = max(self.peak_ram, current_ram)
-        if device_list is None: # TODO this have issue, wait for clean memory all pass devcie_list
+        if device_list is None:  # TODO this have issue, wait for clean memory all pass device_list
             device_list = [0]
         if device_list is not None:
             if not isinstance(device_list, (list, tuple)):
