@@ -52,8 +52,6 @@ __all__ = [
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
-        return
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
@@ -81,8 +79,6 @@ def pack_layer(name, model, backend, device=None):
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")
             setattr(layer, "input_global_scale", input_global_scale)
             delattr(layer, "act_max")
-
-    # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
     if type(layer) == nn.Linear:
         in_features = layer.in_features
