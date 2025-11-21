@@ -180,10 +180,10 @@ def pack_gguf_layer(
                     block_name_to_last_layer_name[block_name] = n
             last_layer_name_to_block_name = {v: k for k, v in block_name_to_last_layer_name.items()}
             model.last_layer_name_to_block_name = last_layer_name_to_block_name
-            names_in_blocks=[]
+            names_in_blocks = []
             for block_name in block_names_flatten:
                 block = get_module(model, block_name)
-                for n,m in block.named_modules():
+                for n, m in block.named_modules():
                     if check_to_quantized(m):
                         names_in_blocks.append(m.tmp_name)
             names_outside_blocks = list(set(layer_config.keys()) - set(names_in_blocks))
@@ -195,7 +195,6 @@ def pack_gguf_layer(
         for gguf_model in gguf_model_instance_global:
             gguf_model.current_packing_block = model.last_layer_name_to_block_name[name]
             gguf_model.prepare_tensors()
-
 
         for n, m in block.named_modules():
             if hasattr(m, "weight"):
@@ -209,7 +208,7 @@ def pack_gguf_layer(
     if name in model.names_outside_blocks:
         # Packing block
         for gguf_model in gguf_model_instance_global:
-            gguf_model.current_packing_block =name
+            gguf_model.current_packing_block = name
             gguf_model.prepare_tensors()
 
         layer = get_module(model, name)

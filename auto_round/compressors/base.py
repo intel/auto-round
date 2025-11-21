@@ -1290,7 +1290,7 @@ class BaseCompressor(object):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.immediate_packing: # For gguf, packing conducts on block level
+        if self.immediate_packing:  # For gguf, packing conducts on block level
             self._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
@@ -1367,7 +1367,7 @@ class BaseCompressor(object):
             any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
         )
 
-        self._quantize_embedding_layer() # levea to gguf itself to handle
+        self._quantize_embedding_layer()  # levea to gguf itself to handle
 
         self.model.to("cpu")
         # Release memory
@@ -1528,7 +1528,7 @@ class BaseCompressor(object):
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name,to_cpu=False)
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=False)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
@@ -1647,7 +1647,7 @@ class BaseCompressor(object):
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
-        is_quantized_embedding,_ = self._quantize_embedding_layer()
+        is_quantized_embedding, _ = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
