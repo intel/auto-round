@@ -81,7 +81,6 @@ def ggml_quant(
     wmin = wmin.to(device).reshape(blocks.shape[0], -1) if wmin is not None else wmin
     d_scale = d_scale.to(device).reshape(blocks.shape[0], -1) if d_scale is not None else d_scale
     d_wmin = d_wmin.to(device).reshape(blocks.shape[0], -1) if d_wmin is not None else d_wmin
-
     quant_func = GGML_QUANT_TYPE[ggml_type]
     results = []
     chunk_size = (n_blocks + split_num - 1) // split_num

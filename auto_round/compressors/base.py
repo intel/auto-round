@@ -1229,7 +1229,7 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
-    def _quantize_layer_via_rtn(self, name: str, dtype: torch.dtype = None) -> None:
+    def _quantize_layer_via_rtn(self, name: str, dtype: torch.dtype = None, to_cpu=True) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
         This function attempts to quantize a layer by switching its data type to a
@@ -1252,14 +1252,14 @@ class BaseCompressor(object):
         if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
             set_module(self.model, name, m)
-
+        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
         if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
+            m = m.to(tuning_device)
             m.scale = None
             m.zp = None
         else:
             try:
-                tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
                 m = m.to(tuning_device)
                 m = WrapperLinear(
                     m,
@@ -1271,7 +1271,6 @@ class BaseCompressor(object):
                     disable_opt_rtn=self.disable_opt_rtn,
                 )
                 m = m.unwrapper({})
-                m.to("cpu")
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
@@ -1291,11 +1290,14 @@ class BaseCompressor(object):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.immediate_packing:
+        if self.immediate_packing: # For gguf, packing conducts on block level
             self._immediate_pack(name)
+            if to_cpu:
+                m = m.to("cpu")
         else:
+            if to_cpu:
+                m = m.to("cpu")
             set_module(self.model, name, m)
-
         if self.immediate_saving:
             all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
@@ -1303,6 +1305,8 @@ class BaseCompressor(object):
             immediate_saving(self, m, name, last_module)
 
     def _immediate_pack(self, name: str):
+        if not self.immediate_packing:
+            return
         m = get_module(self.model, name)
         if not check_to_quantized(m):
             return
@@ -1363,7 +1367,7 @@ class BaseCompressor(object):
             any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
         )
 
-        # self._quantize_embedding_layer()
+        self._quantize_embedding_layer() # levea to gguf itself to handle
 
         self.model.to("cpu")
         # Release memory
@@ -1515,14 +1519,16 @@ class BaseCompressor(object):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 if self.low_gpu_mem_usage:
+                    block.to("cpu")
                     clear_memory(device_list=self.device_list)
+
                 for _, m in block.named_modules():
                     # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
                     # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name)
+                        self._quantize_layer_via_rtn(m.tmp_name,to_cpu=False)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
@@ -1641,7 +1647,7 @@ class BaseCompressor(object):
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
-        is_quantized_embedding = self._quantize_embedding_layer()
+        is_quantized_embedding,_ = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
