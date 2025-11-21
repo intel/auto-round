@@ -1367,7 +1367,7 @@ class BaseCompressor(object):
             any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
         )
 
-        self._quantize_embedding_layer() # levea to gguf itself to handle
+        # self._quantize_embedding_layer() # leave to gguf itself to handle
 
         self.model.to("cpu")
         # Release memory
