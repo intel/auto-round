@@ -30,6 +30,8 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 
 ## 🆕 What's New
+[2025/11] AutoRound has now landed in **LLM-Compressor**. You can apply AutoRound algorithm using `AutoRoundModifier`. Check out the [example](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md) to get started.
+
 [2025/11] AutoRound now offers preliminary support for an enhanced GGUF quantization algorithm via `--enable_alg_ext`. For detailed accuracy benchmarks, please refer to the [documentation](./docs/gguf_alg_ext_acc.md).
 
 [2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the latest SGLang later than v0.5.4.
