@@ -1648,7 +1648,7 @@ class BaseCompressor(object):
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
-        is_quantized_embedding, _ = self._quantize_embedding_layer()
+        is_quantized_embedding = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
