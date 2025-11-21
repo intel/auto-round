@@ -115,8 +115,8 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
 
     @torch.no_grad()
     def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
-
+        original_dtype = bf16_input.dtype
         qdq_input = self.qdq_input(bf16_input)
         qdq_weight = self.dequant_weight_online()
-        out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
+        out = torch.nn.functional.linear(qdq_input.to(original_dtype), qdq_weight.to(original_dtype), self.bias)
         return out
