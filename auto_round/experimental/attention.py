@@ -35,6 +35,7 @@ from auto_round.experimental.utils import (
     is_attention_module,
     normalize_static_kv_dtype,
     update_parameter_data,
+    clean_model_parameters_and_buffers_,
 )
 from auto_round.utils import getattr_chain, logger
 
@@ -185,6 +186,12 @@ def clean_up_hooked_attention(module, model):
         if hasattr(model.config, "_attn_implementation") and hasattr(model, "_original_impl"):
             model.config._attn_implementation = model._original_impl
             del model._original_impl
+    clean_model_parameters_and_buffers_(
+        module,
+        name_tuple=(
+            QUERY_MAX_NAME,
+        ),
+    )
 
 
 @contextlib.contextmanager

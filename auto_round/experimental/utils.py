@@ -73,3 +73,28 @@ def is_attention_module(module: torch.nn.Module):
     return "attention" in module.__class__.__name__.lower() and (
         hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
     )
+
+
+def _clean_param_or_buff_if_exists(module: torch.nn.Module, name_tuple: tuple[str, ...]):
+    """
+    Deletes parameters or buffers from a module if they exist.
+
+    :param module: module to delete parameters/buffers from
+    :param name_tuple: tuple of parameter/buffer names to delete
+    """
+    for name in name_tuple:
+        if hasattr(module, name):
+            try:
+                delattr(module, name)
+            except Exception as e:
+                logger.warning(f"Could not delete {name} from module {module}: {e}")
+
+def clean_model_parameters_and_buffers_(model: torch.nn.Module, name_tuple: tuple[str, ...]):
+    """
+    Cleans parameters and buffers from all modules in the model.
+
+    :param model: model to clean parameters/buffers from
+    :param name_tuple: tuple of parameter/buffer names to delete
+    """
+    for module in model.modules():
+        _clean_param_or_buff_if_exists(module, name_tuple)
