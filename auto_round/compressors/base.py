@@ -1363,11 +1363,9 @@ class BaseCompressor(object):
             for module in tqdm(modules, desc="Update weight global scale for fuse module"):
                 update_fused_layer_global_scales(module)
 
-        has_gguf_k = (
-            any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
-        )
 
-        # self._quantize_embedding_layer() # leave to gguf itself to handle
+        if not (any("gguf" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
+            self._quantize_embedding_layer() # leave to gguf itself to handle
 
         self.model.to("cpu")
         # Release memory
@@ -1375,6 +1373,10 @@ class BaseCompressor(object):
 
         enable_imatrix = False
         if not self.disable_opt_rtn:
+            has_gguf_k = (
+                    any("gguf" in fmt and "k" in fmt for fmt in
+                        getattr(self, "formats", [])) or self.super_bits is not None
+            )
             if has_gguf_k:
                 enable_imatrix = True
             elif self.data_type == "int" and self.sym:
