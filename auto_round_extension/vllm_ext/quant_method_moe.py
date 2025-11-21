@@ -24,16 +24,12 @@ from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
+from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, get_scheme, need_quantize
 
 logger = init_logger(__name__)
 
 
 QMOE_METHODS_DISPATCH_TABLE = {}
-
-
-def _is_mxfp4_w4a4(scheme: QuantizationScheme):
-    # FIXME: below impl is incomplete
-    return scheme.bits == 4 and scheme.group_size == 32
 
 
 class AutoRoundMoEMethod(FusedMoEMethodBase):
@@ -47,21 +43,8 @@ class AutoRoundMoEMethod(FusedMoEMethodBase):
         prefix: str,
     ) -> "AutoRoundMoEMethod":
 
-        def get_scheme(quant_config: AutoRoundConfig, prefix: str):
-            # Check extra_config first
-            layer_schemes = quant_config.layer_schemes
-            # FIXME: make more robust
-            for name, scheme in layer_schemes.items():
-                if prefix.startswith(name):
-                    return scheme
-            # If not found, use default
-            return quant_config.quant_scheme
-
-        def check_quantized(weight_bits: int) -> bool:
-            return weight_bits < 16
-
         def get_impl(scheme: QuantizationScheme):
-            if not check_quantized(scheme.bits):
+            if not need_quantize(scheme.bits):
                 from vllm.model_executor.layers.fused_moe.layer import (
                     UnquantizedFusedMoEMethod,
                 )
@@ -73,10 +56,16 @@ class AutoRoundMoEMethod(FusedMoEMethodBase):
 
                 return AutoRoundMoEMethodMXFp4Impl(quant_config, layer.moe_config)
 
+            elif _is_mxfp8_w8a8(scheme):
+                from auto_round_extension.vllm_ext.moe_impl_mxfp8 import AutoRoundMoEMethodMXFp8Impl
+
+                return AutoRoundMoEMethodMXFp8Impl(quant_config, layer.moe_config)
+
             raise ValueError(f"Unsupported FusedMoe scheme: {scheme}")
 
         layer_scheme = get_scheme(quant_config, prefix)
         impl = get_impl(layer_scheme)
+        layer._prefix = prefix
         logger.debug("Apply %s to %s", impl.__class__.__name__, prefix)
         return impl
 

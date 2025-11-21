@@ -21,6 +21,7 @@ from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMetho
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
+from auto_round_extension.vllm_ext.quant_method_linear import AutoRoundQuantLinearMethod
 from auto_round_extension.vllm_ext.quant_method_moe import AutoRoundMoEMethod
 
 logger = init_logger(__name__)
@@ -36,7 +37,7 @@ class AutoRoundExtensionConfig(AutoRoundConfig):
             quant_method = AutoRoundMoEMethod.get_moe_method(self, layer, prefix)
             return quant_method
         elif isinstance(layer, LinearBase):
-            return UnquantizedLinearMethod()
+            return AutoRoundQuantLinearMethod.get_method(self, layer, prefix)
         else:
             return None
 
