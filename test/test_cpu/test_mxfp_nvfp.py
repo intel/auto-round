@@ -68,7 +68,9 @@ class TestAutoRoundFP(unittest.TestCase):
         compressed_model, _ = autoround.quantize()
         assert hasattr(compressed_model.model.layers[1].mlp.experts[0].gate_proj.orig_layer, "act_max")
         lm_head = compressed_model.lm_head
-        assert hasattr(lm_head, "act_max"), "Illegal NVFP4 quantization for lm_head layer"
+        assert hasattr(lm_head, "orig_layer") and hasattr(
+            lm_head.orig_layer, "act_max"
+        ), "Illegal NVFP4 quantization for lm_head layer"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_nvfp4_moe_actmax_ar(self):
@@ -371,3 +373,4 @@ class TestAutoRoundFP(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
