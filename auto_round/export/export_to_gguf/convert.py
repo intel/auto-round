@@ -50,7 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, get_module, get_packing_device, is_fp8_model, logger
+from auto_round.utils import LazyImport, clear_memory, get_module, get_packing_device, is_fp8_model, logger
 
 gguf = LazyImport("gguf")
 
@@ -190,7 +190,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
-    device = get_packing_device()
+    device = data_torch.device
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
     zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -215,7 +215,7 @@ def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=
 
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
     suffix = ".weight"
-    device = get_packing_device()
+    device = data_torch.device
     if suffix in name:
         layer_name = name[: -len(suffix)]
         module = get_module(cls.model, layer_name)
@@ -406,9 +406,7 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, name)
         orig_device = data_torch.device
-        data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
-            data_torch.to(orig_device)
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
                 if new_name in tensor_info:
@@ -417,12 +415,7 @@ def prepare_tensors(cls):
                     break
             if skip:
                 continue
-            data = data_torch.squeeze().cpu().numpy()
-
-            # if data ends up empty, it means data_torch was a scalar tensor -> restore
-            if len(data.shape) == 0:
-                data = data_torch.numpy()
-
+            data = data_torch.squeeze()
             n_dims = len(data.shape)
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
 
@@ -537,6 +530,11 @@ def prepare_tensors(cls):
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
             ]:
+                data = data_torch.squeeze().cpu().numpy()
+
+                # if data ends up empty, it means data_torch was a scalar tensor -> restore
+                if len(data.shape) == 0:
+                    data = data_torch.numpy()
                 try:
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
@@ -598,6 +596,8 @@ def prepare_tensors(cls):
             logger.info(
                 f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}" f" --> {data_qtype.name}, shape = {shape_str}"
             )
+            if not (hasattr(cls, "current_packing_block") and cls.current_packing_block is not None):
+                clear_memory(device_list=[orig_device])
 
             cls.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 

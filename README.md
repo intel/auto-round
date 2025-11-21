@@ -189,14 +189,14 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 <summary>Important Hyperparameters</summary>
 
 ##### Quantization Scheme & Configuration
-- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`.
+- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`. For MXFP4/NVFP4, we recommend exporting to LLM-Compressor format.
 - **`bits` (int)**: Number of bits for quantization (default is `None`). If not None, it will override the scheme setting.
 - **`group_size` (int)**: Size of the quantization group (default is `None`). If not None, it will override the scheme setting.
 - **`sym` (bool)**: Whether to use symmetric quantization (default is `None`). If not None, it will override the scheme setting.
-- **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
+- **`layer_config` (dict)**: Configuration for layer_wise scheme (default is `None`), mainly for customized mixed schemes.
 
 ##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: [Experimental Feature] Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
 - **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
 
 ##### Tuning Process Parameters
@@ -217,7 +217,8 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 </details>
 
-### AutoScheme Usage 
+### Adaptive Bits/Dtype Usage 
+AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes. For some accuracy result, please refer to this [doc](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc.md). 
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
 from auto_round import AutoRound, AutoScheme
@@ -299,7 +300,7 @@ for output in outputs:
 
 
 ### SGLang (Intel GPU/CUDA)
-Please note that support for the MoE models and visual language models is currently limited.
+**Please note that support for the MoE models and visual language models is currently limited.**
 
 ```python
 import sglang as sgl

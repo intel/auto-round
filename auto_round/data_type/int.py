@@ -22,25 +22,60 @@ from auto_round.utils import get_reciprocal
 
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
-    nmax = pow(2, bits - 1)
+    # Maximum absolute value for symmetric quantization
+    nmax = 1 << (bits - 1)  # equivalent to pow(2, bits-1)
+
+    # Find per-group max along the last dimension
     imax = torch.abs(data).argmax(dim=-1, keepdim=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
+
+    # Compute initial inverse scales
     iscales = -nmax * get_reciprocal(group_max)
-    scales = get_reciprocal(iscales)
-    L = torch.round(1.0 * iscales * data).clip(-nmax, nmax - 1)
+    scales = get_reciprocal(iscales)  # scale = 1 / iscales
+
+    # Initial quantized values (in-place round and clamp)
+    L = torch.empty_like(data)
+    torch.round(iscales * data, out=L)
+    L.clamp_(-nmax, nmax - 1)
+
+    # Set default weight if None
     if qw is None:
         qw = 1.0
-    best_loss = torch.sum(((scales * L - data).to(torch.float32)) ** 2 * qw, dim=-1)
+
+    # Compute initial best loss
+    best_loss = ((scales * L - data).to(torch.float32)) ** 2
+    if isinstance(qw, torch.Tensor):
+        best_loss.mul_(qw)  # inplace multiply by weight
+    best_loss = torch.sum(best_loss, dim=-1)
+
+    # Iterative search over small adjustments
     for _is in range(-18 * 5, 18 * 5 + 1):
         if _is == 0:
             continue
-        iscales = -(nmax - 0.01 * _is) * get_reciprocal(group_max)
-        tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
-        tmp_scales = get_reciprocal(iscales)
-        loss = torch.sum(((tmp_scales * tmp_L - data).to(torch.float32)) ** 2 * qw, dim=-1)
+
+        # Update iscales in-place
+        iscales_tmp = -(nmax - 0.01 * _is) * get_reciprocal(group_max)
+
+        # Compute temporary quantized values (in-place round + clamp)
+        tmp_L = torch.empty_like(data)
+        torch.round(iscales_tmp * data, out=tmp_L)
+        tmp_L.clamp_(-nmax, nmax - 1)
+
+        # Compute temporary scales
+        tmp_scales = get_reciprocal(iscales_tmp)
+
+        # Compute temporary loss
+        loss = ((tmp_scales * tmp_L - data).to(torch.float32)) ** 2
+        if isinstance(qw, torch.Tensor):
+            loss.mul_(qw)
+        loss = torch.sum(loss, dim=-1)
+
+        # Replace scales where loss improves (in-place)
         replace_id = loss < best_loss
-        scales[replace_id] = tmp_scales[replace_id]
-        best_loss[replace_id] = loss[replace_id]
+        if replace_id.any():
+            scales[replace_id] = tmp_scales[replace_id]
+            best_loss[replace_id] = loss[replace_id]
+
     return scales
 
 
@@ -53,11 +88,6 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
         group_size: Number of elements to share scale for quantization
         v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for tensor
-        max_scale: Maximum scale coefficient for tensor
-        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
-        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
-        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
         q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
@@ -79,9 +109,8 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    int_w = round_ste(tensor / scale + v)
-    q = torch.clamp(int_w, -maxq, maxq - 1)
-    qdq_result = (scale * q).to(tensor.dtype)
+    int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
+    qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, maxq
 
