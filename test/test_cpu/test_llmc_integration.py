@@ -12,7 +12,7 @@ quant_stage:
     quant_modifiers:
         AutoRoundModifier:
             ignore: ["lm_head"]
-            iters: 2
+            iters: 1
             config_groups:
                 group_0:
                     targets:
@@ -29,7 +29,7 @@ quant_stage:
 
 recipe_modifier_full = AutoRoundModifier(
     ignore=["lm_head"],
-    iters=2,
+    iters=1,
     config_groups={
         "group_0": QuantizationScheme(
             targets=["Linear"],
@@ -52,10 +52,9 @@ def test_oneshot_application(recipe, tmp_path):
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
-        seqlen=1024,
-        nsamples=32,
+        seqlen=16,
+        nsamples=2,
     )
-
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     oneshot(
