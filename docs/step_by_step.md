@@ -725,7 +725,7 @@ If not explicitly specify '--task', the default value will be used (typically co
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
-Note: To use the vllm backend, please add `--vllm` into the upper command.
+Note: To use the vllm backend, please add `--eval_backend vllm` to  the command above.
 
 ###  Eval the Quantized model
 
