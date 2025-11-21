@@ -53,7 +53,18 @@ def trace(self, message, *args):
 
 
 # Add the trace method to the Logger class
+
 logging.Logger.trace = trace
+INFOCLEAN_LEVEL = 21
+logging.addLevelName(INFOCLEAN_LEVEL, "INFOCLEAN")
+
+
+def infoclean(self, message, *args, **kwargs):
+    if self.isEnabledFor(INFOCLEAN_LEVEL):
+        self._log(INFOCLEAN_LEVEL, message, args, **kwargs)
+
+
+logging.Logger.infoclean = infoclean
 
 
 class AutoRoundFormatter(logging.Formatter):
@@ -65,10 +76,11 @@ class AutoRoundFormatter(logging.Formatter):
     cyan = "\x1b[36;1m"
     blue = "\x1b[34;1m"
     _format = "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s"
-
+    _format_clean = "%(message)s"
     FORMATS = {
         logging.DEBUG: blue + _format + reset,
         logging.INFO: grey + _format + reset,
+        INFOCLEAN_LEVEL: grey + _format_clean + reset,
         logging.WARNING: yellow + _format + reset,
         logging.ERROR: bold_red + _format + reset,
         logging.CRITICAL: bold_red + _format + reset,
