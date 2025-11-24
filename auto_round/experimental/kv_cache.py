@@ -24,12 +24,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 from transformers.cache_utils import DynamicCache
 
-from auto_round.experimental.utils import (
-    is_attention_module,
-    normalize_static_kv_dtype,
-    per_tensor_fp8_qdq,
-    update_parameter_data,
-)
 from auto_round.utils import logger
 
 __all__ = [
@@ -85,6 +79,13 @@ def _pad_and_append_at_idx_(lst: List, idx: int, val: Any) -> list:
         lst += [None] * num_to_pad
     lst[idx] = val
     return lst
+
+
+def fp8_per_tensor_qdq(tensor):
+    from auto_round.data_type.fp8 import quant_fp8_sym
+
+    qdq_tensor, scale, _ = quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=0, v=0)
+    return qdq_tensor, scale
 
 
 class QuantizedKVParameterCache(DynamicCache):
@@ -172,8 +173,8 @@ class QuantizedKVParameterCache(DynamicCache):
             assert kv_type == KVCacheScaleType.VALUE
             scales = self.v_scales
 
-        qdq_tensor, scale = per_tensor_fp8_qdq(tensor)
-        _pad_and_append_at_idx_(scales, layer_idx, scale.squeeze(0))
+        qdq_tensor, scale = fp8_per_tensor_qdq(tensor)
+        _pad_and_append_at_idx_(scales, layer_idx, scale)
         return qdq_tensor
 
 
@@ -191,9 +192,13 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype)
     setattr(module, "kv_cache", quantized_kv_cache)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
-    init_scale = torch.tensor([0.0], device=next(module.parameters()).device)
-    update_parameter_data(module, init_scale.clone(), KVCacheScaleType.KEY.value)
-    update_parameter_data(module, init_scale.clone(), KVCacheScaleType.VALUE.value)
+
+
+def is_attention_module(module: torch.nn.Module):
+    # FIXME: Handle this better.
+    return "attention" in module.__class__.__name__.lower() and (
+        hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
+    )
 
 
 def calibrate_kv_cache_input_hook(
@@ -204,6 +209,7 @@ def calibrate_kv_cache_input_hook(
     kv_cache quantization. Will update the passed in
     kv_cache to singleton QuantizedKVParameterCache.
     """
+    logger.debug(f"calibrate kv_cache input hook for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     kv_cache = getattr(module, "kv_cache")
     #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
     # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
@@ -215,14 +221,33 @@ def calibrate_kv_cache_input_hook(
     return args, kwargs
 
 
+def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: str):
+    """
+    Update the data of a parameter in a module.
+    If the parameter does not exist, it will be created.
+    """
+    if hasattr(module, name):
+        param = getattr(module, name)
+        if isinstance(param, torch.nn.Parameter):
+            param.data = new_val
+        else:
+            module.register_parameter(name, torch.nn.Parameter(new_val))
+    else:
+        logger.warning(
+            "Parameter %s not found in module %s, creating new parameter."
+            % (name, module.__class__.__name__ + str(getattr(module, "layer_idx", "")))
+        )
+        module.register_parameter(name, torch.nn.Parameter(new_val))
+
+
 def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output: torch.Tensor):
     """
     Hook to update k_scale and v_scale parameters when running kv_cache quantization.
     """
-    # logger.debug(
-    #     "Calibrate kv_cache output hook for %s %s"
-    #     % (module.__class__.__name__, str(getattr(module, "layer_idx", None)))
-    # )
+    logger.debug(
+        "Calibrate kv_cache output hook for %s %s"
+        % (module.__class__.__name__, str(getattr(module, "layer_idx", None)))
+    )
     kv_cache = getattr(module, "kv_cache")
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]
@@ -234,6 +259,28 @@ def prep_attention_module_for_calibration(module: torch.nn.Module):
     if is_attention_module(module):
         module.register_forward_pre_hook(calibrate_kv_cache_input_hook, with_kwargs=True)
         module.register_forward_hook(calibrate_kv_cache_output_hook)
+
+
+def normalize_static_kv_dtype(static_kv_dtype: Union[str, torch.dtype]) -> torch.dtype:
+    valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float"]
+    valid_torch_dtype = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "fp8": torch.float8_e4m3fn,
+        "float8_e4m3fn": torch.float8_e4m3fn,
+        "float32": torch.float32,
+        "float": torch.float32,  # Alias for float32
+    }
+    if static_kv_dtype in valid_dtype_name_lst:
+        new_dtype = valid_torch_dtype[static_kv_dtype]
+    elif static_kv_dtype in valid_torch_dtype.values():
+        new_dtype = static_kv_dtype
+    else:
+        raise ValueError(
+            f"Invalid static kv dtype: {static_kv_dtype}. "
+            f"Valid options are: {', '.join(valid_dtype_name_lst  + list(valid_torch_dtype.values()))}."
+        )
+    return new_dtype
 
 
 @contextlib.contextmanager
