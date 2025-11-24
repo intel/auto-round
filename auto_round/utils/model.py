@@ -28,11 +28,12 @@ from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
+
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
     """This function is recommended to be used instead of module.weight = None.
-    For models like `tie_word_embeddings`, setting the embedding weight to None 
-    causes `lm_head` to reallocate memory for its weight instead of treating it as a "bound shared weight," 
-    it's now iterated over as an independent parameter, 
+    For models like `tie_word_embeddings`, setting the embedding weight to None
+    causes `lm_head` to reallocate memory for its weight instead of treating it as a "bound shared weight,"
+    it's now iterated over as an independent parameter,
     resulting in an additional `lm_head` parameter in `named_parameters`.
 
     Args:
@@ -53,6 +54,7 @@ def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
             if param is not None:
                 param.data = torch.empty(0, dtype=param.dtype, device=param.device)
                 param.requires_grad = False
+
 
 def convert_dtype_str2torch(str_dtype):
     """Converts a string dtype to its corresponding PyTorch dtype.

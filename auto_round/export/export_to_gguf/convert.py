@@ -50,7 +50,15 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, clear_memory, get_module, get_packing_device, is_fp8_model, logger, clean_module_parameter
+from auto_round.utils import (
+    LazyImport,
+    clean_module_parameter,
+    clear_memory,
+    get_module,
+    get_packing_device,
+    is_fp8_model,
+    logger,
+)
 
 gguf = LazyImport("gguf")
 
@@ -364,7 +372,7 @@ def prepare_tensors(cls):
     max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-        
+
         if data_torch is None or data_torch.numel() == 0:
             continue
         # we don't need these
