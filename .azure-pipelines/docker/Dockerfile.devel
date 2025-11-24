@@ -44,8 +44,10 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 USER hostuser
 
 ENV PATH="/home/hostuser/.local/bin:$PATH"
+ENV UV_NO_PROGRESS=1
+ENV UV_SYSTEM_PYTHON=1
 RUN pip config set global.break-system-packages true
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools uv
 RUN pip list
 
 WORKDIR /
