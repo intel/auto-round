@@ -50,23 +50,12 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
-from auto_round.utils import LazyImport, clear_memory, get_module, get_packing_device, is_fp8_model, logger
+from auto_round.utils import LazyImport, clear_memory, get_module, get_packing_device, is_fp8_model, logger, clean_module_parameter
 
 gguf = LazyImport("gguf")
 
 if TYPE_CHECKING:
     from torch import Tensor
-
-
-def clean_module_parameter(submodule, parameter):
-    if submodule is None:
-        return
-    is_buffer = parameter in submodule._buffers
-    with torch.no_grad():
-        if is_buffer:
-            submodule._buffers[parameter] = None
-        else:
-            submodule._parameters[parameter] = None
 
 
 def download_convert_file(redownload=False):
@@ -375,7 +364,8 @@ def prepare_tensors(cls):
     max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-        if data_torch is None:
+        
+        if data_torch is None or data_torch.numel() == 0:
             continue
         # we don't need these
         if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
