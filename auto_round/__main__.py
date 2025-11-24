@@ -158,7 +158,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         basic.add_argument(
-            "--static_attention_dtype ", default=None, type=str, help="Data type for static quantize attention. "
+            "--static_attention_dtype", default=None, type=str, help="Data type for static quantize attention. "
         )
 
         tuning = self.add_argument_group("Tuning Arguments")
