@@ -309,6 +309,15 @@ class TestGGUF(unittest.TestCase):
                 assert False, "cmd line test fail, please have a check"
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
+        # test mixed q2_k_s
+        res = os.system(
+            f"cd ../.. && {python_path} -m auto_round --model {model_name}"
+            f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme gguf:mixed_q2_k_s"
+        )
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+        shutil.rmtree("../../tmp_autoround", ignore_errors=True)
+
     def test_vlm_gguf(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
         from auto_round import AutoRoundMLLM
