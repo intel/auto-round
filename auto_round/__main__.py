@@ -549,8 +549,6 @@ def tune(args):
         nblocks=args.nblocks,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
-        static_kv_dtype=args.static_kv_dtype,
-        static_attention_dtype=args.static_attention_dtype,
     )
     scheme_config = SchemeExtraConfig(
         bits=args.bits,
@@ -608,6 +606,8 @@ def tune(args):
         layer_config=layer_config,
         model_dtype=args.model_dtype,
         momentum=args.momentum,
+        static_kv_dtype=args.static_kv_dtype,
+        static_attention_dtype=args.static_attention_dtype,
     )
 
     model_name = args.model.rstrip("/")
