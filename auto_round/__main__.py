@@ -153,6 +153,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument(
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
+        basic.add_argument(
+            "--static_kv_dtype", default=None, type=str, help="Data type for static quantize key and value. "
+        )
+
+        basic.add_argument(
+            "--static_attention_dtype ", default=None, type=str, help="Data type for static quantize attention. "
+        )
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
@@ -542,6 +549,8 @@ def tune(args):
         nblocks=args.nblocks,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
+        static_kv_dtype=args.static_kv_dtype,
+        static_attention_dtype=args.static_attention_dtype,
     )
     scheme_config = SchemeExtraConfig(
         bits=args.bits,

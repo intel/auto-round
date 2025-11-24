@@ -17,7 +17,7 @@ import torch
 from auto_round.utils import logger
 
 
-def fp8_per_tensor_qdq(
+def per_tensor_fp8_qdq(
     tensor: torch.Tensor, tensor_max: None | torch.Tensor = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     from auto_round.data_type.fp8 import quant_fp8_sym

@@ -25,9 +25,9 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from auto_round.experimental.utils import (
-    fp8_per_tensor_qdq,
     is_attention_module,
     normalize_static_kv_dtype,
+    per_tensor_fp8_qdq,
     update_parameter_data,
 )
 from auto_round.utils import logger
@@ -172,7 +172,7 @@ class QuantizedKVParameterCache(DynamicCache):
             assert kv_type == KVCacheScaleType.VALUE
             scales = self.v_scales
 
-        qdq_tensor, scale = fp8_per_tensor_qdq(tensor)
+        qdq_tensor, scale = per_tensor_fp8_qdq(tensor)
         _pad_and_append_at_idx_(scales, layer_idx, scale.squeeze(0))
         return qdq_tensor
 

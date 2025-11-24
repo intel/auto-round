@@ -31,9 +31,8 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 from auto_round.experimental.kv_cache import kvcache_quant_context
 from auto_round.experimental.utils import (
-    fp8_per_tensor_qdq,
     is_attention_module,
-    normalize_static_kv_dtype,
+    per_tensor_fp8_qdq,
     update_parameter_data,
 )
 from auto_round.utils import logger
@@ -96,7 +95,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
             cur_query_max.detach().to(getattr(module, QUERY_MAX_NAME).data.device),
         )
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
-        query, query_scale = fp8_per_tensor_qdq(query, tensor_max=query_max)
+        query, query_scale = per_tensor_fp8_qdq(query, tensor_max=query_max)
         update_parameter_data(module, query_scale.squeeze(0), QUERY_SCALE_NAME)
         # original attention
         return ALL_ATTENTION_FUNCTIONS[self._original_impl](
