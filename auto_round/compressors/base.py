@@ -716,7 +716,7 @@ class BaseCompressor(object):
                     "`iters=0` is recommended when exporting to current GGUF format"
                     " or add `enable_alg_ext` for better accuracy with much more tuning cost."
                     " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
-                    " to check the acc."
+                    " for the accuracy results."
                 )
 
         if (
