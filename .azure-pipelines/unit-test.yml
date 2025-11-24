@@ -69,33 +69,29 @@ stages:
     jobs:
       - job: CollectDatafiles
         steps:
-          - script: |
-              docker build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) -f ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/Dockerfile.devel -t ${IMAGE_NAME}:${IMAGE_TAG} .
-              docker images | grep -i ${IMAGE_NAME}
-              if [[ $? -ne 0 ]]; then
-                echo "NO Such Repo"
-                exit 1
-              fi
-            displayName: "Build develop docker image"
-
           - task: DownloadPipelineArtifact@2
             inputs:
               artifact:
               patterns: '*_coverage/.coverage.*'
               path: $(DOWNLOAD_PATH)
+          
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+            displayName: 'Use Python 3.12'
 
           - script: |
-              echo "--- create container ---"
-              docker run -d -it --name="collectLogs"  -v ${BUILD_SOURCESDIRECTORY}:/auto-round  ${IMAGE_NAME}:${IMAGE_TAG} /bin/bash
-              echo "--- docker ps ---"
-              docker ps
-              echo "--- collect logs ---"
-              docker exec collectLogs bash -c "cd /auto-round \
-                && pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-                && pip install . \
-                && pip list"
-              docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
-                && bash ut/collect_log.sh"
+              cd ${BUILD_SOURCESDIRECTORY}
+              pip install -U pip setuptools uv
+              uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+              uv pip install .
+              pip list
+              cd /auto-round/.azure-pipelines/scripts
+              bash ut/collect_log.sh
+            env:
+              PYTHONUNBUFFERED: '1'
+              UV_NO_PROGRESS: '1'
+              UV_SYSTEM_PYTHON: '1'
             displayName: "Collect UT Coverage"
 
           - task: PublishPipelineArtifact@1
@@ -104,11 +100,6 @@ stages:
               targetPath: $(UPLOAD_PATH)/coverage_PR
               artifact: $(ARTIFACT_NAME)
               publishLocation: "pipeline"
-
-          - task: UseDotNet@2
-            displayName: 'Use .NET Core sdk 7.0.x'
-            inputs:
-              version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
             inputs:

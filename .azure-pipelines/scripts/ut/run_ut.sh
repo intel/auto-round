@@ -10,7 +10,8 @@ uv pip install pytest-cov pytest-html
 uv pip install -r /auto-round/test/test_cpu/requirements.txt \
     --exclude auto_round \
     --extra-index-url https://download.pytorch.org/whl/cpu
-uv pip list
+cd /auto-round && uv pip install .
+
 # install latest gguf for ut test
 cd ~ || exit 1
 git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
