@@ -1383,8 +1383,12 @@ class MemoryMonitor:
                 continue
             if torch.cuda.is_available():
                 current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+                if device == "cuda":
+                    device = "0"
             elif torch.xpu.is_available():
                 current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+                if device == "xpu":
+                    device = "0"
             else:
                 return
 
