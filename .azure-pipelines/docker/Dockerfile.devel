@@ -19,9 +19,6 @@ FROM ubuntu:${UBUNTU_VER}
 ENV LANG C.UTF-8
 
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
-    python3 \
-    python3-pip \
-    python3.12-dev \
     autoconf \
     build-essential \
     git \
@@ -48,8 +45,7 @@ ENV VIRTUAL_ENV="/home/hostuser/.venv"
 ENV UV_NO_PROGRESS=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
-RUN pip config set global.break-system-packages true
-RUN python -m pip install --no-cache-dir --upgrade uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN uv venv --python=3.12 /home/hostuser/.venv
 RUN which python && python --version
 
