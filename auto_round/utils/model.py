@@ -29,6 +29,33 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 
+def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
+    """This function is recommended to be used instead of module.weight = None.
+    For models like `tie_word_embeddings`, setting the embedding weight to None
+    causes `lm_head` to reallocate memory for its weight instead of treating it as a "bound shared weight,"
+    it's now iterated over as an independent parameter,
+    resulting in an additional `lm_head` parameter in `named_parameters`.
+
+    Args:
+        submodule (torch.nn.Module): submodule to clean
+        param_name (str): "weight" or "bias"
+    """
+    if submodule is None:
+        return
+    is_buffer = param_name in submodule._buffers
+    with torch.no_grad():
+        if is_buffer:
+            buf = submodule._buffers[param_name]
+            if buf is not None:
+                buf.data = torch.empty(0, dtype=buf.dtype, device=buf.device)
+                buf.requires_grad = False
+        else:
+            param = submodule._parameters[param_name]
+            if param is not None:
+                param.data = torch.empty(0, dtype=param.dtype, device=param.device)
+                param.requires_grad = False
+
+
 def convert_dtype_str2torch(str_dtype):
     """Converts a string dtype to its corresponding PyTorch dtype.
 

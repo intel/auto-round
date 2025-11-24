@@ -559,6 +559,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 
 - **Reduced CPU Memory Usage :**
+    - Enable low_cpu_mem_usage (experimental): Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
 
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
