@@ -29,14 +29,14 @@ from auto_round.export.export_to_llmcompressor.config import check_compressed_te
 from auto_round.export.utils import save_model
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
-    _get_packing_device,
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    filter_quantization_config,
     get_module,
+    get_packing_device,
     logger,
     set_module,
+    unsupported_meta_device,
 )
 
 
@@ -57,7 +57,7 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     Returns:
         None: The function modifies the model in place.
     """
-    packing_device = _get_packing_device(device)
+    packing_device = get_packing_device(device)
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -148,17 +148,18 @@ def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs)
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
+    if not unsupported_meta_device(model):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with tqdm(total=len(names), leave=True) as pbar:
 
-            def wrapper(name):
-                pbar.set_description(f"packing {name}")
-                with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, kwargs.get("data_type", "fp8"), device)
-                pbar.update(1)
+                def wrapper(name):
+                    pbar.set_description(f"packing {name}")
+                    with tctl.threadpool_limits(limits=1):
+                        pack_layer(name, model, kwargs.get("data_type", "fp8"), device)
+                    pbar.update(1)
 
-            for _ in executor.map(wrapper, names):
-                pass
+                for _ in executor.map(wrapper, names):
+                    pass
 
     # Get llm-compressor format config
     check_compressed_tensors_supported()

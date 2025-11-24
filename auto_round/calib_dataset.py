@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import json
+import logging
 import random
 import sys
+
+logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
 from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
@@ -629,15 +632,8 @@ def select_dataset(dataset, indices):
         return dataset
 
 
-def get_dataloader(
-    tokenizer,
-    seqlen,
-    dataset_name="NeelNanda/pile-10k",
-    seed=42,
-    bs=8,
-    nsamples=512,
-):
-    """Generate a DataLoader for calibration using specified parameters.
+def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
+    """Generate a dataset for calibration.
 
     Args:
         tokenizer (Tokenizer): The tokenizer to use for tokenization.
@@ -647,14 +643,12 @@ def get_dataloader(
                                      Defaults to "NeelNanda/pile-10k".
         split (str, optional): The data split to use. Defaults to None.
         seed (int, optional): The random seed for reproducibility. Defaults to 42.
-        bs (int, optional): The batch size. Defaults to 4.
         nsamples (int, optional): The total number of samples to include. Defaults to 512.
         apply_chat_template: Whether to apply chat template in tokenization.
 
     Returns:
-        DataLoader: The DataLoader for the calibrated dataset.
+        Dataset: The processed dataset ready for calibration.
     """
-
     dataset_names = dataset_name.split(",")
 
     def filter_func(example):
@@ -821,7 +815,29 @@ def get_dataloader(
         else:
             dataset_final = datasets[0]
 
-    # dataset_final = datasets[0]
+    if len(dataset_final) > nsamples:
+        dataset_final = select_dataset(dataset_final, range(nsamples))
+    return dataset_final
+
+
+def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512):
+    """Generate a DataLoader for calibration using specified parameters.
+
+    Args:
+        tokenizer (Tokenizer): The tokenizer to use for tokenization.
+        seqlen (int): The exact sequence length. samples < seqlen will be dropped,
+                      samples longer than seqlen will be truncated
+        dataset_name (str, optional): The name of the dataset or datasets separated by commas.
+                                     Defaults to "NeelNanda/pile-10k".
+        split (str, optional): The data split to use. Defaults to None.
+        seed (int, optional): The random seed for reproducibility. Defaults to 42.
+        bs (int, optional): The batch size. Defaults to 4.
+        nsamples (int, optional): The total number of samples to include. Defaults to 512.
+        apply_chat_template: Whether to apply chat template in tokenization.
+
+    Returns:
+        DataLoader: The DataLoader for the calibrated dataset.
+    """
 
     @torch.no_grad()
     def collate_batch(batch):
@@ -847,8 +863,6 @@ def get_dataloader(
         res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
-    if len(dataset_final) > nsamples:
-        dataset_final = select_dataset(dataset_final, range(nsamples))
-
+    dataset_final = get_dataset(tokenizer, seqlen, dataset_name, seed, nsamples)
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader

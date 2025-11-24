@@ -39,7 +39,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Function
 
-from auto_round.utils import _get_packing_device
+from auto_round.utils import get_packing_device
 
 
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
@@ -102,6 +102,7 @@ def dequantize_gemm(qweight, qzeros, scales, bits, group_size):
 
 
 class WQLinearMMFunction(Function):
+
     @staticmethod
     # ctx is the first argument to forward
     def forward(
@@ -136,6 +137,7 @@ class WQLinearMMFunction(Function):
 
 
 class WQLinear_GEMM(nn.Module):
+
     def __init__(self, w_bit, group_size, in_features, out_features, bias, dev, training=False):
         super().__init__()
 
@@ -193,7 +195,7 @@ class WQLinear_GEMM(nn.Module):
 
     @classmethod
     def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None, device=None):
-        device = _get_packing_device(device)
+        device = get_packing_device(device)
         awq_linear = cls(
             w_bit,
             group_size,
@@ -314,10 +316,3 @@ class WQLinear_GEMM(nn.Module):
             self.w_bit,
             self.group_size,
         )
-
-
-def clear_memory(weight=None):
-    if weight is not None:
-        del weight
-    gc.collect()
-    torch.cuda.empty_cache()

@@ -12,16 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Note: the design of this module is inspired by vLLM's envs.py
+# For detailed usage and configuration guide, see: docs/environments.md
 
 import os
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
+    AR_USE_MODELSCOPE: bool = "False"
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
+    "AR_ENABLE_COMPILE_PACKING": lambda: os.getenv("AR_ENABLE_COMPILE_PACKING", "0").lower() in ("1", "true", "yes"),
+    "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE", "False").lower() in ["1", "true"],
+    "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space").lower(),
 }
 
 
@@ -41,3 +46,30 @@ def is_set(name: str):
     if name in environment_variables:
         return name in os.environ
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def set_config(**kwargs):
+    """
+    Set configuration values for environment variables.
+
+    Args:
+        **kwargs: Keyword arguments where keys are environment variable names
+                 and values are the desired values to set.
+
+    Example:
+        set_config(AR_LOG_LEVEL="DEBUG", AR_USE_MODELSCOPE=True)
+    """
+    for key, value in kwargs.items():
+        if key in environment_variables:
+            # Convert value to appropriate string format
+            if key == "AR_USE_MODELSCOPE":
+                # Handle boolean values for AR_USE_MODELSCOPE
+                str_value = "true" if value in [True, "True", "true", "1", 1] else "false"
+            else:
+                # For other variables, convert to string
+                str_value = str(value)
+
+            # Set the environment variable
+            os.environ[key] = str_value
+        else:
+            raise AttributeError(f"module {__name__!r} has no attribute {key!r}")

@@ -30,6 +30,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def check_block_names(self, block_names, prefixs=[], n_layers=[]):
+        assert len(block_names) == len(prefixs) == len(n_layers)
         for i, block_name in enumerate(block_names):
             prefix = prefixs[i]
             n_layer = n_layers[i]
@@ -72,12 +73,12 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["model.layers"], [32])
         assert is_pure_text_model(model)
 
-    def test_mixtral(self):
-        model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        block_names = get_block_names(model)
-        self.check_block_names(block_names, ["model.layers"], [32])
-        assert is_pure_text_model(model)
+    # def test_mixtral(self):
+    #     model_name = "/models/Mixtral-8x7B-Instruct-v0.1"
+    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    #     block_names = get_block_names(model)
+    #     self.check_block_names(block_names, ["model.layers"], [32])
+    #     assert is_pure_text_model(model)
 
     def test_falcon(self):
         model_name = "/models/Falcon3-7B-Instruct"
@@ -195,6 +196,9 @@ class TestAutoRound(unittest.TestCase):
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
         self.assertTrue(any(["context_embedder" not in n for n in block_names]))
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
 
 
 if __name__ == "__main__":

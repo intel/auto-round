@@ -2,6 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
+
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
@@ -12,31 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-AUTO_SCHEME_METHODS = {}
+from auto_round.logger import logger
+
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
 
-def register_scheme_methods(names):
-    """Class decorator to register a mixed precision algorithm to the registry.
+def __getattr__(name):
+    if name == "AUTO_SCHEME_METHODS":
+        try:
+            import auto_round.auto_scheme.default_alg
+        except ImportError:
+            logger.warning("AutoScheme is currently supported only on Linux.")
 
-    Decorator function used before a Pattern subclass.
+        from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
 
-    Args:
-        names: A string. Define the export type.
+        return AUTO_SCHEME_METHODS
 
-    Returns:
-        cls: The class of register.
-    """
-
-    def register(alg):
-        if isinstance(names, (tuple, list)):
-            for name in names:
-                AUTO_SCHEME_METHODS[name] = alg
-        else:
-            AUTO_SCHEME_METHODS[names] = alg
-
-        return alg
-
-    return register
-
-
-import auto_round.auto_scheme.default_alg
+    raise AttributeError(f"auto-scheme has no attribute '{name}'")

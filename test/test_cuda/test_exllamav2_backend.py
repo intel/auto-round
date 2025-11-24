@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.testing_utils import require_autogptq, require_gptqmodel
+from auto_round.testing_utils import require_autogptq, require_gptqmodel, require_package_version_ut
 
 
 class LLMDataLoader:
@@ -24,7 +24,7 @@ class LLMDataLoader:
             yield torch.ones([1, 10], dtype=torch.long)
 
 
-class TestAutoRoundMarlinBackend(unittest.TestCase):
+class TestAutoRoundexllamaBackend(unittest.TestCase):
 
     @classmethod
     def setUpClass(self):
@@ -99,6 +99,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_autogptq
+    @require_package_version_ut("torch", "<2.6.0")
     def test_gptq_exllamav2_4bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -130,6 +131,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @require_autogptq
+    @require_package_version_ut("torch", "<2.6.0")
     def test_gptq_exllamav2_4bits_sym_group_size(self):
         for group_size in [-1, 32, 64, 128, 256, 1024]:  ## 384, 768 has accuracy issue
             print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")

@@ -28,8 +28,15 @@ class EvalArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "--model",
+            "model",
+            default=None,
+            nargs="?",
+            help="Path to the pre-trained model or model identifier from huggingface.co/models. "
+            "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
+        )
+        self.add_argument(
             "--model_name",
+            "--model",
             "--model_name_or_path",
             default="facebook/opt-125m",
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
@@ -94,6 +101,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             choices=["hf", "vllm"],
             help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
         )
+        self.add_argument("--add_bos_token", action="store_true", help="add BOS token")
 
         # vllm related arguments
         vllm_args = self.add_argument_group("vllm backend arguments")
@@ -103,7 +111,6 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--tokenizer_mode", default="auto", type=str, help="tokenizer mode for vllm (e.g. auto/fast/slow)"
         )
         vllm_args.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
-        vllm_args.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
         vllm_args.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
         vllm_args.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
         vllm_args.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
@@ -159,6 +166,7 @@ def eval(args):
                 if file.endswith(".gguf"):
                     is_gguf_file = True
                     gguf_file = file
+            model = args.model
     eval_model_dtype = get_model_dtype(args.eval_model_dtype)
     if is_gguf_file:
         import torch
@@ -179,7 +187,13 @@ def eval(args):
         model.eval()
         st = time.time()
         res = simple_evaluate_user_model(
-            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit
+            model,
+            tokenizer,
+            tasks=tasks,
+            batch_size=batch_size,
+            device=device_str,
+            limit=args.limit,
+            add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -188,6 +202,7 @@ def eval(args):
         if "auto" in str(batch_size) and args.mllm:
             logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
             batch_size = 16
+        model_args += f",add_bos_token={args.add_bos_token}"
         res = simple_evaluate(
             model="hf" if not args.mllm else "hf-multimodal",
             model_args=model_args,
@@ -213,6 +228,8 @@ def eval_task_by_task(
     trust_remote_code=True,
     eval_model_dtype=None,
     retry_times=3,
+    mllm=False,
+    add_bos_token=False,
 ):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
@@ -256,16 +273,35 @@ def eval_task_by_task(
         )
         model.eval()
         parallelism = False
-    hflm = HFLM(
-        pretrained=model,
-        tokenizer=tokenizer,
-        device=device_str,
-        batch_size=batch_size,
-        max_batch_size=max_batch_size,
-        parallelize=parallelism,
-        trust_remote_code=trust_remote_code,
-        dtype=eval_model_dtype,
-    )
+    if mllm:
+        if batch_size is None or batch_size == "auto":
+            logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
+            batch_size = 16
+        from lm_eval.models.hf_vlms import HFMultimodalLM
+
+        hflm = HFMultimodalLM(
+            pretrained=model,
+            tokenizer=tokenizer,
+            device=device_str,
+            batch_size=batch_size,
+            max_batch_size=max_batch_size,
+            parallelize=parallelism,
+            trust_remote_code=trust_remote_code,
+            dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
+        )
+    else:
+        hflm = HFLM(
+            pretrained=model,
+            tokenizer=tokenizer,
+            device=device_str,
+            batch_size=batch_size,
+            max_batch_size=max_batch_size,
+            parallelize=parallelism,
+            trust_remote_code=trust_remote_code,
+            dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
+        )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
@@ -309,7 +345,10 @@ def eval_task_by_task(
             res_all = res
         else:
             for key in res_keys:
-                res_all[key].update(res[key])
+                if key not in res_all:
+                    continue
+                else:
+                    res_all[key].update(res[key])
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
