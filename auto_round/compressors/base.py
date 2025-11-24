@@ -222,6 +222,8 @@ class BaseCompressor(object):
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
+        self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
         if isinstance(model, str):
             model, tokenizer = llm_load_model(
@@ -273,8 +275,6 @@ class BaseCompressor(object):
             platform = "model_scope"
         self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
-        self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
-        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
 
         self.fp_layers = kwargs.pop("fp_layers", "")
         self.supported_types = SUPPORTED_LAYER_TYPES
