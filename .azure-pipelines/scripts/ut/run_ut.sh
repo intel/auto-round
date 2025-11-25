@@ -13,7 +13,7 @@ cd /auto-round && uv pip install .
 
 # install latest gguf for ut test
 cd ~ || exit 1
-git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
+git clone -b master --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 echo "##[endgroup]"
 uv pip list
 
