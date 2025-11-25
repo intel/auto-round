@@ -8,12 +8,15 @@ echo "##[group]set up UT env..."
 export TQDM_MININTERVAL=60
 uv pip install pytest-cov pytest-html
 uv pip install -r /auto-round/test/test_cpu/requirements.txt \
-    --extra-index-url https://download.pytorch.org/whl/cpu
-cd /auto-round && uv pip install .
+    --extra-index-url https://download.pytorch.org/whl/cpu --excludes gguf
 
 # install latest gguf for ut test
 cd ~ || exit 1
-git clone -b master --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
+git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
+
+cd /auto-round && uv pip install .
+uv pip install lm_eval==0.4.9.1
+
 echo "##[endgroup]"
 uv pip list
 
