@@ -264,12 +264,20 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
         # already fused/treated as one layer
         if hasattr(submodule, "qkv_proj"):
             return
+
+        q_global_scale = getattr(submodule.q_proj, global_scale_name, max_value_tensor)
+        q_global_scale = max_value_tensor if q_global_scale is None else q_global_scale
+        k_global_scale = getattr(submodule.k_proj, global_scale_name, max_value_tensor)
+        k_global_scale = max_value_tensor if k_global_scale is None else k_global_scale
+        v_global_scale = getattr(submodule.v_proj, global_scale_name, max_value_tensor)
+        v_global_scale = max_value_tensor if v_global_scale is None else v_global_scale
+
         global_scale = torch.min(
             torch.cat(
                 (
-                    getattr(submodule.q_proj, global_scale_name, max_value_tensor).reshape(1),
-                    getattr(submodule.k_proj, global_scale_name, max_value_tensor).reshape(1),
-                    getattr(submodule.v_proj, global_scale_name, max_value_tensor).reshape(1),
+                    q_global_scale.reshape(1),
+                    k_global_scale.reshape(1),
+                    v_global_scale.reshape(1),
                 )
             )
         ).reshape([1])

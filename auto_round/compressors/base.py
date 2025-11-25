@@ -615,6 +615,7 @@ class BaseCompressor(object):
             and not is_debug_mode()
             and "fp8" not in self.data_type
             and "fp8" not in self.act_data_type
+            and self.iters > 0
         ):
             logger.info(
                 "'enable_torch_compile' is set to `False` by default. "
