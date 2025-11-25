@@ -25,7 +25,7 @@ class TestGGUF(unittest.TestCase):
 
     @classmethod
     def setUpClass(self):
-        self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
+        self.model_name = "/models/Qwen2.5-0.5B-Instruct"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -312,7 +312,7 @@ class TestGGUF(unittest.TestCase):
         # test mixed q2_k_s
         res = os.system(
             f"cd ../.. && {python_path} -m auto_round --model {model_name}"
-            f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme GGUF:Q2_k_MIXED"
+            f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
