@@ -87,11 +87,6 @@ class AutoRoundMXFP4LinearImpl(AutoRoundQuantImpl):
     def process_weights_after_loading(self, layer) -> None:
         # FIXME: may dequant to bf16
         if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
-            from auto_round_extension.vllm_ext.mxfp4_qdq_utils import (
-                dequant_mxfp4_to_fp8,
-                mxfp4_gemm_with_unpacked_weight,
-                run_mxfp4_emulations,
-            )
 
             weight_fp8, scale_bf16 = dequant_mxfp4_to_fp8(
                 data_lp=layer.weight_packed,
