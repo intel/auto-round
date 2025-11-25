@@ -307,7 +307,7 @@ class TestAutoRound(unittest.TestCase):
 
         from safetensors import safe_open
 
-        model_name = "facebook/opt-125m"
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
