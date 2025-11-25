@@ -3007,7 +3007,7 @@ class BaseCompressor(object):
         if format == "fake" or format == "qdq":  # TODO fix act quantization later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
-            if self.tokenizer is not None:
+            if self.tokenizer is not None and hasattr(self.tokenizer, "save_pretrained"):
                 self.tokenizer.save_pretrained(output_dir)
             processor = kwargs.get("processor", None)
             if processor is not None:
