@@ -713,11 +713,10 @@ class BaseCompressor(object):
                 raise ValueError("Gguf format is not compatible with other formats, please choose only one of them")
             if has_gguf and self.iters != 0 and self.bits != 3 and not self.enable_alg_ext:
                 logger.warning(
-                    "`iters=0` is recommended when exporting to GGUF format except for bits 3,"
-                    " as we have optimized the RTN method for this case."
-                    " Or add enable_alg_ext to use the new algorithm,"
-                    " refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
-                    " to check the acc."
+                    "`iters=0` is recommended when exporting to current GGUF format"
+                    " or add `enable_alg_ext` for better accuracy with much more tuning cost."
+                    " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
+                    " for the accuracy results."
                 )
 
         if (
@@ -1087,11 +1086,16 @@ class BaseCompressor(object):
                 dtype = f"rtn_{dtype}"
 
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
+            dtype = module.weight.dtype
+            # As typically float32 are used in RTN to search scale zp,
+            # to avoid cache a bf16 copy we'd better use float32
+            if config["super_group_size"] is not None:
+                dtype = torch.float32
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(self.device),
+                    module.weight.to(dtype=dtype, device=self.device),
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except torch.OutOfMemoryError:
@@ -1124,8 +1128,9 @@ class BaseCompressor(object):
 
             # Update config
             self.layer_config.setdefault(name, {}).update(config)
-
-            # Release memory
+            del weight
+            del scale
+            del zp
             clear_memory(device_list=self.device_list)
 
         return is_quantized
@@ -1224,7 +1229,7 @@ class BaseCompressor(object):
             for hook in hooks:
                 hook.remove()
 
-    def _quantize_layer_via_rtn(self, name: str) -> None:
+    def _quantize_layer_via_rtn(self, name: str, dtype: torch.dtype = None, to_cpu=True) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
         This function attempts to quantize a layer by switching its data type to a
@@ -1241,19 +1246,20 @@ class BaseCompressor(object):
             RuntimeError: If quantization fails for reasons unrelated to memory.
         """
         m = get_module(self.model, name)
+        if dtype is not None:
+            m = m.to(dtype)
 
         if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
             set_module(self.model, name, m)
-
+        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
-        # if only export gguf, using gguf-packing instead of rtn
         if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
+            m = m.to(tuning_device)
             m.scale = None
             m.zp = None
         else:
             try:
-                tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
                 m = m.to(tuning_device)
                 m = WrapperLinear(
                     m,
@@ -1265,7 +1271,6 @@ class BaseCompressor(object):
                     disable_opt_rtn=self.disable_opt_rtn,
                 )
                 m = m.unwrapper({})
-                m.to("cpu")
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
@@ -1285,11 +1290,14 @@ class BaseCompressor(object):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.immediate_packing:
+        if self.immediate_packing:  # For gguf, packing conducts on block level
             self._immediate_pack(name)
+            if to_cpu:
+                m = m.to("cpu")
         else:
+            if to_cpu:
+                m = m.to("cpu")
             set_module(self.model, name, m)
-
         if self.immediate_saving:
             all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
@@ -1297,6 +1305,8 @@ class BaseCompressor(object):
             immediate_saving(self, m, name, last_module)
 
     def _immediate_pack(self, name: str):
+        if not self.immediate_packing:
+            return
         m = get_module(self.model, name)
         if not check_to_quantized(m):
             return
@@ -1353,16 +1363,18 @@ class BaseCompressor(object):
             for module in tqdm(modules, desc="Update weight global scale for fuse module"):
                 update_fused_layer_global_scales(module)
 
-        has_gguf_k = (
-            any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
-        )
-
-        self._quantize_embedding_layer()
+        if not (any("gguf" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
+            self._quantize_embedding_layer()  # leave to gguf itself to handle
 
         self.model.to("cpu")
+        # Release memory
+        clear_memory(device_list=self.device_list)
 
         enable_imatrix = False
         if not self.disable_opt_rtn:
+            has_gguf_k = (
+                any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
+            )
             if has_gguf_k:
                 enable_imatrix = True
             elif self.data_type == "int" and self.sym:
@@ -1498,6 +1510,7 @@ class BaseCompressor(object):
                     self.device,
                     self.cache_device,
                 )
+
                 if len(self.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
@@ -1505,32 +1518,36 @@ class BaseCompressor(object):
                     # enable moe experts act_max automatic generation for Linear
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
+                if self.low_gpu_mem_usage:
+                    block.to("cpu")
+                    clear_memory(device_list=self.device_list)
+
                 for _, m in block.named_modules():
                     # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
                     # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name)
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=False)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
+                if block_name == block_names[-1]:
+                    clear_memory(input_ids, device_list=self.device_list)
+                else:
+                    clear_memory(device_list=self.device_list)
+
                 memory_monitor.log_summary()
                 pbar.update(1)
 
         pbar.close()
-        cnt = 1
-        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-        if clear_mem_freq == 0:
-            clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
-            self._quantize_layer_via_rtn(name)
-            if cnt % clear_mem_freq == 0:
-                clear_memory(device_list=self.device_list)
-                cnt = 1
-            cnt += 1
+            dtype = None
+            if self.super_group_size is not None:
+                dtype = torch.float32
+            self._quantize_layer_via_rtn(name, dtype=dtype)
+            # clear_memory(device_list=self.device_list)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1631,6 +1648,7 @@ class BaseCompressor(object):
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self._quantize_embedding_layer()
+        clear_memory(device_list=self.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
@@ -2838,7 +2856,7 @@ class BaseCompressor(object):
             if auto_offload:
                 mv_module_from_gpu(block)
 
-            clear_memory(input_ids)
+            clear_memory(input_ids, device_list=self.device_list)
             memory_info_summary = memory_monitor.get_summary()
             logger.infoclean(dump_info + "," + memory_info_summary)
 
@@ -2848,7 +2866,7 @@ class BaseCompressor(object):
                 accelerate.hooks.remove_hook_from_submodules(block)
             if auto_offload:
                 mv_module_from_gpu(block)
-            clear_memory(input_ids)
+            clear_memory(input_ids, device_list=self.device_list)
             memory_info_summary = memory_monitor.get_summary()
             logger.infoclean(dump_info + "," + memory_info_summary)
 
@@ -2977,7 +2995,7 @@ class BaseCompressor(object):
         if format == "fake" or format == "qdq":  # TODO fix act quantization later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
-            if self.tokenizer is not None:
+            if self.tokenizer is not None and hasattr(self.tokenizer, "save_pretrained"):
                 self.tokenizer.save_pretrained(output_dir)
             processor = kwargs.get("processor", None)
             if processor is not None:
