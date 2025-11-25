@@ -52,9 +52,6 @@ def dequant_mx_fp8(weight_fp8, scale_e8m0, block_size, target_dtype):
     return dequant_weight.to(target_dtype)
 
 
-
-
-
 def quant_mx_fp8(tensor):
     from auto_round_extension.vllm_ext.utils import to_mx_fp8e4m3
 

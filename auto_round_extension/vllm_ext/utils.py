@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 from typing import Union
+
+import torch
+
 from auto_round.schemes import QuantizationScheme
 
 E8M0_EXPONENT_BIAS = 127
@@ -112,7 +114,6 @@ def to_mx_fp8e4m3(
     data_hp: torch.Tensor,
     elem_dtype: Union[torch.dtype, str],
     block_size: int,
-
 ):
     """
     Takes a high precision tensor and converts to MX scale and raw data, in
@@ -145,16 +146,13 @@ def to_mx_fp8e4m3(
 
     scale_e8m0_biased, data_lp = _to_mx_rceil(data_hp, max_abs, max_pos)
 
-
     data_lp = data_lp.to(elem_dtype)
     # need to reshape at the end to help inductor fuse things
     data_lp = data_lp.reshape(orig_shape)
 
-
     # scale_e8m0_biased = scale_e8m0_biased.view(torch.float8_e8m0fnu)
     return scale_e8m0_biased, data_lp
-    
-    
+
 
 def down_size(size):
     assert size[-1] % 2 == 0, f"{size} last dim not divisible by two"
