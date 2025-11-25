@@ -25,9 +25,9 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from auto_round.experimental.utils import (
-    fp8_per_tensor_qdq,
     is_attention_module,
     normalize_static_kv_dtype,
+    per_tensor_fp8_qdq,
     update_parameter_data,
 )
 from auto_round.utils import logger
@@ -172,7 +172,7 @@ class QuantizedKVParameterCache(DynamicCache):
             assert kv_type == KVCacheScaleType.VALUE
             scales = self.v_scales
 
-        qdq_tensor, scale = fp8_per_tensor_qdq(tensor)
+        qdq_tensor, scale = per_tensor_fp8_qdq(tensor)
         _pad_and_append_at_idx_(scales, layer_idx, scale.squeeze(0))
         return qdq_tensor
 
@@ -191,11 +191,9 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype)
     setattr(module, "kv_cache", quantized_kv_cache)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
-    device = next(module.parameters()).device
-    # Use 0.0 as initial scale
-    initial_scale = torch.tensor([0.0], device=device)
-    update_parameter_data(module, initial_scale, KVCacheScaleType.KEY.value)
-    update_parameter_data(module, initial_scale, KVCacheScaleType.VALUE.value)
+    init_scale = torch.tensor([0.0], device=next(module.parameters()).device)
+    update_parameter_data(module, init_scale.clone(), KVCacheScaleType.KEY.value)
+    update_parameter_data(module, init_scale.clone(), KVCacheScaleType.VALUE.value)
 
 
 def calibrate_kv_cache_input_hook(
@@ -206,7 +204,6 @@ def calibrate_kv_cache_input_hook(
     kv_cache quantization. Will update the passed in
     kv_cache to singleton QuantizedKVParameterCache.
     """
-    logger.debug(f"calibrate kv_cache input hook for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     kv_cache = getattr(module, "kv_cache")
     #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
     # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
@@ -222,10 +219,6 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
     """
     Hook to update k_scale and v_scale parameters when running kv_cache quantization.
     """
-    logger.debug(
-        "Calibrate kv_cache output hook for %s %s"
-        % (module.__class__.__name__, str(getattr(module, "layer_idx", None)))
-    )
     kv_cache = getattr(module, "kv_cache")
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]

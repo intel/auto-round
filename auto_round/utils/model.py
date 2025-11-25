@@ -29,6 +29,33 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 
+def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
+    """This function is recommended to be used instead of module.weight = None.
+    For models like `tie_word_embeddings`, setting the embedding weight to None
+    causes `lm_head` to reallocate memory for its weight instead of treating it as a "bound shared weight,"
+    it's now iterated over as an independent parameter,
+    resulting in an additional `lm_head` parameter in `named_parameters`.
+
+    Args:
+        submodule (torch.nn.Module): submodule to clean
+        param_name (str): "weight" or "bias"
+    """
+    if submodule is None:
+        return
+    is_buffer = param_name in submodule._buffers
+    with torch.no_grad():
+        if is_buffer:
+            buf = submodule._buffers[param_name]
+            if buf is not None:
+                buf.data = torch.empty(0, dtype=buf.dtype, device=buf.device)
+                buf.requires_grad = False
+        else:
+            param = submodule._parameters[param_name]
+            if param is not None:
+                param.data = torch.empty(0, dtype=param.dtype, device=param.device)
+                param.requires_grad = False
+
+
 def convert_dtype_str2torch(str_dtype):
     """Converts a string dtype to its corresponding PyTorch dtype.
 
@@ -632,18 +659,13 @@ def get_block_names(model, quant_vision=False):
         block_names = []
         target_modules = []
         vision_blocks_tuple = ("vision", "visual", "image", "img")
-        last_block_name = ""
-        for n, m in model.named_modules():
-            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                if quant_vision or all(key not in n.lower() for key in (vision_blocks_tuple)):
-                    if last_block_name and last_block_name in n:
-                        continue
-                    target_modules.append((n, m))
-                    last_block_name = n
+        target_modules = _search_block("", model)
+
         for i, target_m in enumerate(target_modules):
-            block_names.append([])
-            for n, m in target_m[1].named_children():
-                block_names[i].append(target_m[0] + "." + n)
+            if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+                block_names.append([])
+                for n, m in target_m[1].named_children():
+                    block_names[-1].append(target_m[0] + "." + n)
         return block_names
 
     if quant_vision or not is_pure_text_model(model):

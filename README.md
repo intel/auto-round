@@ -20,9 +20,9 @@
 
 ## 🚀 What is AutoRound?
 
-AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
-It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. 
-See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage instructions, please refer to  [User Guide](./docs/step_by_step.md).
+AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
+It achieves high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and providing broad hardware compatibility. 
+See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage instructions, please refer to the [User Guide](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -30,9 +30,11 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 
 ## 🆕 What's New
+[2025/11] AutoRound has now landed in **LLM-Compressor**! You can apply AutoRound algorithm using `AutoRoundModifier`. Check out the [example](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md) to get started!
+
 [2025/11] AutoRound now offers preliminary support for an enhanced GGUF quantization algorithm via `--enable_alg_ext`. For detailed accuracy benchmarks, please refer to the [documentation](./docs/gguf_alg_ext_acc.md).
 
-[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the latest SGLang later than v0.5.4.
+[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the SGLang versions newer than v0.5.4.
 
 [2025/10] We enhanced the RTN mode (--iters 0) to significantly reduce quantization cost compared to the default tuning mode. Check out [this doc](./docs/opt_rtn.md) for some accuracy results. If you don’t have sufficient resources, you can use this mode for 4-bit quantization.
 
@@ -117,6 +119,8 @@ pip install auto-round-lib
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
+> **ModelScope is supported for model downloads, simply set `AR_USE_MODELSCOPE=1`.**
+
 ```bash
 auto-round \
     --model Qwen/Qwen3-0.6B \
@@ -124,6 +128,7 @@ auto-round \
     --format "auto_round" \
     --output_dir ./tmp_autoround
 ```
+
 
 We offer another two recipes, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
@@ -184,14 +189,14 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 <summary>Important Hyperparameters</summary>
 
 ##### Quantization Scheme & Configuration
-- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`.
+- **`scheme` (str|dict|AutoScheme)**: The predefined quantization keys, e.g. `W4A16`, `MXFP4`, `NVFP4`, `GGUF:Q4_K_M`. For MXFP4/NVFP4, we recommend exporting to LLM-Compressor format.
 - **`bits` (int)**: Number of bits for quantization (default is `None`). If not None, it will override the scheme setting.
 - **`group_size` (int)**: Size of the quantization group (default is `None`). If not None, it will override the scheme setting.
 - **`sym` (bool)**: Whether to use symmetric quantization (default is `None`). If not None, it will override the scheme setting.
-- **`layer_config` (dict)**: Configuration for weight quantization (default is `None`), mainly for mixed schemes.
+- **`layer_config` (dict)**: Configuration for layer_wise scheme (default is `None`), mainly for customized mixed schemes.
 
 ##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: [Experimental Feature] Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
 - **`disable_opt_rtn` (bool)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `False` (improved RTN enabled).
 
 ##### Tuning Process Parameters
@@ -207,12 +212,13 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### Device/Speed Configuration
 - **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
-- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to save ram usage (default is `False`).
+- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `False`).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, "cpu"`, `"cuda"`, `"0,1,2"` (default is `'0'`). When using "auto", it will try to use all available GPUs.
 
 </details>
 
-### AutoScheme Usage 
+### Adaptive Bits/Dtype Usage 
+AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
 from auto_round import AutoRound, AutoScheme
@@ -243,7 +249,7 @@ ar.quantize_and_save()
 
 ### API Usage for VLMs
 
-If you encounter issues during quantization, try setting iters=0 (to enable RTN) and use group_size=32 for better
+If you encounter issues during quantization, try setting iters=0 (to enable RTN) and group_size=32 for better
 results.
 
 
@@ -252,17 +258,17 @@ results.
 
 **This feature is experimental and may be subject to changes**.
 
-By default, AutoRoundMLLM only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
+By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
-is limited. For more information, please refer to the AutoRoundMLLM [readme](./auto_round/mllm/README.md).
+is limited. For more information, please refer to the AutoRound [readme](./auto_round/mllm/README.md).
 
 ```python
-from auto_round import AutoRoundMLLM
+from auto_round import AutoRound
 
 # Load the model
 model_name_or_path = "Qwen/Qwen2.5-VL-7B-Instruct"
 # Quantize the model
-ar = AutoRoundMLLM(model_name_or_path, scheme="W4A16")
+ar = AutoRound(model_name_or_path, scheme="W4A16")
 output_dir = "./qmodel"
 ar.quantize_and_save(output_dir)
 ```
@@ -294,7 +300,7 @@ for output in outputs:
 
 
 ### SGLang (Intel GPU/CUDA)
-Please note that support for the MoE models and visual language models is currently limited.
+**Please note that support for the MoE models and visual language models is currently limited.**
 
 ```python
 import sglang as sgl
@@ -314,7 +320,7 @@ for prompt, output in zip(prompts, outputs):
 ### Transformers (CPU/Intel GPU/Gaudi/CUDA)
 
 
-AutoRound support 10+ backends and automatically selects the best available backend based on the installed libraries and prompts the user to
+AutoRound supports 10+ backends and automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
 **Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as
