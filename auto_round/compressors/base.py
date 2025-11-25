@@ -42,6 +42,7 @@ from auto_round.compressors.utils import (
     immediate_saving,
     infer_bits_by_data_type,
     init_cache,
+    is_hpex_available,
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
@@ -85,7 +86,6 @@ from auto_round.utils import (
     is_debug_mode,
     is_fp8_linear,
     is_fp8_model,
-    is_hpex_available,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -626,10 +626,11 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%%, but it might throw an exception."
             )
-
-        # if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
-        #     self.enable_torch_compile = False
-        #     logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        _is_fp8 = is_wfp8afp8(self.data_type) or is_wfp8afp8(self.act_data_type)
+        # On HPU, we rely on torch.compile to speed up the model execution.
+        if self.enable_torch_compile and _is_fp8 and not is_hpex_available():
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
