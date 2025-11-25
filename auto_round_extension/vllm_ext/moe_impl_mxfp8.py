@@ -16,8 +16,6 @@ from typing import Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
-import vllm.envs as envs
-from vllm.distributed import get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import (
     FusedMoE,
@@ -27,12 +25,6 @@ from vllm.model_executor.layers.fused_moe import (
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.utils import set_weight_attrs
 
-import auto_round_extension.vllm_ext.mxfp4_qdq_utils as mxfp4_utils
-from auto_round_extension.vllm_ext.mxfp4_qdq_utils import (
-    dequant_mxfp4_to_fp8,
-    mxfp4_gemm_with_unpacked_weight,
-    run_mxfp4_emulations,
-)
 from auto_round_extension.vllm_ext.quant_method_moe import AutoRoundMoEMethod
 
 logger = init_logger(__name__)
