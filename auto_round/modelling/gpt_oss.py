@@ -18,6 +18,7 @@ from torch import nn
 from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
+from auto_round.utils import unsupported_meta_device
 
 __all__ = ["get_replacement_info"]
 
@@ -82,19 +83,15 @@ class SequentialGPTOSSMoE(nn.Module):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
-        gup = original.experts.gate_up_proj  # [E, H, 2I]
-        gup_b = original.experts.gate_up_proj_bias  # [E, 2I]
-        dwn = original.experts.down_proj  # [E, I, H]
-        dwn_b = original.experts.down_proj_bias  # [E, H]
+        if not unsupported_meta_device(original):
+            for i, mlp in enumerate(self.experts):
+                _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
+                _update_parameter(mlp.up_proj, "weight", original.experts.gate_up_proj[i, :, 1::2].T)
+                _update_parameter(mlp.down_proj, "weight", original.experts.down_proj[i].T)
 
-        for i, mlp in enumerate(self.experts):
-            _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
-            _update_parameter(mlp.up_proj, "weight", original.experts.gate_up_proj[i, :, 1::2].T)
-            _update_parameter(mlp.down_proj, "weight", original.experts.down_proj[i].T)
-
-            _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
-            _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
-            _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
+                _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
+                _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
+                _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape

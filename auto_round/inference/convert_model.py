@@ -41,6 +41,7 @@ from auto_round.utils import (
     is_hpex_available,
     set_module,
 )
+from auto_round.special_model_handler import _handle_moe_model
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
@@ -581,6 +582,9 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
+
+    # preprocess model before replace layers
+    model = _handle_moe_model(model)
 
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
