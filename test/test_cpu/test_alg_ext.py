@@ -27,6 +27,6 @@ class TestAlgExt(unittest.TestCase):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         for scheme in ["MXFP4", "NVFP4", "W2A16G64"]:
             ar = AutoRound(
-                model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True
+                model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True
             )
             ar.quantize()
