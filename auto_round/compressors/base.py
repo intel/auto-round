@@ -3083,7 +3083,6 @@ class BaseCompressor(object):
         serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-
         compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
@@ -3108,6 +3107,8 @@ class BaseCompressor(object):
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
             device=self.device,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
             **kwargs,
         )
         return compressed_model
