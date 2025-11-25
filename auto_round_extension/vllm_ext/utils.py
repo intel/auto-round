@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-
+from typing import Union
 from auto_round.schemes import QuantizationScheme
 
 E8M0_EXPONENT_BIAS = 127
@@ -106,3 +106,64 @@ def _to_mx_rceil(
     # scale and saturated cast the data elements to max of target dtype
     data_lp = torch.clamp(data_hp * descale_fp.unsqueeze(1), min=-1 * max_pos, max=max_pos)
     return exponent, data_lp
+
+
+def to_mx_fp8e4m3(
+    data_hp: torch.Tensor,
+    elem_dtype: Union[torch.dtype, str],
+    block_size: int,
+
+):
+    """
+    Takes a high precision tensor and converts to MX scale and raw data, in
+    naive layout (scale and raw data are separate tensors).
+    """
+
+    assert data_hp.dtype in (
+        torch.bfloat16,
+        torch.float,
+    ), f"{data_hp.dtype} is not supported yet"
+    # TODO(future PR): consider supporting padding
+    data_hp = data_hp.contiguous()
+
+    # calculate the scale in e8m0 format
+    orig_shape = data_hp.shape
+    data_hp = data_hp.reshape(-1, block_size)
+
+    # find max value of the data
+    # Note: this only implements the `minimally supported` version of
+    # https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+    # section 6.3.
+    max_abs = torch.amax(torch.abs(data_hp), 1)
+
+    # Set X to be the largest power-of-two less than or equal to
+    # max_abs(v), divided by the largest power of two representable
+    # in the element data type, and get the mbits at the same time
+    assert elem_dtype == torch.float8_e4m3fn, f"only float8_e4m3fn is supported now, got {elem_dtype}"
+
+    max_pos = torch.finfo(torch.float8_e4m3fn).max  # 448.0
+
+    scale_e8m0_biased, data_lp = _to_mx_rceil(data_hp, max_abs, max_pos)
+
+
+    data_lp = data_lp.to(elem_dtype)
+    # need to reshape at the end to help inductor fuse things
+    data_lp = data_lp.reshape(orig_shape)
+
+
+    # scale_e8m0_biased = scale_e8m0_biased.view(torch.float8_e8m0fnu)
+    return scale_e8m0_biased, data_lp
+    
+    
+
+def down_size(size):
+    assert size[-1] % 2 == 0, f"{size} last dim not divisible by two"
+    return (*size[:-1], size[-1] // 2)
+
+
+def pack_uint4(uint8_data: torch.Tensor) -> torch.Tensor:
+    # converting to uint8 for operations
+    shape = uint8_data.shape
+    assert shape[-1] % 2 == 0
+    uint8_data = uint8_data.contiguous().view(-1)
+    return (uint8_data[::2] << 4 | uint8_data[1::2]).view(down_size(shape))
