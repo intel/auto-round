@@ -312,7 +312,7 @@ class TestGGUF(unittest.TestCase):
         # test mixed q2_k_s
         res = os.system(
             f"cd ../.. && {python_path} -m auto_round --model {model_name}"
-            f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme gguf:mixed_q2_k_s"
+            f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme GGUF:Q2_k_MIXED"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

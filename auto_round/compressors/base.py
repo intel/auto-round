@@ -780,8 +780,8 @@ class BaseCompressor(object):
 
         if gguf_format_name:
             for i in range(len(formats)):
-                if gguf_format_name.lower().startswith("gguf:mixed"):
-                    gguf_format_name = gguf_format_name.lower().replace("mixed_", "")
+                if gguf_format_name.lower().endswith("mixed"):
+                    gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
                 if formats[i] != "fake" and formats[i] != gguf_format_name.lower():
                     logger.warning(
                         f"reset format {formats[i]} to {gguf_format_name.lower()} "
