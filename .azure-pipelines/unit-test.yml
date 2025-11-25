@@ -86,7 +86,7 @@ stages:
               uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
               uv pip install .
               pip list
-              cd /auto-round/.azure-pipelines/scripts
+              cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
               bash ut/collect_log.sh
             env:
               PYTHONUNBUFFERED: '1'
