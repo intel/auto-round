@@ -7,7 +7,6 @@ numpy
 tqdm
 packaging
 pillow
-tbb
 torch
 transformers>=4.38
 threadpoolctl
