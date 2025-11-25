@@ -219,10 +219,6 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
     """
     Hook to update k_scale and v_scale parameters when running kv_cache quantization.
     """
-    # logger.debug(
-    #     "Calibrate kv_cache output hook for %s %s"
-    #     % (module.__class__.__name__, str(getattr(module, "layer_idx", None)))
-    # )
     kv_cache = getattr(module, "kv_cache")
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]

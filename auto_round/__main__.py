@@ -154,11 +154,19 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
         basic.add_argument(
-            "--static_kv_dtype", default=None, type=str, help="Data type for static quantize key and value. "
+            "--static_kv_dtype",
+            default=None,
+            type=str,
+            choices=["fp8"],
+            help="Data type for static quantize key and value. ",
         )
 
         basic.add_argument(
-            "--static_attention_dtype", default=None, type=str, help="Data type for static quantize attention. "
+            "--static_attention_dtype",
+            default=None,
+            type=str,
+            choices=["fp8"],
+            help="Data type for static quantize attention. ",
         )
 
         tuning = self.add_argument_group("Tuning Arguments")
