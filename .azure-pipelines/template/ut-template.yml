@@ -38,6 +38,7 @@ steps:
           && pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu \
           && pip install intel-extension-for-pytorch==2.8.0 \
           && pip install -r requirements-cpu.txt \
+          && pip install transformers==4.57.1 \
           && pip install . \
           && pip list"
       displayName: "Env Setup"
