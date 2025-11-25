@@ -75,7 +75,6 @@ def _use_hpu_compile_mode():
 
 def compile_func_on_hpu(func):
     if _use_hpu_compile_mode():
-        logger.warning_once(f"!!!!!!!!!!!! Using HPU compile mode for function {func.__name__}")
         return torch.compile(func, backend="hpu_backend")
     return func
 
