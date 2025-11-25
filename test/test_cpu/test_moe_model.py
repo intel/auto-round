@@ -22,7 +22,7 @@ def setup_gpt_oss():
 @pytest.fixture
 def setup_llama4():
     """Fixture to set up the llama4 model and tokenizer."""
-    model_name = "/tf_dataset/auto_round/models/Llama-4-Scout-17B-16E-Instruct"
+    model_name = "/tf_dataset/auto_round/models/meta-llama/Llama-4-Scout-17B-16E-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.vision_config.num_hidden_layers = 2  # Reduce layers for testing
