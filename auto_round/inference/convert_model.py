@@ -583,7 +583,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
 
-    # preprocess model before replace layers
+    # Preprocess model before replace layers
     model = _handle_moe_model(model)
 
     # Replace layers with quantized versions
