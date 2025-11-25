@@ -70,12 +70,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "and MXFP4/MXFP8/NVFP4 for different data type.",
         )
         basic.add_argument(
-            "--static_attention_dtype",
-            default=None,
-            type=str,
-            # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
-        )
-        basic.add_argument(
             "--batch_size",
             "--train_bs",
             "--bs",
@@ -604,7 +598,6 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
-        static_attention_dtype=args.static_attention_dtype,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,

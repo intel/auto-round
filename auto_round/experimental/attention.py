@@ -130,7 +130,10 @@ def init_hooked_attention(module: Module, config):
         if config._attn_implementation != HOOKED_ATTENTION_NAME:
             # assumes only one model at a time
             global _original_impl
-
+            _original_impl = config._attn_implementation
+            # Add new implementation to AttentionInterface(mapping)
+            AttentionInterface.register(HOOKED_ATTENTION_NAME, _ct_hooked_attention)
+            config._attn_implementation = HOOKED_ATTENTION_NAME
     # initialize_hooked_kv_cache(model, module)
 
 
