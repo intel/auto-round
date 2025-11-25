@@ -134,6 +134,7 @@ def init_hooked_attention(module: Module, config):
             # Add new implementation to AttentionInterface(mapping)
             AttentionInterface.register(HOOKED_ATTENTION_NAME, _ct_hooked_attention)
             config._attn_implementation = HOOKED_ATTENTION_NAME
+
     # initialize_hooked_kv_cache(model, module)
 
 
