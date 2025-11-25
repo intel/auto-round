@@ -18,6 +18,7 @@ from torch import nn
 from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
+
 from auto_round.utils import unsupported_meta_device
 
 __all__ = ["get_replacement_info"]

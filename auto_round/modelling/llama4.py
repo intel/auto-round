@@ -19,6 +19,7 @@ __all__ = ["get_replacement_info"]
 import torch
 from transformers.modeling_utils import no_init_weights
 from transformers.models.llama4.modeling_llama4 import Llama4TextMLP
+
 from auto_round.utils import unsupported_meta_device
 
 
@@ -27,7 +28,7 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
         self.num_experts = original.gate_up_proj.shape[0]
         with no_init_weights():
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
-        
+
         if not unsupported_meta_device(original):
             intermediate_size = original.down_proj.shape[1]
 
