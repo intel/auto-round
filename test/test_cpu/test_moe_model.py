@@ -15,7 +15,7 @@ def setup_gpt_oss():
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.num_hidden_layers = 1  # Reduce layers for testing
     model = GptOssForCausalLM(config)
-    output_dir = "test_quantized_gpt_oss"
+    output_dir = "/tmp/test_quantized_gpt_oss"
     return model, tokenizer, output_dir, config
 
 
@@ -28,7 +28,7 @@ def setup_llama4():
     config.vision_config.num_hidden_layers = 2  # Reduce layers for testing
     config.text_config.num_hidden_layers = 2
     model = Llama4ForConditionalGeneration(config)
-    output_dir = "test_quantized_llama4"
+    output_dir = "/tmp/test_quantized_llama4"
     return model, tokenizer, output_dir, config
 
 
