@@ -21,8 +21,8 @@ MODELS = [
     # "/data6/yiliu4/Qwen3-15B-A2B-Base-MXFP4",
     # "/data6/yiliu4/Llama-3.2-1B-Instruct-MXFP4-fp8attention",
     # "/data6/yiliu4/Llama-3.2-1B-Instruct-MXFP8"
-    "/home/yiliu7/workspace/inc/examples/pytorch/nlp/huggingface_models/language-modeling/quantization/auto_round/qmodels/quantized_model_qwen_mxfp4",
-    "/home/yiliu7/workspace/inc/examples/pytorch/nlp/huggingface_models/language-modeling/quantization/auto_round/qmodels/quantized_model_qwen_mxfp8",
+    "/storage/yiliu7/ar_vllm_ext/quantized_model_qwen_mxfp4",
+    "/storage/yiliu7/ar_vllm_ext/quantized_model_qwen_mxfp8",
 ]
 
 
