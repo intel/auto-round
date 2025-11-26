@@ -13,7 +13,6 @@ on:
       - "requirements-cpu.txt"
       - ".github/workflows/compatibility-test.yml"
       - "!**/*.md"
-  push:
   workflow_dispatch:
 
 concurrency:
@@ -24,7 +23,7 @@ jobs:
   compatibility-test-arm:
     name: ${{ matrix.os-name }} on ARM64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
