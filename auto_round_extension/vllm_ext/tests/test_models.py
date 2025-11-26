@@ -26,6 +26,16 @@ MODELS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def set_vllm_ar_env(monkeypatch):
+    monkeypatch.setenv("VLLM_AR_MXFP4_MODULAR_MOE", "1")
+    monkeypatch.setenv("VLLM_MXFP4_PRE_UNPACK_TO_FP8", "1")
+    monkeypatch.setenv("VLLM_MXFP4_PRE_UNPACK_WEIGHTS", "0")
+    monkeypatch.setenv("VLLM_ENABLE_STATIC_MOE", "0")
+    monkeypatch.setenv("VLLM_USE_DEEP_GEMM", "0")
+    monkeypatch.setenv("VLLM_ENABLE_AR_EXT", "1")
+
+
 @pytest.mark.skipif(
     not current_platform.is_cuda(),
     reason="only supports CUDA backend.",
