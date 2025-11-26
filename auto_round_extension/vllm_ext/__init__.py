@@ -20,7 +20,7 @@
 def apply():
     import auto_round_extension.vllm_ext.auto_round_ext
     import auto_round_extension.vllm_ext.envs_ext
-    print("*****************************************************************************")
-    print(f"* !!! VLLM_ENABLE_AR_EXT is set to 1, applying auto_round_vllm_extension   *")
-    print("*****************************************************************************")
 
+    print("*****************************************************************************")
+    print("* !!! VLLM_ENABLE_AR_EXT is set to 1, applying auto_round_vllm_extension   *")
+    print("*****************************************************************************")
