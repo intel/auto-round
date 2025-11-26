@@ -4,6 +4,7 @@ branch = True
 [paths]
 source =
     auto_round/
+    /auto-round/auto_round/
     */site-packages/auto_round/
     */dist-packages/auto_round/
 
