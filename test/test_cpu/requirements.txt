@@ -4,5 +4,6 @@ gguf
 torchvision
 parameterized
 numba
+#TODO: (yiliu30) replace it with the release version
 llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@7b28d78
 tbb
