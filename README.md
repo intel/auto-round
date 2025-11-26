@@ -31,24 +31,25 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 ## 🆕 What's New
 
-* [2025/11] AutoRound has landed in [**LLM-Compressor**](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)!
+* [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md).
 
-* [2025/11] An enhanced GGUF quantization algorithm improves [accuracy](./docs/gguf_alg_ext_acc.md).
+* [2025/11] An **enhanced GGUF** quantization algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/gguf_alg_ext_acc.md).
 
-* [2025/10] AutoRound has been integrated into **SGLang**: [Blog](https://lmsys.org/blog/2025-11-13-AutoRound/), [X post](https://x.com/lmsysorg/status/1991977019220148650?s=20), [Linkedin](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472).
+* [2025/10] AutoRound has been integrated into **SGLang**: [*Usage*](), [*LMSYS Blog*](https://lmsys.org/blog/2025-11-13-AutoRound/), [*X post*](https://x.com/lmsysorg/status/1991977019220148650?s=20), [*Linkedin*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472).
 
-* [2025/10] A fast algorithm to generate [**mixed bits/datatypes**](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) schemes in minutes with good [results](./docs/auto_scheme_acc.md)
+* [2025/10] A **mix precision** algorithm is available to generate schemes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
-* [2025/09] **MXFP4 and NVFP4 dtypes** is supported with [accuracy data](./docs/mxnv_acc.md).
+* [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
-* [2025/08] **An improved INT2 algorithm** via `--enable_alg_ext` with good [accuracy](./docs/alg_202508.md)
+* [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
 
-* [2025/07] **GGUF** format is supported and optimized RTN mode is suggested (--iters 0) for
-  all bits other than 3 bits. 
+* [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
 
-* [2025/05] AutoRound has been integrated into **Transformers** and **vLLM**: [Blog](). 
+* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/), [*Blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e).
 
-* [2025/03] The INT2-mixed [**DeepSeek-R1**](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc) model (~200GB) retains 97.9% accuracy.
+* [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
+
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*]((https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc)).
 
 
 ## ✨ Key Features
@@ -337,7 +338,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ, GPTQModel, Triton, Marlin, and ExLLaMAV2 for providing low-precision CUDA kernels, which are leveraged in AutoRound.
 
 > **Note**:
-> For all publications/blogs, please view [Publication List](./docs/publication_list.md).
+> For all publications/events, please view [Publication List](./docs/publication_list.md).
 
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!

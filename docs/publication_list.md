@@ -11,4 +11,4 @@ Full Publications/Events
 
 ## 2024 (1)
 
-arXiv: [Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://arxiv.org/pdf/2309.05516) (Oct 2024)
+* EMNLP: [Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (Oct 2024)
