@@ -13,6 +13,7 @@ on:
       - "requirements-cpu.txt"
       - ".github/workflows/compatibility-test.yml"
       - "!**/*.md"
+  push:
   workflow_dispatch:
 
 concurrency:
