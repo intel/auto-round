@@ -21,10 +21,10 @@ logger = init_logger(__name__)
 
 # Define extra environment variables
 extra_environment_variables: dict[str, Callable[[], Any]] = {
-    "VLLM_MXFP4_PRE_UNPACK_WEIGHTS": lambda: os.getenv("VLLM_MXFP4_PRE_UNPACK_WEIGHTS", "1") in ("1", "true", "True"),
-    "VLLM_MXFP4_PRE_UNPACK_TO_FP8": lambda: os.getenv("VLLM_MXFP4_PRE_UNPACK_TO_FP8", "0") in ("1", "true", "True"),
-    "VLLM_ENABLE_STATIC_MOE": lambda: os.getenv("VLLM_ENABLE_STATIC_MOE", "1") in ("1", "true", "True"),
-    "VLLM_AR_MXFP4_MODULAR_MOE": lambda: os.getenv("VLLM_AR_MXFP4_MODULAR_MOE", "0") in ("1", "true", "True"),
+    "VLLM_MXFP4_PRE_UNPACK_WEIGHTS": lambda: os.getenv("VLLM_MXFP4_PRE_UNPACK_WEIGHTS", "0") in ("1", "true", "True"),
+    "VLLM_MXFP4_PRE_UNPACK_TO_FP8": lambda: os.getenv("VLLM_MXFP4_PRE_UNPACK_TO_FP8", "1") in ("1", "true", "True"),
+    "VLLM_ENABLE_STATIC_MOE": lambda: os.getenv("VLLM_ENABLE_STATIC_MOE", "0") in ("1", "true", "True"),
+    "VLLM_AR_MXFP4_MODULAR_MOE": lambda: os.getenv("VLLM_AR_MXFP4_MODULAR_MOE", "1") in ("1", "true", "True"),
     "VLLM_AR_POST_PROCESS_GPTOSS": lambda: os.getenv("VLLM_AR_POST_PROCESS_GPTOSS", "0") in ("1", "true", "True"),
 }
 # Add the extra environment variables to vllm.envs
