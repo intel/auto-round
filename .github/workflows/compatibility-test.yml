@@ -2,8 +2,8 @@ name: Compatibility Test on ARM64
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize]
     paths:
       - "auto_round/**"
       - "auto_round_extension/**"
