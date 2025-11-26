@@ -295,7 +295,21 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="List of layer names to keep in original precision (not quantized). "
             "Useful for preserving critical layers. Separate multiple names with commas.",
         )
+        scheme.add_argument(
+            "--static_kv_dtype",
+            default=None,
+            type=str,
+            choices=["fp8", "float8_e4m3fn"],
+            help="Data type for static quantize key and value. ",
+        )
 
+        scheme.add_argument(
+            "--static_attention_dtype",
+            default=None,
+            type=str,
+            choices=["fp8", "float8_e4m3fn"],
+            help="Data type for static quantize attention. ",
+        )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
             "--super_group_size", default=None, type=int, help="Super group size for double quantization."
@@ -556,6 +570,8 @@ def tune(args):
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
         fp_layers=args.fp_layers,
+        static_kv_dtype=args.static_kv_dtype,
+        static_attention_dtype=args.static_attention_dtype,
     )
     mllm_config = MLLMExtraConfig(
         quant_nontext_module=args.quant_nontext_module, extra_data_dir=args.extra_data_dir, template=args.template
