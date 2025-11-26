@@ -58,7 +58,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip uv setuptools
+          python -m pip install --upgrade pip uv setuptools==70.2.0
           uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
           uv pip install .
           pip list
