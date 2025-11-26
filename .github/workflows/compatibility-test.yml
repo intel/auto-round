@@ -35,9 +35,6 @@ jobs:
           - os: ubuntu-24.04-arm
             os-name: Linux
             shell: bash
-          - os: windows-11-arm
-            os-name: Windows
-            shell: pwsh
 
     defaults:
       run:
@@ -50,7 +47,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Verify ARM architecture
         run: |
@@ -58,9 +55,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools==70.2.0
-          pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-          pip install .
+          python -m pip install --upgrade pip uv setuptools
+          uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          uv pip install .
           pip list
         env:
           PYTHONUNBUFFERED: "1"
@@ -70,3 +67,4 @@ jobs:
       - name: Run compatibility test
         run: |
           python -c "import auto_round"
+          auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 0 --nsamples 8
