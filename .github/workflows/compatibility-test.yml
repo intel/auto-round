@@ -1,0 +1,78 @@
+name: Compatibility Test on ARM64
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize]
+    paths:
+      - "auto_round/**"
+      - "auto_round_extension/**"
+      - "setup.py"
+      - "setup.cfg"
+      - "requirements.txt"
+      - "requirements-cpu.txt"
+      - ".github/workflows/compatibility-test.yml"
+      - "!**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility-test-arm:
+    name: ${{ matrix.os-name }} on ARM64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            os-name: macOS
+            shell: bash
+          - os: ubuntu-24.04-arm
+            os-name: Linux
+            shell: bash
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify ARM architecture
+        run: |
+          python -c "import platform; print(f'Architecture: {platform.machine()}')"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip uv setuptools
+          uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          uv pip install datasets --upgrade
+          uv pip install .
+          pip list
+        env:
+          PYTHONUNBUFFERED: "1"
+          UV_NO_PROGRESS: "1"
+          UV_SYSTEM_PYTHON: "1"
+          TQDM_MININTERVAL: "60"
+
+      - name: Run compatibility test
+        run: |
+          set -xe
+          python -c "import auto_round"
+          echo "============================================================================"
+          auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 0 --nsamples 8
+          echo "============================================================================"
+          auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 1 --nsamples 8
+        env:
+          TQDM_MININTERVAL: "60"
+          PYTHONUNBUFFERED: "1"

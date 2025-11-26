@@ -26,7 +26,7 @@ pool: GAUDI
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py310"
+  IMAGE_TAG: "py312"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
@@ -47,11 +47,6 @@ stages:
               utScriptFileName: "run_ut_hpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
-
-          - task: UseDotNet@2
-            displayName: 'Use .NET Core sdk 7.0.x'
-            inputs:
-              version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
             inputs:

@@ -16,6 +16,8 @@ from copy import deepcopy
 from dataclasses import dataclass, fields
 from typing import Optional, Union
 
+import torch
+
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
 
@@ -264,6 +266,25 @@ for key, val in GGUF_CONFIG.items():
     value.pop("embedding", None)
     value.pop("lm_head", None)
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
+
+SPECIAL_SCHEMES = {"GGUF:Q2_K_MIXED": PRESET_SCHEMES["GGUF:Q2_K_S"]}
+PRESET_SCHEMES.update(SPECIAL_SCHEMES)
+
+
+def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.nn.Module) -> dict:
+    """handle special schemes, like GGUF:Q2_K_MIXED.
+    Provide some special auto_round recipes.
+
+    """
+    if scheme_name == "GGUF:Q2_K_MIXED":
+        for n, m in model.named_modules():
+            if n in layer_config:
+                continue
+            if n == "lm_head" or isinstance(m, torch.nn.Embedding):
+                layer_config[n] = "GGUF:Q8_0"
+            elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_experts" in n) and n != "lm_head":
+                layer_config[n] = "GGUF:Q4_K_S"
+    return layer_config
 
 
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
