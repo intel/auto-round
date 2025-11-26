@@ -302,9 +302,6 @@ class BaseCompressor(object):
         if device_map is None:
             device_map = 0
 
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
-
         self.device_map = device_map
         if isinstance(self.device_map, str):
             self.device_map = self.device_map.replace(" ", "")
@@ -351,6 +348,10 @@ class BaseCompressor(object):
         # Whether to pack the layer immediately after tuning
         self.immediate_packing = False
         self.immediate_saving = False
+
+        # after setting iters
+        self.enable_torch_compile = enable_torch_compile
+        self._adjust_torch_compile(enable_torch_compile)
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
