@@ -272,8 +272,8 @@ class TestAutoRound(unittest.TestCase):
         if static_kv_dtype == "fp8":
             self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
             self.assertIn("model.decoder.layers.8.self_attn.v_scale", f.keys())
-            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1, 1]))
-            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1, 1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1]))
             self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype, torch.float32)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
@@ -300,6 +300,38 @@ class TestAutoRound(unittest.TestCase):
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_static_fp8_attn(self):
+        import os
+
+        from safetensors import safe_open
+
+        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            iters=0,
+            nsamples=2,
+            seqlen=2,
+            scheme="FP8_STATIC",
+            static_attention_dtype="fp8",
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.input_scale", f.keys())
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+        check_attrs = ["k_scale", "v_scale", "q_scale"]
+        for attr in check_attrs:
+            weight_name = f"model.decoder.layers.8.self_attn.{attr}"
+            self.assertIn(weight_name, f.keys())
+            self.assertEqual(f.get_tensor(weight_name).shape, torch.Size([1]))
+            self.assertEqual(f.get_tensor(weight_name).dtype, torch.float32)
+
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
