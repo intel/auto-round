@@ -12,3 +12,9 @@ Full Publications/Events
 ## 2024 (1)
 
 * EMNLP: [Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (Oct 2024)
+
+# 2023 (2)
+
+* arXiv: [TEQ: Trainable Equivalent Transformation for Quantization of LLMs](https://arxiv.org/abs/2310.10944) (Oct 2023)
+
+* Blog in Medium: [Effective Post-Training Quantization for Large Language Models](https://medium.com/intel-analytics-software/effective-post-training-quantization-for-large-language-models-with-enhanced-smoothquant-approach-93e9d104fb98) (Apr 2023)
