@@ -6,7 +6,5 @@ numpy
 tqdm
 packaging
 pillow
-numba
-tbb
 transformers
 threadpoolctl

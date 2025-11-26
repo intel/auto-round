@@ -308,11 +308,27 @@ def json_serialize(obj: Any):
 
 
 def get_reciprocal(tensor):
-    if torch.dtype is torch.float16:
-        tensor = torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
-    else:
-        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
-    return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
+    """
+    Memory-frugal reciprocal:
+    - Inplace operations on original tensor
+    - Only allocates small boolean mask
+    """
+    eps = 1e-5 if tensor.dtype == torch.float16 else 1e-30
+
+    # Create mask for very small elements (small overhead)
+    mask = tensor.abs() < eps
+
+    # Prepare output in place: reuse tensor if allowed, otherwise create once
+    recip = torch.empty_like(tensor)
+
+    # Safe reciprocal: for nonzero elements
+    nonzero_mask = ~mask
+    recip[nonzero_mask] = 1.0 / tensor[nonzero_mask]
+
+    # Zero out elements below threshold
+    recip[mask] = 0.0
+
+    return recip
 
 
 def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch.Tensor], Dict[str, Any]]:

@@ -5,3 +5,4 @@ torchvision
 compressed-tensors
 parameterized
 numba
+tbb
