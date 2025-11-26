@@ -48,7 +48,7 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
 
 def test_gptoss(setup_gpt_oss):
     model, tokenizer, output_dir, config = setup_gpt_oss
-    
+
     # Below parameter is set to be same as the full model
     # Remove it to avoid mismatch during quantized model loading
     delattr(model.config, "layer_types")

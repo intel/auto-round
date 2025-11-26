@@ -1,10 +1,11 @@
+import shutil
+
 import pytest
 import torch
 from transformers import AutoConfig, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 
 from auto_round import AutoRound
-import shutil
 
 
 @pytest.fixture
@@ -31,6 +32,7 @@ def setup_llama4():
     output_dir = "test_quantized_llama4"
     return model, tokenizer, output_dir, config
 
+
 def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
     """Helper function to quantize the model with the given scheme."""
     autoround = AutoRound(
@@ -43,6 +45,7 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     return quantized_model
+
 
 def test_gptoss(setup_gpt_oss):
     model, tokenizer, output_dir, config = setup_gpt_oss
@@ -60,16 +63,17 @@ def test_gptoss(setup_gpt_oss):
     quantized_model.to("cuda")
     loaded_model.to("cuda")
     for n, m in quantized_model.named_modules():
-         if m.__class__.__name__ == "QuantLinear":
+        if m.__class__.__name__ == "QuantLinear":
             loaded_m = loaded_model.get_submodule(n)
             assert (loaded_m.weight_packed == m.weight_packed).all()
 
-    inp = torch.randint(0, 100, (1,64)).to("cuda")
+    inp = torch.randint(0, 100, (1, 64)).to("cuda")
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
 
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
+
 
 def test_llama4(setup_llama4):
     model, tokenizer, output_dir, config = setup_llama4
@@ -89,11 +93,11 @@ def test_llama4(setup_llama4):
     quantized_model.to("cuda")
     loaded_model.to("cuda")
     for n, m in quantized_model.named_modules():
-         if m.__class__.__name__ == "QuantLinear":
+        if m.__class__.__name__ == "QuantLinear":
             loaded_m = loaded_model.get_submodule(n)
             assert (loaded_m.weight_packed == m.weight_packed).all()
 
-    inp = torch.randint(0, 100, (1,64)).to("cuda")
+    inp = torch.randint(0, 100, (1, 64)).to("cuda")
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
 
