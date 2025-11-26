@@ -55,8 +55,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip uv setuptools datasets
+          python -m pip install --upgrade pip uv setuptools
           uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          uv pip install datasets --upgrade
           uv pip install .
           pip list
         env:
@@ -67,8 +68,12 @@ jobs:
 
       - name: Run compatibility test
         run: |
+          set -xe
           python -c "import auto_round"
+          echo "============================================================================"
           auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 0 --nsamples 8
+          echo "============================================================================"
+          auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 1 --nsamples 8
         env:
           TQDM_MININTERVAL: "60"
           PYTHONUNBUFFERED: "1"
