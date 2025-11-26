@@ -63,6 +63,8 @@ class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
         ar_config.layer_schemes = layer_schemes
         return ar_config
 
+
 # Patch vLLM’s AutoRoundConfig at import time
 import vllm.model_executor.layers.quantization.auto_round as _auto_round_module
+
 _auto_round_module.AutoRoundConfig = AutoRoundExtensionConfig
