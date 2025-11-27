@@ -502,7 +502,7 @@ class BaseCompressor(object):
             if len(tmp_devices) > 1:
                 logger.warning(
                     f"there are multiple device types in the device_map, "
-                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device "
+                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device."
                 )
 
             self.device = tmp_devices[0]
@@ -517,7 +517,7 @@ class BaseCompressor(object):
                 if "bits" not in kwargs:
                     data_type = kwargs["data_type"]
                     raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative.."
+                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
                     )
                 bits = kwargs["bits"]
                 scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
@@ -1780,18 +1780,14 @@ class BaseCompressor(object):
                         f"insufficient collected inputs. "
                     )
                     if "fp8_e5m2" in self.act_data_type:
-                        logger.warning(
-                            msg_prefix +
-                            "Please notes that unit scale is used for this layer."
-                        )
+                        logger.warning(msg_prefix + "Please notes that unit scale is used for this layer.")
                     else:
                         logger.warning(
-                            msg_prefix +
-                            "Static activation quantization is not supported or ineffective, "
+                            msg_prefix + "Static activation quantization is not supported or ineffective, "
                             "Skipping quantization for this layer."
                         )
                         layer_names.remove(layer_name)
-                        return
+                        continue
                 logger.info(f"using rtn to quantize {layer_name}")
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
