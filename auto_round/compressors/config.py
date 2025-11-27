@@ -275,6 +275,7 @@ class SchemeExtraConfig(BaseExtraConfig):
     super_bits: int = None
     super_group_size: int = None
     static_kv_dtype: Union[str, torch.dtype] = None
+    static_attention_dtype: Union[str, torch.dtype] = None
     quant_lm_head: bool = False
     fp_layers: str = None
 

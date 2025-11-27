@@ -20,23 +20,27 @@ import torch
 from transformers.modeling_utils import no_init_weights
 from transformers.models.llama4.modeling_llama4 import Llama4TextMLP
 
+from auto_round.utils import unsupported_meta_device
+
 
 class SequentialLlama4TextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
         self.num_experts = original.gate_up_proj.shape[0]
         with no_init_weights():
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
-        intermediate_size = original.down_proj.shape[1]
 
-        for i in range(self.num_experts):
-            gate_up = original.gate_up_proj[i]
-            down = original.down_proj[i]
-            gate_proj = gate_up[:, :intermediate_size]
-            up_proj = gate_up[:, intermediate_size:]
+        if not unsupported_meta_device(original):
+            intermediate_size = original.down_proj.shape[1]
 
-            self[i].gate_proj.weight.data = gate_proj.t().contiguous()
-            self[i].up_proj.weight.data = up_proj.t().contiguous()
-            self[i].down_proj.weight.data = down.t().contiguous()
+            for i in range(self.num_experts):
+                gate_up = original.gate_up_proj[i]
+                down = original.down_proj[i]
+                gate_proj = gate_up[:, :intermediate_size]
+                up_proj = gate_up[:, intermediate_size:]
+
+                self[i].gate_proj.weight.data.copy_(gate_proj.t())
+                self[i].up_proj.weight.data.copy_(up_proj.t())
+                self[i].down_proj.weight.data.copy_(down.t())
 
 
 class SequentialLlama4TextMoe(torch.nn.Module):
