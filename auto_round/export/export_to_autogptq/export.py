@@ -130,8 +130,6 @@ def convert_from_autogptq_dynamic(dynamic_config: dict) -> dict:
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  ##dese not support lm-head
-        return
     layer = get_module(model, name)
 
     if type(layer) not in SUPPORTED_LAYER_TYPES:  # already packed
@@ -316,3 +314,4 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         model, output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
     )
     return model
+

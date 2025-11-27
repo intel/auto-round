@@ -46,8 +46,6 @@ from auto_round.utils import (
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  ##dese not support lm-head
-        return
     layer = get_module(model, name)
 
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
@@ -169,3 +167,4 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model
+
