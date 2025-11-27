@@ -1774,10 +1774,24 @@ class BaseCompressor(object):
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
-                    logger.warning(
-                        f"Due to insufficient resources: act_max hook for layer '{layer_name}' is unavailable. "
-                        f"Static activation quantization is currently not supported or ineffective for this layer."
+                    # Activation quantization requires collected inputs
+                    msg_prefix = (
+                        f"Activation max hook for layer '{layer_name}' is unavailable due to "
+                        f"insufficient collected inputs. "
                     )
+                    if "fp8_e5m2" in self.act_data_type:
+                        logger.warning(
+                            msg_prefix +
+                            "Please notes that unit scale is used for this layer."
+                        )
+                    else:
+                        logger.warning(
+                            msg_prefix +
+                            "Static activation quantization is not supported or ineffective, "
+                            "Skipping quantization for this layer."
+                        )
+                        layer_names.remove(layer_name)
+                        return
                 logger.info(f"using rtn to quantize {layer_name}")
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
