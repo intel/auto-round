@@ -308,9 +308,6 @@ class BaseCompressor(object):
 
         self.device_list = parse_available_devices(device_map)
 
-        if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
-
         # Set device, must place after model loading
         self.device = get_major_device(device_map)
         set_non_auto_device_map(self.model, self.device_map)
@@ -349,10 +346,6 @@ class BaseCompressor(object):
         self.immediate_packing = False
         self.immediate_saving = False
 
-        # after setting iters
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
-
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
         if self.static_kv_dtype is not None:
@@ -379,9 +372,16 @@ class BaseCompressor(object):
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
+        # after setting iters
+        self.enable_torch_compile = enable_torch_compile
+        self._adjust_torch_compile(enable_torch_compile)
+
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
+
+        if isinstance(scheme, AutoScheme):
+            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
