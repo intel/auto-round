@@ -629,15 +629,13 @@ def dynamic_import_inference_linear(backend, config):
     if "torch_nvfp4" in backend:
         return ar_qmodules.NVFP4QuantLinear
 
-    if "auto_round_kernel" in backend or 'ark' in backend:
+    if "auto_round_kernel" in backend or "ark" in backend:
         try:
             import auto_round_kernel as ark  # pylint: disable=E0401
         except Exception as e:
-            raise ImportError(
-                "Please install auto_round_kernel version for CPU/XPU"
-            )
+            raise ImportError("Please install auto_round_kernel version for CPU/XPU")
         import auto_round_extension.kernel.qlinear as qlinear
-        
+
         if "zp" in backend:
             return qlinear.QuantLinearGPTQ
         elif "awq" in backend:
