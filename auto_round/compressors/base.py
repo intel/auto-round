@@ -2601,7 +2601,7 @@ class BaseCompressor(object):
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
             if self.amp:
-                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
                         (output_q * tmp_attention_mask).to(torch.float32),
                         (current_output * tmp_attention_mask).to(torch.float32),
@@ -2614,7 +2614,7 @@ class BaseCompressor(object):
 
         else:
             if self.amp:
-                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
