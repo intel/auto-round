@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round_extension.qbits.qlinear_qbits import QuantLinear as QBitsQuantLinear
-from auto_round_extension.qbits.qlinear_qbits_gptq import (
-    QuantLinear as QBitsGPTQQuantLinear,
-)
-from auto_round_extension.qbits.qbits_awq import QuantLinear as QBitsAWQQuantLinear
+from auto_round_extension.ark.qlinear import QuantLinear, QuantLinearGPTQ, QuantLinearAWQ
+qlinear_classes = (QuantLinear, QuantLinearGPTQ)
 
-qbits_qlinear_classes = (QBitsQuantLinear, QBitsGPTQQuantLinear)
-
-qbits_awq_classes = (QBitsAWQQuantLinear,)
+awq_classes = (QuantLinearAWQ,)
