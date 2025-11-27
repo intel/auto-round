@@ -314,4 +314,3 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         model, output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
     )
     return model
-

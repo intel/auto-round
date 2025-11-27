@@ -1780,14 +1780,10 @@ class BaseCompressor(object):
                         f"insufficient collected inputs. "
                     )
                     if "fp8_e5m2" in self.act_data_type:
-                        logger.warning(
-                            msg_prefix +
-                            "Please notes that unit scale is used for this layer."
-                        )
+                        logger.warning(msg_prefix + "Please notes that unit scale is used for this layer.")
                     else:
                         logger.warning(
-                            msg_prefix +
-                            "Static activation quantization is not supported or ineffective, "
+                            msg_prefix + "Static activation quantization is not supported or ineffective, "
                             "Skipping quantization for this layer."
                         )
                         layer_names.remove(layer_name)
@@ -3321,4 +3317,3 @@ class BaseCompressor(object):
 
 class LLMCompressor(BaseCompressor):
     pass
-
