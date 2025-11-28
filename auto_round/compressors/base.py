@@ -2800,7 +2800,7 @@ class BaseCompressor(object):
         global_batch_size = self.batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not self.attention_mask :
+        if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
