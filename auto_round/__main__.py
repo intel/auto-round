@@ -78,9 +78,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="The batch size for tuning/calibration."
             "Larger batch sizes may improve stability but require more memory.",
         )
-        basic.add_argument("--avg_bits", default=None, type=float, help="for auto scheme, number of avg weight bits")
+        basic.add_argument("--avg_bits", "--target_bits",
+                           default=None, type=float, help="for auto scheme, number of avg weight bits")
         basic.add_argument(
-            "--options", default=None, type=str, help="for auto scheme, options for auto scheme, e.g. 'W4A16,W8A16'"
+            "--options", default=None, type=str,
+            help="for auto scheme, options for auto scheme, e.g. 'W4A16,W8A16'"
         )
 
         basic.add_argument(

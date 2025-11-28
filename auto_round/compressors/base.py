@@ -428,10 +428,6 @@ class BaseCompressor(object):
 
         all_dtypes = []
         for option in scheme.options:
-            # Skip pure BF16 option
-            if option == "BF16":
-                continue
-
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
