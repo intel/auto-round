@@ -2460,7 +2460,7 @@ class BaseCompressor(object):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q.to(torch.float32), current_output.to(torch.float32)
                         )
-                num_elm = 1 if num_elm <=0 else num_elm
+                num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 self._scale_loss_and_backward(scaler, loss)
@@ -2572,7 +2572,7 @@ class BaseCompressor(object):
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
-    def _get_non_zero_cnt(self,tensor: list[torch.Tensor], indices: list[int]) -> int:
+    def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
         non_zero_cnt = 0
         for t in current_tensors:
@@ -2822,7 +2822,7 @@ class BaseCompressor(object):
                 current_output = to_device(current_output, loss_device)
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
-                num_elm = 1 if num_elm <=0 else num_elm
+                num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
