@@ -337,7 +337,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_awq_lmhead_export(self):
         bits, sym, group_size = 4, False, 128
-        model_name = "/tf_dataset/auto_round/models/phi-2"
+        model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
         }
@@ -369,7 +369,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_gptq_lmhead_export(self):
         bits, sym, group_size = 4, True, 128
-        model_name = "/tf_dataset/auto_round/models/phi-2"
+        model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
         }
