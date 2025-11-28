@@ -2601,7 +2601,7 @@ class BaseCompressor(object):
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
             if self.amp:
-                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
                         (output_q * tmp_attention_mask).to(torch.float32),
                         (current_output * tmp_attention_mask).to(torch.float32),
@@ -2614,7 +2614,7 @@ class BaseCompressor(object):
 
         else:
             if self.amp:
-                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
@@ -3096,7 +3096,6 @@ class BaseCompressor(object):
         serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-
         compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
@@ -3121,6 +3120,8 @@ class BaseCompressor(object):
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
             device=self.device,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
             **kwargs,
         )
         return compressed_model
