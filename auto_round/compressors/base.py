@@ -40,6 +40,7 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     gguf_args_check,
     immediate_saving,
+    IndexSampler,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
@@ -196,7 +197,7 @@ class BaseCompressor(object):
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
-                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
@@ -259,7 +260,6 @@ class BaseCompressor(object):
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
-        sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
         nblocks = kwargs.pop("nblocks", 1)
@@ -344,7 +344,6 @@ class BaseCompressor(object):
             self.lr = lr or (1.0 / self.iters)  # must place after iter setting
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
-        self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
@@ -2395,26 +2394,23 @@ class BaseCompressor(object):
         batch_size = 1  # Force to low gpu
         global_batch_size = batch_size * gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
-        if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:global_batch_size]
         total_loss = 0
         num_elm = 1
         mse_reduction = "mean"
         if gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        index_sampler = IndexSampler(nsamples, batch_size)
 
         for i in range(self.iters):
             total_loss = 0
-            if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:global_batch_size]
-                if gradient_accumulate_steps != 1:
-                    if q_inputs is not None:
-                        num_elm = self._get_current_num_elm(q_inputs, whole_indices)
-                    else:
-                        num_elm = self._get_current_num_elm(inputs, whole_indices)
+            if gradient_accumulate_steps != 1:
+                if q_inputs is not None:
+                    num_elm = self._get_current_num_elm(q_inputs, whole_indices)
+                else:
+                    num_elm = self._get_current_num_elm(inputs, whole_indices)
             for tmp_step in range(gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
+                indices = index_sampler.next_batch()
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -2761,7 +2757,7 @@ class BaseCompressor(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {})  # TODO Quant layer should change
+            unwrapper_block(block, {})
             mv_module_from_gpu(block)
             return output, output
 
@@ -2776,11 +2772,6 @@ class BaseCompressor(object):
             nsamples = len(input_ids["hidden_states"])
         else:
             nsamples = len(input_ids)
-
-        global_batch_size = self.batch_size * self.gradient_accumulate_steps
-        global_batch_size = min(nsamples, global_batch_size)
-        if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:global_batch_size]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -2794,28 +2785,25 @@ class BaseCompressor(object):
         total_loss = 0
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1:
+            global_batch_size = self.batch_size * self.gradient_accumulate_steps
+            global_batch_size = min(nsamples, global_batch_size)
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
+
+        index_sampler = IndexSampler(nsamples, self.batch_size)
 
         for i in range(self.iters):
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0
-            if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:global_batch_size]
 
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-
+                indices = index_sampler.next_batch()
                 current_output = self._get_current_output(output, indices)
-
                 current_output = to_device(current_output, loss_device)
-
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
-
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
-
                 total_loss += loss.item() / num_elm
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
