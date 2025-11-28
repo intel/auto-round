@@ -2391,24 +2391,28 @@ class BaseCompressor(object):
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
-        batch_size = 1  # Force to low gpu
-        global_batch_size = batch_size * gradient_accumulate_steps
-        global_batch_size = min(nsamples, global_batch_size)
+
         total_loss = 0
         num_elm = 1
         mse_reduction = "mean"
         if gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        if gradient_accumulate_steps != 1:  # We use the same num_elm affects only on Adam and padding dataset
+            global_batch_size = batch_size * gradient_accumulate_steps
+            global_batch_size = min(nsamples, global_batch_size)
+            whole_indices = torch.arange(global_batch_size)
+            if q_inputs is not None:
+                batch_size = 1  # Force to low gpu
+                num_elm = self._get_current_num_elm(q_inputs, whole_indices)
+            else:
+                num_elm = self._get_current_num_elm(inputs, whole_indices)
+
         index_sampler = IndexSampler(nsamples, batch_size)
 
         for i in range(self.iters):
             total_loss = 0
-            if gradient_accumulate_steps != 1:
-                if q_inputs is not None:
-                    num_elm = self._get_current_num_elm(q_inputs, whole_indices)
-                else:
-                    num_elm = self._get_current_num_elm(inputs, whole_indices)
+
             for tmp_step in range(gradient_accumulate_steps):
                 indices = index_sampler.next_batch()
                 if q_inputs is not None:
