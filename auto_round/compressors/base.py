@@ -311,17 +311,11 @@ class BaseCompressor(object):
         if device_map is None:
             device_map = 0
 
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
-
         self.device_map = device_map
         if isinstance(self.device_map, str):
             self.device_map = self.device_map.replace(" ", "")
 
         self.device_list = parse_available_devices(device_map)
-
-        if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         # Set device, must place after model loading
         self.device = get_major_device(device_map)
@@ -387,9 +381,16 @@ class BaseCompressor(object):
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
+        # after setting iters
+        self.enable_torch_compile = enable_torch_compile
+        self._adjust_torch_compile(enable_torch_compile)
+
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
+
+        if isinstance(scheme, AutoScheme):
+            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
@@ -632,6 +633,7 @@ class BaseCompressor(object):
             and not is_debug_mode()
             and "fp8" not in self.data_type
             and "fp8" not in self.act_data_type
+            and self.iters > 0
         ):
             logger.info(
                 "'enable_torch_compile' is set to `False` by default. "

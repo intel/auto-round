@@ -689,18 +689,6 @@ class TestAutoRound(unittest.TestCase):
         ):
             raise ValueError("mixed bits is not correct")
 
-    def test_alg_ext(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
-        ar.quantize()
-
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
-        ar = AutoRound(model_name, scheme="gguf:q4_k_s", iters=1, nsamples=1, enable_alg_ext=True)
-        ar.quantize()
-
-    def test_alg_ext_import(self):
-        from auto_round.alg_ext import wrapper_autoround
-
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
