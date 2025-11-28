@@ -2399,7 +2399,6 @@ class BaseCompressor(object):
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         batch_size = 1  # Force to low gpu
-        # TODO this has bug for Adam and padding data.
         global_batch_size = self.batch_size * gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         if gradient_accumulate_steps != 1 and not self.attention_mask:
