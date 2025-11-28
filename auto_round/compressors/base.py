@@ -341,7 +341,13 @@ class BaseCompressor(object):
         if self.iters == 0:
             self.lr = 5e-3
         else:
-            self.lr = lr or (1.0 / self.iters)  # must place after iter setting
+            if not lr:
+                # TODO need to check 3/4 bits lr setting for auto-round-best
+                self.lr = 2.0/self.iters  if (self.iters>=1000 and self.bits==2) else 1.0/self.iters
+                if (self.iters>=1000 and self.bits==2):
+                    logger.info("set the lr to 2.0/iters for better accuracy")
+            else:
+                self.lr = lr
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
         self.sampler = sampler
@@ -510,7 +516,7 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
+    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> tuple[QuantizationScheme,bool]:
         """Parse and set the quantization scheme."""
 
         def _parse_and_set(scheme, kwargs):
