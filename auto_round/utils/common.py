@@ -17,7 +17,7 @@ import importlib
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Tuple, Union, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import transformers
@@ -331,8 +331,9 @@ def get_reciprocal(tensor):
     return recip
 
 
-def normalize_input(decoding_layer_inputs:tuple[Union[list[torch.Tensor], dict, Any], Optional[dict]])\
-        -> Tuple[List[torch.Tensor], Dict[str, Any]]:
+def normalize_input(
+    decoding_layer_inputs: tuple[Union[list[torch.Tensor], dict, Any], Optional[dict]],
+) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
     """Normalize the decoding layer inputs into input_ids and other inputs."""
     input_ids = []
     input_others = {"positional_inputs": []}

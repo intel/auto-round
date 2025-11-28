@@ -1312,6 +1312,7 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
         except Exception as _cleanup_err:
             logger.warning(f"shard cleanup warning: {_cleanup_err}")
 
+
 class IndexSampler:
     """A cyclic sampler that returns shuffled index batches.
 
@@ -1338,9 +1339,7 @@ class IndexSampler:
             ValueError: If batch_size is not in the range (0, nsamples].
         """
         if batch_size <= 0 or batch_size > nsamples:
-            raise ValueError(
-                "batch_size must be > 0 and <= nsamples"
-            )
+            raise ValueError("batch_size must be > 0 and <= nsamples")
 
         self.nsamples: int = nsamples
         self.batch_size: int = batch_size
@@ -1362,6 +1361,6 @@ class IndexSampler:
             random.shuffle(self.indices)
             self.index = 0
 
-        batch = self.indices[self.index:self.index + self.batch_size]
+        batch = self.indices[self.index : self.index + self.batch_size]
         self.index += self.batch_size
         return batch

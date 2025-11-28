@@ -33,6 +33,7 @@ from transformers import set_seed
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
+    IndexSampler,
     block_forward,
     check_need_act_calibration,
     check_skippable_keywords,
@@ -40,7 +41,6 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     gguf_args_check,
     immediate_saving,
-    IndexSampler,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
