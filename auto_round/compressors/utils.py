@@ -1345,17 +1345,17 @@ class IndexSampler:
         self.batch_size: int = batch_size
         self.index: int = 0
 
-        self.indices: List[int] = list(range(nsamples))
+        self.indices: list[int] = list(range(nsamples))
         random.shuffle(self.indices)
 
-    def next_batch(self) -> List[int]:
+    def next_batch(self) -> list[int]:
         """Returns the next batch of shuffled indices.
 
         If the remaining indices are fewer than `batch_size`, the sampler
         reshuffles the entire list and starts from the beginning.
 
         Returns:
-            List[int]: A list of size `batch_size` containing sample indices.
+            list[int]: A list of size `batch_size` containing sample indices.
         """
         if self.index + self.batch_size > self.nsamples:
             random.shuffle(self.indices)
