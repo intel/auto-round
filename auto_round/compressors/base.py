@@ -2398,12 +2398,13 @@ class BaseCompressor(object):
         if gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        if gradient_accumulate_steps != 1:  # We use the same num_elm affects only on Adam and padding dataset
-            global_batch_size = batch_size * gradient_accumulate_steps
+        batch_size = 1  # Force to low gpu
+        # TODO this has bug for Adam and padding data.
+        if gradient_accumulate_steps != 1 and self.attention_mask:
+            global_batch_size = self.batch_size * gradient_accumulate_steps
             global_batch_size = min(nsamples, global_batch_size)
             whole_indices = torch.arange(global_batch_size)
             if q_inputs is not None:
-                batch_size = 1  # Force to low gpu
                 num_elm = self._get_current_num_elm(q_inputs, whole_indices)
             else:
                 num_elm = self._get_current_num_elm(inputs, whole_indices)
