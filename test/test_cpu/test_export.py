@@ -334,7 +334,6 @@ class TestAutoRound(unittest.TestCase):
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_awq_lmhead_export(self):
         bits, sym, group_size = 4, False, 128
         model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
@@ -352,9 +351,10 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = "./saved"
-        compressed_model,_ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal GPTQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
@@ -365,7 +365,6 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
 
     def test_gptq_lmhead_export(self):
         bits, sym, group_size = 4, True, 128
@@ -384,7 +383,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = "./saved"
-        compressed_model,_ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()
@@ -401,4 +400,3 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
