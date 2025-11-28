@@ -2400,22 +2400,25 @@ class BaseCompressor(object):
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         batch_size = 1  # Force to low gpu
         # TODO this has bug for Adam and padding data.
-        if gradient_accumulate_steps != 1 and self.attention_mask:
-            global_batch_size = self.batch_size * gradient_accumulate_steps
-            global_batch_size = min(nsamples, global_batch_size)
+        global_batch_size = self.batch_size * gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
+        if gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             if q_inputs is not None:
                 num_elm = self._get_current_num_elm(q_inputs, whole_indices)
             else:
                 num_elm = self._get_current_num_elm(inputs, whole_indices)
 
-        index_sampler = IndexSampler(nsamples, batch_size)
+        index_sampler = IndexSampler(nsamples, global_batch_size)
 
         for i in range(self.iters):
             total_loss = 0
+            global_indices = index_sampler.next_batch()
+            if self.attention_mask:
+                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
             for tmp_step in range(gradient_accumulate_steps):
-                indices = index_sampler.next_batch()
+                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -2457,7 +2460,7 @@ class BaseCompressor(object):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q.to(torch.float32), current_output.to(torch.float32)
                         )
-
+                num_elm = 1 if num_elm <=0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 self._scale_loss_and_backward(scaler, loss)
@@ -2568,6 +2571,13 @@ class BaseCompressor(object):
     ) -> int:
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
+
+    def _get_non_zero_cnt(self,tensor: list[torch.Tensor], indices: list[int]) -> int:
+        current_tensors = [tensor[i] for i in indices]
+        non_zero_cnt = 0
+        for t in current_tensors:
+            non_zero_cnt += torch.count_nonzero(t).item()
+        return non_zero_cnt
 
     def quantize_block(
         self,
@@ -2789,26 +2799,30 @@ class BaseCompressor(object):
         best_params = {}
         total_loss = 0
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1:
+        if self.gradient_accumulate_steps != 1 and not self.attention_mask :
             global_batch_size = self.batch_size * self.gradient_accumulate_steps
             global_batch_size = min(nsamples, global_batch_size)
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
         index_sampler = IndexSampler(nsamples, self.batch_size)
-
+        batch_size = self.batch_size
         for i in range(self.iters):
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0
+            global_indices = index_sampler.next_batch()
+            if self.attention_mask:
+                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = index_sampler.next_batch()
+                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 current_output = self._get_current_output(output, indices)
                 current_output = to_device(current_output, loss_device)
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
+                num_elm = 1 if num_elm <=0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
