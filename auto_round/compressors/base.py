@@ -55,7 +55,13 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
+from auto_round.schemes import (
+    SPECIAL_SCHEMES,
+    QuantizationScheme,
+    _handle_special_schemes,
+    get_gguf_scheme,
+    preset_name_to_scheme,
+)
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
@@ -214,6 +220,33 @@ class BaseCompressor(object):
             ... }
         """
 
+        # Model related
+        model_dtype = kwargs.pop("model_dtype", None)
+        self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
+        self.quantized = False
+        if isinstance(model, str):
+            model, tokenizer = llm_load_model(
+                model,
+                platform=platform,
+                device="cpu",  # always load cpu first
+                model_dtype=model_dtype,
+            )
+        elif tokenizer is None and not self.diffusion and iters > 0:
+            raise ValueError("A tokenizer must be set for non-str model input")
+        if unsupported_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        check_and_mark_fp8_model(model)
+        self.model = model.eval()
+        self.tokenizer = tokenizer
+        self.shared_cache_keys = get_shared_keys(self.model)
+
+        self.layer_config = layer_config
+
+        # should be set after loading model and set layer_config, cause some special scheme need these.
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
@@ -244,11 +277,8 @@ class BaseCompressor(object):
             platform = "model_scope"
         self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
-        self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
-        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
 
         self.fp_layers = kwargs.pop("fp_layers", "")
-        self.layer_config = layer_config
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
@@ -269,27 +299,6 @@ class BaseCompressor(object):
             torch.use_deterministic_algorithms(True, warn_only=False)
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
-
-        # Model related
-        self.quantized = False
-        if isinstance(model, str):
-            model, tokenizer = llm_load_model(
-                model,
-                platform=platform,
-                device="cpu",  # always load cpu first
-                model_dtype=model_dtype,
-            )
-        elif tokenizer is None and not self.diffusion and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        if unsupported_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
-            )
-        check_and_mark_fp8_model(model)
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
 
         self.to_quant_block_names = to_quant_block_names
         if not hasattr(self, "quant_block_list"):
@@ -524,6 +533,8 @@ class BaseCompressor(object):
                 scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
+                if scheme in SPECIAL_SCHEMES:
+                    self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
@@ -776,6 +787,8 @@ class BaseCompressor(object):
 
         if gguf_format_name:
             for i in range(len(formats)):
+                if gguf_format_name.lower().endswith("mixed"):
+                    gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
                 if formats[i] != "fake" and formats[i] != gguf_format_name.lower():
                     logger.warning(
                         f"reset format {formats[i]} to {gguf_format_name.lower()} "
@@ -2588,7 +2601,7 @@ class BaseCompressor(object):
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
             if self.amp:
-                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
                         (output_q * tmp_attention_mask).to(torch.float32),
                         (current_output * tmp_attention_mask).to(torch.float32),
@@ -2601,7 +2614,7 @@ class BaseCompressor(object):
 
         else:
             if self.amp:
-                with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
@@ -3083,7 +3096,6 @@ class BaseCompressor(object):
         serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-
         compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
@@ -3108,6 +3120,8 @@ class BaseCompressor(object):
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
             device=self.device,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
             **kwargs,
         )
         return compressed_model
