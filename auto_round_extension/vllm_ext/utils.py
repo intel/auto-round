@@ -143,7 +143,7 @@ def to_mx_fp8e4m3(
     assert elem_dtype == torch.float8_e4m3fn, f"only float8_e4m3fn is supported now, got {elem_dtype}"
 
     max_pos = torch.finfo(torch.float8_e4m3fn).max  # 448.0
-
+    # TODO: add support for other rounding modes
     scale_e8m0_biased, data_lp = _to_mx_rceil(data_hp, max_abs, max_pos)
 
     data_lp = data_lp.to(elem_dtype)
