@@ -2798,14 +2798,14 @@ class BaseCompressor(object):
         init_loss = None
         best_params = {}
         total_loss = 0
+        global_batch_size = self.batch_size * self.gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask :
-            global_batch_size = self.batch_size * self.gradient_accumulate_steps
-            global_batch_size = min(nsamples, global_batch_size)
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
-        index_sampler = IndexSampler(nsamples, self.batch_size)
+        index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
             if self.enable_alg_ext and self.data_type.endswith("dq"):
