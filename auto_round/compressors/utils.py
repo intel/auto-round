@@ -33,6 +33,7 @@ class BackendDataType(str, Enum):
     STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
+    MX_FP_EXP = "mx_fp_exp"
 
 
 def is_standard_fp(backend):
@@ -48,6 +49,11 @@ def is_mx_fp(backend):
 def is_nv_fp(backend):
     backend = backend.lower()
     return BackendDataType.NV_FP in backend
+
+
+def is_exp_fp(backend):
+    backend = backend.lower()
+    return BackendDataType.MX_FP_EXP in backend
 
 
 def _is_weight_fp8_activation_static_fp8(

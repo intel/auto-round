@@ -34,7 +34,7 @@ import torch.nn as nn
 import transformers
 
 import auto_round.envs as envs
-from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
+from auto_round.compressors.utils import BackendDataType, is_exp_fp, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
@@ -73,6 +73,7 @@ class QuantLinear(nn.Module):
             raise NotImplementedError("Only 4,8 bits are supported.")
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
+        self.is_exp = is_exp_fp(data_type)
         if self.is_mx:
             if group_size != 32:
                 raise NotImplementedError(f"Only group_size 32 are supported for {BackendDataType.MX_FP} data type.")
@@ -149,6 +150,8 @@ class QuantLinear(nn.Module):
             W = W.t()
 
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
+        if self.is_exp:
+            tensor = tensor * 3 / 4
         scales = scales.to(device)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1

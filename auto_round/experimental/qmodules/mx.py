@@ -17,6 +17,7 @@ from typing import Optional, Union
 
 import torch
 
+from auto_round.compressors.utils import is_exp_fp
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
@@ -77,6 +78,7 @@ class MXQuantLinearBase(QModuleBase):
         # Initialize weights
         init_weight = self.initialize_weights(weight)
         self.register_buffer(self.weight_name, init_weight)
+        self.is_exp = is_exp_fp(self.config.data_type)
 
         # Initialize bias
         if bias is not None:
@@ -118,6 +120,8 @@ class MXQuantLinearBase(QModuleBase):
         scale_float = scale_float.reshape(-1, 1)
         data_float = unpacked_data.to(target_dtype)
         data_dequant = data_float * scale_float
+        if self.is_exp:
+            data_dequant = data_dequant * 4 / 3
         data_dequant = data_dequant.reshape(original_shape)
         return data_dequant
 

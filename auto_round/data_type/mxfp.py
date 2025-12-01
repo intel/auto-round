@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from functools import partial
 
 import torch
 
@@ -102,6 +103,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
     Raises:
         KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
     """
+    enable_exp = kwargs.get("enable_exp", False)
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     data_type = data_type if data_type in MXFP_FORMAT_CACHE else "mx_fp" + str(bits)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
@@ -120,14 +122,14 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
-    if os.environ.get("AR_EXP", "0") == "1":
+    if enable_exp:
         tensor = tensor * 3 / 4
     tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
-    if os.environ.get("AR_EXP", "0") == "1":
+    if enable_exp:
         tensor = tensor * 4 / 3
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
@@ -175,15 +177,11 @@ def quant_mx_rceil(
     shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
-    if os.environ.get("AR_EXP", "0") == "1":
-        tensor = tensor * 3 / 4
     tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
-    if os.environ.get("AR_EXP", "0") == "1":
-        tensor = tensor * 4 / 3
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
@@ -192,6 +190,7 @@ for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
     QUANT_FUNC_WITH_DTYPE[key + "_rceil"] = quant_mx_rceil
 QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
+QUANT_FUNC_WITH_DTYPE["mx_fp_exp"] = partial(quant_mx, enable_exp=True)
 
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])

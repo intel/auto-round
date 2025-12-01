@@ -110,6 +110,7 @@ BACKEND_ACT_ATTRS = [
 MX_TENSOR_DATA_TYPES = [
     "mx_fp",
     "mx_fp_rceil",
+    "mx_fp_exp",
 ]
 
 
