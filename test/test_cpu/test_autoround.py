@@ -713,14 +713,22 @@ class TestAutoRound(unittest.TestCase):
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
-        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True)
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0, seqlen=8, nsamples=1, disable_opt_rtn=True)
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
         layer_config = {"lm_head": {"bits": 4}}
-        ar = AutoRound(model_name, quant_lm_head=False, iters=0, disable_opt_rtn=True, layer_config=layer_config)
+        ar = AutoRound(
+            model_name,
+            quant_lm_head=False,
+            iters=0,
+            seqlen=8,
+            nsamples=1,
+            disable_opt_rtn=True,
+            layer_config=layer_config,
+        )
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
@@ -729,7 +737,15 @@ class TestAutoRound(unittest.TestCase):
     def test_quant_lm_head_layer_config(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
         layer_config = {"lm_head": {"bits": 4}}
-        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True, layer_config=layer_config)
+        ar = AutoRound(
+            model_name,
+            quant_lm_head=True,
+            iters=0,
+            seqlen=8,
+            nsamples=1,
+            disable_opt_rtn=True,
+            layer_config=layer_config,
+        )
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
