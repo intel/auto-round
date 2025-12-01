@@ -284,7 +284,7 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ### AutoScheme
 
-AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
+AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
 
 **Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
 
@@ -408,7 +408,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
-This format is well-suited for CPU devices and is widely adopted by the community.
+
+The optimized RTN mode is suggested (--iters 0) for all bits other than 3 bits.
+
 ```python
 from auto_round import AutoRound
 
@@ -559,6 +561,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 
 - **Reduced CPU Memory Usage :**
+    - Enable `low_cpu_mem_usage` (experimental): Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
 
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
