@@ -64,7 +64,7 @@ from auto_round.schemes import (
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
-from auto_round.utils import (
+from auto_round.utils import (  # normalize_input,
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
     SUPPORTED_FORMATS,
@@ -95,7 +95,6 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
-    normalize_input,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -1885,6 +1884,30 @@ class BaseCompressor(object):
 
         return output
 
+    def normalize_input(self, decoding_layer_inputs: list[tuple[Any]]):
+        """Normalize the decoding layer inputs into input_ids and other inputs."""
+        input_ids = []
+        input_others = {}
+        input_others["positional_inputs"] = []
+        for cur_inp in decoding_layer_inputs:
+            cur_input_ids = cur_inp[0][0][0]
+            cur_input_others = cur_inp[0][1]
+            attention_mask = cur_input_others.get("attention_mask", None)
+            if attention_mask is not None:
+                self.attention_mask.extend(list(torch.split(attention_mask[:, 0, -1, :], 1, dim=0)))
+            # self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
+            if cur_input_ids.shape[0] != 1:
+                input_ids.extend(list(torch.split(cur_input_ids, 1, dim=0)))
+            for key, val in cur_inp[0][1].items():
+                input_others[key] = val
+        # Force 'use_cache' to be False
+        if "use_cache" in input_others and input_others["use_cache"] is True:
+            logger.warning_once("Forcing 'use_cache' to be False during calibration.")
+            input_others["use_cache"] = False
+        if "attention_mask" in input_others:
+            del input_others["attention_mask"]
+        return input_ids, input_others
+
     @torch.no_grad()
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
@@ -2585,7 +2608,7 @@ class BaseCompressor(object):
             "DiffusionCompressor",
             "MLLMCompressor",
         ], f"Currently, {self.__class__.__name__} does not support support quantize block with this function."
-        input_ids, input_others = normalize_input(inputs)
+        input_ids, input_others = self.normalize_input(inputs)
         return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
 
     def _get_loss(
