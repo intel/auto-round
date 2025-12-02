@@ -146,8 +146,14 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: Union[int, None] = 16
+    is_act_dynamic: Union[bool, None],
+    act_data_type: Union[str, None] = None,
+    act_bits: Union[int, None] = 16,
+    static_kv_dtype: Union[str, None] = None,
+    static_attention_dtype: Union[str, None] = None,
 ) -> bool:
+    if static_kv_dtype is not None or static_attention_dtype is not None:
+        return True
     if act_bits is None or act_bits > 8:
         return False
     # None is dynamic
