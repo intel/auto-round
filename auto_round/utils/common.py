@@ -337,10 +337,16 @@ def normalize_input(
     """Normalize the decoding layer inputs into input_ids and other inputs."""
     input_ids = []
     input_others = {"positional_inputs": []}
+    key_items = ["attention_mask"]
     for cur_inp in decoding_layer_inputs:
         input_ids.append(cur_inp[0][0][0])
         for key, val in cur_inp[0][1].items():
-            input_others[key] = val
+            if key in key_items:
+                if key not in input_others:
+                    input_others[key] = []
+                input_others[key].append(val)
+            else:
+                input_others[key] = val
     # Force 'use_cache' to be False
     if "use_cache" in input_others and input_others["use_cache"] is True:
         logger.warning_once("Forcing 'use_cache' to be False during calibration.")
