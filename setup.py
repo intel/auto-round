@@ -184,5 +184,5 @@ if __name__ == "__main__":
             "License :: OSI Approved :: Apache Software License",
         ],
         include_package_data=True,
-        package_data={"": ["mllm/templates/*.json", "*.abi3.so"]},
+        package_data={"": ["mllm/templates/*.json", "*.abi3.so", "*.pyd"]},
     )
