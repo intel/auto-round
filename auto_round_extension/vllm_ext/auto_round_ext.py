@@ -18,17 +18,18 @@ import torch
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
-from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
+from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig as _BaseAutoRoundConfig
 
 from auto_round.schemes import QuantizationScheme
+from auto_round_extension.vllm_ext.quant_method_linear import AutoRoundQuantLinearMethod
 from auto_round_extension.vllm_ext.quant_method_moe import AutoRoundMoEMethod
 
 logger = init_logger(__name__)
 
 
-class AutoRoundExtensionConfig(AutoRoundConfig):
-    SUPPORTED_DTYPES = AutoRoundConfig.SUPPORTED_DTYPES.union({"mx_fp"})
-    SUPPORTED_FORMATS = AutoRoundConfig.SUPPORTED_FORMATS.union({"auto_round:llm_compressor"})
+class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
+    SUPPORTED_DTYPES = _BaseAutoRoundConfig.SUPPORTED_DTYPES.union({"mx_fp"})
+    SUPPORTED_FORMATS = _BaseAutoRoundConfig.SUPPORTED_FORMATS.union({"auto_round:llm_compressor"})
 
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         # FIXME: (yi) make it compatible with `AutoRoundConfig`
@@ -36,7 +37,7 @@ class AutoRoundExtensionConfig(AutoRoundConfig):
             quant_method = AutoRoundMoEMethod.get_moe_method(self, layer, prefix)
             return quant_method
         elif isinstance(layer, LinearBase):
-            return UnquantizedLinearMethod()
+            return AutoRoundQuantLinearMethod.get_method(self, layer, prefix)
         else:
             return None
 
@@ -48,7 +49,7 @@ class AutoRoundExtensionConfig(AutoRoundConfig):
         return quant_scheme
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> AutoRoundConfig:
+    def from_config(cls, config: dict[str, Any]) -> _BaseAutoRoundConfig:
         ar_config = super().from_config(config)
         # TODO: (yi) refine below implementation
         quant_scheme = AutoRoundExtensionConfig._parse_quant_scheme(config)
@@ -61,3 +62,9 @@ class AutoRoundExtensionConfig(AutoRoundConfig):
         ar_config.quant_scheme = quant_scheme
         ar_config.layer_schemes = layer_schemes
         return ar_config
+
+
+# Patch vLLM’s AutoRoundConfig at import time
+import vllm.model_executor.layers.quantization.auto_round as _auto_round_module
+
+_auto_round_module.AutoRoundConfig = AutoRoundExtensionConfig

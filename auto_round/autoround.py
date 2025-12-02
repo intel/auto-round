@@ -41,7 +41,7 @@ class AutoRound:
         the quantization of LLMs." arXiv:2309.05516 (2023).
 
     Attributes:
-        model (torch.nn.Module): The loaded PyTorch model in eval mode.
+        model (torch.nn.Module | str): The loaded PyTorch model in eval mode.
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
@@ -85,6 +85,8 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
+        enable_alg_ext: bool = False,
+        disable_opt_rtn: bool = False,
         low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:

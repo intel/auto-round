@@ -159,8 +159,10 @@ def dequant_mxfp4_to_fp8(data_lp, scale_e8m0):
 
 
 def mxfp4_fp8_weight_to_bf16(weight_fp8, scale_bf16):
+
     origin_shape = weight_fp8.shape
     weight_fp8 = weight_fp8.reshape(-1, 32)
+    scale_bf16 = scale_bf16.reshape(-1, 1)
     assert weight_fp8.shape[0] == scale_bf16.shape[0], f"shape mismatch: {weight_fp8.shape} vs {scale_bf16.shape}"
     dequant_weight_bf16 = weight_fp8.to(torch.bfloat16) * scale_bf16
     dequant_weight_bf16 = dequant_weight_bf16.reshape(origin_shape)

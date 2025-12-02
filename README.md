@@ -30,30 +30,26 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 
 ## 🆕 What's New
-[2025/11] AutoRound has now landed in **LLM-Compressor**! You can apply AutoRound algorithm using `AutoRoundModifier`. Check out the [example](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md) to get started!
 
-[2025/11] AutoRound now offers preliminary support for an enhanced GGUF quantization algorithm via `--enable_alg_ext`. For detailed accuracy benchmarks, please refer to the [documentation](./docs/gguf_alg_ext_acc.md).
+* [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md).
 
-[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the SGLang versions newer than v0.5.4.
+* [2025/11] An **enhanced GGUF** quantization algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/gguf_alg_ext_acc.md).
 
-[2025/10] We enhanced the RTN mode (--iters 0) to significantly reduce quantization cost compared to the default tuning mode. Check out [this doc](./docs/opt_rtn.md) for some accuracy results. If you don’t have sufficient resources, you can use this mode for 4-bit quantization.
+* [2025/10] AutoRound has been integrated into **SGLang**: [*Usage*](), [*LMSYS Blog*](https://lmsys.org/blog/2025-11-13-AutoRound/), [*X post*](https://x.com/lmsysorg/status/1991977019220148650?s=20), [*Linkedin*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472).
 
-[2025/10] We proposed a fast algorithm to generate **mixed bits/datatypes** schemes in minutes. Please
-refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and [this guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for usage instructions.
+* [2025/10] A **mix precision** algorithm is available to generate schemes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
-[2025/09] AutoRound now includes experimental support for the **mxfp4 and nvfp4 dtypes**. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
-. We currently recommend exporting to the LLM-Compressor format.
+* [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
-[2025/08] AutoRound now provides experimental support for **an improved INT2 algorithm** via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
- for some accuracy results. 
+* [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
 
-[2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
-  all bits other than 3 bits. 
+* [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
 
-[2025/05] AutoRound has been integrated into **Transformers** and **vLLM**. 
+* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/), [*Blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e).
 
-[2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
-  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
+* [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
+
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*]((https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc)).
 
 
 ## ✨ Key Features
@@ -319,7 +315,6 @@ for prompt, output in zip(prompts, outputs):
 
 ### Transformers (CPU/Intel GPU/Gaudi/CUDA)
 
-
 AutoRound supports 10+ backends and automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
@@ -327,6 +322,7 @@ install additional libraries when a better backend is found.
 this may cause unexpected exceptions.
 
 The support for Gaudi device is limited.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -337,15 +333,12 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
+
 ## Acknowledgement
 Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ, GPTQModel, Triton, Marlin, and ExLLaMAV2 for providing low-precision CUDA kernels, which are leveraged in AutoRound.
 
+> **Note**:
+> For all publications/events, please view [Publication List](./docs/publication_list.md).
+
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
-
-
-
-
-
-
-
