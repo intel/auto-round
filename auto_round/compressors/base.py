@@ -347,7 +347,7 @@ class BaseCompressor(object):
                     self.lr = 2.0 / self.iters
                     logger.info("set the lr to 2.0/iters for better accuracy")
                 else:
-                    self.lr = 1.0/self.iters
+                    self.lr = 1.0 / self.iters
             else:
                 self.lr = lr
         self.minmax_lr = minmax_lr or self.lr
@@ -742,7 +742,7 @@ class BaseCompressor(object):
                     " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                     " for the accuracy results."
                 )
-            elif self.bits>=8 and self.iters!=0:
+            elif self.bits >= 8 and self.iters != 0:
                 logger.warning("`iters=0` is recommended for bits>=8")
 
         if (
