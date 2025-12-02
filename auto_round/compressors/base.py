@@ -342,12 +342,19 @@ class BaseCompressor(object):
             self.lr = 5e-3
         else:
             if not lr:
-                # TODO need to check 3/4 bits lr setting for auto-round-best
-                self.lr = 2.0 / self.iters if (self.iters >= 1000 and self.bits == 2) else 1.0 / self.iters
-                if self.iters >= 1000 and self.bits == 2:
+                # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+                if self.iters >= 1000 and self.bits <= 3:
+                    self.lr = 2.0 / self.iters
                     logger.info("set the lr to 2.0/iters for better accuracy")
+                else:
+                    self.lr = 1.0 / self.iters
             else:
                 self.lr = lr
+        if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
+            logger.warning(
+                "For bits <= 2, it is recommended to enable `auto-round-best` " "and set `--enable_alg_ext` "
+            )
+
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
         self.not_use_best_mse = not_use_best_mse
@@ -740,6 +747,8 @@ class BaseCompressor(object):
                     " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                     " for the accuracy results."
                 )
+            elif self.bits >= 8 and self.iters != 0:
+                logger.warning("`iters=0` is recommended for bits>=8")
 
         if (
             self.seqlen is not None
