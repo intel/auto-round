@@ -634,7 +634,7 @@ def dynamic_import_inference_linear(backend, config):
             import auto_round_kernel as ark  # pylint: disable=E0401
         except Exception as e:
             raise ImportError("Please install auto_round_kernel version for CPU/XPU")
-        import auto_round_extension.kernel.qlinear as qlinear
+        import auto_round_extension.ark.qlinear as qlinear
 
         if "zp" in backend:
             return qlinear.QuantLinearGPTQ
