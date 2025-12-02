@@ -33,6 +33,13 @@ class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
 
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         # FIXME: (yi) make it compatible with `AutoRoundConfig`
+        from vllm.attention.layer import Attention
+
+        if isinstance(layer, Attention):
+            from auto_round_extension.vllm_ext.kv_cache import AutoRoundKVCacheMethod
+
+            return AutoRoundKVCacheMethod(self)
+
         if isinstance(layer, FusedMoE):
             quant_method = AutoRoundMoEMethod.get_moe_method(self, layer, prefix)
             return quant_method
