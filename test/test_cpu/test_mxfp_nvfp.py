@@ -371,5 +371,56 @@ class TestAutoRoundFP(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
+    @parameterized.expand(
+        [
+            # scheme,  static_kv_dtype, static_attention_dtype
+            ("MXFP4", None,   "fp8"),
+            ("MXFP4", "fp8",  None),
+            ("MXFP8", None,   "fp8"),
+            ("MXFP8", "fp8",  None),
+            ("NVFP4", None,   "fp8"),
+            ("NVFP4", "fp8",  None),
+        ]
+    )
+    def test_fp8_kv_attn(self, scheme, static_kv_dtype, static_attention_dtype):
+        model_name = self.model_name
+
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=0,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            static_kv_dtype=static_kv_dtype,
+            static_attention_dtype=static_attention_dtype,
+        )
+
+        quantized_model_path = self.save_dir
+        compressed_model, _ = autoround.quantize_and_save(
+            output_dir=quantized_model_path,
+            format="auto_round",
+        )
+
+        attn = compressed_model.model.decoder.layers[3].self_attn
+        q_proj = attn.q_proj
+
+        # weight_scale should exist for all quantized schemes
+        assert hasattr(q_proj, "weight_scale"), f"Missing weight_scale in q_proj for scheme={scheme}"
+
+        # Only when static_kv_dtype / static_attention_dtype are fp8 do we expect FP8 KV scales
+        if static_kv_dtype == "fp8" or static_attention_dtype == "fp8":
+            assert attn.k_scale is not None and attn.v_scale is not None, (
+                f"Missing k_scale/v_scale in attention for scheme={scheme}, "
+                f"static_kv_dtype={static_kv_dtype}, static_attention_dtype={static_attention_dtype}"
+            )
+
+        if static_attention_dtype == "fp8":
+            assert (
+                getattr(attn, "q_scale", None) is not None
+            ), f"Missing q_scale in attention for scheme={scheme}, static_attention_dtype={static_attention_dtype}"
+
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
