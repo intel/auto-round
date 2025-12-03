@@ -113,6 +113,15 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
+def show_mem(info):
+    logger.warning(f"[Memory Monitor] {info}:")
+    all_gpus = torch.cuda.device_count()
+    for i in range(all_gpus):
+        allocated = torch.cuda.memory_allocated(i) / (1024**3)
+        reserved = torch.cuda.memory_reserved(i) / (1024**3)
+        logger.warning(f"  [GPU {i}] Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
+
+
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -2706,7 +2715,11 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
-
+        # memory_monitor.reset()
+        # memory_monitor.update()
+        # memory_info_summary = memory_monitor.get_summary()
+        # logger.infoclean("before assighn" + "," + memory_info_summary)
+        show_mem("before aasign")
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
             # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
@@ -2719,7 +2732,11 @@ class BaseCompressor(object):
                 card_0_in_high_risk, loss_device = False, device
         else:
             card_0_in_high_risk, loss_device = False, device
-
+        # memory_monitor.reset()
+        # memory_monitor.update()
+        # memory_info_summary = memory_monitor.get_summary()
+        # logger.infoclean("after assighn" + "," + memory_info_summary)
+        show_mem("after aasign")
         if len(self.device_list) > 1 and auto_offload:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
@@ -2850,6 +2867,7 @@ class BaseCompressor(object):
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
+            logger.trace(f"Quantization fine-tuning iteration {i}/{self.iters}, best loss so far: {best_loss}")
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i

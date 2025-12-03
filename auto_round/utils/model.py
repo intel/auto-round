@@ -277,7 +277,7 @@ def llm_load_model(
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
-
+    # trust_remote_code = False
     if _use_hpu_compile_mode():
         model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
@@ -288,12 +288,15 @@ def llm_load_model(
         )
     else:
         try:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            from transformers.modeling_utils import no_init_weights
+
+            with no_init_weights():
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=trust_remote_code,
+                    device_map="auto" if use_auto_mapping else None,
+                )
         except ValueError as e:
             if "FP8 quantized" in str(e):
                 orig_func = set_fake_cuda_device_capability()

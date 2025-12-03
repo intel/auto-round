@@ -981,6 +981,34 @@ def estimate_tuning_block_mem(
     return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
 
 
+def get_all_expert(block):
+
+    expert_modules = {}
+    for name, module in block.named_modules():
+        if isinstance(module, torch.nn.ModuleList):
+            expert_modules = {**expert_modules, **{f"{name}.{i}": m for i, m in enumerate(module)}}
+            break
+    return expert_modules
+
+
+def dispatch_model_as_ep(expert_modules, device_map):
+    device_index = [int(index) for index in device_map.split(",")]
+    device_index = device_index[1:]
+    ep_size = len(device_index)
+    num_experts = len(expert_modules)
+    num_experts_per_rank = num_experts // ep_size
+    for i, (name, module) in enumerate(expert_modules.items()):
+        index = min(i // num_experts_per_rank, ep_size - 1)
+        assigned_device = f"cuda:{device_index[index]}"
+        module.to(assigned_device)
+        module.tuing_device = assigned_device
+        for _n, _sub_mod in module.named_modules():
+            _sub_mod.tuning_device = assigned_device
+        # logger.info(f"Assign expert module {name} to device {assigned_device}")
+    # set_non_auto_device_map(block, device_map, names)
+    return
+
+
 def set_auto_device_map_for_block_with_tuning(
     block: torch.nn.Module,
     device_map,
@@ -1015,6 +1043,23 @@ def set_auto_device_map_for_block_with_tuning(
     Note:
         This function is intended for internal use in device memory management and tuning.
     """
+    #
+
+    expert_modules = get_all_expert(block)
+    if expert_modules:
+        block.to("cpu")
+        dispatch_model_as_ep(expert_modules, device_map)
+        for n, m in block.named_modules():
+            if getattr(m, "tuning_device", None) is None and getattr(m, "weight", None) is not None:
+                m.tuning_device = output_device
+                logger.trace(f"assign non-expert module {n} to device {output_device}")
+                m.to(output_device)
+
+        for n, m in block.named_modules():
+            weight = getattr(m, "weight", None)
+            if weight is not None:
+                logger.trace(f"n {n} tuning_device: {m.tuning_device}, weight device: {weight.device}")
+        return False, output_device
     card_0_in_high_risk, loss_device = False, output_device
     if torch.cuda.is_available():
         num_devices = torch.cuda.device_count()
