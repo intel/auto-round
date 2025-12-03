@@ -370,16 +370,15 @@ class TestAutoRoundFP(unittest.TestCase):
         self.assertGreater(result["results"]["piqa"]["acc,none"], 0.60)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     @parameterized.expand(
         [
             # scheme,  static_kv_dtype, static_attention_dtype
-            ("MXFP4", None,   "fp8"),
-            ("MXFP4", "fp8",  None),
-            ("MXFP8", None,   "fp8"),
-            ("MXFP8", "fp8",  None),
-            ("NVFP4", None,   "fp8"),
-            ("NVFP4", "fp8",  None),
+            ("MXFP4", None, "fp8"),
+            ("MXFP4", "fp8", None),
+            ("MXFP8", None, "fp8"),
+            ("MXFP8", "fp8", None),
+            ("NVFP4", None, "fp8"),
+            ("NVFP4", "fp8", None),
         ]
     )
     def test_fp8_kv_attn(self, scheme, static_kv_dtype, static_attention_dtype):
