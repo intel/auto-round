@@ -1417,11 +1417,14 @@ class BaseCompressor(object):
                 enable_imatrix = True
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
-
         if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic, self.act_data_type, self.act_bits
+            self.act_dynamic,
+            self.act_data_type,
+            self.act_bits,
+            self.static_kv_dtype,
+            self.static_attention_dtype,
         ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
             try:
@@ -3145,6 +3148,8 @@ class BaseCompressor(object):
             "super_bits",
             "super_group_size",
             "regex_config",
+            "static_kv_dtype",
+            "static_attention_dtype",
         ]
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
