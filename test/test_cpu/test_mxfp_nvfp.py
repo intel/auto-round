@@ -405,6 +405,10 @@ class TestAutoRoundFP(unittest.TestCase):
 
         # weight_scale should exist for all quantized schemes
         assert hasattr(q_proj, "weight_scale"), f"Missing weight_scale in q_proj for scheme={scheme}"
+        if static_kv_dtype == "fp8":
+            assert (
+                compressed_model.config.quantization_config["static_kv_dtype"] == "fp8"
+            ), f"Invalid static_kv_dtype in config for scheme={scheme}, static_kv_dtype={static_kv_dtype}"
 
         # Only when static_kv_dtype / static_attention_dtype are fp8 do we expect FP8 KV scales
         if static_kv_dtype == "fp8" or static_attention_dtype == "fp8":
@@ -415,9 +419,11 @@ class TestAutoRoundFP(unittest.TestCase):
 
         if static_attention_dtype == "fp8":
             assert (
+                compressed_model.config.quantization_config["static_attention_dtype"] == "fp8"
+            ), f"Invalid static_attention_dtype in config for scheme={scheme}, static_attention_dtype={static_attention_dtype}"
+            assert (
                 getattr(attn, "q_scale", None) is not None
             ), f"Missing q_scale in attention for scheme={scheme}, static_attention_dtype={static_attention_dtype}"
-
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
