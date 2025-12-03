@@ -110,6 +110,8 @@ from auto_round.utils.device import (
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
+import torch
+from typing import List, Tuple, Dict, Any, Optional
 
 class BaseCompressor(object):
     """Base compressor for LLM quantization
@@ -1884,28 +1886,55 @@ class BaseCompressor(object):
 
         return output
 
-    def normalize_input(self, decoding_layer_inputs: list[tuple[Any]]):
-        """Normalize the decoding layer inputs into input_ids and other inputs."""
-        input_ids = []
-        input_others = {}
-        input_others["positional_inputs"] = []
-        for cur_inp in decoding_layer_inputs:
-            cur_input_ids = cur_inp[0][0][0]
-            cur_input_others = cur_inp[0][1]
-            attention_mask = cur_input_others.get("attention_mask", None)
-            if attention_mask is not None:
-                self.attention_mask.extend(list(torch.split(attention_mask[:, 0, -1, :], 1, dim=0)))
-            # self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
-            if cur_input_ids.shape[0] != 1:
-                input_ids.extend(list(torch.split(cur_input_ids, 1, dim=0)))
-            for key, val in cur_inp[0][1].items():
-                input_others[key] = val
-        # Force 'use_cache' to be False
-        if "use_cache" in input_others and input_others["use_cache"] is True:
+    def normalize_input(
+        self, 
+        decoding_layer_inputs: List[Tuple[Any]]
+    ) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
+        """
+        Normalize the decoding layer inputs into a flat list of input_ids and a dictionary of other inputs.
+        """
+        input_ids: List[torch.Tensor] = []
+        
+        # Initialize output dictionary with required keys
+        input_others: Dict[str, Any] = {
+            "positional_inputs": []
+        }
+        
+        # keys that should be collected into lists rather than overwritten
+        keys_to_accumulate = {"attention_mask"} 
+
+        for step_input in decoding_layer_inputs:
+            # Unpack the nested structure for readability
+            # Structure assumed: ( (args_tuple, kwargs_dict), ... )
+            # step_input[0] -> (args, kwargs)
+            args, kwargs = step_input[0]
+            current_input_ids = args[0] # Assuming input_ids is the first arg
+            
+            # 1. Process Input IDs: Flatten batch dimension
+            # torch.unbind splits a tensor into a tuple of tensors along a dimension
+            if current_input_ids.shape[0] > 1:
+                input_ids.extend(torch.unbind(current_input_ids, dim=0))
+            else:
+                input_ids.append(current_input_ids)
+
+            # 2. Process Other Inputs (kwargs)
+            for key, val in kwargs.items():
+                if val is None:
+                    continue
+                if key in keys_to_accumulate:
+                    # Initialize list if key missing, then append
+                    if val.shape[0] > 1:
+                        input_others.setdefault(key, []).extend(torch.unbind(val, dim=0))
+                    else:
+                        input_others.setdefault(key, []).append(val)
+                else:
+                    # For non-accumulating keys, the last seen value persists
+                    input_others[key] = val
+
+        # 3. Post-processing constraints
+        if input_others.get("use_cache"):
             logger.warning_once("Forcing 'use_cache' to be False during calibration.")
             input_others["use_cache"] = False
-        if "attention_mask" in input_others:
-            del input_others["attention_mask"]
         return input_ids, input_others
 
     @torch.no_grad()
