@@ -20,7 +20,8 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
-from typing import Any, Callable, Optional, Union
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import accelerate
 import torch
@@ -111,10 +112,7 @@ from auto_round.utils.device import (
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
-import torch
-from typing import List, Tuple, Dict, Any, Optional
-from functools import partial
-from collections import defaultdict
+
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -1920,10 +1918,7 @@ class BaseCompressor(object):
 
         return output
 
-    def normalize_decoding_layer_inputs_(
-        self, 
-        decoding_layer_inputs: List[Tuple[Tuple[Any, Dict[str, Any]]]]
-    ):
+    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: List[Tuple[Tuple[Any, Dict[str, Any]]]]):
         """
         Processes and stores decoding layer inputs for block quantization.
 
@@ -1951,11 +1946,11 @@ class BaseCompressor(object):
         class _FakeDecodingLayer(torch.nn.Module):
             def forward(self, *args, **kwargs):
                 return args, kwargs
-        
+
         fake_layer = _FakeDecodingLayer()
         fake_layer.orig_forward = fake_layer.forward
         fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
-    
+
         self.inputs = {}
         self.last_cache_name = None
         for step_input in decoding_layer_inputs:
@@ -2390,7 +2385,6 @@ class BaseCompressor(object):
 
     def _replace_forward(self):
         """Replaces the forward function."""
-
 
         for n, m in self.model.named_modules():
             if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
