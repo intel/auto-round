@@ -1927,8 +1927,8 @@ class BaseCompressor(object):
         """
         Normalize decoding layer inputs to be used for block quantization.
 
-        This function takes a list of captured decoding-layer calls and replays them
-        to normalize the inputs for the decoding block. It uses a fake decoding layer
+        This function takes a list of captured decoding-layer inputs and replays them
+        to normalize the inputs for the fine-tuning. It uses a fake decoding layer
         to simulate the forward pass and capture the necessary inputs.
         Args:
             decoding_layer_inputs (List[Tuple[Any]]): A list of tuples captured
@@ -3017,7 +3017,7 @@ class BaseCompressor(object):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
-                    to_dtype(input_others[key][i], tmp_dtype)
+                    input_others[key][i] = to_dtype(input_others[key][i], tmp_dtype)
         return input_ids, input_others
 
     def _quantize_blocks(
