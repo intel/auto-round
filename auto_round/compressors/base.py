@@ -1947,6 +1947,7 @@ class BaseCompressor(object):
                 return args, kwargs
         
         fake_layer = _FakeDecodingLayer()
+        fake_layer.orig_forward = fake_layer.forward
         fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
     
         self.inputs = {}
