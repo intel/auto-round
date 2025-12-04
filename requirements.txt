@@ -1,5 +1,5 @@
-# accelerate<=1.5.1
-accelerate>=1.10.0
+# 1.5.1<accelerate<1.10.0 may cause potentially high RAM usage; versions 1.10.0 or above are recommended.
+accelerate
 datasets
 py-cpuinfo
 sentencepiece
