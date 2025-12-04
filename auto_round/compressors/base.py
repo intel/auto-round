@@ -2994,9 +2994,9 @@ class BaseCompressor(object):
 
             return None, output
 
-    def _split_inputs(self, inputs: dict, name) -> tuple[torch.Tensor, dict]:
-        input_ids = inputs[name]
-        inputs.pop(name, None)
+    def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
+        input_ids = inputs[first_input_name]
+        inputs.pop(first_input_name, None)
         input_others = inputs
         return input_ids, input_others
 
