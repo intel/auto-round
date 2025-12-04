@@ -21,7 +21,7 @@ import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
@@ -1918,7 +1918,7 @@ class BaseCompressor(object):
 
         return output
 
-    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: List[Tuple[Tuple[Any, Dict[str, Any]]]]):
+    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]):
         """
         Processes and stores decoding layer inputs for block quantization.
 
@@ -2752,7 +2752,7 @@ class BaseCompressor(object):
         device: The device for quantization.
 
         Returns:
-        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
+        tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
