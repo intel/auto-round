@@ -46,9 +46,12 @@ def set_vllm_ar_env(monkeypatch):
 )
 @pytest.mark.parametrize("model", MODELS)
 def test_auto_fp8_kv(vllm_runner, model):
-    with vllm_runner(model, 
-    # enforce_eager=True, 
-    kv_cache_dtype="fp8", gpu_memory_utilization=0.1) as llm:
+    with vllm_runner(
+        model,
+        # enforce_eager=True,
+        kv_cache_dtype="fp8",
+        gpu_memory_utilization=0.1,
+    ) as llm:
         output = llm.generate_greedy(["The capital of France is"], max_tokens=8)
         assert (
             llm.llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.kv_cache_dtype
