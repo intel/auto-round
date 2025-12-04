@@ -2752,7 +2752,7 @@ class BaseCompressor(object):
         device: The device for quantization.
 
         Returns:
-        tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
+        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
