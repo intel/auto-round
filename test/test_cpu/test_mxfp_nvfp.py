@@ -410,7 +410,7 @@ class TestAutoRoundFP(unittest.TestCase):
 
         attn = compressed_model.model.decoder.layers[0].self_attn
         q_proj = attn.q_proj
-        
+
         # weight_scale should exist for all quantized schemes
         assert hasattr(q_proj, "weight_scale"), f"Missing weight_scale in q_proj for scheme={scheme}"
         if static_kv_dtype == "fp8":
