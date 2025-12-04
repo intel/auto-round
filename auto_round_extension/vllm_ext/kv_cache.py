@@ -13,13 +13,14 @@
 # limitations under the License.
 
 
-
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
+
 import torch
-from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
 from vllm.logger import init_logger
+from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
 
 logger = init_logger(__name__)
+
 
 class AutoRoundKVCacheMethod(BaseKVCacheMethod):
     """
@@ -30,7 +31,7 @@ class AutoRoundKVCacheMethod(BaseKVCacheMethod):
     def __init__(self, quant_config):
         self.validate_kv_cache_scheme(quant_config)
         super().__init__(quant_config)
-    
+
     @staticmethod
     def validate_kv_cache_scheme(quant_config):
         # FIXME: parse from quant_config
