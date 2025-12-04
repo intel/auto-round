@@ -383,9 +383,17 @@ class TestAutoRoundFP(unittest.TestCase):
     )
     def test_fp8_kv_attn(self, scheme, static_kv_dtype, static_attention_dtype):
         model_name = self.model_name
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+        from transformers.models.opt.modeling_opt import OPTForCausalLM
+
+        config = AutoConfig.from_pretrained(model_name)
+        config.num_hidden_layers = 1
+        model = OPTForCausalLM(config)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         autoround = AutoRound(
-            model_name,
+            model,
+            tokenizer,
             scheme=scheme,
             iters=0,
             seqlen=2,
@@ -400,9 +408,9 @@ class TestAutoRoundFP(unittest.TestCase):
             format="auto_round",
         )
 
-        attn = compressed_model.model.decoder.layers[3].self_attn
+        attn = compressed_model.model.decoder.layers[0].self_attn
         q_proj = attn.q_proj
-
+        
         # weight_scale should exist for all quantized schemes
         assert hasattr(q_proj, "weight_scale"), f"Missing weight_scale in q_proj for scheme={scheme}"
         if static_kv_dtype == "fp8":

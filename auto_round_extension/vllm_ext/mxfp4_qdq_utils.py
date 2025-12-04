@@ -37,8 +37,7 @@ def to_mxfp4_rceil(
     ), f"{data_hp.dtype} is not supported yet"
     # TODO(future PR): consider supporting padding
     assert data_hp.numel() % block_size == 0, f"data size must be multiple of block_size={block_size}"
-    assert data_hp.is_contiguous(), f"data must be contiguous, got {data_hp.stride()}"
-
+    data_hp = data_hp.contiguous()
     # calculate the scale in e8m0 format
 
     orig_shape = data_hp.shape
