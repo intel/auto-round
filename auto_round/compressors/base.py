@@ -1934,11 +1934,17 @@ class BaseCompressor(object):
         for subsequent quantization steps.
 
         Args:
-            decoding_layer_inputs (List[Tuple[Tuple[Any, Dict[str, Any]]]]):
-                A list of captured decoding-layer calls. Each element is expected
-                to be a tuple containing another tuple `(args, kwargs)`, where
-                `args` are positional arguments and `kwargs` are keyword arguments
-                captured from a decoding-layer's forward hook.
+            decoding_layer_inputs:
+                A list of entries captured by a forward hook on the decoding layer.
+                Each element is expected to be a tuple whose first item is
+                `(args, kwargs)`, where `args` are the positional arguments and
+                `kwargs` are the keyword arguments seen during the original
+                forward pass.
+
+                The capture hook look like:
+
+                    def input_capture_hook(module, *args, **kwargs):
+                        _all_module_input[module._tmp_name].append((args, kwargs))
         """
         first_block_name = self.quant_block_list[0][0]
 
