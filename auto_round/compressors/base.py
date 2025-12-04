@@ -1922,7 +1922,7 @@ class BaseCompressor(object):
         """
         Processes and stores decoding layer inputs for block quantization.
 
-        This function iterates through a list of captured decoding-layer calls,
+        This function iterates through a list of captured decoding layer calls,
         replaying them through a fake decoding layer to extract and store the
         inputs required for the decoding block in `self.inputs`. This effectively
         "normalizes" the inputs by making them accessible in a consistent format
