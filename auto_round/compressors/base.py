@@ -3023,7 +3023,7 @@ class BaseCompressor(object):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
-                    input_others[key][i] = to_dtype(input_others[key][i], tmp_dtype)
+                    to_dtype(input_others[key][i], tmp_dtype)
         return input_ids, input_others
 
     def _quantize_blocks(
