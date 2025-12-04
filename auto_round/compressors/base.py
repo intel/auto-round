@@ -64,7 +64,7 @@ from auto_round.schemes import (
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import _handle_moe_model
-from auto_round.utils import (  # normalize_input,
+from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
     SUPPORTED_FORMATS,
@@ -112,7 +112,8 @@ from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block
 
 import torch
 from typing import List, Tuple, Dict, Any, Optional
-
+from functools import partial
+from collections import defaultdict
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -1886,56 +1887,35 @@ class BaseCompressor(object):
 
         return output
 
-    def normalize_input(
+    def normalize_decoding_layer_inputs_(
         self, 
         decoding_layer_inputs: List[Tuple[Any]]
-    ) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
+    ):
         """
-        Normalize the decoding layer inputs into a flat list of input_ids and a dictionary of other inputs.
-        """
-        input_ids: List[torch.Tensor] = []
-        
-        # Initialize output dictionary with required keys
-        input_others: Dict[str, Any] = {
-            "positional_inputs": []
-        }
-        
-        # keys that should be collected into lists rather than overwritten
-        keys_to_accumulate = {"attention_mask"} 
+        Normalize decoding layer inputs to be used for block quantization.
 
+        This function takes a list of captured decoding-layer calls and replays them
+        to normalize the inputs for the decoding block. It uses a fake decoding layer
+        to simulate the forward pass and capture the necessary inputs.
+        Args:
+            decoding_layer_inputs (List[Tuple[Any]]): A list of tuples captured
+                from decoding-layer's forward hook.
+        """
+        first_block_name = self.quant_block_list[0][0]
+
+        class _FakeDecodingLayer(torch.nn.Module):
+            def forward(self, *args, **kwargs):
+                return args, kwargs
+        
+        fake_layer = _FakeDecodingLayer()
+        fake_layer.orig_forward = fake_layer.forward
+        fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
+    
+        self.inputs = {}
+        self.last_cache_name = None
         for step_input in decoding_layer_inputs:
-            # Unpack the nested structure for readability
-            # Structure assumed: ( (args_tuple, kwargs_dict), ... )
-            # step_input[0] -> (args, kwargs)
             args, kwargs = step_input[0]
-            current_input_ids = args[0] # Assuming input_ids is the first arg
-            
-            # 1. Process Input IDs: Flatten batch dimension
-            # torch.unbind splits a tensor into a tuple of tensors along a dimension
-            if current_input_ids.shape[0] > 1:
-                input_ids.extend(torch.unbind(current_input_ids, dim=0))
-            else:
-                input_ids.append(current_input_ids)
-
-            # 2. Process Other Inputs (kwargs)
-            for key, val in kwargs.items():
-                if val is None:
-                    continue
-                if key in keys_to_accumulate:
-                    # Initialize list if key missing, then append
-                    if val.shape[0] > 1:
-                        input_others.setdefault(key, []).extend(torch.unbind(val, dim=0))
-                    else:
-                        input_others.setdefault(key, []).append(val)
-                else:
-                    # For non-accumulating keys, the last seen value persists
-                    input_others[key] = val
-
-        # 3. Post-processing constraints
-        if input_others.get("use_cache"):
-            logger.warning_once("Forcing 'use_cache' to be False during calibration.")
-            input_others["use_cache"] = False
-        return input_ids, input_others
+            fake_layer(*args, **kwargs)
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
@@ -2365,7 +2345,7 @@ class BaseCompressor(object):
 
     def _replace_forward(self):
         """Replaces the forward function."""
-        from functools import partial
+
 
         for n, m in self.model.named_modules():
             if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
@@ -2637,7 +2617,10 @@ class BaseCompressor(object):
             "DiffusionCompressor",
             "MLLMCompressor",
         ], f"Currently, {self.__class__.__name__} does not support support quantize block with this function."
-        input_ids, input_others = self.normalize_input(inputs)
+        self.normalize_decoding_layer_inputs_(inputs)
+        block_inputs = self.inputs[self.quant_block_list[0][0]]
+        decoding_layer_first_input_name = "hidden_states"
+        input_ids, input_others = self._preprocess_block_inputs(block_inputs, decoding_layer_first_input_name)
         return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
 
     def _get_loss(
@@ -2948,10 +2931,30 @@ class BaseCompressor(object):
 
             return None, output
 
-    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
-        input_ids = inputs["input_ids"]
-        inputs.pop("input_ids", None)
+    def _split_inputs(self, inputs: dict, name) -> tuple[torch.Tensor, dict]:
+        input_ids = inputs[name]
+        inputs.pop(name, None)
         input_others = inputs
+        return input_ids, input_others
+
+    def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
+        input_ids, input_others = self._split_inputs(inputs, first_input_name)
+        clear_memory(device_list=self.device_list)
+        input_ids = to_device(input_ids, self.cache_device)
+        input_others = to_device(input_others, self.cache_device)
+        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+
+        tmp_dtype = self.amp_dtype if self.amp else torch.float32
+        input_ids = to_dtype(input_ids, tmp_dtype)
+
+        for key in input_others.keys():
+            if isinstance(input_others[key], torch.Tensor) and (
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+            ):
+                input_others[key] = input_others[key].to(tmp_dtype)
+            elif isinstance(input_others[key], list):
+                for i in range(len(input_others[key])):
+                    to_dtype(input_others[key][i], tmp_dtype)
         return input_ids, input_others
 
     def _quantize_blocks(
@@ -2980,23 +2983,7 @@ class BaseCompressor(object):
         for n, m in model.named_parameters():
             m.requires_grad_(False)
 
-        input_ids, input_others = self._split_inputs(inputs)
-        clear_memory(device_list=self.device_list)
-        input_ids = to_device(input_ids, self.cache_device)
-        input_others = to_device(input_others, self.cache_device)
-        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
-
-        tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        input_ids = to_dtype(input_ids, tmp_dtype)
-
-        for key in input_others.keys():
-            if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
-            ):
-                input_others[key] = input_others[key].to(tmp_dtype)
-            elif isinstance(input_others[key], list):
-                for i in range(len(input_others[key])):
-                    to_dtype(input_others[key][i], tmp_dtype)
+        input_ids, input_others = self._preprocess_block_inputs(inputs)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
