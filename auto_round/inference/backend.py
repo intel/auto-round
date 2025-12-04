@@ -631,7 +631,7 @@ def dynamic_import_inference_linear(backend, config):
 
     if "auto_round_kernel" in backend or "ark" in backend:
         try:
-            import auto_round_kernel as ark  # pylint: disable=E0401
+            from auto_round_extension.ark import auto_round_kernel as ark  # pylint: disable=E0401
         except Exception as e:
             raise ImportError("Please install auto_round_kernel version for CPU/XPU")
         import auto_round_extension.ark.qlinear as qlinear

@@ -20,7 +20,7 @@ import torch.nn as nn
 from auto_round.utils import convert_dtype_torch2str, logger
 
 try:
-    import auto_round_kernel as ark
+    from auto_round_extension.ark import auto_round_kernel as ark
 
     ARK_INSTALLED = True
 except:
