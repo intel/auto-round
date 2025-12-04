@@ -33,6 +33,7 @@ from transformers import set_seed
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.utils import (
+    IndexSampler,
     block_forward,
     check_need_act_calibration,
     check_skippable_keywords,
@@ -198,7 +199,7 @@ class BaseCompressor(object):
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
-                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, to_quant_block_names,
                   enable_norm_bias_tuning, enable_quanted_input,
@@ -261,7 +262,6 @@ class BaseCompressor(object):
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
         minmax_lr = kwargs.pop("minmax_lr", None)
         lr_scheduler = kwargs.pop("lr_scheduler", None)
-        sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
         nblocks = kwargs.pop("nblocks", 1)
@@ -313,17 +313,11 @@ class BaseCompressor(object):
         if device_map is None:
             device_map = 0
 
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
-
         self.device_map = device_map
         if isinstance(self.device_map, str):
             self.device_map = self.device_map.replace(" ", "")
 
         self.device_list = parse_available_devices(device_map)
-
-        if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         # Set device, must place after model loading
         self.device = get_major_device(device_map)
@@ -349,10 +343,22 @@ class BaseCompressor(object):
         if self.iters == 0:
             self.lr = 5e-3
         else:
-            self.lr = lr or (1.0 / self.iters)  # must place after iter setting
+            if not lr:
+                # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+                if self.iters >= 1000 and self.bits <= 3:
+                    self.lr = 2.0 / self.iters
+                    logger.info("set the lr to 2.0/iters for better accuracy")
+                else:
+                    self.lr = 1.0 / self.iters
+            else:
+                self.lr = lr
+        if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
+            logger.warning(
+                "For bits <= 2, it is recommended to enable `auto-round-best` " "and set `--enable_alg_ext` "
+            )
+
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
-        self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
@@ -389,9 +395,16 @@ class BaseCompressor(object):
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
+        # after setting iters
+        self.enable_torch_compile = enable_torch_compile
+        self._adjust_torch_compile(enable_torch_compile)
+
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
+
+        if isinstance(scheme, AutoScheme):
+            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
@@ -423,10 +436,6 @@ class BaseCompressor(object):
 
         all_dtypes = []
         for option in scheme.options:
-            # Skip pure BF16 option
-            if option == "BF16":
-                continue
-
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
@@ -504,14 +513,16 @@ class BaseCompressor(object):
             if len(tmp_devices) > 1:
                 logger.warning(
                     f"there are multiple device types in the device_map, "
-                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device "
+                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device."
                 )
 
             self.device = tmp_devices[0]
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _parse_and_set_scheme(self, scheme: Union[str, dict, QuantizationScheme], kwargs) -> QuantizationScheme:
+    def _parse_and_set_scheme(
+        self, scheme: Union[str, dict, QuantizationScheme], kwargs
+    ) -> tuple[QuantizationScheme, bool]:
         """Parse and set the quantization scheme."""
 
         def _parse_and_set(scheme, kwargs):
@@ -519,7 +530,7 @@ class BaseCompressor(object):
                 if "bits" not in kwargs:
                     data_type = kwargs["data_type"]
                     raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative.."
+                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
                     )
                 bits = kwargs["bits"]
                 scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
@@ -634,6 +645,7 @@ class BaseCompressor(object):
             and not is_debug_mode()
             and "fp8" not in self.data_type
             and "fp8" not in self.act_data_type
+            and self.iters > 0
         ):
             logger.info(
                 "'enable_torch_compile' is set to `False` by default. "
@@ -737,6 +749,8 @@ class BaseCompressor(object):
                     " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                     " for the accuracy results."
                 )
+            elif self.bits >= 8 and self.iters != 0:
+                logger.warning("`iters=0` is recommended for bits>=8")
 
         if (
             self.seqlen is not None
@@ -1405,11 +1419,14 @@ class BaseCompressor(object):
                 enable_imatrix = True
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
-
         if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic, self.act_data_type, self.act_bits
+            self.act_dynamic,
+            self.act_data_type,
+            self.act_bits,
+            self.static_kv_dtype,
+            self.static_attention_dtype,
         ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
             try:
@@ -1461,8 +1478,8 @@ class BaseCompressor(object):
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
         all_first_block_names = [block[0] for block in all_blocks]
-        if self.act_bits < 16 and not self.act_dynamic:
-            layer_names = self._get_quantized_layer_names_outside_blocks()
+        layer_names = self._get_quantized_layer_names_outside_blocks()
+        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0):
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
@@ -1775,6 +1792,21 @@ class BaseCompressor(object):
 
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
+                if self.act_bits < 16 and not self.act_dynamic:
+                    # Activation quantization requires collected inputs
+                    msg_prefix = (
+                        f"Activation max hook for layer '{layer_name}' is unavailable due to "
+                        f"insufficient collected inputs. "
+                    )
+                    if "fp8_e5m2" in self.act_data_type:
+                        logger.warning(msg_prefix + "Please notes that unit scale is used for this layer.")
+                    else:
+                        logger.warning(
+                            msg_prefix + "Static activation quantization is not supported or ineffective, "
+                            "Skipping quantization for this layer."
+                        )
+                        layer_names.remove(layer_name)
+                        continue
                 logger.info(f"using rtn to quantize {layer_name}")
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
@@ -1805,6 +1837,7 @@ class BaseCompressor(object):
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
         has_gguf = False
+
         if hasattr(self, "formats"):
             has_gguf = any("gguf" in format_ for format_ in self.formats)
         if has_gguf and self.immediate_packing:
@@ -2356,6 +2389,64 @@ class BaseCompressor(object):
                 hook_handle = m.register_forward_hook(hook_func)
                 self.hook_handles.append(hook_handle)
 
+    def _register_act_max_hook(self, model):
+        def get_act_max_hook(module, input, output):
+            if isinstance(input, (tuple, list)):
+                input = input[0]
+            if input.numel() == 0:
+                return  # as no needs for act_max update
+            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+            else:
+                act_max = act_max.to(module.act_max.device)
+                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                    module.act_max = torch.max(
+                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
+                    )
+                else:
+                    module.act_max = torch.max(act_max, module.act_max)
+
+        hook_handles = []
+        # for single layers out of blocks, like lm_head
+        if isinstance(model, SUPPORTED_LAYER_TYPES):
+            m = model
+            if (
+                hasattr(m, "act_dynamic")
+                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
+                and check_to_quantized(m)
+            ):
+                hook = m.register_forward_hook(get_act_max_hook)
+                hook_handles.append(hook)
+            return hook_handles
+
+        for n, m in model.named_modules():
+            if (
+                hasattr(m, "act_dynamic")
+                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
+                and check_to_quantized(m)
+            ):
+                hook = m.register_forward_hook(get_act_max_hook)
+                hook_handles.append(hook)
+                continue
+
+            # for whole model, RTN
+            if n in self.layer_config:
+                config = self.layer_config[n]
+                act_dynamic = config.get("act_dynamic", True)
+                act_data_type = config.get("act_data_type", None)
+                act_bits = config.get("act_bits", 16)
+                if (
+                    config["bits"] <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                    and check_to_quantized(config)
+                ):
+                    hook = m.register_forward_hook(get_act_max_hook)
+                    hook_handles.append(hook)
+                    continue
+        return hook_handles
+
     def _quantize_layer(
         self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
     ):
@@ -2380,6 +2471,19 @@ class BaseCompressor(object):
             inputs[i] = inputs[i].to(layer.weight.dtype)
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
+
+        if q_inputs is None:
+            hook_handles = self._register_act_max_hook(layer)
+            with torch.no_grad():
+                layer(torch.cat(inputs, dim=0))
+            for handle in hook_handles:
+                handle.remove()
+        else:
+            hook_handles = self._register_act_max_hook(layer)
+            if hook_handles:
+                layer(torch.cat(q_inputs, dim=0))
+            for handle in hook_handles:
+                handle.remove()
 
         wrapper_linear = WrapperLinear(
             layer,
@@ -2422,29 +2526,33 @@ class BaseCompressor(object):
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
-        batch_size = 1  # Force to low gpu
-        global_batch_size = batch_size * gradient_accumulate_steps
-        global_batch_size = min(nsamples, global_batch_size)
-        if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:global_batch_size]
+
         total_loss = 0
         num_elm = 1
         mse_reduction = "mean"
         if gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        batch_size = 1  # Force to low gpu
+        global_batch_size = self.batch_size * gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
+        if gradient_accumulate_steps != 1 and not self.attention_mask:
+            whole_indices = torch.arange(global_batch_size)
+            if q_inputs is not None:
+                num_elm = self._get_current_num_elm(q_inputs, whole_indices)
+            else:
+                num_elm = self._get_current_num_elm(inputs, whole_indices)
+
+        index_sampler = IndexSampler(nsamples, global_batch_size)
 
         for i in range(self.iters):
             total_loss = 0
-            if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:global_batch_size]
-                if gradient_accumulate_steps != 1:
-                    if q_inputs is not None:
-                        num_elm = self._get_current_num_elm(q_inputs, whole_indices)
-                    else:
-                        num_elm = self._get_current_num_elm(inputs, whole_indices)
+            global_indices = index_sampler.next_batch()
+            if self.attention_mask:
+                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
+
             for tmp_step in range(gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
+                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -2486,7 +2594,7 @@ class BaseCompressor(object):
                         loss = mse_loss(  # pylint: disable=not-callable
                             output_q.to(torch.float32), current_output.to(torch.float32)
                         )
-
+                num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 self._scale_loss_and_backward(scaler, loss)
@@ -2516,54 +2624,6 @@ class BaseCompressor(object):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-
-    def _register_act_max_hook(self, model):
-
-        def get_act_max_hook(module, input, output):
-            if isinstance(input, (tuple, list)):
-                input = input[0]
-            if input.numel() == 0:
-                return  # as no needs for act_max update
-            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-            else:
-                act_max = act_max.to(module.act_max.device)
-                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    module.act_max = torch.max(
-                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
-                    )
-                else:
-                    module.act_max = torch.max(act_max, module.act_max)
-
-        hook_handles = []
-
-        for n, m in model.named_modules():
-            if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
-            ):
-                hook = m.register_forward_hook(get_act_max_hook)
-                hook_handles.append(hook)
-                continue
-
-            # for whole model, RTN
-            if n in self.layer_config:
-                config = self.layer_config[n]
-                act_dynamic = config.get("act_dynamic", True)
-                act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_bits", 16)
-                if (
-                    config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
-                    and check_to_quantized(config)
-                ):
-                    hook = m.register_forward_hook(get_act_max_hook)
-                    hook_handles.append(hook)
-                    continue
-        return hook_handles
 
     def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
         current_output = [output[x] for x in indices]
@@ -2597,6 +2657,13 @@ class BaseCompressor(object):
     ) -> int:
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
+
+    def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
+        current_tensors = [tensor[i] for i in indices]
+        non_zero_cnt = 0
+        for t in current_tensors:
+            non_zero_cnt += torch.count_nonzero(t).item()
+        return non_zero_cnt
 
     def quantize_block(
         self,
@@ -2794,7 +2861,7 @@ class BaseCompressor(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {})  # TODO Quant layer should change
+            unwrapper_block(block, {})
             mv_module_from_gpu(block)
             return output, output
 
@@ -2809,11 +2876,6 @@ class BaseCompressor(object):
             nsamples = len(input_ids["hidden_states"])
         else:
             nsamples = len(input_ids)
-
-        global_batch_size = self.batch_size * self.gradient_accumulate_steps
-        global_batch_size = min(nsamples, global_batch_size)
-        if self.sampler != "rand":
-            whole_indices = torch.randperm(nsamples)[:global_batch_size]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -2825,30 +2887,31 @@ class BaseCompressor(object):
         init_loss = None
         best_params = {}
         total_loss = 0
+        global_batch_size = self.batch_size * self.gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1:
+        if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
+        index_sampler = IndexSampler(nsamples, global_batch_size)
+        batch_size = self.batch_size
         for i in range(self.iters):
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0
-            if self.sampler == "rand":
-                whole_indices = torch.randperm(nsamples)[:global_batch_size]
+            global_indices = index_sampler.next_batch()
+            if self.attention_mask:
+                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
-
+                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 current_output = self._get_current_output(output, indices)
-
                 current_output = to_device(current_output, loss_device)
-
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
-
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
-
+                num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
@@ -3124,6 +3187,8 @@ class BaseCompressor(object):
             "super_bits",
             "super_group_size",
             "regex_config",
+            "static_kv_dtype",
+            "static_attention_dtype",
         ]
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
@@ -3135,7 +3200,6 @@ class BaseCompressor(object):
         serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in serialization_dict.keys():
             serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-
         compressed_model = save_quantized_as_format(  # TODO refine the code
             output_dir,
             model=self.model,
@@ -3160,6 +3224,8 @@ class BaseCompressor(object):
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
             device=self.device,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
             **kwargs,
         )
         return compressed_model

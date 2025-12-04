@@ -46,8 +46,6 @@ from auto_round.utils import (
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  ##dese not support lm-head
-        return
     layer = get_module(model, name)
 
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed

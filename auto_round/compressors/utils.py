@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import os
+import random
 import re
 import sys
 from dataclasses import asdict, fields
@@ -145,8 +146,14 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: Union[int, None] = 16
+    is_act_dynamic: Union[bool, None],
+    act_data_type: Union[str, None] = None,
+    act_bits: Union[int, None] = 16,
+    static_kv_dtype: Union[str, None] = None,
+    static_attention_dtype: Union[str, None] = None,
 ) -> bool:
+    if static_kv_dtype is not None or static_attention_dtype is not None:
+        return True
     if act_bits is None or act_bits > 8:
         return False
     # None is dynamic
@@ -1310,3 +1317,56 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
             clear_memory()
         except Exception as _cleanup_err:
             logger.warning(f"shard cleanup warning: {_cleanup_err}")
+
+
+class IndexSampler:
+    """A cyclic sampler that returns shuffled index batches.
+
+    This sampler maintains internal state so that each call to `next_batch()`
+    continues from where it left off. When the remaining number of samples is
+    less than `batch_size`, the sampler reshuffles all indices and starts from
+    the beginning, discarding the last incomplete batch.
+
+    Attributes:
+        nsamples (int): Total number of samples.
+        batch_size (int): Number of indices to return in each batch.
+        index (int): Current position in the index list.
+        indices (List[int]): Shuffled list of indices.
+    """
+
+    def __init__(self, nsamples: int, batch_size: int) -> None:
+        """Initializes the sampler.
+
+        Args:
+            nsamples (int): Total number of samples (must be >= batch_size).
+            batch_size (int): Number of indices per batch.
+
+        Raises:
+            ValueError: If batch_size is not in the range (0, nsamples].
+        """
+        if batch_size <= 0 or batch_size > nsamples:
+            raise ValueError("batch_size must be > 0 and <= nsamples")
+
+        self.nsamples: int = nsamples
+        self.batch_size: int = batch_size
+        self.index: int = 0
+
+        self.indices: list[int] = list(range(nsamples))
+        random.shuffle(self.indices)
+
+    def next_batch(self) -> list[int]:
+        """Returns the next batch of shuffled indices.
+
+        If the remaining indices are fewer than `batch_size`, the sampler
+        reshuffles the entire list and starts from the beginning.
+
+        Returns:
+            list[int]: A list of size `batch_size` containing sample indices.
+        """
+        if self.index + self.batch_size > self.nsamples:
+            random.shuffle(self.indices)
+            self.index = 0
+
+        batch = self.indices[self.index : self.index + self.batch_size]
+        self.index += self.batch_size
+        return batch

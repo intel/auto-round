@@ -17,7 +17,7 @@ import importlib
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import transformers

@@ -1003,10 +1003,6 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
         if gptq_req:
             commands.append(f"pip install -v {gptq_req} --no-build-isolation")
-            try:
-                require_version("numpy<2.0")
-            except:
-                commands.append("pip install 'numpy<2.0'")
 
         if other_reqs:
             other_str = " ".join(other_reqs)

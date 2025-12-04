@@ -408,7 +408,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
-This format is well-suited for CPU devices and is widely adopted by the community.
+
+The optimized RTN mode is suggested (--iters 0) for all bits other than 3 bits.
+
 ```python
 from auto_round import AutoRound
 
