@@ -1922,17 +1922,23 @@ class BaseCompressor(object):
 
     def normalize_decoding_layer_inputs_(
         self, 
-        decoding_layer_inputs: List[Tuple[Any]]
+        decoding_layer_inputs: List[Tuple[Tuple[Any, Dict[str, Any]]]]
     ):
         """
-        Normalize decoding layer inputs to be used for block quantization.
+        Processes and stores decoding layer inputs for block quantization.
 
-        This function takes a list of captured decoding-layer inputs and replays them
-        to normalize the inputs for the fine-tuning. It uses a fake decoding layer
-        to simulate the forward pass and capture the necessary inputs.
+        This function iterates through a list of captured decoding-layer calls,
+        replaying them through a fake decoding layer to extract and store the
+        inputs required for the decoding block in `self.inputs`. This effectively
+        "normalizes" the inputs by making them accessible in a consistent format
+        for subsequent quantization steps.
+
         Args:
-            decoding_layer_inputs (List[Tuple[Any]]): A list of tuples captured
-                from decoding-layer's forward hook.
+            decoding_layer_inputs (List[Tuple[Tuple[Any, Dict[str, Any]]]]):
+                A list of captured decoding-layer calls. Each element is expected
+                to be a tuple containing another tuple `(args, kwargs)`, where
+                `args` are positional arguments and `kwargs` are keyword arguments
+                captured from a decoding-layer's forward hook.
         """
         first_block_name = self.quant_block_list[0][0]
 
@@ -1941,7 +1947,6 @@ class BaseCompressor(object):
                 return args, kwargs
         
         fake_layer = _FakeDecodingLayer()
-        fake_layer.orig_forward = fake_layer.forward
         fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
     
         self.inputs = {}
