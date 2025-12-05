@@ -86,8 +86,7 @@ class AutoRoundMXFP4LinearImpl(AutoRoundQuantImpl):
 
     def process_weights_after_loading(self, layer) -> None:
         # FIXME: may dequant to bf16
-        if envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
-
+        if envs.VLLM_MXFP4_PRE_UNPACK_TO_FP8:
             weight_fp8, scale_bf16 = dequant_mxfp4_to_fp8(
                 data_lp=layer.weight_packed,
                 scale_e8m0=layer.weight_scale,
@@ -110,20 +109,16 @@ class AutoRoundMXFP4LinearImpl(AutoRoundQuantImpl):
                     requires_grad=False,
                 ),
             )
+        else:
+            raise NotImplementedError("Only VLLM_MXFP4_PRE_UNPACK_TO_FP8 is supported now.")
 
     def apply_weights(
         self, layer: torch.nn.Module, x: torch.Tensor, bias: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        if not envs.VLLM_MXFP4_PRE_UNPACK_WEIGHTS:
-            out = run_mxfp4_emulations(x=x, weight=layer.weight_packed, weight_scale=layer.weight_scale)
-            if bias is not None:
-                out = out + bias
-            return out
-        else:
-            out = mxfp4_gemm_with_unpacked_weight(
-                x=x,
-                weight_fp8=layer.weight_unpacked_fp8,
-                weight_scale_bf16=layer.weight_scale_bf16,
-                bias=bias,
-            )
-            return out
+        out = mxfp4_gemm_with_unpacked_weight(
+            x=x,
+            weight_fp8=layer.weight_unpacked_fp8,
+            weight_scale_bf16=layer.weight_scale_bf16,
+            bias=bias,
+        )
+        return out
