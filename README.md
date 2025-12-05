@@ -30,8 +30,8 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 
 ## 🆕 What's New
-* [2025/12] [AutoRoundV2 paper](http://arxiv.org/abs/2512.04746) is public at arxiv, please use `AutoScheme` API for mixed precision quantization and use 'enable_alg_ext' to reproduce the resutls.
-* 
+* [2025/12] The [AutoRoundV2 paper](http://arxiv.org/abs/2512.04746) is now publicly available on arXiv. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results.
+
 * [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md).
 
 * [2025/11] An **enhanced GGUF** quantization algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/gguf_alg_ext_acc.md).
