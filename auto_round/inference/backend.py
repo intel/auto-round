@@ -80,6 +80,9 @@ class BackendInfo:
             an empty list.
         alias: An optional list of strings representing alternative names for the
             backend. Defaults to None.
+        requirements: An optional list of strings specifying the library dependencies
+            required by the backend (e.g., 'triton>=2.0'). Defaults to None.
+        systems: An optional list of strings specifying the operating systems,(e.g., 'windows', 'linux', 'darwin').
     """
 
     device: list[str]  # TODO change to tuple
