@@ -574,7 +574,7 @@ def check_compatible(
         return False
     if backend.systems is not None:
         current_sym = platform.system()
-        systems = [s.lower() for s in  backend.systems]
+        systems = [s.lower() for s in backend.systems]
         if current_sym.lower() not in systems:
             return False
     # Check scheme
