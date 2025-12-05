@@ -1,7 +1,9 @@
 Full Publications/Events
 ==========
 
-## 2025 (3)
+## 2025 (4)
+
+* Paper: [SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (Dec 2025)
 
 * Blog in LMSYS: [AutoRound Meets SGLang: Enabling Quantized Model Inference with AutoRound](https://lmsys.org/blog/2025-11-13-AutoRound/) (Nov 2025)
 
