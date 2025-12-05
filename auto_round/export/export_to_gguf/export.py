@@ -186,8 +186,6 @@ def pack_gguf_layer(
                 for n, m in block.named_modules():
                     if check_to_quantized(m):
                         names_in_blocks.append(m.tmp_name)
-            names_outside_blocks = list(set(layer_config.keys()) - set(names_in_blocks))
-            model.names_outside_blocks = names_outside_blocks
 
     if name in model.last_layer_name_to_block_name:
         # Packing block
@@ -203,21 +201,6 @@ def pack_gguf_layer(
                 m.bias = None
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
-            for gguf_model in gguf_model_instance_global:
-                gguf_model.current_packing_block = None
-    if name in model.names_outside_blocks:
-        # Packing block
-        for gguf_model in gguf_model_instance_global:
-            gguf_model.current_packing_block = name
-            gguf_model.prepare_tensors()
-
-        layer = get_module(model, name)
-        if hasattr(layer, "weight"):
-            layer.weight = None
-        if hasattr(layer, "bias"):
-            layer.bias = None
-        model.names_outside_blocks.remove(name)
-        if len(model.names_outside_blocks) == 0:
             for gguf_model in gguf_model_instance_global:
                 gguf_model.current_packing_block = None
 

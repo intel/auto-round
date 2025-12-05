@@ -2478,16 +2478,18 @@ class BaseCompressor(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        if q_inputs is None:
+        if self.act_bits <= 8 and check_need_act_calibration(
+            self.act_dynamic,
+            self.act_data_type,
+            self.act_bits,
+            self.static_kv_dtype,
+            self.static_attention_dtype,
+        ):
+            tmp_inputs = q_inputs if q_inputs is not None else inputs
             hook_handles = self._register_act_max_hook(layer)
             with torch.no_grad():
-                layer(torch.cat(inputs, dim=0))
-            for handle in hook_handles:
-                handle.remove()
-        else:
-            hook_handles = self._register_act_max_hook(layer)
-            if hook_handles:
-                layer(torch.cat(q_inputs, dim=0))
+                for input in tmp_inputs:
+                    layer(input)
             for handle in hook_handles:
                 handle.remove()
 
