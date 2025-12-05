@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -97,6 +98,7 @@ class BackendInfo:
     checkers: list[Any] = field(default_factory=list)
     alias: Optional[list[str]] = None
     requirements: Optional[list[str]] = None
+    systems: Optional[list[str]] = None
 
 
 BACKEND_ACT_ATTRS = [
@@ -340,6 +342,7 @@ BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     checkers=[feature_multiply_checker_32],
     alias=["tritonv2", "tritonv2_zp", "triton"],
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
+    # systems=["windows", "linux", "darwin"],
 )
 
 BackendInfos["auto_round:torch"] = BackendInfo(
@@ -569,6 +572,11 @@ def check_compatible(
         pass
     else:
         return False
+    if backend.systems is not None:
+        current_sym = platform.system()
+        systems = [s.lower() for s in  backend.systems]
+        if current_sym.lower() not in systems:
+            return False
     # Check scheme
     for key, value in config.items():
         backend_value = getattr(backend, key, None)
