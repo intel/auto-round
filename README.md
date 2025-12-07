@@ -51,7 +51,7 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 * [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
 
-* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*]((https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc)).
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 
 
 ## ✨ Key Features
