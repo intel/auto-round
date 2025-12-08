@@ -30,8 +30,8 @@ def register_format(name):
     """
 
     def register(format):
-        EXPORT_FORMAT[name] = format
         return format
+        EXPORT_FORMAT[name] = format
 
     return register
 

@@ -84,7 +84,7 @@ def download_convert_file(redownload=False):
         f.write(response.text)
 
 
-def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usage=False):
+def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usage=False, device=None):
     if model_instance.model_arch == gguf.MODEL_ARCH.MMPROJ and model_instance.fname_out.is_dir():
         model_instance.fname_out = model_instance.fname_out / "mmproj-model.gguf"
     model_instance.model = model
@@ -93,6 +93,8 @@ def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usag
 
     model_instance.get_tensors = partial(get_tensors, model_instance)
     model_instance.prepare_tensors = partial(prepare_tensors, model_instance)
+
+    model_instance.device = device
 
     return model_instance
 
@@ -186,8 +188,8 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         yield name, tensor
 
 
-def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
-    device = data_torch.device
+def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None, device=None):
+    device = data_torch.device if device is None else device
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
     zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -210,9 +212,9 @@ def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=
     return data
 
 
-def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
+def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid, device=None):
     suffix = ".weight"
-    device = data_torch.device
+    device = data_torch.device if device is None else device
     if suffix in name:
         layer_name = name[: -len(suffix)]
         module = get_module(cls.model, layer_name)
@@ -370,6 +372,7 @@ def _special_name_handle(cls, name):
 
 def prepare_tensors(cls):
     max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
+    device = get_packing_device(cls.device)
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
 
@@ -567,7 +570,7 @@ def prepare_tensors(cls):
                             else:
                                 attr_list[attr] = v_b
                     attr_list["imatrix"] = module.imatrix if hasattr(module, "imatrix") else None
-                    data = _quant_data_with_args(data_torch, data_qtype, **attr_list)
+                    data = _quant_data_with_args(data_torch, data_qtype, device=device, **attr_list)
 
                 # for MOE model
                 elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", name)) == 2:
@@ -578,12 +581,12 @@ def prepare_tensors(cls):
                             if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                 arr_name[i] = str(idx)
                         arr_name = ".".join(arr_name)
-                        arr, data_qtype = _quant_data(cls, arr, data_qtype, arr_name, modify_name, bid)
+                        arr, data_qtype = _quant_data(cls, arr, data_qtype, arr_name, modify_name, bid, device=device)
                         new_data.append(arr)
                     data = np.array(new_data)
                     del new_data
                 else:
-                    data, data_qtype = _quant_data(cls, data_torch, data_qtype, name, modify_name, bid)
+                    data, data_qtype = _quant_data(cls, data_torch, data_qtype, name, modify_name, bid, device=device)
 
             shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
 

@@ -73,6 +73,7 @@ def create_model_class(
     backend="gguf:q4_0",
     low_cpu_mem_usage=False,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
+    device="cpu",
 ):
     tmp_work_dir = model.name_or_path
     os.makedirs(output_dir, exist_ok=True)
@@ -113,7 +114,7 @@ def create_model_class(
             small_first_shard=False,
         )
         model_instance = wrapper_model_instance(
-            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage
+            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage, device=device
         )
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
@@ -130,6 +131,7 @@ def pack_gguf_layer(
     processor=None,
     image_processor=None,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
+    device="cpu",
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -157,6 +159,7 @@ def pack_gguf_layer(
                     backend,
                     low_cpu_mem_usage=True,
                     model_type=convert_hf_to_gguf.ModelType.MMPROJ,
+                    device=device,
                 )
             )
 
@@ -206,7 +209,7 @@ def pack_gguf_layer(
 
 
 @torch.inference_mode()
-def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, **kwargs):
+def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, device="cpu", **kwargs):
     """Export the model to gguf format."""
     st = time.time()
     global gguf_model_instance_global
@@ -214,12 +217,12 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
     model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
         gguf_model_instance_global = [
-            create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT)
+            create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device)
         ]
         if vlm:
             gguf_model_instance_global.append(
                 create_model_class(
-                    output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.MMPROJ
+                    output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.MMPROJ, device=device
                 )
             )
 
