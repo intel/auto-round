@@ -352,7 +352,7 @@ class BaseCompressor(object):
                 self.lr = lr
         if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
             logger.warning(
-                "For bits <= 2, it is recommended to enable `auto-round-best` " "and set `--enable_alg_ext` "
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
 
         self.minmax_lr = minmax_lr or self.lr
