@@ -1332,6 +1332,8 @@ class BaseCompressor(object):
             self._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
+                packed_m = get_module(self.model, name)
+                set_module(self.model, name, packed_m.to("cpu"))
         else:
             if to_cpu:
                 m = m.to("cpu")
