@@ -472,9 +472,11 @@ def tune(args):
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
     from transformers.utils.versions import require_version
 
-    require_version(
-        "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
-    )
+    if args.tasks is not None:
+        require_version(
+            "lm_eval>=0.4.2",
+            "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`",
+        )
 
     from auto_round.utils import detect_device, get_library_version, logger
 
