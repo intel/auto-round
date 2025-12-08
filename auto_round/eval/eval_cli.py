@@ -144,7 +144,9 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
-    require_version("lm_eval>=0.4.2", "lm-eval is required for evaluation", "`pip install 'lm-eval>=0.4.2'`")
+    require_version(
+        "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
+    )
 
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
@@ -236,7 +238,9 @@ def eval_task_by_task(
     mllm=False,
     add_bos_token=False,
 ):
-    require_version("lm_eval>=0.4.2", "lm-eval is required for evaluation", "`pip install 'lm-eval>=0.4.2'`")
+    require_version(
+        "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
+    )
 
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
@@ -244,7 +248,7 @@ def eval_task_by_task(
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     import traceback
 
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
+    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
     from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -313,7 +317,7 @@ def eval_task_by_task(
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
 
-    from lm_eval.utils import make_table  # pylint: disable=E0611
+    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
