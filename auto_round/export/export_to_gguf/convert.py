@@ -188,7 +188,9 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         yield name, tensor
 
 
-def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None, device=None):
+def _quant_data_with_args(
+    data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None, device=None
+):
     device = data_torch.device if device is None else device
     data_torch = data_torch.to(torch.float32)
     scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale

@@ -217,12 +217,19 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
     model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
         gguf_model_instance_global = [
-            create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device)
+            create_model_class(
+                output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device
+            )
         ]
         if vlm:
             gguf_model_instance_global.append(
                 create_model_class(
-                    output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.MMPROJ, device=device
+                    output_dir,
+                    model,
+                    layer_config,
+                    backend,
+                    model_type=convert_hf_to_gguf.ModelType.MMPROJ,
+                    device=device,
                 )
             )
 
