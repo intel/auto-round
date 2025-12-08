@@ -16,7 +16,7 @@ import importlib.util
 import os
 import time
 
-from transformers.utils import require_version
+from transformers.utils.versions import require_version
 
 from auto_round.utils import (
     clear_memory,
