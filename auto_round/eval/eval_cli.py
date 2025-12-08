@@ -16,6 +16,8 @@ import importlib.util
 import os
 import time
 
+from transformers.utils import require_version
+
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -142,8 +144,7 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
-    if importlib.util.find_spec("lm_eval") is None:
-        raise ImportError("lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`")
+    require_version("lm_eval>=0.4.2", "lm-eval is required for evaluation", "`pip install 'lm-eval>=0.4.2'`")
 
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
@@ -235,8 +236,8 @@ def eval_task_by_task(
     mllm=False,
     add_bos_token=False,
 ):
-    if importlib.util.find_spec("lm_eval") is None:
-        raise ImportError("lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`")
+    require_version("lm_eval>=0.4.2", "lm-eval is required for evaluation", "`pip install 'lm-eval>=0.4.2'`")
+
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -244,7 +245,7 @@ def eval_task_by_task(
     import traceback
 
     from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
-    from lm_eval.models.huggingface import HFLM
+    from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils import logger
@@ -283,7 +284,7 @@ def eval_task_by_task(
         if batch_size is None or batch_size == "auto":
             logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
             batch_size = 16
-        from lm_eval.models.hf_vlms import HFMultimodalLM
+        from lm_eval.models.hf_vlms import HFMultimodalLM  # pylint: disable=E0401
 
         hflm = HFMultimodalLM(
             pretrained=model,

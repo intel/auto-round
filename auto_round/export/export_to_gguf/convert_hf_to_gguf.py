@@ -1232,7 +1232,7 @@ class TextModel(ModelBase):
         special_vocab.add_to_gguf(self.gguf_writer)
 
     def _create_vocab_sentencepiece(self):
-        from sentencepiece import SentencePieceProcessor
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "tokenizer.model"
 
@@ -4243,7 +4243,7 @@ class Phi3MiniModel(TextModel):
                 if tokenizer_class == "GPT2Tokenizer":
                     return self._set_vocab_gpt2()
 
-        from sentencepiece import SentencePieceProcessor
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "tokenizer.model"
 
@@ -4730,8 +4730,8 @@ class InternLM2Model(TextModel):
         # Copy from _set_vocab_sentencepiece, The only difference is that we will treat the character
         # \x00 specially and convert it into an emoji character to prevent it from being mistakenly
         # recognized as an empty string in C++.
-        from sentencepiece import SentencePieceProcessor
-        from sentencepiece import sentencepiece_model_pb2 as model
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
+        from sentencepiece import sentencepiece_model_pb2 as model  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "tokenizer.model"
 
@@ -5064,8 +5064,8 @@ class BertModel(TextModel):
         # to avoid TypeError: Descriptors cannot be created directly
         # exception when importing sentencepiece_model_pb2
         os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-        from sentencepiece import SentencePieceProcessor
-        from sentencepiece import sentencepiece_model_pb2 as model
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
+        from sentencepiece import sentencepiece_model_pb2 as model  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "sentencepiece.bpe.model"
 
@@ -6756,7 +6756,7 @@ class ArcticModel(TextModel):
         # The reason for using a custom implementation here is that the
         # snowflake-arctic-instruct model redefined tokens 31998 and 31999 from
         # tokenizer.model and used them as BOS and EOS instead of adding new tokens.
-        from sentencepiece import SentencePieceProcessor
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "tokenizer.model"
 
@@ -7246,8 +7246,8 @@ class T5Model(TextModel):
         # to avoid TypeError: Descriptors cannot be created directly
         # exception when importing sentencepiece_model_pb2
         os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-        from sentencepiece import SentencePieceProcessor
-        from sentencepiece import sentencepiece_model_pb2 as model
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
+        from sentencepiece import sentencepiece_model_pb2 as model  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "tokenizer.model"
 
@@ -7381,8 +7381,8 @@ class T5EncoderModel(TextModel):
         # to avoid TypeError: Descriptors cannot be created directly
         # exception when importing sentencepiece_model_pb2
         os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-        from sentencepiece import SentencePieceProcessor
-        from sentencepiece import sentencepiece_model_pb2 as model
+        from sentencepiece import SentencePieceProcessor  # pylint: disable=E0401
+        from sentencepiece import sentencepiece_model_pb2 as model  # pylint: disable=E0401
 
         tokenizer_path = self.dir_model / "tokenizer.model"
 

@@ -21,7 +21,7 @@ from auto_round.logger import logger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-from lm_eval.models.huggingface import HFLM
+from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
 
 
 def simple_evaluate_user_model(

@@ -2,7 +2,7 @@
 accelerate
 datasets
 numpy
-packaging # for python version <= 3.9
+# packaging # for python version <= 3.9
 py-cpuinfo
 threadpoolctl
 torch
