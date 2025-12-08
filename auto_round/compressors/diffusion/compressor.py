@@ -133,15 +133,14 @@ class DiffusionCompressor(BaseCompressor):
                 f"reset batch_size({batch_size}) to 1 and "
                 f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                 f"to {batch_size * gradient_accumulate_steps}, "
-                f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
-            )
+                f"because batch_size={batch_size} cannot be used for calibrating non-text modules.")
             gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
 
         seqlen = 2048 if seqlen is None else seqlen
 
         if nsamples % batch_size != 0:
-            nsamples = (nsamples // batch_size + 1) * batch_size
+            nsamples = (nsamples//batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
 
         kwargs["diffusion"] = True
@@ -172,7 +171,7 @@ class DiffusionCompressor(BaseCompressor):
             q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
         return inputs, q_inputs
 
-    def _split_inputs(self, inputs: dict) -> tuple[dict, dict]:
+    def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[dict, dict]:
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
@@ -247,8 +246,7 @@ class DiffusionCompressor(BaseCompressor):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = self._sampling_inputs(
-                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
-            )
+                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys)
             if isinstance(tmp_input_ids, dict):
                 hidden_states = tmp_input_ids.pop("hidden_states")
                 tmp_input_others.update(tmp_input_ids)
@@ -291,8 +289,7 @@ class DiffusionCompressor(BaseCompressor):
         """
         logger.warning(
             "Diffusion model will catch nsamples * num_inference_steps inputs, "
-            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
-        )
+            "you can reduce nsamples or num_inference_steps if OOM or take too much time.")
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
@@ -310,17 +307,12 @@ class DiffusionCompressor(BaseCompressor):
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
 
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 0
-            and self.pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
+        if (hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 0 and
+                self.pipe.device != self.model.device and torch.device(self.model.device).type in ["cuda", "xpu"]):
             logger.error(
                 "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
                 "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
-            )
+                "move the pipeline object to GPU/XPU before passing them into API.")
             exit(-1)
 
         if self.pipe.device != self.model.device:
@@ -335,10 +327,8 @@ class DiffusionCompressor(BaseCompressor):
                         guidance_scale=self.guidance_scale,
                         num_inference_steps=self.num_inference_steps,
                         generator=(
-                            None
-                            if self.generator_seed is None
-                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
-                        ),
+                            None if self.generator_seed is None else torch.Generator(
+                                device=self.pipe.device).manual_seed(self.generator_seed)),
                     )
                 except NotImplementedError:
                     pass
@@ -352,19 +342,16 @@ class DiffusionCompressor(BaseCompressor):
         if total_cnt == 0:
             logger.error(
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length"
-            )
+                f"dataset or decease the sequence length")
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantization. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
-            )
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}")
             if total_cnt < self.batch_size:
                 raise ValueError(
                     f"valid samples is less than batch_size({self.batch_size}),"
-                    " please adjust self.batch_size or seqlen."
-                )
+                    " please adjust self.batch_size or seqlen.")
             max_len = (total_cnt // self.batch_size) * self.batch_size
             for k, v in self.inputs.items():
                 for key in v:

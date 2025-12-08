@@ -35,7 +35,7 @@ class TestAlgExt(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        # wo alg ext 0.2084, with 0.2364
+        # wo alg ext 0.2078, with 0.2371
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.22)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 

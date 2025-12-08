@@ -64,6 +64,7 @@ class AutoRound:
     super_bits: int | None
     super_group_size: int | None
 
+    # all args in __new__ need be passed to the dynamic created class __init__
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
@@ -191,6 +192,8 @@ class AutoRound:
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
+            disable_opt_rtn=disable_opt_rtn,
+            enable_alg_ext=enable_alg_ext,
             **kwargs,
         )
         return ar
