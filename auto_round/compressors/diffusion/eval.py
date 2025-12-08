@@ -17,6 +17,7 @@ import os
 
 import numpy as np
 import torch
+from PIL import Image
 from tqdm import tqdm
 
 from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
