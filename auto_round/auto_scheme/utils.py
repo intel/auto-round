@@ -106,7 +106,6 @@ def compute_avg_bits_for_scheme(
         total_params += module.weight.numel()
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
-
     avg_bits = float(total_quantized_bits) / total_params
 
     if scheme is not None:
@@ -122,7 +121,6 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
         model: The model to analyze.
         ignore_scale_zp_bits: If True, ignores overhead from scale and zero-points.
         if scheme is not None:
-        apply_quant_scheme(model, quant_layer_names, fixed_layer_scheme, scheme)
     """
 
     total_params = 0
@@ -133,11 +131,11 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
             continue
         if not hasattr(module, "weight"):
             continue
-        # if isinstance(module,torch.nn.Embedding): # Tricky setting for Embedding
-        #     continue
         total_params += module.weight.numel()
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
+
+
 
     avg_bits = float(total_quantized_bits) / total_params
 
