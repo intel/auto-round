@@ -449,6 +449,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.9.0"],
+    systems=["linux"],
 )
 
 BackendInfos["auto_round_kernel_zp"] = BackendInfo(
@@ -464,6 +465,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.9.0"],
+    systems=["linux"],
 )
 
 BackendInfos["auto_round_kernel_awq"] = BackendInfo(
@@ -479,6 +481,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.9.0"],
+    systems=["linux"],
 )
 
 BackendInfos["ipex_gptq"] = BackendInfo(
