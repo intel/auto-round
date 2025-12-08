@@ -187,7 +187,8 @@ class MLLMCompressor(BaseCompressor):
             from transformers.utils.versions import require_version
 
             require_version(
-                "PIL", "Pillow is required for quantizing non-text modules, please install it with `pip install Pillow`"
+                "pillow",
+                "pillow is required for quantizing non-text modules, please install it with `pip install pillow`",
             )
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
