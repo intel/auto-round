@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import importlib.util
 import os
 import re
 import sys
@@ -739,7 +740,12 @@ class BaseCompressor(object):
                 elif format_ != "fake":
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
-                raise ValueError("Gguf format is not compatible with other formats, please choose only one of them")
+                raise ValueError("GGUF format is not compatible with other formats, please choose only one of them")
+            if has_gguf and importlib.util.find_spec("sentencepiece") is None:
+                logger.error(
+                    "SentencePiece is required for GGUF format, please install it with `pip install sentencepiece`"
+                )
+                exit(-1)
             if has_gguf and self.iters != 0 and self.bits != 3 and not self.enable_alg_ext:
                 logger.warning(
                     "`iters=0` is recommended when exporting to current GGUF format"

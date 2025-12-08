@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import importlib.util
 import os
 import sys
 
@@ -469,6 +470,8 @@ def tune(args):
         args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
+    if args.tasks is not None and importlib.util.find_spec("lm_eval") is None:
+        raise ImportError("lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`")
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils import detect_device, get_library_version, logger

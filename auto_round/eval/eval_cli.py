@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import importlib.util
 import os
 import time
 
@@ -141,6 +142,9 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
+    if importlib.util.find_spec("lm_eval") is None:
+        raise ImportError("lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`")
+
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
         eval_with_vllm(args)
@@ -231,6 +235,8 @@ def eval_task_by_task(
     mllm=False,
     add_bos_token=False,
 ):
+    if importlib.util.find_spec("lm_eval") is None:
+        raise ImportError("lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`")
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
