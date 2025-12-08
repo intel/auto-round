@@ -74,7 +74,7 @@ class GenScheme:
             else self.auto_scheme.enable_torch_compile
         )
         self.disable_opt_rtn = self.auto_scheme.disable_opt_rtn
-        self.min_avg_bit, self.max_avg_bit,self.min_avg_bit_scheme = self.compute_avg_bit_range()
+        self.min_avg_bit, self.max_avg_bit, self.min_avg_bit_scheme = self.compute_avg_bit_range()
         self._check_configs()
 
     def _check_configs(self) -> None:
@@ -84,7 +84,6 @@ class GenScheme:
 
         if not isinstance(self.dataset, str):
             raise TypeError("`dataset` must be a string, got {type(self.dataset).__name__}.")
-
 
         target = self.auto_scheme.avg_bits
         min_avg_bit = self.min_avg_bit
@@ -171,7 +170,7 @@ class GenScheme:
 
         return layer_config
 
-    def compute_avg_bit_range(self) -> tuple[float, float, str|QuantizationScheme]:
+    def compute_avg_bit_range(self) -> tuple[float, float, str | QuantizationScheme]:
         """Compute the min and max average bitwidths among candidate quantization options."""
         avg_bits = [
             compute_avg_bits_for_scheme(

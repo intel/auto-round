@@ -433,7 +433,7 @@ class BaseCompressor(object):
             sys.exit(-1)
 
         all_dtypes = []
-        all_gguf= True
+        all_gguf = True
         for option in scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
@@ -444,7 +444,7 @@ class BaseCompressor(object):
                 option = preset_name_to_scheme(option)
 
             else:
-                all_gguf=False
+                all_gguf = False
 
             if isinstance(option, QuantizationScheme):
                 dtype = option.data_type
@@ -455,7 +455,7 @@ class BaseCompressor(object):
 
         # Check for mixed data types
         unique_dtypes = set(all_dtypes)
-        if len(unique_dtypes) > 1  and not all_gguf:
+        if len(unique_dtypes) > 1 and not all_gguf:
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "

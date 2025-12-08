@@ -135,8 +135,6 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
 
-
-
     avg_bits = float(total_quantized_bits) / total_params
 
     return avg_bits, total_quantized_bits
