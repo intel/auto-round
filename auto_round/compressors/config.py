@@ -247,7 +247,7 @@ class BaseExtraConfig:
 @dataclass
 class TuningExtraConfig(BaseExtraConfig):
     amp: bool = True
-    disable_opt_rtn: bool = True
+    # disable_opt_rtn: bool = True
     enable_alg_ext: bool = False
     enable_minmax_tuning: bool = True
     enable_norm_bias_tuning: bool = False
