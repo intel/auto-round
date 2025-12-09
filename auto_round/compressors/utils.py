@@ -253,7 +253,7 @@ def set_layer_config(
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
-    fill_default_value=True
+    fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.

@@ -38,6 +38,7 @@ class TestAutoScheme(unittest.TestCase):
         ar = AutoRound(model=model_name, scheme=scheme, iters=1, enable_alg_ext=True)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
     #
     def test_embedding_fallback(self):
         model_name = "/models/Qwen3-0.6B"
