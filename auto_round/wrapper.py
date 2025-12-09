@@ -247,7 +247,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
-            imatrix=self.orig_layer.imatrix if hasattr(self.orig_layer, "imatrix") else None,
+            imatrix=self.orig_layer.imatrix.to(weight.device) if hasattr(self.orig_layer, "imatrix") else None,
             global_scale=getattr(self, "weight_global_scale", None),
             **quant_kwargs,
         )
