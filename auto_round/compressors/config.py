@@ -32,7 +32,7 @@ class ExtraConfig:
         self,
         # tuning
         amp: bool = True,
-        disable_opt_rtn: bool = True,
+        # disable_opt_rtn: bool = True,
         enable_alg_ext: bool = False,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
@@ -112,7 +112,7 @@ class ExtraConfig:
         """
         self.tuning_config = TuningExtraConfig(
             amp=amp,
-            disable_opt_rtn=disable_opt_rtn,
+            # disable_opt_rtn=disable_opt_rtn,
             enable_alg_ext=enable_alg_ext,
             enable_minmax_tuning=enable_minmax_tuning,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
