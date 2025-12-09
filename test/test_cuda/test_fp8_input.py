@@ -120,6 +120,15 @@ class TestAutoRound(unittest.TestCase):
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    def test_diff_datatype(self):
+        model_name = "/models/Qwen3-0.6B-FP8"
+        for scheme in ["NVFP4", "MXFP4"]:
+            for iters in [0, 1]:
+                print(f"Testing scheme: {scheme}, iters: {iters}")
+                ar = AutoRound(model=model_name, iters=iters, scheme=scheme)
+                ar.quantize_and_save(output_dir=self.save_dir)
+                shutil.rmtree(self.save_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
