@@ -290,7 +290,7 @@ def set_layer_config(
                 f"Expected str, dict, or QuantizationScheme."
             )
         # Clean up
-        config = {k: v for k, v in config.items()}
+        config = {k: v for k, v in config.items() if v is not None}
         config["fixed_by_user"] = True
         return config
 
