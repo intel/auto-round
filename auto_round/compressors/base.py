@@ -1579,7 +1579,7 @@ class BaseCompressor(object):
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=False)
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
