@@ -547,6 +547,7 @@ def tune(args):
     extra_config = ExtraConfig()
     tuning_config = TuningExtraConfig(
         amp=not args.disable_amp,
+        disable_opt_rtn=args.disable_opt_rtn,
         enable_alg_ext=args.enable_alg_ext,
         enable_minmax_tuning=not args.disable_minmax_tuning,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
@@ -616,7 +617,6 @@ def tune(args):
         layer_config=layer_config,
         model_dtype=args.model_dtype,
         momentum=args.momentum,
-        disable_opt_rtn=args.disable_opt_rtn,
     )
 
     model_name = args.model.rstrip("/")

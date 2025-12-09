@@ -86,8 +86,8 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
-        enable_alg_ext: bool = False,
-        disable_opt_rtn: bool = False,
+        enable_alg_ext: bool = None,
+        disable_opt_rtn: bool = None,
         low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:
@@ -175,6 +175,10 @@ class AutoRound:
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
         if extra_config:
             kwargs.update(extra_config.to_dict())
+        if enable_alg_ext is not None:
+            kwargs["enable_alg_ext"] = enable_alg_ext
+        if disable_opt_rtn is not None:
+            kwargs["disable_opt_rtn"] = disable_opt_rtn
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,
@@ -192,8 +196,6 @@ class AutoRound:
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
-            disable_opt_rtn=disable_opt_rtn,
-            enable_alg_ext=enable_alg_ext,
             **kwargs,
         )
         return ar
