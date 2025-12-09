@@ -23,6 +23,30 @@ class TestAutoScheme(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_gguf_k_0(self):
+        model_name = "/models/Qwen3-0.6B"
+        target_bits = 5.5
+        scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=1, enable_alg_ext=True)
+        ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_gguf_k_1(self):
+        model_name = "/models/Qwen3-0.6B"
+        target_bits = 3.5
+        scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_1"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=1, enable_alg_ext=True)
+        ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+    #
+    def test_embedding_fallback(self):
+        model_name = "/models/Qwen3-0.6B"
+        target_bits = 5.0
+        scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
+        ar = AutoRound(model=model_name, scheme=scheme, iters=1, enable_alg_ext=True)
+        ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     def test_gguf_export(self):
         model_name = "/models/Qwen3-0.6B"
         target_bits = 3

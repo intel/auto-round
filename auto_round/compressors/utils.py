@@ -253,6 +253,7 @@ def set_layer_config(
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
+    fill_default_value=True
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
@@ -289,11 +290,12 @@ def set_layer_config(
                 f"Expected str, dict, or QuantizationScheme."
             )
         # Clean up
-        config = {k: v for k, v in config.items() if v is not None}
+        config = {k: v for k, v in config.items()}
         config["fixed_by_user"] = True
         return config
 
     # ---- main logic ----------------------------------------------
+    extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
 
@@ -325,8 +327,14 @@ def set_layer_config(
     else:
         default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype
+
+    # in AutoScheme gguf:q4_k_m, gguf:q8_0 some values is None for super_group_size, which should not fill them here
+    if fill_default_value:
+        tmp_scheme_keys = scheme_keys
+    else:
+        tmp_scheme_keys = extra_scheme_keys
     for cfg in layer_config.values():
-        for key in scheme_keys:
+        for key in tmp_scheme_keys:
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
