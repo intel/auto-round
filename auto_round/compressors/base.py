@@ -352,7 +352,7 @@ class BaseCompressor(object):
                 self.lr = lr
         if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
             logger.warning(
-                "For bits <= 2, it is recommended to enable `auto-round-best` " "and set `--enable_alg_ext` "
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
 
         self.minmax_lr = minmax_lr or self.lr
@@ -433,11 +433,18 @@ class BaseCompressor(object):
             sys.exit(-1)
 
         all_dtypes = []
+        all_gguf = True
         for option in scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
+                if not option.lower().startswith("gguf"):
+                    all_gguf = False
+
                 option = preset_name_to_scheme(option)
+
+            else:
+                all_gguf = False
 
             if isinstance(option, QuantizationScheme):
                 dtype = option.data_type
@@ -448,7 +455,7 @@ class BaseCompressor(object):
 
         # Check for mixed data types
         unique_dtypes = set(all_dtypes)
-        if len(unique_dtypes) > 1:
+        if len(unique_dtypes) > 1 and not all_gguf:
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "
@@ -1378,6 +1385,7 @@ class BaseCompressor(object):
                 processor=self.processor if hasattr(self, "processor") else None,
                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                 model_type=model_type,
+                device=self.device,
             )
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
