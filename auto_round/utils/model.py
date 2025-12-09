@@ -923,8 +923,8 @@ def check_to_quantized(config):
         bits = int(config.orig_layer.bits) if hasattr(config.orig_layer, "bits") else 16
         act_bits = int(config.orig_layer.act_bits) if hasattr(config.orig_layer, "act_bits") else 16
     else:
-        bits = int(config.bits) if hasattr(config, "bits") else 16
-        act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
+        bits = int(config.bits) if (hasattr(config, "bits") and config.bits is not None) else 16
+        act_bits = int(config.act_bits) if (hasattr(config, "act_bits") and config.act_bits is not None) else 16
 
     return bits <= 8 or act_bits <= 8
 
