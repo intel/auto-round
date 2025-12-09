@@ -328,7 +328,7 @@ def set_layer_config(
         default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype
 
-    # in AutoScheme gguf:q4_k_m, gguf:q8_0 some values is None for super_group_size, which should not fill them here
+    # in AutoScheme gguf:q4_k_m, gguf:q8_0 some values are None for super_group_size, which should not fill them here
     if fill_default_value:
         tmp_scheme_keys = scheme_keys
     else:

@@ -1620,6 +1620,9 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        fill_default_value = True
+        if self.is_auto_scheme:
+            fill_default_value = False
         self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model,
             self.layer_config,
@@ -1632,6 +1635,7 @@ class BaseCompressor(object):
             self.quant_lm_head,
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.mllm,
+            fill_default_value=fill_default_value,
         )
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
