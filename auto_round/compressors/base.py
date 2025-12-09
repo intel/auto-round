@@ -1411,6 +1411,9 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
+                if is_fp8_linear(m):
+                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
+                    set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
