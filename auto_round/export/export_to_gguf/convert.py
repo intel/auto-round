@@ -277,7 +277,7 @@ def get_qtype_by_layer_config(layer_config, name, data_qtype):
     if name not in layer_config or layer_config[name]["bits"] >= 16:
         return data_qtype
     bits = layer_config[name]["bits"]
-    super_bits = layer_config[name]["super_bits"]
+    super_bits = layer_config[name].get("super_bits", None)
     sym = layer_config[name]["sym"]
     if bits == 2:
         return gguf.GGMLQuantizationType.Q2_K
