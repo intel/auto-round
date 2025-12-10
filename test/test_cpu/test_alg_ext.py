@@ -22,7 +22,7 @@ class TestAlgExt(unittest.TestCase):
 
         from auto_round.auto_scheme import AutoScheme
 
-        scheme = AutoScheme(options=["mxfp4", "mxfp6"], avg_bits=5.5, ignore_scale_zp_bits=True)
+        scheme = AutoScheme(options=["mxfp4", "mxfp8"], avg_bits=5.5, ignore_scale_zp_bits=True)
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
         ar = AutoRound(model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True)
         ar.quantize()
