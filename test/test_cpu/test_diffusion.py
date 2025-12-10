@@ -3,7 +3,6 @@ import shutil
 import sys
 import unittest
 
-
 sys.path.insert(0, "../..")
 
 from diffusers import AutoPipelineForText2Image
