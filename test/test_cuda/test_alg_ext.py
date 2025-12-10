@@ -46,7 +46,13 @@ class TestAlgExt(unittest.TestCase):
         python_path = sys.executable
 
         res = os.system(
-            f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --device auto --enable_alg_ext --avg_bits 2 --options=W2A16,W4A16 --ignore_scale_zp_bits"
+            f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iters 1 --device auto --enable_alg_ext --avg_bits 2 --options=W2A16,W4A16 --ignore_scale_zp_bits"
+        )
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+
+        res = os.system(
+            f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iters 1 --device auto --enable_alg_ext --avg_bits 5.5 --options=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

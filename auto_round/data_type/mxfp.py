@@ -50,13 +50,17 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
         # The minimum representable exponent for 8 exp bits is -126
-        min_exp = -(2 ** (ebits - 1)) + 2
+        min_exp = -(2.0 ** float(ebits - 1)) + 2
         private_exp = private_exp.clip(min=min_exp)
     else:
         private_exp = None
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
-    tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2**private_exp) * (2 ** (mbits - 2))
+    tensor = (
+        tensor * (2 ** (mbits - 2))
+        if private_exp is None
+        else tensor / (2.0 ** private_exp.float()) * (2.0 ** float(mbits - 2))
+    )
     if mantissa_rounding == "even":
         abs_tensor = torch.abs(tensor)
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
@@ -71,7 +75,11 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
         raise ValueError("mantissa_rounding only supports even, nearest or floor.")
 
     # Undo scaling
-    tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2**private_exp)
+    tensor = (
+        tensor / (2.0 ** float(mbits - 2))
+        if private_exp is None
+        else tensor / (2.0 ** float(mbits - 2)) * (2.0 ** private_exp.float())
+    )
 
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     return tensor
@@ -114,10 +122,10 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
     shared_exp = floor_ste(shared_exp)
-    scale_emax = 2 ** (8 - 1) - 1
+    scale_emax = 2.0 ** float(8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    scale = torch.pow(2, shared_exp)
+    scale = torch.pow(2.0, shared_exp.float())
     tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
@@ -165,10 +173,10 @@ def quant_mx_rceil(
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / max_norm)))
-    scale_emax = 2 ** (8 - 1) - 1
+    scale_emax = 2.0 ** float(8 - 1) - 1
     shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
 
-    scale = torch.pow(2, shared_exp)
+    scale = torch.pow(2.0, shared_exp.float())
     tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
