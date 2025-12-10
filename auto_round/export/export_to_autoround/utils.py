@@ -38,4 +38,4 @@ def check_neq_config(config: dict, **expected) -> List[str]:
     #     raise ValueError(f"Missing config values for keys: {missing_config}")
 
     # 3. Collect mismatches
-    return [key for key in scheme_keys if key in config and  config[key] != expected[key] and config[key] is not None]
+    return [key for key in scheme_keys if config.get(key) not in (expected[key], None)]
