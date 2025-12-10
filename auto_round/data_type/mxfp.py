@@ -57,7 +57,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = (
-        tensor * (2 ** (mbits - 2))
+        tensor * (2.0 ** float(mbits - 2))
         if private_exp is None
         else tensor / (2.0 ** private_exp.float()) * (2.0 ** float(mbits - 2))
     )
