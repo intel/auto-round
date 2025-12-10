@@ -57,6 +57,18 @@ class TestAlgExt(unittest.TestCase):
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    def test_all_support_dtype(self):
+        from auto_round.auto_scheme import AutoScheme
+
+        model_name = "/models/Qwen3-0.6B"
+        for scheme in ["MXFP4", "NVFP4", "W2A16G64", "gguf:q4_k_s"]:
+            avg_bits = 2 if scheme == "W2A16G64" else 4
+            scheme = AutoScheme(options=[scheme], avg_bits=avg_bits, ignore_scale_zp_bits=True)
+            ar = AutoRound(
+                model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True
+            )
+            ar.quantize()
+
 
 if __name__ == "__main__":
     unittest.main()
