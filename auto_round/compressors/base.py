@@ -1384,6 +1384,7 @@ class BaseCompressor(object):
                 processor=self.processor if hasattr(self, "processor") else None,
                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                 model_type=model_type,
+                device=self.device,
             )
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
@@ -1410,6 +1411,9 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
+                if is_fp8_linear(m):
+                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
+                    set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
@@ -1585,7 +1589,7 @@ class BaseCompressor(object):
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=False)
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
