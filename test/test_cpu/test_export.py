@@ -339,6 +339,7 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
+            "layer": {"bits": 16},
         }
         autoround = AutoRound(
             model=model_name,
@@ -346,6 +347,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            nsamples=2,
             seqlen=2,
             layer_config=layer_config,
             dataset=self.llm_dataloader,
@@ -355,7 +357,7 @@ class TestAutoRound(unittest.TestCase):
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
-        assert isinstance(lm_head, WQLinear_GEMM), "Illegal GPTQ quantization for lm_head layer"
+        assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="cpu", quantization_config=quantization_config
@@ -368,15 +370,18 @@ class TestAutoRound(unittest.TestCase):
 
     def test_gptq_lmhead_export(self):
         bits, sym, group_size = 4, True, 128
+        # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
         model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
+            "layer": {"bits": 16},
         }
         autoround = AutoRound(
             model=model_name,
             bits=bits,
             group_size=group_size,
             sym=sym,
+            nsamples=2,
             iters=2,
             seqlen=2,
             layer_config=layer_config,

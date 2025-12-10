@@ -352,7 +352,7 @@ class BaseCompressor(object):
                 self.lr = lr
         if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
             logger.warning(
-                "For bits <= 2, it is recommended to enable `auto-round-best` " "and set `--enable_alg_ext` "
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
 
         self.minmax_lr = minmax_lr or self.lr
@@ -433,11 +433,18 @@ class BaseCompressor(object):
             sys.exit(-1)
 
         all_dtypes = []
+        all_gguf = True
         for option in scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
+                if not option.lower().startswith("gguf"):
+                    all_gguf = False
+
                 option = preset_name_to_scheme(option)
+
+            else:
+                all_gguf = False
 
             if isinstance(option, QuantizationScheme):
                 dtype = option.data_type
@@ -448,7 +455,7 @@ class BaseCompressor(object):
 
         # Check for mixed data types
         unique_dtypes = set(all_dtypes)
-        if len(unique_dtypes) > 1:
+        if len(unique_dtypes) > 1 and not all_gguf:
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "
@@ -739,7 +746,15 @@ class BaseCompressor(object):
                 elif format_ != "fake":
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
-                raise ValueError("Gguf format is not compatible with other formats, please choose only one of them")
+                raise ValueError("GGUF format is not compatible with other formats, please choose only one of them")
+            if has_gguf:
+                from transformers.utils.versions import require_version
+
+                require_version(
+                    "sentencepiece",
+                    "GGUF format requires SentencePiece to be installed. "
+                    "Please install it with `pip install sentencepiece`",
+                )
             if has_gguf and self.iters != 0 and self.bits != 3 and not self.enable_alg_ext:
                 logger.warning(
                     "`iters=0` is recommended when exporting to current GGUF format"
@@ -1332,6 +1347,8 @@ class BaseCompressor(object):
             self._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
+                packed_m = get_module(self.model, name)
+                set_module(self.model, name, packed_m.to("cpu"))
         else:
             if to_cpu:
                 m = m.to("cpu")
@@ -1368,6 +1385,7 @@ class BaseCompressor(object):
                 processor=self.processor if hasattr(self, "processor") else None,
                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                 model_type=model_type,
+                device=self.device,
             )
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
@@ -1394,6 +1412,9 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
+                if is_fp8_linear(m):
+                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
+                    set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
@@ -1569,7 +1590,7 @@ class BaseCompressor(object):
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=False)
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
