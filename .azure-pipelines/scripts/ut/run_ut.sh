@@ -15,7 +15,6 @@ cd ~ || exit 1
 git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
 cd /auto-round && uv pip install .
-uv pip install lm_eval==0.4.9.1
 
 echo "##[endgroup]"
 uv pip list
@@ -47,6 +46,10 @@ else
 fi
 end_line=$(( start_line + chunk_size - 1 ))
 selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+if [[ $selected_files == *"model_scope"* ]]; then
+    mkdir -p /home/hostuser/.cache
+    cp -r /tf_dataset/auto_round/modelscope /home/hostuser/.cache
+fi
 printf '%s\n' "${selected_files}" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
 cat run.sh
 bash run.sh 2>&1 | tee "${ut_log_name}"
