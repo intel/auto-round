@@ -19,7 +19,7 @@ import requests
 from auto_round.utils import LazyImport
 
 PIL = LazyImport("PIL")
-from PIL import Image  # pylint: disable=E0401
+Image = LazyImport("PIL.Image")
 
 VISUAL_KEYS = [
     "thinker",
