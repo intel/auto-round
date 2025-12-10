@@ -921,7 +921,7 @@ def check_to_quantized(config):
         act_bits = config.get("act_bits", None)
 
     elif hasattr(config, "orig_layer"):
-        bits =  getattr(config.orig_layer,"bits", None)
+        bits = getattr(config.orig_layer, "bits", None)
         act_bits = getattr(config.orig_layer, "act_bits", None)
 
     else:
