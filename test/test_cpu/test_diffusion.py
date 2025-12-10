@@ -1,19 +1,14 @@
-import copy
-import os
 import re
 import shutil
 import sys
 import unittest
 
-import requests
 
 sys.path.insert(0, "../..")
 
 from diffusers import AutoPipelineForText2Image
-from PIL import Image
 
 from auto_round import AutoRoundDiffusion
-from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
 
 
 class TestAutoRound(unittest.TestCase):
@@ -25,7 +20,6 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @require_optimum
     def test_diffusion_tune(self):
         # Load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
