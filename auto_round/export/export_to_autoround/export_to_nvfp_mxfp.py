@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import filter_quantization_config, save_model
+from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -115,10 +115,7 @@ def pack_layer(name, model, backend, device=None):
     qlayer.to(orig_device)
     set_module(model, name, qlayer)
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
-    if hasattr(layer, "weight"):
-        layer.weight = None
-    if hasattr(layer, "bias"):
-        layer.bias = None
+    release_layer_safely(layer)
 
 
 def save_quantized_as_fp(output_dir, inplace=True, **kwargs):

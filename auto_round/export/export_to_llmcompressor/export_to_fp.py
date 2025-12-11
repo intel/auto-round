@@ -27,7 +27,7 @@ from tqdm import tqdm
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
-from auto_round.export.utils import filter_quantization_config, save_model
+from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -114,10 +114,8 @@ def pack_layer(name, model, backend, device=None):
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
     qlayer.to(orig_device)
     set_module(model, name, qlayer)
-    if hasattr(layer, "weight"):
-        layer.weight = None
-    if hasattr(layer, "bias"):
-        layer.bias = None
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    release_layer_safely(layer)
 
 
 def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
