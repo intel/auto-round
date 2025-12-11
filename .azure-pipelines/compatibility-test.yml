@@ -40,6 +40,9 @@ stages:
           Python313_Linux:
             python_version: '3.13'
             vmImage: 'ubuntu-latest'
+          Python314_Linux:
+            python_version: '3.14'
+            vmImage: 'ubuntu-latest'
 
           Python310_Windows:
             python_version: '3.10'
@@ -52,6 +55,9 @@ stages:
             vmImage: 'windows-latest'
           Python313_Windows:
             python_version: '3.13'
+            vmImage: 'windows-latest'
+          Python314_Windows:
+            python_version: '3.14'
             vmImage: 'windows-latest'
             
       pool:

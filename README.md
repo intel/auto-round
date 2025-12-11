@@ -51,7 +51,7 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 * [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
 
-* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*]((https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc)).
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 
 
 ## ✨ Key Features
@@ -216,7 +216,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 </details>
 
-### Adaptive Bits/Dtype Usage 
+### Adaptive Schemes (Experimental Feature)
 AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
