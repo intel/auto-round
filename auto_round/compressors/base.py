@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import gc
 import os
 import re
 import sys
@@ -1344,6 +1345,7 @@ class BaseCompressor(object):
 
         # Step 2: Optional immediate packing/export
         if self.immediate_packing:  # For gguf, packing conducts on block level
+            logger.warning_once("Do immediate_packing")
             self._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
@@ -1542,8 +1544,27 @@ class BaseCompressor(object):
                     input_others[key] = val.to(tmp_dtype)
                 elif isinstance(val, list):
                     input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+            name = "model.layers.0.mlp.gate_proj"
+            tmp_module = get_module(self.model, name)
 
-            for block_name in block_names:
+            # weak ref to its weight
+            import weakref
+
+            weight_ref = weakref.ref(tmp_module.weight)
+            mod_ref = weakref.ref(tmp_module)
+            del tmp_module
+            gc.collect()
+            for block_index, block_name in enumerate(block_names):
+                # check weight not freed
+                if weight_ref() is None:
+                    logger.warning("weight freed")
+                else:
+                    logger.warning("weight not freed")
+                if mod_ref() is None:
+                    logger.warning("module freed")
+                else:
+                    logger.warning("module not freed")
+                # import pdb; pdb.set_trace()
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 if is_fp8_model(self.model):
@@ -1601,6 +1622,8 @@ class BaseCompressor(object):
 
                 memory_monitor.log_summary()
                 pbar.update(1)
+                if block_index == 5:
+                    return
 
         pbar.close()
         # Process remaining layers not in blocks
@@ -1685,7 +1708,12 @@ class BaseCompressor(object):
             logger.warning("immediate_saving is only supported for int quantization, set to False")
             self.immediate_saving = False
         if self.iters == 0:
-            return self._quantize_rtn()
+            import memray
+
+            filename = f"memray_autoround_{int(time.time())}.bin"
+            with memray.Tracker(filename, track_object_lifetimes=True):
+                self._quantize_rtn()
+            exit(0)
 
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list

@@ -57,6 +57,8 @@ FLOAT_TO_E2M1 = [
     6.0,
 ]
 
+import os
+
 
 class QuantLinear(nn.Module):
     """
@@ -183,6 +185,8 @@ class QuantLinear(nn.Module):
         if input_global_scale is not None:
             # TODO: the shape of `input_global_scale` is [] in some cases — need to investigate why.
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
+        if os.environ.get("AR_DEL_WEIGHT"):
+            del linear.weight
         return
 
 
