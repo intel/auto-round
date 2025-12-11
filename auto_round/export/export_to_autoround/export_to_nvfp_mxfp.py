@@ -92,7 +92,7 @@ def pack_layer(name, model, backend, device=None):
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-    new_layer = QuantLinear(  ##pylint: disable=E1123
+    qlayer = QuantLinear(  ##pylint: disable=E1123
         bits,
         group_size,
         in_features,
@@ -105,16 +105,20 @@ def pack_layer(name, model, backend, device=None):
         act_data_type=act_data_type,
     )
 
-    new_layer.device = orig_device
-    set_module(model, name, new_layer)
-    qlayer = new_layer
+    qlayer.device = orig_device
     scale = layer.scale
     global_scale = getattr(layer, "weight_global_scale", None)
     input_global_scale = getattr(layer, "input_global_scale", None)
+    ## no zeros to handle, as mxfp/nvfp do not support asym quantization
     # zero = layer.zp
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
-    ## no zeros to handle, as mxfp not support asym quantization
     qlayer.to(orig_device)
+    set_module(model, name, qlayer)
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    if hasattr(layer, "weight"):
+        layer.weight = None
+    if hasattr(layer, "bias"):
+        layer.bias = None
 
 
 def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
@@ -251,3 +255,4 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+
