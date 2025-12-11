@@ -256,4 +256,3 @@ def _pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
     packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
 
     return packed.reshape(m, n // 2)
-
