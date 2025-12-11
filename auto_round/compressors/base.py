@@ -20,6 +20,7 @@ import time
 import traceback
 from collections import defaultdict
 from dataclasses import asdict, fields
+from functools import partial
 from typing import Any, Callable, Optional, Union
 
 import accelerate
@@ -96,7 +97,6 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
-    normalize_input,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -271,7 +271,6 @@ class BaseCompressor(object):
         self.momentum = kwargs.pop("momentum", 0.0)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         static_attention_dtype = kwargs.pop("static_attention_dtype", None)
-        model_dtype = kwargs.pop("model_dtype", None)
         device = kwargs.pop("device", None)
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
@@ -342,12 +341,19 @@ class BaseCompressor(object):
             self.lr = 5e-3
         else:
             if not lr:
-                # TODO need to check 3/4 bits lr setting for auto-round-best
-                self.lr = 2.0 / self.iters if (self.iters >= 1000 and self.bits == 2) else 1.0 / self.iters
-                if self.iters >= 1000 and self.bits == 2:
+                # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+                if self.iters >= 1000 and self.bits <= 3:
+                    self.lr = 2.0 / self.iters
                     logger.info("set the lr to 2.0/iters for better accuracy")
+                else:
+                    self.lr = 1.0 / self.iters
             else:
                 self.lr = lr
+        if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
+            logger.warning(
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
+            )
+
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
         self.not_use_best_mse = not_use_best_mse
@@ -426,11 +432,18 @@ class BaseCompressor(object):
             sys.exit(-1)
 
         all_dtypes = []
+        all_gguf = True
         for option in scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
+                if not option.lower().startswith("gguf"):
+                    all_gguf = False
+
                 option = preset_name_to_scheme(option)
+
+            else:
+                all_gguf = False
 
             if isinstance(option, QuantizationScheme):
                 dtype = option.data_type
@@ -441,7 +454,7 @@ class BaseCompressor(object):
 
         # Check for mixed data types
         unique_dtypes = set(all_dtypes)
-        if len(unique_dtypes) > 1:
+        if len(unique_dtypes) > 1 and not all_gguf:
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "
@@ -732,6 +745,8 @@ class BaseCompressor(object):
                 " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                 " for the accuracy results."
             )
+        elif has_gguf and self.bits >= 8 and self.iters != 0:
+            logger.warning("`iters=0` is recommended for bits>=8")
 
         if (
             self.seqlen is not None
@@ -1078,6 +1093,8 @@ class BaseCompressor(object):
             self._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
+                packed_m = get_module(self.model, name)
+                set_module(self.model, name, packed_m.to("cpu"))
         else:
             if to_cpu:
                 m = m.to("cpu")
@@ -1114,6 +1131,7 @@ class BaseCompressor(object):
                 processor=self.processor if hasattr(self, "processor") else None,
                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                 model_type=model_type,
+                device=self.device,
             )
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
@@ -1140,6 +1158,9 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
+                if is_fp8_linear(m):
+                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
+                    set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
@@ -1164,11 +1185,14 @@ class BaseCompressor(object):
                 enable_imatrix = True
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
-
         if enable_imatrix:
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic, self.act_data_type, self.act_bits
+            self.act_dynamic,
+            self.act_data_type,
+            self.act_bits,
+            self.static_kv_dtype,
+            self.static_attention_dtype,
         ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
             try:
@@ -1313,7 +1337,7 @@ class BaseCompressor(object):
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=False)
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.tmp_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
@@ -1348,6 +1372,9 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        fill_default_value = True
+        if self.is_auto_scheme:
+            fill_default_value = False
         self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model,
             self.layer_config,
@@ -1360,6 +1387,7 @@ class BaseCompressor(object):
             self.quant_lm_head,
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.mllm,
+            fill_default_value=fill_default_value,
         )
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1436,7 +1464,6 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
-        self.model = mv_module_from_gpu(self.model)
         logger.info("caching done")
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
@@ -1652,6 +1679,45 @@ class BaseCompressor(object):
             clear_memory(device_list=self.device_list)
 
         return output
+
+    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]):
+        """
+        Processes and stores decoding layer inputs for block quantization.
+
+        This function iterates through a list of captured decoding layer calls,
+        replaying them through a fake decoding layer to extract and store the
+        inputs required for the decoding block in `self.inputs`. This effectively
+        "normalizes" the inputs by making them accessible in a consistent format
+        for subsequent quantization steps.
+
+        Args:
+            decoding_layer_inputs:
+                A list of entries captured by a forward hook on the decoding layer.
+                Each element is expected to be a tuple whose first item is
+                `(args, kwargs)`, where `args` are the positional arguments and
+                `kwargs` are the keyword arguments seen during the original
+                forward pass.
+
+                The capture hook look like:
+
+                    def input_capture_hook(module, *args, **kwargs):
+                        _all_module_input[module._tmp_name].append((args, kwargs))
+        """
+        first_block_name = self.quant_block_list[0][0]
+
+        class _FakeDecodingLayer(torch.nn.Module):
+            def forward(self, *args, **kwargs):
+                return args, kwargs
+
+        fake_layer = _FakeDecodingLayer()
+        fake_layer.orig_forward = fake_layer.forward
+        fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
+
+        self.inputs = {}
+        self.last_cache_name = None
+        for step_input in decoding_layer_inputs:
+            args, kwargs = step_input[0]
+            fake_layer(*args, **kwargs)
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
@@ -2081,7 +2147,6 @@ class BaseCompressor(object):
 
     def _replace_forward(self):
         """Replaces the forward function."""
-        from functools import partial
 
         for n, m in self.model.named_modules():
             if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
@@ -2175,16 +2240,18 @@ class BaseCompressor(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        if q_inputs is None:
+        if self.act_bits <= 8 and check_need_act_calibration(
+            self.act_dynamic,
+            self.act_data_type,
+            self.act_bits,
+            self.static_kv_dtype,
+            self.static_attention_dtype,
+        ):
+            tmp_inputs = q_inputs if q_inputs is not None else inputs
             hook_handles = self._register_act_max_hook(layer)
             with torch.no_grad():
-                layer(torch.cat(inputs, dim=0))
-            for handle in hook_handles:
-                handle.remove()
-        else:
-            hook_handles = self._register_act_max_hook(layer)
-            if hook_handles:
-                layer(torch.cat(q_inputs, dim=0))
+                for input in tmp_inputs:
+                    layer(input)
             for handle in hook_handles:
                 handle.remove()
 
@@ -2387,7 +2454,10 @@ class BaseCompressor(object):
             "DiffusionCompressor",
             "MLLMCompressor",
         ], f"Currently, {self.__class__.__name__} does not support support quantize block with this function."
-        input_ids, input_others = normalize_input(inputs)
+        self.normalize_decoding_layer_inputs_(inputs)
+        block_inputs = self.inputs[self.quant_block_list[0][0]]
+        decoding_layer_first_input_name = "hidden_states"
+        input_ids, input_others = self._preprocess_block_inputs(block_inputs, decoding_layer_first_input_name)
         return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
 
     def _get_loss(
@@ -2694,10 +2764,30 @@ class BaseCompressor(object):
 
             return None, output
 
-    def _split_inputs(self, inputs: dict) -> tuple[torch.Tensor, dict]:
-        input_ids = inputs["input_ids"]
-        inputs.pop("input_ids", None)
+    def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
+        input_ids = inputs[first_input_name]
+        inputs.pop(first_input_name, None)
         input_others = inputs
+        return input_ids, input_others
+
+    def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
+        input_ids, input_others = self._split_inputs(inputs, first_input_name)
+        clear_memory(device_list=self.device_list)
+        input_ids = to_device(input_ids, self.cache_device)
+        input_others = to_device(input_others, self.cache_device)
+        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+
+        tmp_dtype = self.amp_dtype if self.amp else torch.float32
+        input_ids = to_dtype(input_ids, tmp_dtype)
+
+        for key in input_others.keys():
+            if isinstance(input_others[key], torch.Tensor) and (
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+            ):
+                input_others[key] = input_others[key].to(tmp_dtype)
+            elif isinstance(input_others[key], list):
+                for i in range(len(input_others[key])):
+                    to_dtype(input_others[key][i], tmp_dtype)
         return input_ids, input_others
 
     def _quantize_blocks(
@@ -2726,23 +2816,7 @@ class BaseCompressor(object):
         for n, m in model.named_parameters():
             m.requires_grad_(False)
 
-        input_ids, input_others = self._split_inputs(inputs)
-        clear_memory(device_list=self.device_list)
-        input_ids = to_device(input_ids, self.cache_device)
-        input_others = to_device(input_others, self.cache_device)
-        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
-
-        tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        input_ids = to_dtype(input_ids, tmp_dtype)
-
-        for key in input_others.keys():
-            if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
-            ):
-                input_others[key] = input_others[key].to(tmp_dtype)
-            elif isinstance(input_others[key], list):
-                for i in range(len(input_others[key])):
-                    to_dtype(input_others[key][i], tmp_dtype)
+        input_ids, input_others = self._preprocess_block_inputs(inputs)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))

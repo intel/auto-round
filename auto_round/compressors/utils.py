@@ -146,8 +146,14 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: Union[int, None] = 16
+    is_act_dynamic: Union[bool, None],
+    act_data_type: Union[str, None] = None,
+    act_bits: Union[int, None] = 16,
+    static_kv_dtype: Union[str, None] = None,
+    static_attention_dtype: Union[str, None] = None,
 ) -> bool:
+    if static_kv_dtype is not None or static_attention_dtype is not None:
+        return True
     if act_bits is None or act_bits > 8:
         return False
     # None is dynamic
@@ -247,6 +253,7 @@ def set_layer_config(
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
+    fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
@@ -288,6 +295,7 @@ def set_layer_config(
         return config
 
     # ---- main logic ----------------------------------------------
+    extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
 
@@ -319,8 +327,15 @@ def set_layer_config(
     else:
         default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype
+
+    # In AutoScheme with mixed gguf:q4_k_m, the super_group_size of gguf:q8_0 layer is None,
+    # which should not be filled by default q4km again
+    if fill_default_value:
+        tmp_scheme_keys = scheme_keys
+    else:
+        tmp_scheme_keys = extra_scheme_keys
     for cfg in layer_config.values():
-        for key in scheme_keys:
+        for key in tmp_scheme_keys:
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules

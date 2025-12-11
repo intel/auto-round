@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -79,6 +80,9 @@ class BackendInfo:
             an empty list.
         alias: An optional list of strings representing alternative names for the
             backend. Defaults to None.
+        requirements: An optional list of strings specifying the library dependencies
+            required by the backend (e.g., 'triton>=2.0'). Defaults to None.
+        systems: An optional list of strings specifying the operating systems,(e.g., 'windows', 'linux', 'darwin').
     """
 
     device: list[str]  # TODO change to tuple
@@ -97,6 +101,7 @@ class BackendInfo:
     checkers: list[Any] = field(default_factory=list)
     alias: Optional[list[str]] = None
     requirements: Optional[list[str]] = None
+    systems: Optional[list[str]] = None
 
 
 BACKEND_ACT_ATTRS = [
@@ -340,6 +345,7 @@ BackendInfos["auto_round:tritonv2_zp"] = BackendInfo(
     checkers=[feature_multiply_checker_32],
     alias=["tritonv2", "tritonv2_zp", "triton"],
     requirements=["triton>=2.0", "auto-round>=0.5.0"],
+    # systems=["windows", "linux", "darwin"],
 )
 
 BackendInfos["auto_round:torch"] = BackendInfo(
@@ -427,7 +433,8 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
-    requirements=["autoawq", "transformers<4.57.0"],
+    # requirements=["autoawq", "transformers<4.57.0"],
+    requirements=["autoawq", "transformers"],
 )
 
 BackendInfos["qbits"] = BackendInfo(
@@ -569,6 +576,11 @@ def check_compatible(
         pass
     else:
         return False
+    if backend.systems is not None:
+        current_system = platform.system()
+        systems = [s.lower() for s in backend.systems]
+        if current_system.lower() not in systems:
+            return False
     # Check scheme
     for key, value in config.items():
         backend_value = getattr(backend, key, None)
@@ -1003,10 +1015,6 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
         if gptq_req:
             commands.append(f"pip install -v {gptq_req} --no-build-isolation")
-            try:
-                require_version("numpy<2.0")
-            except:
-                commands.append("pip install 'numpy<2.0'")
 
         if other_reqs:
             other_str = " ".join(other_reqs)

@@ -240,6 +240,20 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
         return model_path
 
 
+def _check_accelerate_version():
+    from auto_round.utils.common import get_library_version
+
+    accelerate_version = get_library_version("accelerate")
+    from packaging.version import Version
+
+    if Version(accelerate_version) > Version("1.5.1") and Version(accelerate_version) < Version("1.10.0"):
+        logger.warning(
+            f"Detected accelerate version {accelerate_version}. "
+            "Versions between 1.5.1 and 1.10.0 may cause high RAM usage during model loading. "
+            "It is recommended to upgrade to version 1.10.0 or above."
+        )
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -254,6 +268,9 @@ def llm_load_model(
     ], "current only support hf or model_scope platform to load pretrained model."
     if platform.lower() == "model_scope" and not envs.AR_USE_MODELSCOPE:
         envs.set_config(AR_USE_MODELSCOPE=True)
+
+    _check_accelerate_version()
+
     if platform == "model_scope":
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
@@ -335,6 +352,8 @@ def mllm_load_model(
     **kwargs,
 ):
     from auto_round.special_model_handler import MISTRAL_3_2_MODELS
+
+    _check_accelerate_version()
 
     assert platform.lower() in [
         "hf",
@@ -484,6 +503,8 @@ def diffusion_load_model(
 ):
     from auto_round.utils.common import LazyImport
     from auto_round.utils.device import get_device_and_parallelism
+
+    _check_accelerate_version()
 
     if platform != "hf":
         raise NotImplementedError(
@@ -896,14 +917,19 @@ def check_to_quantized(config):
     """
 
     if isinstance(config, (dict, QuantizationScheme)):
-        bits = int(config.get("bits", 16))
-        act_bits = int(config.get("act_bits", 16))
+        bits = config.get("bits", None)
+        act_bits = config.get("act_bits", None)
+
     elif hasattr(config, "orig_layer"):
-        bits = int(config.orig_layer.bits) if hasattr(config.orig_layer, "bits") else 16
-        act_bits = int(config.orig_layer.act_bits) if hasattr(config.orig_layer, "act_bits") else 16
+        bits = getattr(config.orig_layer, "bits", None)
+        act_bits = getattr(config.orig_layer, "act_bits", None)
+
     else:
-        bits = int(config.bits) if hasattr(config, "bits") else 16
-        act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
+        bits = getattr(config, "bits", None)
+        act_bits = getattr(config, "act_bits", None)
+
+    bits = int(bits) if bits is not None else 16
+    act_bits = int(act_bits) if act_bits is not None else 16
 
     return bits <= 8 or act_bits <= 8
 

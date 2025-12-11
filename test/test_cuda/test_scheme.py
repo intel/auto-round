@@ -20,7 +20,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    ## tuning tests
+    # Tuning tests
     def test_gguf(self):
         ar = AutoRound("/models/Qwen3-0.6B", scheme="W2A16", nsamples=1, iters=1)
         ar.quantize_and_save(self.save_folder, format="gguf:q4_k_m")

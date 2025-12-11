@@ -1,13 +1,10 @@
-# accelerate<=1.5.1
-accelerate>=1.10.0
+# 1.5.1<accelerate<1.10.0 may cause potentially high RAM usage; versions 1.10.0 or above are recommended.
+accelerate
 datasets
-py-cpuinfo
-sentencepiece
 numpy
-tqdm
-packaging
-pillow
-torch
-transformers>=4.38
+# packaging # for python version <= 3.9
+py-cpuinfo
 threadpoolctl
-lm-eval>=0.4.2,<0.5
+torch
+tqdm
+transformers>=4.38
