@@ -185,7 +185,7 @@ class QuantLinear(nn.Module):
         if input_global_scale is not None:
             # TODO: the shape of `input_global_scale` is [] in some cases — need to investigate why.
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
-        if os.environ.get("AR_DEL_WEIGHT"):
+        if os.environ.get("AR_DEL_WEIGHT", None) in ("1", "true"):
             del linear.weight
         return
 

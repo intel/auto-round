@@ -1708,12 +1708,7 @@ class BaseCompressor(object):
             logger.warning("immediate_saving is only supported for int quantization, set to False")
             self.immediate_saving = False
         if self.iters == 0:
-            import memray
-
-            filename = f"memray_autoround_{int(time.time())}.bin"
-            with memray.Tracker(filename, track_object_lifetimes=True):
-                self._quantize_rtn()
-            exit(0)
+            return self._quantize_rtn()
 
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
