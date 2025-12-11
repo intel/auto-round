@@ -15,7 +15,6 @@ cd ~ || exit 1
 git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
 cd /auto-round && uv pip install .
-uv pip install lm_eval==0.4.9.1
 
 echo "##[endgroup]"
 uv pip list
