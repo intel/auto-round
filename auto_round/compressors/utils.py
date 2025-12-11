@@ -208,12 +208,18 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
 def collect_best_params(block, cache_device="cpu"):
     """Collect the best parameters from the block to the specified device."""
+    from auto_round.wrapper import WrapperLinear
+
     params = {}
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            params[n] = {}
-            for key in m.params.keys():
-                params[n][key] = m.params[key].data.to(cache_device, copy=True)
+    if isinstance(block, WrapperLinear):
+        for key in block.params.keys():
+            params[key] = block.params[key].data.to(cache_device, copy=True)
+    else:
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                params[n] = {}
+                for key in m.params.keys():
+                    params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
 
 
