@@ -1,4 +1,6 @@
 name: AutoRound binary build and publish
+permissions:
+  contents: read
 
 on:
   workflow_dispatch:
