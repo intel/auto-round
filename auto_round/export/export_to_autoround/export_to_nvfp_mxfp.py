@@ -203,8 +203,8 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
                 for key in scheme_keys:
-                    if cfg[key] is not None:
-                        extra_config[layer_name][key] = cfg[key]
+                    if cfg.get(key, None) is not None:
+                        extra_config[layer_name][key] = cfg.get(key, None)
 
     regex_config = quantization_config.pop("regex_config")
     if regex_config is not None:
