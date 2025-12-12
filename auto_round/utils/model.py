@@ -917,14 +917,19 @@ def check_to_quantized(config):
     """
 
     if isinstance(config, (dict, QuantizationScheme)):
-        bits = int(config.get("bits", 16))
-        act_bits = int(config.get("act_bits", 16))
+        bits = config.get("bits", None)
+        act_bits = config.get("act_bits", None)
+
     elif hasattr(config, "orig_layer"):
-        bits = int(config.orig_layer.bits) if hasattr(config.orig_layer, "bits") else 16
-        act_bits = int(config.orig_layer.act_bits) if hasattr(config.orig_layer, "act_bits") else 16
+        bits = getattr(config.orig_layer, "bits", None)
+        act_bits = getattr(config.orig_layer, "act_bits", None)
+
     else:
-        bits = int(config.bits) if hasattr(config, "bits") else 16
-        act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
+        bits = getattr(config, "bits", None)
+        act_bits = getattr(config, "act_bits", None)
+
+    bits = int(bits) if bits is not None else 16
+    act_bits = int(act_bits) if act_bits is not None else 16
 
     return bits <= 8 or act_bits <= 8
 

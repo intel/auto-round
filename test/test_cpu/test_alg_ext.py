@@ -20,6 +20,13 @@ class TestAlgExt(unittest.TestCase):
         ar = AutoRound(model_name, scheme="gguf:q4_k_s", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
+        from auto_round.auto_scheme import AutoScheme
+
+        scheme = AutoScheme(options=["mxfp4", "mxfp8"], avg_bits=5.5, ignore_scale_zp_bits=True)
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        ar = AutoRound(model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True)
+        ar.quantize()
+
     def test_alg_ext_import(self):
         from auto_round.alg_ext import wrapper_autoround
 
