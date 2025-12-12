@@ -797,6 +797,7 @@ class BaseCompressor(object):
             ValueError: If an unsupported format is specified.
         """
         # Validate and process the specified formats
+        self.orig_output_dir = output_dir
 
         # check and update the format based on the current configuration
         format_list = OutputFormat.get_formats(format, self)
@@ -2890,7 +2891,10 @@ class BaseCompressor(object):
             object: The compressed model object.
         """
         self.orig_output_dir = output_dir
-        formats = OutputFormat.get_formats(format, self) if isinstance(format, str) else format
+        if isinstance(format, str):
+            formats = OutputFormat.get_formats(format, self)
+            if not hasattr(self, "formats"):
+                self.formats = formats
 
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
@@ -2917,6 +2921,7 @@ class BaseCompressor(object):
                     copy_python_files_from_model_cache(self.model, output_dir)
                 except Exception as e:
                     logger.warning("Skipping source model Python file copy due to error: %s", e)
+                compressed_model = self.model
                 continue
             if self.act_bits <= 8 and format.is_fake():
                 logger.warning(

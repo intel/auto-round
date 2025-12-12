@@ -200,16 +200,20 @@ class OutputFormat:
         return output_str
 
     def get_backend_name(self) -> str:
-        return self.backend.output_format if self.backend else self.output_format
+        if self.backend is None:
+            return self.output_format
+        # for format like auto_round:fp8, auto_round:fp8_static
+        if self.backend.output_format.startswith("auto_round"):
+            return self.backend.output_format if self.backend else self.output_format
+
+        return f"{self.output_format}:{self.backend.output_format}"
 
     @classmethod
     def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:
-        if scheme in cls.support_schemes:
+        if isinstance(scheme, str) and scheme in cls.support_schemes:
             return True
         if isinstance(scheme, QuantizationScheme):
-            for key in cls.support_schemes:
-                if scheme == PRESET_SCHEMES[key]:
-                    return True
+            return True
         return False
 
     def is_gguf(self) -> bool:
