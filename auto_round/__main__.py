@@ -163,6 +163,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="for auto scheme whether ignore scale zp bits calculation ",
         )
         tuning.add_argument(
+            "--shared_layer",
+            type=str,
+            nargs="+",
+            action="append",
+            default=[],
+            help="[mix-precision] ensure that listed layers are using same data type for quantization",
+        )
+        tuning.add_argument(
             "--lr",
             default=None,
             type=float,
@@ -601,7 +609,10 @@ def tune(args):
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
         scheme = AutoScheme(
-            options=args.options, avg_bits=args.avg_bits, ignore_scale_zp_bits=args.ignore_scale_zp_bits
+            options=args.options,
+            avg_bits=args.avg_bits,
+            shared_layers=args.shared_layer,
+            ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
 
     autoround: BaseCompressor = AutoRound(
