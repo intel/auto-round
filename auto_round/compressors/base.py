@@ -271,7 +271,6 @@ class BaseCompressor(object):
         self.momentum = kwargs.pop("momentum", 0.0)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         static_attention_dtype = kwargs.pop("static_attention_dtype", None)
-        model_dtype = kwargs.pop("model_dtype", None)
         device = kwargs.pop("device", None)
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
@@ -1418,9 +1417,10 @@ class BaseCompressor(object):
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
-            modules = list(self.model.modules())
-            for module in tqdm(modules, desc="Update weight global scale for fuse module"):
+            logger.info("Start to update fused layer global scales, it may take some time.")
+            for name, module in self.model.named_modules():
                 update_fused_layer_global_scales(module)
+            logger.info("Finished updating fused layer global scales.")
 
         if not (any("gguf" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
@@ -1625,6 +1625,9 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        fill_default_value = True
+        if self.is_auto_scheme:
+            fill_default_value = False
         self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model,
             self.layer_config,
@@ -1637,6 +1640,7 @@ class BaseCompressor(object):
             self.quant_lm_head,
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.mllm,
+            fill_default_value=fill_default_value,
         )
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1722,7 +1726,6 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
-        self.model = mv_module_from_gpu(self.model)
         logger.info("caching done")
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
