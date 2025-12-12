@@ -76,6 +76,7 @@ def compute_avg_bits_for_scheme(
     fixed_layer_scheme: dict[str, dict],
     scheme: Union[str, dict, None] = None,
     ignore_scale_zp_bits: bool = False,
+    clean_scheme: bool = True,
 ) -> tuple[float, float]:
     """Compute the average and total bit usage for the given quantization scheme.
 
@@ -85,6 +86,7 @@ def compute_avg_bits_for_scheme(
         fixed_layer_scheme: Dictionary of fixed per-layer quantization schemes.
         scheme: Optional scheme to temporarily apply before measuring.
         ignore_scale_zp_bits: If True, ignores overhead from scale and zero-points.
+        clean_scheme: If True, removes the applied quantization scheme after computation.
 
     Returns:
         A tuple (avg_bits, total_quantized_bits):
@@ -108,7 +110,7 @@ def compute_avg_bits_for_scheme(
         total_quantized_bits += layer_bits
     avg_bits = float(total_quantized_bits) / total_params
 
-    if scheme is not None:
+    if scheme is not None and clean_scheme:
         remove_quant_scheme(model)
 
     return avg_bits, total_quantized_bits
