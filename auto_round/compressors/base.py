@@ -1417,9 +1417,10 @@ class BaseCompressor(object):
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
-            modules = list(self.model.modules())
-            for module in tqdm(modules, desc="Update weight global scale for fuse module"):
+            logger.info("Start to update fused layer global scales, it may take some time.")
+            for name, module in self.model.named_modules():
                 update_fused_layer_global_scales(module)
+            logger.info("Finished updating fused layer global scales.")
 
         if not (any("gguf" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
