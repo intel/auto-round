@@ -216,7 +216,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 </details>
 
-### Adaptive Bits/Dtype Usage 
+### Adaptive Schemes (Experimental Feature)
 AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python

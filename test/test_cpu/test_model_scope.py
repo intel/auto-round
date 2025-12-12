@@ -1,4 +1,5 @@
 import copy
+import os
 import shutil
 import sys
 import unittest
@@ -25,10 +26,18 @@ class TestModelScope(unittest.TestCase):
         self.saved_path = "./saved"
         self.dataset = LLMDataLoader()
 
+        self.source_path, self.cache_path = "/tf_dataset/auto_round/modelscope", "/home/hostuser/.cache/modelscope"
+        if os.path.exists(self.source_path):
+            if not os.path.exists("/home/hostuser/.cache"):
+                os.makedirs("/home/hostuser/.cache")
+            shutil.copytree(self.source_path, self.cache_path, dirs_exist_ok=True)
+
     @classmethod
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+        if os.path.exists(self.cache_path):
+            shutil.rmtree(self.cache_path, ignore_errors=True)
 
         return super().tearDownClass()
 

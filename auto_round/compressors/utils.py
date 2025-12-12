@@ -209,11 +209,15 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 def collect_best_params(block, cache_device="cpu"):
     """Collect the best parameters from the block to the specified device."""
     params = {}
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            params[n] = {}
-            for key in m.params.keys():
-                params[n][key] = m.params[key].data.to(cache_device, copy=True)
+    if hasattr(block, "orig_layer"):
+        for key in block.params.keys():
+            params[key] = block.params[key].data.to(cache_device, copy=True)
+    else:
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                params[n] = {}
+                for key in m.params.keys():
+                    params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
 
 
@@ -253,6 +257,7 @@ def set_layer_config(
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
+    fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
@@ -294,6 +299,7 @@ def set_layer_config(
         return config
 
     # ---- main logic ----------------------------------------------
+    extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
 
@@ -325,8 +331,15 @@ def set_layer_config(
     else:
         default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype
+
+    # In AutoScheme with mixed gguf:q4_k_m, the super_group_size of gguf:q8_0 layer is None,
+    # which should not be filled by default q4km again
+    if fill_default_value:
+        tmp_scheme_keys = scheme_keys
+    else:
+        tmp_scheme_keys = extra_scheme_keys
     for cfg in layer_config.values():
-        for key in scheme_keys:
+        for key in tmp_scheme_keys:
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
