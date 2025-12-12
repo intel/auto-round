@@ -210,6 +210,23 @@ class TestAutoScheme(unittest.TestCase):
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
+        target_bits = 5.5
+        model_name = "/models/opt-125m"
+        scheme = AutoScheme(avg_bits=target_bits, options=("mxfp4", "mxfp8"))
+        user_layer_config = {"model.decoder.layers.10.fc1": {"bits": 8, "group_size": 32, "sym": False}}
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
+        model, layer_config = ar.quantize()
+        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["bits"], 8)
+        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["sym"], False)
+        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["group_size"], 32)
+        layer = get_module(model, "model.decoder.layers.10.fc1")
+        self.assertEqual(layer.orig_layer.bits, 8)
+        self.assertEqual(layer.orig_layer.sym, False)
+        self.assertEqual(layer.orig_layer.group_size, 32)
+        avg_bits, _ = compute_avg_bits_for_model(model)
+        print(avg_bits)
+        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+
     def test_lm_head_and_mix_dtype(self):
         model_name = "/models/Qwen3-8B"
         target_bits = 6
@@ -232,6 +249,12 @@ class TestAutoScheme(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        scheme = AutoScheme(avg_bits=3, options=("gguf:q2_k_s,gguf:q4_k_s"), nsamples=1, ignore_scale_zp_bits=True)
+        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+        ar.quantize_and_save(self.save_dir)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     def test_enable_torch_compile(self):
         model_name = "/models/opt-125m"
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)
@@ -242,3 +265,7 @@ class TestAutoScheme(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.10)
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
