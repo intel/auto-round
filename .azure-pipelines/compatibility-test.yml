@@ -82,4 +82,5 @@ stages:
 
       - script: |
           python -c "import auto_round"
+          python -c "from auto_round.alg_ext import quant_tensor_sym"
         displayName: 'Run compatibility test'
