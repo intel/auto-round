@@ -31,7 +31,7 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 ## 🆕 What's New
 
-* [2025/12] The [AutoRoundV2 paper](http://arxiv.org/abs/2512.04746) is now publicly available on arXiv.  Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results.  If you are using recent Transformers, Please
+* [2025/12] The [AutoRoundV2 paper](http://arxiv.org/abs/2512.04746) is now publicly available on arXiv.  Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results.  If you are using recent Transformers, please
 remove `@use_kernel_forward_from_hub("RMSNorm")` in [modeling_llama.py](https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L52C1-L52C40) and enable `add_bos_token` in lm-eval to stabilize the accuracy for symmetric quantization. 
 
 * [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md).
