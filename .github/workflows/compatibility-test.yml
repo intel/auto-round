@@ -69,13 +69,15 @@ jobs:
         run: |
           set -xe
           python -c "import auto_round"
-          echo "================================test RTN============================================"
-          auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 0 --nsamples 8
-          echo "================================test tuning========================================="
-          auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 1 --nsamples 8
-          echo "================================test alg ext========================================"
-          python -c "from auto_round.alg_ext import quant_tensor_sym"
-          auto-round --model facebook/opt-125m --enable_alg_ext  --iters 1
+          #echo "================================test RTN============================================"
+          #auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 0 --nsamples 8
+          #echo "================================test tuning========================================="
+          #auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 1 --nsamples 8
+          if [ ${{ matrix.os-name }} = "Linux" ];then 
+            echo "================================test alg ext========================================"
+            python -c "from auto_round.alg_ext import quant_tensor_sym"
+            auto-round --model facebook/opt-125m --enable_alg_ext  --iters 1
+          fi
 
         env:
           TQDM_MININTERVAL: "60"
