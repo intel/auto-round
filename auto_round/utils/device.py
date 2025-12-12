@@ -1416,8 +1416,12 @@ class MemoryMonitor:
         summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
         if len(self.peak_vram) > 0:
             sorted_items = sorted(self.peak_vram.items())
-            items_str = ", ".join([f"'{k}': {round(v, 2)}GB" for k, v in sorted_items])
-            summary += f", 'peak_vram': {{{items_str}}}"
+            if len(self.peak_vram) == 1:
+                key, value = sorted_items[0]
+                summary += f", 'peak_vram': {round(value, 2)}GB"
+            else:
+                items_str = ", ".join([f"'{k}': {round(v, 2)}GB" for k, v in sorted_items])
+                summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
     def log_summary(self):
