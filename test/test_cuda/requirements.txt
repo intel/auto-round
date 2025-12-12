@@ -1,23 +1,16 @@
-accelerate
 # autoawq
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
 auto-gptq
-datasets
 einops
 # gptqmodel>=2.0
 # pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
 intel-extension-for-pytorch
 lm-eval>=0.4.9.1
-numpy < 2.0
 optimum
 pandas
 parameterized
 pillow
-py-cpuinfo
-torch
 torchvision
-tqdm
 numba
-transformers
 vllm>=0.8.5.post1
 compressed-tensors
