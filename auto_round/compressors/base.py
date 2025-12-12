@@ -69,7 +69,6 @@ from auto_round.special_model_handler import _handle_moe_model
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
-    SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
@@ -1053,7 +1052,7 @@ class BaseCompressor(object):
             set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
-        if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
+        if self.immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
             m = m.to(tuning_device)
             m.scale = None
             m.zp = None
@@ -1114,7 +1113,7 @@ class BaseCompressor(object):
         from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
         target_backend = self.formats[0].output_format
-        has_gguf = any("gguf" in fmt for fmt in self.formats)
+        has_gguf = any(fmt.is_gguf() for fmt in self.formats)
 
         if has_gguf:
             from auto_round.export.export_to_gguf.export import pack_gguf_layer
@@ -1124,7 +1123,7 @@ class BaseCompressor(object):
             pack_gguf_layer(
                 name,
                 self.model,
-                self.formats[0],
+                self.formats[0].output_format,
                 output_dir,
                 self.layer_config,
                 self.tokenizer,
@@ -1134,7 +1133,9 @@ class BaseCompressor(object):
                 device=self.device,
             )
         else:
-            PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
+            PACKING_LAYER_WITH_FORMAT[target_backend](
+                name, self.model, self.formats[0].output_format, device=self.device
+            )
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -2925,19 +2926,19 @@ class BaseCompressor(object):
             from auto_round.export import EXPORT_FORMAT
 
             backend = format.get_backend_name()
-            format = format.output_format
-            if format not in EXPORT_FORMAT:
+            output_format = format.output_format
+            if output_format not in EXPORT_FORMAT:
                 logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
-                raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {format}")
-            save_quantized_as_format = EXPORT_FORMAT.get(format)
-            if "gptq" in format and not self.sym:
+                raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {output_format}")
+            save_quantized_as_format = EXPORT_FORMAT.get(output_format)
+            if format.is_gptq() and not self.sym:
                 logger.warning(
                     "the asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                     " particularly for 2-bit quantization and smaller models."
                     " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
                     "the AutoRound format(2/3/4/8 bits)."
                 )
-            if "awq" in format and not self.bits == 4:
+            if format.is_awq() and not self.bits == 4:
                 raise ValueError("The AWQ format only supports W4 quantization ")
             serialization_keys = [
                 "bits",
