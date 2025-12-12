@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import filter_quantization_config, save_model
+from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -141,6 +141,8 @@ def pack_layer(layer_name, model, data_type, device=None):
 
     my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    release_layer_safely(layer)
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", **kwargs):
