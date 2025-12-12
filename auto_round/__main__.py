@@ -163,14 +163,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="for auto scheme whether ignore scale zp bits calculation ",
         )
         tuning.add_argument(
-            "--shared_layer",
-            type=str,
-            nargs="+",
-            action="append",
-            default=[],
-            help="[mix-precision] ensure that listed layers are using same data type for quantization",
-        )
-        tuning.add_argument(
             "--lr",
             default=None,
             type=float,
@@ -292,6 +284,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         scheme.add_argument(
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--shared_layers",
+            type=str,
+            nargs="+",
+            action="append",
+            default=[],
+            help="[mix-precision] ensure that listed layers are using same data type for quantization",
         )
         scheme.add_argument(
             "--quant_lm_head",
@@ -611,7 +611,7 @@ def tune(args):
         scheme = AutoScheme(
             options=args.options,
             avg_bits=args.avg_bits,
-            shared_layers=args.shared_layer,
+            shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
 
