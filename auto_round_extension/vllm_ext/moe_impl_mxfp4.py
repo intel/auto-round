@@ -283,7 +283,6 @@ class AutoRoundMoEMethodMXFp4Impl(AutoRoundMoEMethod):
 
                 return revert_bias
 
-            # breakpoint()
             if self.has_bias:
                 if envs.VLLM_AR_POST_PROCESS_GPTOSS:
                     w13_bias_swapped = revert_interleaved_bias(layer.w13_bias)

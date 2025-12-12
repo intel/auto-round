@@ -23,3 +23,7 @@ class TestAutoScheme(unittest.TestCase):
         ar = AutoRound(model=model_name, scheme=scheme)
         ar.quantize_and_save(self.save_dir)
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
