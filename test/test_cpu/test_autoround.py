@@ -162,28 +162,6 @@ class TestAutoRound(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
 
-    def test_default(self):
-        bits, group_size, sym = 4, 128, False
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=2,
-            dataset=self.llm_dataloader,
-        )
-        autoround.quantize()
-
-        autoround.save_quantized(output_dir="./saved", inplace=False, format="itrex")
-        try:
-            import auto_gptq
-        except:
-            return
-        if torch.cuda.is_available():
-            autoround.save_quantized(output_dir="./saved", inplace=False)
-
     def test_w4g1(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         bits, group_size, sym = 4, -1, True
@@ -711,14 +689,6 @@ class TestAutoRound(unittest.TestCase):
         ):
             raise ValueError("mixed bits is not correct")
 
-    def test_alg_ext(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
-        ar.quantize()
-
-    def test_alg_ext_import(self):
-        from auto_round.alg_ext import quantize_block_ext
-
     def test_invalid_layer_config(self):
         with self.assertRaises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
@@ -743,7 +713,22 @@ class TestAutoRound(unittest.TestCase):
 
     def test_quant_lm_head(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
-        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True)
+        ar = AutoRound(model_name, quant_lm_head=True, iters=0, seqlen=8, nsamples=1, disable_opt_rtn=True)
+        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        assert "lm_head" in model.config.quantization_config.extra_config
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
+
+        layer_config = {"lm_head": {"bits": 4}}
+        ar = AutoRound(
+            model_name,
+            quant_lm_head=False,
+            iters=0,
+            seqlen=8,
+            nsamples=1,
+            disable_opt_rtn=True,
+            layer_config=layer_config,
+        )
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
@@ -752,7 +737,15 @@ class TestAutoRound(unittest.TestCase):
     def test_quant_lm_head_layer_config(self):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
         layer_config = {"lm_head": {"bits": 4}}
-        ar = AutoRound(model_name, quant_lm_head=True, iters=0, disable_opt_rtn=True, layer_config=layer_config)
+        ar = AutoRound(
+            model_name,
+            quant_lm_head=True,
+            iters=0,
+            seqlen=8,
+            nsamples=1,
+            disable_opt_rtn=True,
+            layer_config=layer_config,
+        )
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config

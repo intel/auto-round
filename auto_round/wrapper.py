@@ -247,7 +247,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
-            imatrix=self.orig_layer.imatrix if hasattr(self.orig_layer, "imatrix") else None,
+            imatrix=self.orig_layer.imatrix.to(weight.device) if hasattr(self.orig_layer, "imatrix") else None,
             global_scale=getattr(self, "weight_global_scale", None),
             **quant_kwargs,
         )
@@ -319,7 +319,7 @@ class WrapperLinear(torch.nn.Module):
 
         if self.orig_layer.weight.device.type == "meta":
             self.orig_layer.to(self.device)
-        ##unwrapper weight
+        # Unwrapper weight
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
         # if hasattr(self.orig_layer, "imatrix"):
         #     self.orig_layer.imatrix = None
@@ -380,7 +380,7 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.update()
             self.orig_layer.to("meta")
 
-        ##unwrapper act
+        # Unwrapper act
         if self.enable_act_quant:
             if not self.orig_layer.act_dynamic:
                 act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).to(self.device)

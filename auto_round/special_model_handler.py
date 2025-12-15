@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import auto_round.modelling as auto_round_modelling
-from auto_round.utils import LazyImport, logger
+from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -79,8 +79,9 @@ def _handle_moe_model(model, formats=None):
         from auto_round.utils import clear_memory
 
         new_moe_class, convert_config, orig_cls_name = _get_moe_converter(model.config)
-        model = model.to("cpu")
-        clear_memory()
+        if not unsupported_meta_device(model):
+            model = model.to("cpu")
+            clear_memory()
 
         for name, module in tqdm(model.named_modules(), desc="Converting model"):
             cls_name = module.__class__.__name__

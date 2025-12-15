@@ -15,14 +15,13 @@
 import os
 from typing import Optional, Union
 
-from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
+from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
 
 from auto_round.logger import logger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-from lm_eval.models.hf_vlms import HFMultimodalLM
-from lm_eval.models.huggingface import HFLM
+from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
 
 
 def simple_evaluate_user_model(
@@ -37,6 +36,8 @@ def simple_evaluate_user_model(
     **kwargs
 ):
     if mllm:
+        from lm_eval.models.hf_vlms import HFMultimodalLM  # pylint: disable=E0401
+
         if batch_size is None or batch_size == "auto":
             logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
             batch_size = 16

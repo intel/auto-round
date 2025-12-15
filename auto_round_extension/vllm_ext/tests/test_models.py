@@ -18,8 +18,22 @@ from vllm.platforms import current_platform
 MODELS = [
     # "/data5/yliu7/HF_HOME/unsloth-gpt-oss-20b-BF16-ar-MXFP4/"
     # "/data5/yliu7/HF_HOME/Qwen2.5-0.5B-Instruct-test-FP8_STATIC-fp8kv/"
-    "/data6/yiliu4/Qwen3-15B-A2B-Base-MXFP4"
+    # "/data6/yiliu4/Qwen3-15B-A2B-Base-MXFP4",
+    # "/data6/yiliu4/Llama-3.2-1B-Instruct-MXFP4-fp8attention",
+    # "/data6/yiliu4/Llama-3.2-1B-Instruct-MXFP8"
+    "/storage/yiliu7/ar_vllm_ext/quantized_model_qwen_mxfp4",
+    "/storage/yiliu7/ar_vllm_ext/quantized_model_qwen_mxfp8",
 ]
+
+
+@pytest.fixture(autouse=True)
+def set_vllm_ar_env(monkeypatch):
+    monkeypatch.setenv("VLLM_AR_MXFP4_MODULAR_MOE", "1")
+    monkeypatch.setenv("VLLM_MXFP4_PRE_UNPACK_TO_FP8", "1")
+    monkeypatch.setenv("VLLM_MXFP4_PRE_UNPACK_WEIGHTS", "0")
+    monkeypatch.setenv("VLLM_ENABLE_STATIC_MOE", "0")
+    monkeypatch.setenv("VLLM_USE_DEEP_GEMM", "0")
+    monkeypatch.setenv("VLLM_ENABLE_AR_EXT", "1")
 
 
 @pytest.mark.skipif(

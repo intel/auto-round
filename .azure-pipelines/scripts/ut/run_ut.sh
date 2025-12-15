@@ -6,18 +6,23 @@ test_part=$1
 # install requirements
 echo "##[group]set up UT env..."
 export TQDM_MININTERVAL=60
-pip install pytest-cov pytest-html
-pip install -r /auto-round/test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-pip list
+uv pip install pytest-cov pytest-html
+uv pip install -r /auto-round/test/test_cpu/requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+
 # install latest gguf for ut test
-git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .
+cd ~ || exit 1
+git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
+
+cd /auto-round && uv pip install .
+
 echo "##[endgroup]"
-pip list
+uv pip list
 
 cd /auto-round/test/test_cpu || exit 1
 find . -type f -exec sed -i '/sys\.path\.insert(0, "\.\.")/d' {} +
 
-export LD_LIBRARY_PATH=${HOME}/.local/lib/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export FORCE_BF16=1
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')

@@ -35,10 +35,10 @@ class LLMDataLoader:
 class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
     @classmethod
@@ -49,7 +49,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
-            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+            model_name = self.model_name
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
@@ -79,7 +79,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, True
-            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+            model_name = self.model_name
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
@@ -105,7 +105,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
-            model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+            model_name = self.model_name
             autoround = AutoRound(
                 model=model_name,
                 bits=bits,
@@ -217,7 +217,7 @@ class TestAutoRound(unittest.TestCase):
 
         from safetensors import safe_open
 
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = self.model_name
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -272,8 +272,8 @@ class TestAutoRound(unittest.TestCase):
         if static_kv_dtype == "fp8":
             self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
             self.assertIn("model.decoder.layers.8.self_attn.v_scale", f.keys())
-            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1, 1]))
-            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1, 1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1]))
             self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype, torch.float32)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
@@ -300,6 +300,106 @@ class TestAutoRound(unittest.TestCase):
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_static_fp8_attn(self):
+        import os
+
+        from safetensors import safe_open
+
+        model_name = self.model_name
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            iters=0,
+            nsamples=2,
+            seqlen=2,
+            scheme="FP8_STATIC",
+            static_attention_dtype="fp8",
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.input_scale", f.keys())
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+        check_attrs = ["k_scale", "v_scale", "q_scale"]
+        for attr in check_attrs:
+            weight_name = f"model.decoder.layers.8.self_attn.{attr}"
+            self.assertIn(weight_name, f.keys())
+            self.assertEqual(f.get_tensor(weight_name).shape, torch.Size([1]))
+            self.assertEqual(f.get_tensor(weight_name).dtype, torch.float32)
+
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_awq_lmhead_export(self):
+        bits, sym, group_size = 4, False, 128
+        model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
+        layer_config = {
+            "lm_head": {"bits": 4},  # set lm_head quant
+            "layer": {"bits": 16},
+        }
+        autoround = AutoRound(
+            model=model_name,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            nsamples=2,
+            seqlen=2,
+            layer_config=layer_config,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = "./saved"
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        lm_head = compressed_model.lm_head
+        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+
+        assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
+        quantization_config = AutoRoundConfig()
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", quantization_config=quantization_config
+        )
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_gptq_lmhead_export(self):
+        bits, sym, group_size = 4, True, 128
+        # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
+        model_name = "/tf_dataset/auto_round/models/microsoft/phi-2"
+        layer_config = {
+            "lm_head": {"bits": 4},  # set lm_head quant
+            "layer": {"bits": 16},
+        }
+        autoround = AutoRound(
+            model=model_name,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            nsamples=2,
+            iters=2,
+            seqlen=2,
+            layer_config=layer_config,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = "./saved"
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        lm_head = compressed_model.lm_head
+        assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
+        quantization_config = AutoRoundConfig()
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", quantization_config=quantization_config
+        )
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+        print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 

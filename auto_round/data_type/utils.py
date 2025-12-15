@@ -23,7 +23,7 @@ from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import logger
 
 
-def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
+def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int, val: float = 0.0):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
     This function adjusts the
@@ -55,7 +55,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
         return data, orig_shape, pad_len
     else:
         pad_len = (data.shape[1] + group_size - 1) // group_size * group_size - data.shape[1]
-        data_new = torch.nn.functional.pad(data, (0, pad_len))
+        data_new = torch.nn.functional.pad(data, (0, pad_len), value=val)
         data_new = data_new.reshape(-1, group_size)
         return data_new, orig_shape, pad_len
 
@@ -264,12 +264,20 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
         # already fused/treated as one layer
         if hasattr(submodule, "qkv_proj"):
             return
+
+        q_global_scale = getattr(submodule.q_proj, global_scale_name, max_value_tensor)
+        q_global_scale = max_value_tensor if q_global_scale is None else q_global_scale
+        k_global_scale = getattr(submodule.k_proj, global_scale_name, max_value_tensor)
+        k_global_scale = max_value_tensor if k_global_scale is None else k_global_scale
+        v_global_scale = getattr(submodule.v_proj, global_scale_name, max_value_tensor)
+        v_global_scale = max_value_tensor if v_global_scale is None else v_global_scale
+
         global_scale = torch.min(
             torch.cat(
                 (
-                    getattr(submodule.q_proj, global_scale_name, max_value_tensor).reshape(1),
-                    getattr(submodule.k_proj, global_scale_name, max_value_tensor).reshape(1),
-                    getattr(submodule.v_proj, global_scale_name, max_value_tensor).reshape(1),
+                    q_global_scale.reshape(1),
+                    k_global_scale.reshape(1),
+                    v_global_scale.reshape(1),
                 )
             )
         ).reshape([1])

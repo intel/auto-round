@@ -111,6 +111,39 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     set_module(model, layer_name, my_linear)
 
 
+def _construct_kv_scheme():
+    """Construct the default KV cache quantization scheme for FP8_STATIC export."""
+    from compressed_tensors.quantization import (  # pylint: disable=E0401
+        QuantizationArgs,
+        QuantizationStrategy,
+        QuantizationType,
+    )
+
+    default_kv_scheme = QuantizationArgs(
+        num_bits=8,
+        type=QuantizationType.FLOAT,
+        strategy=QuantizationStrategy.TENSOR,
+        symmetric=True,
+        dynamic=False,
+    )
+
+    logger.warning_once(
+        "Using default KV cache scheme: %s. "
+        "Currently, only this KV cache scheme is supported for FP8_STATIC + FP8 KV.",
+        repr(default_kv_scheme),
+    )
+
+    return default_kv_scheme
+
+
+def _use_fp8_kv(static_kv_dtype: str | None) -> bool:
+    """Return True if static KV cache should use FP8."""
+    if static_kv_dtype in ("fp8", "float8_e4m3fn"):
+        logger.warning_once("Exporting model with static KV cache in FP8 dtype.")
+        return True
+    return False
+
+
 def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs) -> torch.nn.Module:
     """
     Saves a quantized model of FP8_STATIC scheme in the llm-compressor format.
@@ -211,7 +244,7 @@ def save_quantized_as_static_fp(output_dir: str, inplace: bool = True, **kwargs)
     config_groups["group_0"] = scheme
     quantization_config = QuantizationConfig(
         config_groups=config_groups,
-        kv_cache_scheme=None,
+        kv_cache_scheme=_construct_kv_scheme() if _use_fp8_kv(kwargs.get("static_kv_dtype", None)) else None,
         quantization_status=QuantizationStatus.COMPRESSED,
         ignore=ignore,
     )

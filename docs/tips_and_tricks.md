@@ -1,6 +1,8 @@
 **AutoRound** [version 0.4](https://github.com/intel/auto-round) is set for release, introducing major updates to
-support Vision-Language Models (VLMs). During this process, we’ve gathered insights from quantizing various models.
+support Vision-Language Models (VLMs). During this process, we've gathered insights from quantizing various models.
 While the scope of quantization has been somewhat limited, the following tips may still prove useful as a reference.
+
+For environment configuration and setup options, please refer to the [Environment Variables Guide](./environments.md).
 
 ### 1. VLM Quantization and Calibration Dataset Choice
 

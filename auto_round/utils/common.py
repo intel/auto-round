@@ -17,7 +17,7 @@ import importlib
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import transformers
@@ -88,8 +88,6 @@ class SupportedFormats:
             "auto_round:gptqmodel",
             "auto_round:auto_awq",
             "auto_round:llm_compressor",
-            "itrex",
-            "itrex_xpu",
             "fake",
             "llm_compressor",
         )
@@ -123,6 +121,24 @@ if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
+
+MM_KEYS = [
+    "multi_modal_projector",
+    "vision_tower",
+    "multimodal_projector",
+    "thinker",
+    "visual",
+    "audio",
+    "talker",
+    "token2wav",
+    "vision_model",
+    "audio_tower",
+    "vision_encoder",
+    "vision_language_adapter",
+    "patch_merger",
+    "pre_mm_projector_norm",
+    "vision",
+]
 
 
 def is_debug_mode():
@@ -292,24 +308,24 @@ def json_serialize(obj: Any):
 
 
 def get_reciprocal(tensor):
-    if torch.dtype is torch.float16:
-        tensor = torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
-    else:
-        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
-    return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
+    """
+    Memory-frugal reciprocal:
+    - Inplace operations on original tensor
+    - Only allocates small boolean mask
+    """
+    eps = 1e-5 if tensor.dtype == torch.float16 else 1e-30
 
+    # Create mask for very small elements (small overhead)
+    mask = tensor.abs() < eps
 
-def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
-    """Normalize the decoding layer inputs into input_ids and other inputs."""
-    input_ids = []
-    input_others = {}
-    input_others["positional_inputs"] = []
-    for cur_inp in decoding_layer_inputs:
-        input_ids.append(cur_inp[0][0][0])
-        for key, val in cur_inp[0][1].items():
-            input_others[key] = val
-    # Force 'use_cache' to be False
-    if "use_cache" in input_others and input_others["use_cache"] is True:
-        logger.warning_once("Forcing 'use_cache' to be False during calibration.")
-        input_others["use_cache"] = False
-    return input_ids, input_others
+    # Prepare output in place: reuse tensor if allowed, otherwise create once
+    recip = torch.empty_like(tensor)
+
+    # Safe reciprocal: for nonzero elements
+    nonzero_mask = ~mask
+    recip[nonzero_mask] = 1.0 / tensor[nonzero_mask]
+
+    # Zero out elements below threshold
+    recip[mask] = 0.0
+
+    return recip

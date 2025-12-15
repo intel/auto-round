@@ -107,9 +107,8 @@ PKG_INSTALL_CFG = {
         ],
     ),
     "install_requires": fetch_requirements("requirements.txt"),
-    "extras_require": {
-        "cpu": fetch_requirements("requirements-cpu.txt"),
-    },
+    # auto-round[cpu] is deprecated, will be removed from v1.0.0
+    "extras_require": {"cpu": fetch_requirements("requirements-cpu.txt"), "kernel": ["auto-round-kernel"]},
 }
 
 ###############################################################################
@@ -135,9 +134,12 @@ LIB_INSTALL_CFG = {
 }
 
 if __name__ == "__main__":
+
+    package_name = "auto_round"
     # There are two ways to install hpu-only package:
     # 1. python setup.py lib install
     # 2. Within the gaudi docker where the HPU is available, we install the "auto_round_lib" by default.
+    # 3. This package is deprecated and will be removed from v1.0.0 release, please replace with auto_round_hpu.
     is_user_requesting_library_build = "lib" in sys.argv
     if is_user_requesting_library_build:
         sys.argv.remove("lib")
@@ -145,17 +147,15 @@ if __name__ == "__main__":
     if should_build_library:
         package_name = "auto_round_lib"
 
-    # Install hpu dependencies when hpu is build args, and keep "auto_round" package name.
-    # Only available for source code installation, "python setup.py install hpu".
+    # From v0.9.3, auto-round-hpu will be published to replace auto-round-lib.
     hpu_build = "hpu" in sys.argv
     if hpu_build:
         sys.argv.remove("hpu")
-        package_name = "auto_round"
+        package_name = "auto_round_hpu"
 
     if should_build_library or hpu_build:
         INSTALL_CFG = LIB_INSTALL_CFG
     else:
-        package_name = "auto_round"
         INSTALL_CFG = PKG_INSTALL_CFG
 
     include_packages = INSTALL_CFG.get("include_packages", {})
@@ -184,5 +184,5 @@ if __name__ == "__main__":
             "License :: OSI Approved :: Apache Software License",
         ],
         include_package_data=True,
-        package_data={"": ["mllm/templates/*.json", "alg_ext.abi3.so"]},
+        package_data={"": ["mllm/templates/*.json", "*.abi3.so", "*.pyd"]},
     )
