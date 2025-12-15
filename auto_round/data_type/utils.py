@@ -265,9 +265,9 @@ def update_fused_layer_global_scales(
 
     def _is_attention_module(m: Module) -> bool:
         name = m.__class__.__name__.lower()
-        return "attention" in name and (
-            hasattr(m, "q_proj") and hasattr(m, "k_proj") and hasattr(m, "v_proj") or hasattr(m, "qkv_proj")
-        )
+        return (
+            "attention" in name and hasattr(m, "q_proj") and hasattr(m, "k_proj") and hasattr(m, "v_proj")
+        ) or hasattr(m, "qkv_proj")
 
     def _is_mlp_module(m: Module) -> bool:
         name = m.__class__.__name__.lower()
