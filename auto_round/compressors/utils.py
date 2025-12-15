@@ -558,7 +558,7 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
         except AttributeError as e:
             raise ImportError(
                 "Please use the latest gguf-py, you can use the following command to install it:\n"
-                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install . sentencepiece"
             )
         download_convert_file(redownload)
 
@@ -570,7 +570,7 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
         except ImportError as e:
             raise ImportError(
                 "Please use the latest gguf-py, you can use the following command to install it:\n"
-                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install . sentencepiece"
             )
         if isinstance(args_or_ar.model, str):
             model_path = args_or_ar.model

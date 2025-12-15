@@ -338,7 +338,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
                 for key in scheme_keys:
-                    if cfg[key] is not None:
+                    if cfg.get(key) is not None:
                         extra_config[layer_name][key] = cfg[key]
 
     regex_config = quantization_config.pop("regex_config")
