@@ -135,11 +135,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Enable memory-efficient mode by offloading intermediate features to CPU. "
             "Useful when working with large models that don't fit in GPU memory.",
         )
-        basic.add_argument(
-            "--low_cpu_mem_usage",
-            action="store_true",
-            help="Lower CPU memory mode. Defaults to False."
-        )
+        basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
         basic.add_argument(
             "--format",
             default="auto_round",
