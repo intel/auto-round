@@ -99,7 +99,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         cls,
         original: torch.nn.Module,
         config,
-        # calibrate_all_experts: bool = Tr
     ) -> "ReplacementModuleBase":
         """Create replacement module from original module."""
         pass
