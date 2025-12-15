@@ -13,4 +13,4 @@ pillow
 torchvision
 numba
 vllm>=0.8.5.post1
-compressed-tensors
+llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
