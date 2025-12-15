@@ -71,6 +71,18 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         return module_class_name in cls._replacement_registry
 
     @classmethod
+    def is_to_be_replaced(
+        cls,
+        original: torch.nn.Module,
+        module_class_name: str,
+    ) -> bool:
+        """Determine if the given module should be replaced.
+
+        Users can extend this method to add custom logic for replacement.
+        """
+        return cls.is_registered(module_class_name)
+
+    @classmethod
     def get_registered_modules(cls) -> list:
         """Get list of all registered module class names."""
         return list(cls._replacement_registry.keys())
@@ -126,7 +138,7 @@ def apply_replacements(
             if hasattr(module, "original_module_class") and callable(module.original_module_class)
             else module.__class__.__name__
         )
-        if ReplacementModuleBase.is_registered(class_name):
+        if ReplacementModuleBase.is_to_be_replaced(module, class_name):
             modules_to_replace.append((name, module, class_name))
 
     # Step 2: Replace modules
