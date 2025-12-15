@@ -370,7 +370,7 @@ class GGUFFormat(OutputFormat):
             self.backend = None
 
     def check_and_reset_format(self, ar):
-        if ar.iters != 0 and ar.bitrs != 3 and not ar.enable_alg_ext:
+        if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
                 " or add `enable_alg_ext` for better accuracy with much more tuning cost."
