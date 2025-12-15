@@ -199,6 +199,18 @@ class OutputFormat:
                             ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                             logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
 
+        w_fp8 = self.data_type.startswith("fp") and self.bits == 8
+        act_fp8 = self.act_data_type.startswith("fp") and self.act_bits == 8
+        if w_fp8 or act_fp8:
+            error_msg = (
+                f"is only supported to export auto_round or llm_compressor format,"
+                f" but got {self.format_name}, please check."
+            )
+            error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
+            error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
+            logger.error(error_msg)
+            sys.exit(-1)
+
         if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic):
             logger.warning(
                 f"{self.format_name} format not support for current activation quantization configuration,"
@@ -262,12 +274,6 @@ class LLMCompressorFormat(OutputFormat):
                         f"please note that group_size={ar.group_size}"
                         " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
                     )
-            elif not is_wfp8afp8(ar):
-                logger.error(
-                    "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
-                    "Please change format to fake or auto_round etc."
-                )
-                sys.exit(-1)
         else:
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
