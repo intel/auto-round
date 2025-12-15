@@ -14,7 +14,7 @@
 # Note: adapted from # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
 import torch
 from transformers.modeling_utils import no_init_weights
-from transformers.models.llama4.modeling_llama4 import Llama4TextConfig, Llama4TextMLP, Llama4TextMoe
+from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import unsupported_meta_device
@@ -83,7 +83,7 @@ class SequentialLlama4TextMoe(ReplacementModuleBase):
     def from_original(
         cls,
         original: torch.nn.Module,
-        config: Llama4TextConfig,
+        config: Llama4Config,
         **kwargs,
     ) -> "SequentialLlama4TextMoe":
         """Create an instance from the original module."""

@@ -111,7 +111,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
 def apply_replacements(
     model: torch.nn.Module,
-) -> dict:
+) -> torch.nn.Module:
     """
     Function to apply module replacements to a model.
 
@@ -124,8 +124,7 @@ def apply_replacements(
         model: The model to apply module replacement to (modified in-place).
 
     Returns:
-        dict: A dictionary of replaced modules, where the keys are module names and
-              the values are tuples of (original_module, replacement_module).
+        The model with modules replaced.
     """
     replaced = {}
 
