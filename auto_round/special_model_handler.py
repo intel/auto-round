@@ -94,10 +94,10 @@ def _handle_moe_model(model, formats=None):
         logger.warning(
             f"{model.config.model_type} experts are converted, the quantized model can not run on transformers."
         )
-    return model
-    # from auto_round.modelling.replace_modules import apply_replacements
 
-    # return apply_replacements(model)
+    from auto_round.modelling.replace_modules import apply_replacements
+
+    return apply_replacements(model)
 
 
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):

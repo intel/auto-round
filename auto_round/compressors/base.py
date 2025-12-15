@@ -57,6 +57,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
+from auto_round.modelling.replace_modules import apply_replacements
 from auto_round.schemes import (
     SPECIAL_SCHEMES,
     QuantizationScheme,
@@ -1658,7 +1659,7 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        # self.model = _handle_moe_model(self.model, formats=formats)
+        self.model = _handle_moe_model(self.model, formats=formats)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
@@ -3092,9 +3093,6 @@ class BaseCompressor(object):
             if i != 0:
                 pbar.update(1)
 
-            from auto_round.modelling.replace_modules import apply_replacements
-
-            m = apply_replacements(m)
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
