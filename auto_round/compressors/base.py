@@ -653,7 +653,7 @@ class BaseCompressor(object):
         ):
             logger.info(
                 "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%%, but it might throw an exception."
+                "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
             )
 
         if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
