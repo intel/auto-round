@@ -92,8 +92,12 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         pass
 
 
+# Note: adapted from llm-compressor
+# https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/moe_context.py
+
+
 def apply_replacements(
-    model: PreTrainedModel,
+    model: torch.nn.Module,
 ) -> dict:
     """
     Function to apply module replacements to a model.
