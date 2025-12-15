@@ -260,18 +260,21 @@ def update_fused_layer_global_scales(
             if hasattr(m, global_scale_name):
                 scale = getattr(m, global_scale_name)
                 if isinstance(scale, torch.Tensor):
-                    scales.append(scale)
+                    # Normalize shape early
+                    scales.append(scale.reshape(1))
         return scales
 
-    def _is_attention_module(m: Module) -> bool:
-        name = m.__class__.__name__.lower()
-        return (
-            "attention" in name and hasattr(m, "q_proj") and hasattr(m, "k_proj") and hasattr(m, "v_proj")
-        ) or hasattr(m, "qkv_proj")
+    def _is_attention_module(module: Module):
+        return "attention" in module.__class__.__name__.lower() and (
+            hasattr(module, "k_proj")
+            or hasattr(module, "v_proj")
+            or hasattr(module, "qkv_proj")
+        )
 
-    def _is_mlp_module(m: Module) -> bool:
-        name = m.__class__.__name__.lower()
-        return "mlp" in name and hasattr(m, "gate_proj") and hasattr(m, "up_proj")
+    def _is_mlp_module(module: Module):
+        return "mlp" in module.__class__.__name__.lower() and (
+            hasattr(module, "gate_proj") and hasattr(module, "up_proj")
+        )
 
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
@@ -279,14 +282,13 @@ def update_fused_layer_global_scales(
         if hasattr(submodule, "qkv_proj"):
             return
 
-        scales = _collect_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
+        scales = _collect_scales(
+            [submodule.q_proj, submodule.k_proj, submodule.v_proj]
+        )
         if not scales:
             return
 
-        device = scales[0].device
-        dtype = scales[0].dtype
-
-        global_scale = torch.stack([s.to(device=device, dtype=dtype).reshape(1) for s in scales]).min(dim=0).values
+        global_scale = torch.min(torch.stack(scales), dim=0).values
 
         for proj in (submodule.q_proj, submodule.k_proj, submodule.v_proj):
             if hasattr(proj, global_scale_name):
@@ -296,15 +298,15 @@ def update_fused_layer_global_scales(
 
     # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
-        scales = _collect_scales([submodule.gate_proj, submodule.up_proj])
+        scales = _collect_scales(
+            [submodule.gate_proj, submodule.up_proj]
+        )
         if not scales:
             return
 
-        device = scales[0].device
-        dtype = scales[0].dtype
-
-        global_scale = torch.stack([s.to(device=device, dtype=dtype).reshape(1) for s in scales]).min(dim=0).values
+        global_scale = torch.min(torch.stack(scales), dim=0).values
 
         for proj in (submodule.gate_proj, submodule.up_proj):
             if hasattr(proj, global_scale_name):
                 setattr(proj, global_scale_name, global_scale.clone())
+
