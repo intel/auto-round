@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import auto_round.modelling as auto_round_modelling
+from auto_round.modelling.replace_modules import apply_replacements
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
@@ -36,30 +37,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
-
-# CONVERT_EXPERT_TO_LINEAR_MODELS = [
-#     "llama4",
-#     #    "gpt_oss"
-# ]
-
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
-
-
-# def _get_moe_converter(config):
-#     # Dispatch table for model_type to replacement_info functions
-#     moe_converters = {
-#         # "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
-#         # "llama4": LazyImport("auto_round.modelling.llama4.get_replacement_info"),
-#     }
-
-#     # Retrieve the appropriate function based on model_type
-#     if config.model_type in moe_converters:
-#         return moe_converters[config.model_type](config)
-#     else:
-#         raise ValueError(
-#             f"Unsupported model_type '{config.model_type}'. "
-#             f"Currently, MoE converter only supports: {', '.join(moe_converters.keys())}."
-#         )
 
 
 def _handle_special_model(model):
@@ -73,29 +51,6 @@ def _handle_special_model(model):
 def update_moe_module_if_needed(model, formats=None):
     if formats is not None and any(["gguf" in format_ for format_ in formats]):
         return model
-    # if hasattr(model.config, "model_type") and model.config.model_type in CONVERT_EXPERT_TO_LINEAR_MODELS:
-    #     from tqdm import tqdm
-
-    #     from auto_round.utils import clear_memory
-
-    #     new_moe_class, convert_config, orig_cls_name = _get_moe_converter(model.config)
-    #     if not unsupported_meta_device(model):
-    #         model = model.to("cpu")
-    #         clear_memory()
-
-    #     for name, module in tqdm(model.named_modules(), desc="Converting model"):
-    #         cls_name = module.__class__.__name__
-    #         if cls_name == orig_cls_name:
-    #             new_module = new_moe_class(config=convert_config, original=module)
-    #             parent, child = name.rsplit(".", maxsplit=1)
-    #             parent = model.get_submodule(parent)
-    #             setattr(parent, child, new_module)
-
-    #     logger.warning(
-    #         f"{model.config.model_type} experts are converted, the quantized model can not run on transformers."
-    #     )
-
-    from auto_round.modelling.replace_modules import apply_replacements
 
     return apply_replacements(model)
 

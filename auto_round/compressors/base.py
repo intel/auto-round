@@ -57,7 +57,6 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.logger import logger
-from auto_round.modelling.replace_modules import apply_replacements
 from auto_round.schemes import (
     SPECIAL_SCHEMES,
     QuantizationScheme,
@@ -112,11 +111,6 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
-
-
-def assign_temp_name_(model: torch.nn.Module):
-    for n, m in model.named_modules():
-        m.tmp_name = n
 
 
 class BaseCompressor(object):
@@ -1607,7 +1601,6 @@ class BaseCompressor(object):
 
                 memory_monitor.log_summary()
                 pbar.update(1)
-
         pbar.close()
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
