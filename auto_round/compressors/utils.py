@@ -513,13 +513,14 @@ def gguf_type_fallback(gguf_type: str) -> str:
     return gguf_type
 
 
-def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.TEXT):
+def gguf_args_check(args_or_ar, formats: Union[str, list[str]] = None, model_type=ModelType.TEXT):
     import argparse
 
     from auto_round.export.export_to_gguf.convert import download_convert_file
     from auto_round.logger import logger
     from auto_round.utils.model import download_or_get_path, get_gguf_architecture
 
+    formats = [formats] if isinstance(formats, str) else formats
     formats = sorted(formats, key=lambda x: len(x))
     export_gguf = False
     for f in formats:

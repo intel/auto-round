@@ -1135,7 +1135,7 @@ class BaseCompressor(object):
             )
         else:
             PACKING_LAYER_WITH_FORMAT[target_backend](
-                name, self.model, self.formats[0].output_format, device=self.device
+                name, self.model, self.formats[0].get_backend_name(), device=self.device
             )
 
     @torch.inference_mode()
@@ -2933,7 +2933,6 @@ class BaseCompressor(object):
             backend = format.get_backend_name()
             output_format = format.output_format
             if output_format not in EXPORT_FORMAT:
-                logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
                 raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {output_format}")
             save_quantized_as_format = EXPORT_FORMAT.get(output_format)
             if format.is_gptq() and not self.sym:

@@ -118,22 +118,29 @@ def _check_act_compatibility(ar: BaseCompressor, formats: list[str]) -> list[str
                         f"Please note that quantize activation with act_group_size={ar.act_group_size}"
                         " may result in failure to export or import normally."
                     )
-        if re.search(r"q\d_k", formats[i]) and not ar.data_type.endswith("_dq"):
-            logger.error(
-                f"datatype<{ar.data_type}> not support to export {formats[i]} format."
-                " Please change export format or `data_type`."
-            )
-            sys.exit(-1)
+        # if re.search(r"q\d_k", formats[i]) and not ar.data_type.endswith("_dq"):
+        #     logger.error(
+        #         f"datatype<{ar.data_type}> not support to export {formats[i]} format."
+        #         " Please change export format or `data_type`."
+        #     )
+        #     sys.exit(-1)
 
     return formats
 
 
 class OutputFormat:
+    """ "Base class for different output formats.
+
+    format: determines which method from export module to use for exporting. For example, auto_round, gguf, llmcompressor etc.
+    backend: determines the specific export process within the format. For example, auto_round:fp8_static, auto_round:auto_awq etc.
+    """
+
     support_schemes: list = []
     _format_list: dict[str, OutputFormat] = {}
     format_name = "base"
 
     def __init__(self, format: str, ar: BaseCompressor):
+        """Initialize the OutputFormat class."""
         if not self.is_support_scheme(ar.scheme):
             logger.error(
                 f"Currently, the {self.format_name} format only supports {self.support_schemes}, "
@@ -304,7 +311,7 @@ class LLMCompressorFormat(OutputFormat):
         self.backend = None
 
 
-@OutputFormat.register("auto_gptq")
+@OutputFormat.register("auto_gptq", "gptqmodel")
 class AutoGPTQFormat(OutputFormat):
     support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
     format_name = "auto_gptq"
@@ -352,14 +359,18 @@ class GGUFFormat(OutputFormat):
     format_name = "gguf"
 
     def __init__(self, format: str, ar: BaseCompressor):
-        gguf_args_check(ar, format, model_type=ModelType.TEXT)
-        if ar.mllm:
-            gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
-        ar.scheme = format.upper()
+        if format.startswith("gguf:"):
+            gguf_args_check(ar, format, model_type=ModelType.TEXT)
+            if ar.mllm:
+                gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
+            ar.scheme = format.upper()
 
-        self.output_format = format
-        self.backend_cls = GGUFFormat
-        self.backend = None
+            self.output_format = "gguf"
+            self.backend_cls = GGUFFormat
+            self.backend = GGUFFormat(format.split(":")[-1], ar)
+        else:
+            self.output_format = f"gguf:{format}"
+            self.backend = None
 
 
 @OutputFormat.register("auto_round")
