@@ -3085,7 +3085,6 @@ class BaseCompressor(object):
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
-
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
