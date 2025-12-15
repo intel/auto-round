@@ -23,7 +23,6 @@ import torch
 import transformers
 
 from auto_round.compressors.utils import (
-    gguf_args_check,
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
@@ -104,8 +103,10 @@ def get_formats(
 class OutputFormat:
     """ "Base class for different output formats.
 
-    format: determines which method from export module to use for exporting. For example, auto_round, gguf, llmcompressor etc.
-    backend: determines the specific export process within the format. For example, auto_round:fp8_static, auto_round:auto_awq etc.
+    format: determines which method from export module to use for exporting.
+            For example, auto_round, gguf, llmcompressor etc.
+    backend: determines the specific export process within the format.
+            For example, auto_round:fp8_static, auto_round:auto_awq etc.
     """
 
     support_schemes: list = []
@@ -322,7 +323,7 @@ class AutoAWQFormat(OutputFormat):
         )
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
-        if self.bits != 4:
+        if ar.bits != 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
         return super().check_and_reset_format(ar)
 
@@ -356,9 +357,9 @@ class GGUFFormat(OutputFormat):
 
     def __init__(self, format: str, ar: BaseCompressor):
         if format.startswith("gguf:"):
-            gguf_args_check(ar, format, model_type=ModelType.TEXT)
+            self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
-                gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
+                self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
             ar.scheme = format.upper()
 
             self.output_format = "gguf"
