@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
 import traceback
 from copy import deepcopy
 from typing import Union
@@ -182,6 +183,13 @@ class MLLMCompressor(BaseCompressor):
 
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
+        if quant_nontext_module:
+            from transformers.utils.versions import require_version
+
+            require_version(
+                "pillow",
+                "pillow is required for quantizing non-text modules, please install it with `pip install pillow`",
+            )
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:

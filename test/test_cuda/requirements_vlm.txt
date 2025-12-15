@@ -2,24 +2,17 @@
 # pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git --no-deps
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
 # pip install flash-attn==2.7.4.post1 --no-build-isolation
-accelerate
 bitsandbytes
-datasets
 einops
 flash-attn
 intel-extension-for-transformers
 lm-eval>=0.4.2,<0.5
-numpy < 2.0
 optimum
 pandas
 protobuf
 pillow
-py-cpuinfo
 tiktoken
-torch
 torchvision
 triton
-tqdm
-transformers
 xformers
 timm

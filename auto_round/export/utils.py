@@ -192,3 +192,17 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_dynamic", None)
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
+
+
+def release_layer_safely(layer: nn.Module):
+    """
+    Safely releases the weight and bias tensors of a layer to free memory.
+    Handles the case where attributes might not exist or are already None.
+    """
+    for attr in ["weight", "bias"]:
+        if hasattr(layer, attr):
+            tensor = getattr(layer, attr)
+            if tensor is not None:
+                # Detach and delete to avoid memory leaks
+                tensor.detach_()
+                setattr(layer, attr, None)
