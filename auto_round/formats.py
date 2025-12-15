@@ -14,9 +14,11 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import sys
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Callable, Union
 
 import torch
@@ -164,6 +166,21 @@ class OutputFormat:
         return False
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        if self.backend is None:
+            from auto_round.schemes import preset_name_to_scheme
+
+            if isinstance(ar.scheme, str):
+                default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
+            else:
+                default_dict = asdict(ar.scheme)
+            if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
+                for n, m in ar.model.named_modules():
+                    if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
+                        if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+                            ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
+                            ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+                            logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+
         if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic):
             logger.warning(
                 f"{self.format_name} format not support for current activation quantization configuration,"
@@ -562,4 +579,18 @@ class AutoRoundFormat(OutputFormat):
                         f"Please note that quantize activation with act_group_size={ar.act_group_size}"
                         " may result in failure to export or import normally."
                     )
+        if self.backend is None:
+            from auto_round.schemes import preset_name_to_scheme
+
+            if isinstance(ar.scheme, str):
+                default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
+            else:
+                default_dict = asdict(ar.scheme)
+            if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
+                for n, m in ar.model.named_modules():
+                    if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
+                        if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+                            ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
+                            ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+                            logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
         return None

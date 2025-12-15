@@ -373,14 +373,15 @@ def set_layer_config(
     if not quant_lm_head and not gguf_name:
         layer_config.pop(lm_head_name, None)
 
+    # move to OUtpuFormat, using OutputFormat.check_and_reset_format to check it
     # 8. enforce shape divisibility for int weight-only
-    if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
-        for n, m in model.named_modules():
-            if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
-                if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
-                    layer_config.setdefault(n, copy.deepcopy(default_dict))
-                    layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+    # if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
+    #     for n, m in model.named_modules():
+    #         if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
+    #             if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+    #                 layer_config.setdefault(n, copy.deepcopy(default_dict))
+    #                 layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+    #                 logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
     # enforce shape divisibility for mxfp/nvfp
     if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
         for n, m in model.named_modules():
