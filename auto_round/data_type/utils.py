@@ -266,9 +266,7 @@ def update_fused_layer_global_scales(
 
     def _is_attention_module(module: Module):
         return "attention" in module.__class__.__name__.lower() and (
-            hasattr(module, "k_proj")
-            or hasattr(module, "v_proj")
-            or hasattr(module, "qkv_proj")
+            hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
         )
 
     def _is_mlp_module(module: Module):
@@ -282,9 +280,7 @@ def update_fused_layer_global_scales(
         if hasattr(submodule, "qkv_proj"):
             return
 
-        scales = _collect_scales(
-            [submodule.q_proj, submodule.k_proj, submodule.v_proj]
-        )
+        scales = _collect_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
         if not scales:
             return
 
@@ -298,9 +294,7 @@ def update_fused_layer_global_scales(
 
     # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
-        scales = _collect_scales(
-            [submodule.gate_proj, submodule.up_proj]
-        )
+        scales = _collect_scales([submodule.gate_proj, submodule.up_proj])
         if not scales:
             return
 
@@ -309,4 +303,3 @@ def update_fused_layer_global_scales(
         for proj in (submodule.gate_proj, submodule.up_proj):
             if hasattr(proj, global_scale_name):
                 setattr(proj, global_scale_name, global_scale.clone())
-
