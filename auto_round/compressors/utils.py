@@ -164,48 +164,6 @@ def check_need_act_calibration(
     return False
 
 
-def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
-    """Checks if a model is compatible with the AutoAWQ GEMM kernel.
-
-    Args:
-        model: The model object to evaluate, typically a PyTorch model.
-        bits (int): The number of bits for quantization (must be 4 for compatibility).
-        group_size (int): The group size for quantization.
-        sym (bool): Whether symmetric quantization is used (not utilized in the current function logic).
-        layer_configs (dict, optional): A dictionary mapping layer names to configurations, where each
-            configuration can specify a custom number of bits for the layer.
-
-    Returns:
-        tuple: A tuple containing:
-            - bool: `True` if the model is compatible, `False` otherwise.
-            - str: An error message describing why the model is incompatible, or an empty string if compatible.
-    """
-    from auto_round.utils.model import get_layer_names_in_block, get_module
-
-    if bits != 4:
-        return False, "AutoAWQ GEMM kernel only supports 4 bits"
-    for n, m in model.named_modules():
-        if type(m) == transformers.pytorch_utils.Conv1D:
-            return False, "AutoAWQ GEMM kernel does not support conv1d"
-
-    layer_names = get_layer_names_in_block(model)
-    for layer_name in layer_names:
-        if (
-            layer_configs is not None
-            and layer_name in layer_configs.keys()
-            and layer_configs[layer_name].get("bits", bits) > 8
-        ):
-            continue
-
-        layer = get_module(model, layer_name)
-        if layer.in_features % group_size != 0:
-            return False, f"Layer {layer_name} in_features is not multiple of group_size {group_size}"
-        if layer.out_features % (32 // bits) != 0:
-            return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
-
-    return True, ""
-
-
 def collect_best_params(block, cache_device="cpu"):
     """Collect the best parameters from the block to the specified device."""
     params = {}
@@ -511,116 +469,6 @@ def gguf_type_fallback(gguf_type: str) -> str:
     elif gguf_type == "gguf:q6_k":
         gguf_type = "gguf:q8_0"
     return gguf_type
-
-
-def gguf_args_check(args_or_ar, formats: Union[str, list[str]] = None, model_type=ModelType.TEXT):
-    import argparse
-
-    from auto_round.export.export_to_gguf.convert import download_convert_file
-    from auto_round.logger import logger
-    from auto_round.utils.model import download_or_get_path, get_gguf_architecture
-
-    formats = [formats] if isinstance(formats, str) else formats
-    formats = sorted(formats, key=lambda x: len(x))
-    export_gguf = False
-    for f in formats:
-        if f.startswith("gguf"):
-            export_gguf = True
-
-        if f.startswith("gguf") and f not in GGUF_CONFIG:
-            logger.error(f"{f} is not supported, please check.")
-
-    redownload = False
-    if export_gguf:
-        try:
-            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
-                ModelBase,
-                ModelType,
-                get_model_architecture,
-            )
-
-            if isinstance(args_or_ar.model, str):
-                model_path = args_or_ar.model
-            else:
-                model_path = args_or_ar.model.name_or_path
-            if not os.path.isdir(model_path):
-                model_path = download_or_get_path(model_path, args_or_ar.platform)
-            model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
-            if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
-                logger.warning(
-                    f"Current version of gguf export does not support for {model_architecture},"
-                    " will re-download dependency file. Please restart the task."
-                )
-                redownload = True
-        except ModuleNotFoundError as e:
-            if "convert_hf_to_gguf" in str(e):
-                logger.warning("GGUF export dependency file is not found, download from github.")
-                redownload = True
-        except AttributeError as e:
-            raise ImportError(
-                "Please use the latest gguf-py, you can use the following command to install it:\n"
-                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-            )
-        download_convert_file(redownload)
-
-        try:
-            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
-                ModelBase,
-                ModelType,
-            )
-        except ImportError as e:
-            raise ImportError(
-                "Please use the latest gguf-py, you can use the following command to install it:\n"
-                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-            )
-        if isinstance(args_or_ar.model, str):
-            model_path = args_or_ar.model
-        else:
-            model_path = args_or_ar.model.name_or_path
-        if not os.path.isdir(model_path):
-            model_path = download_or_get_path(model_path, args_or_ar.platform)
-        model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
-        if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
-            logger.error(f"Model {model_architecture} is not supported to export gguf format.")
-            sys.exit(1)
-
-    pattern = re.compile(r"q\d_k")
-    pre_dq_format = ""
-    unsupported_list, reset_list = [], []
-    for format in GGUF_CONFIG:
-        if format in formats:
-            if format == "q6_k_s":
-                logger.warning("Please note that q6_k_s is q6_k.")
-
-            if re.search(pattern, format):
-                if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
-                    logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
-                    sys.exit(-1)
-                else:
-                    pre_dq_format = format
-
-            unsupported_list, reset_list = [], []
-            gguf_config = GGUF_CONFIG[format]
-            for k, v in gguf_config.items():
-                if not hasattr(args_or_ar, k):
-                    continue
-                if k == "data_type":
-                    if re.search(r"q\d_1", format) and len(formats) > 1:
-                        v = "int"
-                if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
-                    k = "asym"
-                    v = not v
-                if getattr(args_or_ar, k) != v:
-                    unsupported_list.append(f"{k}={getattr(args_or_ar, k)}")
-                    reset_list.append(f"{k}={v}")
-                    setattr(args_or_ar, k, v)
-            if len(unsupported_list) > 0:
-                logger.info(
-                    f"format {format} does not support for {', '.join(unsupported_list)},"
-                    f" reset to {', '.join(reset_list)}."
-                )
-    # Removed obsolete commented-out block for improved readability and maintainability.
-    return args_or_ar
 
 
 def get_gguf_qtype_by_layer_config(layer_config):
@@ -1109,7 +957,6 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
             writes shard index, renames shard files, copies source files, and releases temporary state.
     """
     import json
-    import os
     from collections import OrderedDict
 
     from auto_round.utils import clear_memory, get_module

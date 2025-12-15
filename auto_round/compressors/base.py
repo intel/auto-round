@@ -40,7 +40,6 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    gguf_args_check,
     immediate_saving,
     infer_bits_by_data_type,
     init_cache,
@@ -55,7 +54,7 @@ from auto_round.compressors.utils import (
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
-from auto_round.formats import OutputFormat
+from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.schemes import (
     SPECIAL_SCHEMES,
@@ -734,19 +733,6 @@ class BaseCompressor(object):
 
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
-        has_gguf = False
-        if hasattr(self, "formats"):
-            has_gguf = any([f.is_gguf() for f in self.formats])
-        if has_gguf and self.iters != 0 and self.bits != 3 and not self.enable_alg_ext:
-            logger.warning(
-                "`iters=0` is recommended when exporting to current GGUF format"
-                " or add `enable_alg_ext` for better accuracy with much more tuning cost."
-                " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
-                " for the accuracy results."
-            )
-        elif has_gguf and self.bits >= 8 and self.iters != 0:
-            logger.warning("`iters=0` is recommended for bits>=8")
-
         if (
             self.seqlen is not None
             and hasattr(self.model, "config")
@@ -800,7 +786,7 @@ class BaseCompressor(object):
         self.orig_output_dir = output_dir
 
         # check and update the format based on the current configuration
-        format_list = OutputFormat.get_formats(format, self)
+        format_list = get_formats(format, self)
         self.formats = format_list
 
         # If multiple formats are specified, enforce inplace=False
@@ -2893,7 +2879,7 @@ class BaseCompressor(object):
         """
         self.orig_output_dir = output_dir
         if isinstance(format, str):
-            formats = OutputFormat.get_formats(format, self)
+            formats = get_formats(format, self)
             if not hasattr(self, "formats"):
                 self.formats = formats
 
@@ -2902,13 +2888,6 @@ class BaseCompressor(object):
             return
         folders = []
         for format in formats:
-            if format.is_gptq() and not self.sym:
-                logger.warning(
-                    "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
-                    " particularly for 2-bit quantization and smaller models."
-                    " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                    "the AutoRound format(2/3/4/8 bits)."
-                )
             save_folder = self._get_save_folder_name(format)
             if format.is_fake():  # TODO fix act quantization later
                 self.model = self.model.to("cpu")
@@ -2936,15 +2915,6 @@ class BaseCompressor(object):
             if output_format not in EXPORT_FORMAT:
                 raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {output_format}")
             save_quantized_as_format = EXPORT_FORMAT.get(output_format)
-            if format.is_gptq() and not self.sym:
-                logger.warning(
-                    "the asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
-                    " particularly for 2-bit quantization and smaller models."
-                    " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                    "the AutoRound format(2/3/4/8 bits)."
-                )
-            if format.is_awq() and not self.bits == 4:
-                raise ValueError("The AWQ format only supports W4 quantization ")
             serialization_keys = [
                 "bits",
                 "group_size",
