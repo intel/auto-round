@@ -49,6 +49,8 @@ class AutoRoundExportFormat(str, Enum):
     MXFP4 = "mxfp4"
     NVFP4 = "nvfp4"
     FP8 = "fp8"
+    MX_FP = "mx_fp"
+    NV_FP = "nv_fp"
 
 
 if TYPE_CHECKING:
@@ -166,7 +168,10 @@ class OutputFormat:
         # auto_round:llm_compressor:fp8_static
         if self.backend.backend is not None:
             return f"{self.output_format}:{self.backend.get_backend_name()}"
-        # auto_round:fp8_static
+        # auto_round:auto_awq, auto_round:auto_gptq
+        elif self.backend.get_backend_name() in self._format_list:
+            return f"{self.output_format}:{self.backend.get_backend_name()}"
+        # auto_round:fp8_static, llm_compressor:fp8_static
         else:
             return self.backend.get_backend_name()
 
