@@ -146,7 +146,7 @@ def apply_replacements(
         logger.info(f"Found {len(modules_to_replace)} modules to replace")
         for name, module, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
             replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
-            replacement = replacement_cls(
+            replacement = replacement_cls.from_original(
                 module,
                 model.config,
             )

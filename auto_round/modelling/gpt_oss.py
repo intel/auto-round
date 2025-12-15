@@ -22,8 +22,6 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
-# __all__ = ["get_replacement_info"]
-
 
 def _update_parameter(
     module: torch.nn.Module,
@@ -138,11 +136,3 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
     ) -> "SequentialGPTOSSMoE":
         """Create an instance from the original module."""
         return cls(original, config)
-
-
-# def get_replacement_info(config):
-#     return (
-#         SequentialGPTOSSMoE,
-#         config.get_text_config(),
-#         GptOssMLP.__name__,
-#     )
