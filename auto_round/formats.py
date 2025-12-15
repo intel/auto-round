@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from dataclasses import asdict
+from enum import Enum
 from typing import TYPE_CHECKING, Callable, Union
 
 import torch
@@ -31,7 +32,6 @@ from auto_round.compressors.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
 )
-from auto_round.export.export_to_autoround import AutoRoundExportFormat
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.schemes import (
     PRESET_SCHEMES,
@@ -39,6 +39,17 @@ from auto_round.schemes import (
     get_gguf_scheme,
 )
 from auto_round.utils import SUPPORTED_FORMATS, logger
+
+
+class AutoRoundExportFormat(str, Enum):
+    # Weight: FP8, per-channel, may be extended to per-tensor in future
+    # Activation: FP8, per-tensor
+    FP8_STATIC = "fp8_static"
+    MXFP8 = "mxfp8"
+    MXFP4 = "mxfp4"
+    NVFP4 = "nvfp4"
+    FP8 = "fp8"
+
 
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
@@ -151,11 +162,13 @@ class OutputFormat:
     def get_backend_name(self) -> str:
         if self.backend is None:
             return self.output_format
-        # for format like auto_round:fp8, auto_round:fp8_static
-        if self.backend.output_format.startswith("auto_round"):
-            return self.backend.output_format if self.backend else self.output_format
 
-        return f"{self.output_format}:{self.backend.output_format}"
+        # auto_round:llm_compressor:fp8_static
+        if self.backend.backend is not None:
+            return f"{self.output_format}:{self.backend.get_backend_name()}"
+        # auto_round:fp8_static
+        else:
+            return self.backend.get_backend_name()
 
     @classmethod
     def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:
@@ -211,7 +224,7 @@ class FakeFormat(OutputFormat):
     format_name = "fake"
 
 
-@OutputFormat.register("llm_compressor")
+@OutputFormat.register("llm_compressor", "llmcompressor")
 class LLMCompressorFormat(OutputFormat):
     support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"]
     format_name = "llm_compressor"
@@ -223,31 +236,38 @@ class LLMCompressorFormat(OutputFormat):
                 f"but got scheme {ar.scheme}, please change to fake or auto_round etc."
             )
             exit(-1)
-        if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
-            from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+        if format.startswith("llm_compressor"):
+            self.output_format = format
+            self.backend = None
+            if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-            check_compressed_tensors_supported()
-            format = format.replace("llm_compressor", f"llm_compressor:{ar.data_type}")
-        elif is_static_wfp8afp8(ar):
-            format = f"llm_compressor:{AutoRoundExportFormat.FP8_STATIC.value}"
-            if ar.act_group_size != 0:
-                logger.warning(
-                    f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
-                    f" ,but got act_group_size={ar.act_group_size}, reset = 0"
+                check_compressed_tensors_supported()
+                self.backend = LLMCompressorFormat(ar.data_type, ar)
+            elif is_static_wfp8afp8(ar):
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
+                if ar.act_group_size != 0:
+                    logger.warning(
+                        f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
+                        f" ,but got act_group_size={ar.act_group_size}, reset = 0"
+                    )
+                    ar.act_group_size = 0
+                if ar.group_size > 0:
+                    logger.warning(
+                        f"please note that group_size={ar.group_size}"
+                        " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
+                    )
+            elif not is_wfp8afp8(ar):
+                logger.error(
+                    "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
+                    "Please change format to fake or auto_round etc."
                 )
-                ar.act_group_size = 0
-            if ar.group_size > 0:
-                logger.warning(
-                    f"please note that group_size={ar.group_size}"
-                    " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
-                )
-        elif not is_wfp8afp8(ar):
-            logger.error(
-                "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
-                "Please change format to fake or auto_round etc."
-            )
-        self.output_format = format
-        self.backend = None
+                sys.exit(-1)
+        else:
+            if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
+                raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
+            self.output_format = f"llm_compressor:{format}"
+            self.backend = None
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
         if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic):
@@ -558,11 +578,13 @@ class AutoRoundFormat(OutputFormat):
                     "please change to `fake` format for research purpose"
                 )
         elif not format.startswith("auto_round"):
+            if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
+                raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
             self.output_format = f"auto_round:{format}"
             self.backend = None
         else:
             backend = format.split(":")[1] if ":" in format else None
-            self.backend = self._format_list.get(backend)(format, ar) if backend else None
+            self.backend = self._format_list.get(backend)(backend, ar) if backend else None
 
         if self.backend is not None:
             self.support_schemes = self.backend.support_schemes

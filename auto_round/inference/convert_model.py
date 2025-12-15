@@ -20,7 +20,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.export.export_to_autoround import AutoRoundExportFormat
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,

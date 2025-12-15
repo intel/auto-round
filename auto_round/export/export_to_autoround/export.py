@@ -35,6 +35,7 @@ from auto_round.export.utils import (
     release_layer_safely,
     save_model,
 )
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -48,16 +49,6 @@ from auto_round.utils import (
     to_standard_regex,
     unsupported_meta_device,
 )
-
-
-class AutoRoundExportFormat(str, Enum):
-    # Weight: FP8, per-channel, may be extended to per-tensor in future
-    # Activation: FP8, per-tensor
-    FP8_STATIC = "fp8_static"
-    MXFP8 = "mxfp8"
-    MXFP4 = "mxfp4"
-    NVFP4 = "nvfp4"
-    FP8 = "fp8"
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
@@ -177,7 +168,7 @@ def pack_layer(layer_name, model, backend, device=None):
 
         return pack_layer(layer_name, model, backend, device)
 
-    if backend == "auto_round:llm_compressor":
+    if backend in ["auto_round:llm_compressor", f"auto_round:llm_compressor:{AutoRoundExportFormat.FP8_STATIC.value}"]:
         from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
         return pack_layer(layer_name, model, backend, device)
@@ -287,7 +278,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
         return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round:llm_compressor", **kwargs)
 
-    if backend == "auto_round:llm_compressor":
+    if backend in ["auto_round:llm_compressor", f"auto_round:llm_compressor:{AutoRoundExportFormat.FP8_STATIC.value}"]:
         from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
 
         return save_quantized_as_static_fp(output_dir, inplace=inplace, backend="auto_round:llm_compressor", **kwargs)

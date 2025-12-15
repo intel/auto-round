@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .export import save_quantized_as_autoround, AutoRoundExportFormat
+from .export import save_quantized_as_autoround
