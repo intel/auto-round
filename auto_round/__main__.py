@@ -290,7 +290,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             nargs="+",
             action="append",
-            default=[],
+            default=None,
             help="[mix-precision] ensure that listed layers are using same data type for quantization",
         )
         scheme.add_argument(
