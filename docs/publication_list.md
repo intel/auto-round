@@ -5,7 +5,7 @@ Full Publications/Events
 
 * Blog in Intel: [Advancing Low-Bit Quantization for LLMs: AutoRound x LLM Compressor](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336) (Dec 2025)
 
-* Blog in WeChat (vLLM): [AutoRound x LLM Compressor：让低比特量化 LLM 更准、更好推理](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg) (Dec 2025)
+* Blog in WeChat: [AutoRound x LLM Compressor：让低比特量化 LLM 更准、更好推理](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg) (Dec 2025)
 
 * Blog in vLLM: [Advancing Low‑Bit Quantization for LLMs: AutoRound x LLM Compressor](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html) (Dec 2025)
 
@@ -13,7 +13,7 @@ Full Publications/Events
 
 * arXiv: [SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (Dec 2025)
 
-* Blog in Intel (SGLang): [AutoRound Meets SGLang: Enabling Quantized Model Inference with AutoRound](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196) (Nov 2025)
+* Blog in Intel: [AutoRound Meets SGLang: Enabling Quantized Model Inference with AutoRound](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196) (Nov 2025)
 
 * Blog in LMSYS: [AutoRound Meets SGLang: Enabling Quantized Model Inference with AutoRound](https://lmsys.org/blog/2025-11-13-AutoRound/) (Nov 2025)
 
