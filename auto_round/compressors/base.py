@@ -113,6 +113,11 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
+def assign_temp_name_(model: torch.nn.Module):
+    for n, m in model.named_modules():
+        m.tmp_name = n
+
+
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -1653,7 +1658,7 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = _handle_moe_model(self.model, formats=formats)
+        # self.model = _handle_moe_model(self.model, formats=formats)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
@@ -3086,6 +3091,10 @@ class BaseCompressor(object):
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
+
+            from auto_round.modelling.replace_modules import apply_replacements
+
+            m = apply_replacements(m)
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")

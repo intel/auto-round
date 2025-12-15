@@ -16,9 +16,10 @@ from abc import ABC, abstractmethod
 from typing import Dict, Type
 
 import torch
-from loguru import logger
 from tqdm import tqdm
 from transformers import PreTrainedModel
+
+from auto_round.utils import logger
 
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
@@ -57,7 +58,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
                 )
 
             cls._replacement_registry[cls.original_module_class()] = cls
-            print(f"Registered {cls.__name__} for replacing {cls.original_module_class()}")
+            logger.trace(f"Registered {cls.__name__} for replacing {cls.original_module_class()}")
 
     @classmethod
     def get_replacement_class(cls, module_class_name: str) -> Type["ReplacementModuleBase"]:
@@ -139,6 +140,8 @@ def apply_replacements(
             )
             model.set_submodule(name, replacement)
             replaced[name] = (module, replacement)
+    else:
+        logger.info("No modules found for replacement")
 
     # Log what was replaced
     if replaced:
