@@ -17,7 +17,6 @@ import os
 
 import numpy as np
 import torch
-from PIL import Image
 from tqdm import tqdm
 
 from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
@@ -25,6 +24,7 @@ from auto_round.utils import LazyImport
 
 metrics = LazyImport("torchmetrics.multimodal")
 reward = LazyImport("ImageReward")
+Image = LazyImport("PIL.Image")
 
 
 def compute_clip(prompts, images, device: str = "cuda"):
@@ -107,6 +107,6 @@ def diffusion_eval(
     for metric in metrics:
         result.update(metric_map[metric](prompt_list, image_list, pipe.device))
 
-    import tabulate
+    import tabulate  # pylint: disable=E0401
 
     print(tabulate.tabulate(result.items(), tablefmt="grid"))

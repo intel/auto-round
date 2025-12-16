@@ -408,7 +408,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
-This format is well-suited for CPU devices and is widely adopted by the community.
+
+The optimized RTN mode is suggested (--iters 0) for all bits other than 3 bits.
+
 ```python
 from auto_round import AutoRound
 
@@ -726,7 +728,6 @@ If not explicitly specify '--task', the default value will be used (typically co
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
-Note: To use the vllm backend, please add `--eval_backend vllm` to  the command above.
 
 ###  Eval the Quantized model
 
@@ -735,6 +736,8 @@ Note: To use the vllm backend, please add `--eval_backend vllm` to  the command 
   ~~~bash
   auto-round --model="your_model_path" --eval  --tasks lambada_openai --eval_bs 16
   ~~~
+  > Note: To use the vllm backend, add `--eval_backend vllm` to the command above. Common vllm parameters are already supported, such as `--tensor_parallel_size`.
+
   Multiple gpu evaluation
   ~~~bash
   auto-round --model="your_model_path" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
@@ -756,6 +759,7 @@ Note: To use the vllm backend, please add `--eval_backend vllm` to  the command 
   ~~~bash
   CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
   ~~~
+
 
 
 ## 6 Known Issues

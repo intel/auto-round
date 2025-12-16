@@ -37,8 +37,7 @@ def to_mxfp4_rceil(
     ), f"{data_hp.dtype} is not supported yet"
     # TODO(future PR): consider supporting padding
     assert data_hp.numel() % block_size == 0, f"data size must be multiple of block_size={block_size}"
-    assert data_hp.is_contiguous(), f"data must be contiguous, got {data_hp.stride()}"
-
+    data_hp = data_hp.contiguous()
     # calculate the scale in e8m0 format
 
     orig_shape = data_hp.shape
@@ -159,8 +158,10 @@ def dequant_mxfp4_to_fp8(data_lp, scale_e8m0):
 
 
 def mxfp4_fp8_weight_to_bf16(weight_fp8, scale_bf16):
+
     origin_shape = weight_fp8.shape
     weight_fp8 = weight_fp8.reshape(-1, 32)
+    scale_bf16 = scale_bf16.reshape(-1, 1)
     assert weight_fp8.shape[0] == scale_bf16.shape[0], f"shape mismatch: {weight_fp8.shape} vs {scale_bf16.shape}"
     dequant_weight_bf16 = weight_fp8.to(torch.bfloat16) * scale_bf16
     dequant_weight_bf16 = dequant_weight_bf16.reshape(origin_shape)

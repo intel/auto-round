@@ -10,7 +10,7 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.9.0-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.9.2-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -30,30 +30,28 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 
 ## 🆕 What's New
-[2025/11] AutoRound has now landed in **LLM-Compressor**! You can apply AutoRound algorithm using `AutoRoundModifier`. Check out the [example](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md) to get started!
 
-[2025/11] AutoRound now offers preliminary support for an enhanced GGUF quantization algorithm via `--enable_alg_ext`. For detailed accuracy benchmarks, please refer to the [documentation](./docs/gguf_alg_ext_acc.md).
+* [2025/12] The **AutoRoundV2** paper is available. Reproduce mixed-precision results via `--enable_alg_ext` and **AutoScheme**: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
-[2025/10] AutoRound has been integrated into **SGLang**. You can now run models in the AutoRound format directly using the SGLang versions newer than v0.5.4.
+* [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md), [*vLLM blog*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html), [*RedHat blog*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor), [*X post*](https://x.com/vllm_project/status/1998710451312771532), [*Intel blog*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336), [*Linkedin*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg), [*WeChat*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg).
 
-[2025/10] We enhanced the RTN mode (--iters 0) to significantly reduce quantization cost compared to the default tuning mode. Check out [this doc](./docs/opt_rtn.md) for some accuracy results. If you don’t have sufficient resources, you can use this mode for 4-bit quantization.
+* [2025/11] An **enhanced GGUF** quantization algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/gguf_alg_ext_acc.md).
 
-[2025/10] We proposed a fast algorithm to generate **mixed bits/datatypes** schemes in minutes. Please
-refer to the documentation for accuracy [results](./docs/auto_scheme_acc.md) and [this guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for usage instructions.
+* [2025/10] AutoRound has been integrated into **SGLang**: [*Usage*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round), [*LMSYS Blog*](https://lmsys.org/blog/2025-11-13-AutoRound/), [*X post*](https://x.com/lmsysorg/status/1991977019220148650?s=20), [*Intel blog*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196), [*Linkedin*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472).
 
-[2025/09] AutoRound now includes experimental support for the **mxfp4 and nvfp4 dtypes**. For accuracy results, see the [documentation](./docs/mxnv_acc.md)
-. We currently recommend exporting to the LLM-Compressor format.
+* [2025/10] A **mix precision** algorithm is available to generate schemes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
-[2025/08] AutoRound now provides experimental support for **an improved INT2 algorithm** via `--enable_alg_ext`. See this [documentation](./docs/alg_202508.md)
- for some accuracy results. 
+* [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
-[2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
-  all bits other than 3 bits. 
+* [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
 
-[2025/05] AutoRound has been integrated into **Transformers** and **vLLM**. 
+* [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
 
-[2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
-  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
+* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/), [*Blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e).
+
+* [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
+
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 
 
 ## ✨ Key Features
@@ -203,6 +201,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
 - **`lr` (float)**: The learning rate for rounding value (default is `None`). When None, it will be set to `1.0/iters` automatically.
 - **`batch_size` (int)**: Batch size for training (default is `8`). 4 is also commonly used.
+- ** `enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
@@ -217,7 +216,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 </details>
 
-### Adaptive Bits/Dtype Usage 
+### Adaptive Schemes (Experimental Feature)
 AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
@@ -319,7 +318,6 @@ for prompt, output in zip(prompts, outputs):
 
 ### Transformers (CPU/Intel GPU/Gaudi/CUDA)
 
-
 AutoRound supports 10+ backends and automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
@@ -327,6 +325,7 @@ install additional libraries when a better backend is found.
 this may cause unexpected exceptions.
 
 The support for Gaudi device is limited.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -337,15 +336,15 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
+
+
+## Publications & Events
+
+[Publication List](./docs/publication_list.md).
+
 ## Acknowledgement
 Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ, GPTQModel, Triton, Marlin, and ExLLaMAV2 for providing low-precision CUDA kernels, which are leveraged in AutoRound.
 
+
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
-
-
-
-
-
-
-

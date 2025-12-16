@@ -317,7 +317,7 @@ def mllm_eval(
                     if len(eval_results) < len(eval_results.columns):
                         eval_results = eval_results.T
                     try:
-                        import tabulate
+                        import tabulate  # pylint: disable=E0401
 
                         logger.info("\n" + tabulate.tabulate(eval_results))
                     except:

@@ -74,6 +74,7 @@ class GenScheme:
             else self.auto_scheme.enable_torch_compile
         )
         self.disable_opt_rtn = self.auto_scheme.disable_opt_rtn
+        self.min_avg_bit, self.max_avg_bit, self.min_avg_bit_scheme = self.compute_avg_bit_range()
         self._check_configs()
 
     def _check_configs(self) -> None:
@@ -84,9 +85,9 @@ class GenScheme:
         if not isinstance(self.dataset, str):
             raise TypeError("`dataset` must be a string, got {type(self.dataset).__name__}.")
 
-        min_avg_bit, max_avg_bit = self.compute_avg_bit_range()
         target = self.auto_scheme.avg_bits
-
+        min_avg_bit = self.min_avg_bit
+        max_avg_bit = self.max_avg_bit
         logger.info("Average bits range: [%.3f, %.3f], target = %.3f", min_avg_bit, max_avg_bit, target)
         if abs(target - min_avg_bit) < 1e-3 or abs(target - max_avg_bit) < 1e-3:
             if abs(target - min_avg_bit) < 1e-3:
@@ -119,6 +120,7 @@ class GenScheme:
             enable_torch_compile=self.enable_torch_compile,
             disable_opt_rtn=self.disable_opt_rtn,
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
+            min_avg_bit_scheme=self.min_avg_bit_scheme,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config
@@ -168,7 +170,7 @@ class GenScheme:
 
         return layer_config
 
-    def compute_avg_bit_range(self) -> tuple[float, float]:
+    def compute_avg_bit_range(self) -> tuple[float, float, str | QuantizationScheme]:
         """Compute the min and max average bitwidths among candidate quantization options."""
         avg_bits = [
             compute_avg_bits_for_scheme(
@@ -180,5 +182,6 @@ class GenScheme:
             )[0]
             for option in self.auto_scheme.options
         ]
-        self.min_avg_bit, self.max_avg_bit = min(avg_bits), max(avg_bits)
-        return self.min_avg_bit, self.max_avg_bit
+        min_avg_bit, max_avg_bit = min(avg_bits), max(avg_bits)
+        min_avg_bit_scheme = self.auto_scheme.options[avg_bits.index(min_avg_bit)]
+        return min_avg_bit, max_avg_bit, min_avg_bit_scheme

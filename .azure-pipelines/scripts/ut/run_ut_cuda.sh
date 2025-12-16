@@ -106,7 +106,7 @@ function run_unit_test() {
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-   
+
     # run unit tests individually with separate logs
     for test_file in $(find . -name "test_*.py" ! -name "test_*vlms.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
