@@ -21,7 +21,7 @@
 ## 🚀 What is AutoRound?
 
 AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
-It achieves high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and providing broad hardware compatibility. 
+It achieves high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging **sign-gradient descent** and providing broad hardware compatibility. 
 See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage instructions, please refer to the [User Guide](./docs/step_by_step.md).
 
 <p align="center">
@@ -31,7 +31,7 @@ See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage in
 
 ## 🆕 What's New
 
-* [2025/12] The **AutoRoundV2** paper is available. Reproduce mixed-precision results via `--enable_alg_ext` and **AutoScheme**: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
+* [2025/12] The **SignRoundV2** paper is available. Reproduce mixed-precision results via `--enable_alg_ext` and **AutoScheme**: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
 * [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md), [*vLLM blog*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html), [*RedHat blog*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor), [*X post*](https://x.com/vllm_project/status/1998710451312771532), [*Intel blog*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336), [*Linkedin*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg), [*WeChat blog (Chinese)*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg), [*Zhihu blog (Chinese)*](https://zhuanlan.zhihu.com/p/1982167638315664412).
 
