@@ -49,7 +49,12 @@ import transformers
 from tqdm import tqdm
 
 import auto_round.export.export_to_autogptq.qlinear_triton
-from auto_round.export.utils import filter_quantization_config, get_autogptq_packing_qlinear, save_model
+from auto_round.export.utils import (
+    filter_quantization_config,
+    get_autogptq_packing_qlinear,
+    release_layer_safely,
+    save_model,
+)
 from auto_round.schemes import QuantizationScheme
 
 GPTQ_REQUIRED_CONFIG_KEYS = (
@@ -130,8 +135,6 @@ def convert_from_autogptq_dynamic(dynamic_config: dict) -> dict:
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  ##dese not support lm-head
-        return
     layer = get_module(model, name)
 
     if type(layer) not in SUPPORTED_LAYER_TYPES:  # already packed
@@ -159,13 +162,11 @@ def pack_layer(name, model, backend, device=None):
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-    new_layer = QuantLinear(  ##pylint: disable=E1123
+    qlayer = QuantLinear(  ##pylint: disable=E1123
         bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
     )
 
-    new_layer.device = orig_device
-    set_module(model, name, new_layer)
-    qlayer = new_layer
+    qlayer.device = orig_device
     scale = layer.scale
     zero = layer.zp
     # so far can only pack layer on CPU
@@ -173,7 +174,7 @@ def pack_layer(name, model, backend, device=None):
     ##force to float32 to be compatible with torch 2.0
     if sym and isinstance(zero, torch.Tensor):
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
-        if isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
+        if isinstance(qlayer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
             zero = int(zero.flatten()[0])
     else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero
@@ -184,10 +185,9 @@ def pack_layer(name, model, backend, device=None):
     else:
         qlayer.pack(layer, scale, zero, None, device)
     qlayer.to(orig_device)
-    if hasattr(layer, "weight"):
-        layer.weight = None
-    if hasattr(layer, "bias"):
-        layer.bias = None
+    set_module(model, name, qlayer)
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    release_layer_safely(layer)
 
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2", **kwargs):

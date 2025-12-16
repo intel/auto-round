@@ -41,7 +41,7 @@ class AutoRound:
         the quantization of LLMs." arXiv:2309.05516 (2023).
 
     Attributes:
-        model (torch.nn.Module): The loaded PyTorch model in eval mode.
+        model (torch.nn.Module | str): The loaded PyTorch model in eval mode.
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
@@ -64,6 +64,7 @@ class AutoRound:
     super_bits: int | None
     super_group_size: int | None
 
+    # all args in __new__ need be passed to the dynamic created class __init__
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
@@ -85,6 +86,8 @@ class AutoRound:
         enable_adam: bool = False,
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
+        enable_alg_ext: bool = None,
+        disable_opt_rtn: bool = None,
         low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:
@@ -172,6 +175,10 @@ class AutoRound:
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
         if extra_config:
             kwargs.update(extra_config.to_dict())
+        if enable_alg_ext is not None:
+            kwargs["enable_alg_ext"] = enable_alg_ext
+        if disable_opt_rtn is not None:
+            kwargs["disable_opt_rtn"] = disable_opt_rtn
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,

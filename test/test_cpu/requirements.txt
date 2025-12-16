@@ -1,7 +1,10 @@
 addict
 modelscope
 gguf
+sentencepiece
 torchvision
-compressed-tensors
 parameterized
+pillow
 numba
+llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
+lm_eval

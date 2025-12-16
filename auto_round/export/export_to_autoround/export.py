@@ -29,7 +29,12 @@ from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import filter_quantization_config, get_autogptq_packing_qlinear, save_model
+from auto_round.export.utils import (
+    filter_quantization_config,
+    get_autogptq_packing_qlinear,
+    release_layer_safely,
+    save_model,
+)
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -250,10 +255,8 @@ def pack_layer(layer_name, model, backend, device=None):
         )
         qlayer.to(orig_device)
         set_module(model, layer_name, qlayer)
-    if hasattr(layer, "weight"):
-        layer.weight = None
-    if hasattr(layer, "bias"):
-        layer.bias = None
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    release_layer_safely(layer)
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
@@ -335,7 +338,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
                 for key in scheme_keys:
-                    if cfg[key] is not None:
+                    if cfg.get(key) is not None:
                         extra_config[layer_name][key] = cfg[key]
 
     regex_config = quantization_config.pop("regex_config")

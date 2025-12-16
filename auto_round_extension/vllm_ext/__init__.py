@@ -18,9 +18,9 @@
 
 
 def apply():
-    import vllm.model_executor.layers.quantization.auto_round as auto_round_module
+    import auto_round_extension.vllm_ext.auto_round_ext
+    import auto_round_extension.vllm_ext.envs_ext
 
-    from auto_round_extension.vllm_ext.auto_round_ext import AutoRoundExtensionConfig
-
-    auto_round_module.AutoRoundConfig = AutoRoundExtensionConfig
-    from auto_round_extension.vllm_ext.envs_ext import extra_environment_variables
+    print("*****************************************************************************")
+    print("* !!! VLLM_ENABLE_AR_EXT is set to 1, applying auto_round_vllm_extension   *")
+    print("*****************************************************************************")

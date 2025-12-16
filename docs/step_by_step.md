@@ -10,8 +10,9 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Dataset operations](#dataset-operations)
 * [3 Quantization](#3-quantization)
   + [Supported Quantization Configurations](#supported-quantization-configurations)
-  + [Hardware Compatibility](#hardware-compatibility)
   + [Supported Export Formats](#supported-export-formats)
+  + [Hardware Compatibility](#hardware-compatibility)
+  + [Environment Configuration](#environment-configuration)
   + [Command Line Usage](#command-line-usage)
   + [API usage](#api-usage)
     - [AutoRound API Usage](#autoround-api-usage)
@@ -149,6 +150,10 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 CPU, Intel GPU, HPU and CUDA for both quantization and inference.
 
+### Environment Configuration
+
+Before starting quantization, you may want to configure AutoRound's environment variables for optimal performance. For detailed information about available environment variables (logging levels, ModelScope integration, workspace settings, etc.), please refer to the [Environment Variables Guide](./environments.md).
+
 ### Command Line Usage
 
 
@@ -279,7 +284,7 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ### AutoScheme
 
-AutoScheme provide automatically algorithm to provide mixed bits/data_type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
+AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
 
 **Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
 
@@ -403,7 +408,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
-This format is well-suited for CPU devices and is widely adopted by the community.
+
+The optimized RTN mode is suggested (--iters 0) for all bits other than 3 bits.
+
 ```python
 from auto_round import AutoRound
 
@@ -554,6 +561,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 
 - **Reduced CPU Memory Usage :**
+    - Enable `low_cpu_mem_usage` (experimental): Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
 
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
@@ -720,7 +728,6 @@ If not explicitly specify '--task', the default value will be used (typically co
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
-Note: To use the vllm backend, please add `--vllm` into the upper command.
 
 ###  Eval the Quantized model
 
@@ -729,6 +736,8 @@ Note: To use the vllm backend, please add `--vllm` into the upper command.
   ~~~bash
   auto-round --model="your_model_path" --eval  --tasks lambada_openai --eval_bs 16
   ~~~
+  > Note: To use the vllm backend, add `--eval_backend vllm` to the command above. Common vllm parameters are already supported, such as `--tensor_parallel_size`.
+
   Multiple gpu evaluation
   ~~~bash
   auto-round --model="your_model_path" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
@@ -750,6 +759,7 @@ Note: To use the vllm backend, please add `--vllm` into the upper command.
   ~~~bash
   CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
   ~~~
+
 
 
 ## 6 Known Issues

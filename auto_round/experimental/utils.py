@@ -17,7 +17,7 @@ import torch
 from auto_round.utils import logger
 
 
-def fp8_per_tensor_qdq(
+def per_tensor_fp8_qdq(
     tensor: torch.Tensor, tensor_max: None | torch.Tensor = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     from auto_round.data_type.fp8 import quant_fp8_sym
@@ -26,7 +26,7 @@ def fp8_per_tensor_qdq(
     return qdq_tensor, scale
 
 
-@torch.compiler.disable
+# @torch.compiler.disable
 def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: str):
     """
     Update the data of a parameter in a module.
@@ -37,13 +37,13 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
         if isinstance(param, torch.nn.Parameter):
             param.data.copy_(new_val)
         else:
-            module.register_parameter(name, torch.nn.Parameter(new_val, requires_grad=False))
+            module.register_parameter(name, torch.nn.Parameter(new_val))
     else:
-        logger.warning(
+        logger.warning_once(
             "Parameter %s not found in module %s, creating new parameter."
             % (name, module.__class__.__name__ + str(getattr(module, "layer_idx", "")))
         )
-        module.register_parameter(name, torch.nn.Parameter(new_val, requires_grad=False))
+        module.register_parameter(name, torch.nn.Parameter(new_val))
 
 
 def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype:
@@ -73,28 +73,3 @@ def is_attention_module(module: torch.nn.Module):
     return "attention" in module.__class__.__name__.lower() and (
         hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
     )
-
-
-def _clean_param_or_buff_if_exists(module: torch.nn.Module, name_tuple: tuple[str, ...]):
-    """
-    Deletes parameters or buffers from a module if they exist.
-
-    :param module: module to delete parameters/buffers from
-    :param name_tuple: tuple of parameter/buffer names to delete
-    """
-    for name in name_tuple:
-        if hasattr(module, name):
-            try:
-                delattr(module, name)
-            except Exception as e:
-                logger.warning(f"Could not delete {name} from module {module}: {e}")
-
-def clean_model_parameters_and_buffers_(model: torch.nn.Module, name_tuple: tuple[str, ...]):
-    """
-    Cleans parameters and buffers from all modules in the model.
-
-    :param model: model to clean parameters/buffers from
-    :param name_tuple: tuple of parameter/buffer names to delete
-    """
-    for module in model.modules():
-        _clean_param_or_buff_if_exists(module, name_tuple)

@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, "../..")
 import torch
 import transformers
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
@@ -321,6 +321,69 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_awq_lmhead_export(self):
+        bits, sym, group_size = 4, False, 128
+        model_name = "/models/phi-2"
+        layer_config = {
+            "lm_head": {"bits": 4},  # set lm_head quant
+        }
+        autoround = AutoRound(
+            model=model_name,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            layer_config=layer_config,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = "./saved"
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        lm_head = compressed_model.lm_head
+        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+
+        assert isinstance(lm_head, WQLinear_GEMM), "Illegal GPTQ quantization for lm_head layer"
+        quantization_config = AutoRoundConfig()
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="auto", quantization_config=quantization_config
+        )
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_gptq_lmhead_export(self):
+        bits, sym, group_size = 4, True, 128
+        model_name = "/models/phi-2"
+        layer_config = {
+            "lm_head": {"bits": 4},  # set lm_head quant
+        }
+        autoround = AutoRound(
+            model=model_name,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            layer_config=layer_config,
+            dataset=self.llm_dataloader,
+        )
+        quantized_model_path = "./saved"
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        lm_head = compressed_model.lm_head
+        assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
+        quantization_config = AutoRoundConfig()
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="auto", quantization_config=quantization_config
+        )
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+        print(res)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
 if __name__ == "__main__":

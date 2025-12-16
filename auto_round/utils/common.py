@@ -17,7 +17,7 @@ import importlib
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import transformers
@@ -308,55 +308,24 @@ def json_serialize(obj: Any):
 
 
 def get_reciprocal(tensor):
-    if torch.dtype is torch.float16:
-        tensor = torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
-    else:
-        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
-    return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
-
-
-def normalize_input(decoding_layer_inputs: list[tuple[Any]]) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
-    """Normalize the decoding layer inputs into input_ids and other inputs."""
-    input_ids = []
-    input_others = {}
-    input_others["positional_inputs"] = []
-    for cur_inp in decoding_layer_inputs:
-        input_ids.append(cur_inp[0][0][0])
-        for key, val in cur_inp[0][1].items():
-            input_others[key] = val
-    # Force 'use_cache' to be False
-    if "use_cache" in input_others and input_others["use_cache"] is True:
-        logger.warning_once("Forcing 'use_cache' to be False during calibration.")
-        input_others["use_cache"] = False
-    return input_ids, input_others
-
-
-def getattr_chain(obj: Any, chain_str: str, *args, **kwargs) -> Any:
     """
-    Chain multiple getattr calls, separated by `.`
-
-    :param obj: base object whose attributes are being retrieved
-    :param chain_str: attribute names separated by `.`
-    :param default: default value, throw error otherwise
+    Memory-frugal reciprocal:
+    - Inplace operations on original tensor
+    - Only allocates small boolean mask
     """
-    if len(args) >= 1:
-        has_default = True
-        default = args[0]
-    elif "default" in kwargs:
-        has_default = True
-        default = kwargs["default"]
-    else:
-        has_default = False
+    eps = 1e-5 if tensor.dtype == torch.float16 else 1e-30
 
-    attr_names = chain_str.split(".")
+    # Create mask for very small elements (small overhead)
+    mask = tensor.abs() < eps
 
-    res = obj
-    for attr_name in attr_names:
-        if not hasattr(res, attr_name):
-            if has_default:
-                return default
-            else:
-                raise AttributeError(f"{res} object has no attribute {attr_name}")
-        res = getattr(res, attr_name)
+    # Prepare output in place: reuse tensor if allowed, otherwise create once
+    recip = torch.empty_like(tensor)
 
-    return res
+    # Safe reciprocal: for nonzero elements
+    nonzero_mask = ~mask
+    recip[nonzero_mask] = 1.0 / tensor[nonzero_mask]
+
+    # Zero out elements below threshold
+    recip[mask] = 0.0
+
+    return recip

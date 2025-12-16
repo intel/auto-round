@@ -73,6 +73,7 @@ def create_model_class(
     backend="gguf:q4_0",
     low_cpu_mem_usage=False,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
+    device="cpu",
 ):
     tmp_work_dir = model.name_or_path
     os.makedirs(output_dir, exist_ok=True)
@@ -113,7 +114,7 @@ def create_model_class(
             small_first_shard=False,
         )
         model_instance = wrapper_model_instance(
-            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage
+            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage, device=device
         )
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
@@ -130,6 +131,7 @@ def pack_gguf_layer(
     processor=None,
     image_processor=None,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
+    device="cpu",
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -157,15 +159,19 @@ def pack_gguf_layer(
                     backend,
                     low_cpu_mem_usage=True,
                     model_type=convert_hf_to_gguf.ModelType.MMPROJ,
+                    device=device,
                 )
             )
+
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}
             block_names = get_block_names(model, quant_vision=True)
             block_names_flatten = flatten_list(block_names)
+            all_qlayer_name = []
             for n, m in model.named_modules():
                 if not check_to_quantized(m):
                     continue
+                all_qlayer_name.append(n)
                 for block_name in block_names_flatten:
                     block_name_split = block_name.split(".")
                     name_split = n.split(".")
@@ -177,19 +183,25 @@ def pack_gguf_layer(
                     block_name_to_last_layer_name[block_name] = n
             last_layer_name_to_block_name = {v: k for k, v in block_name_to_last_layer_name.items()}
             model.last_layer_name_to_block_name = last_layer_name_to_block_name
+            names_in_blocks = []
+            for block_name in block_names_flatten:
+                block = get_module(model, block_name)
+                for n, m in block.named_modules():
+                    if check_to_quantized(m):
+                        names_in_blocks.append(m.tmp_name)
+
     if name in model.last_layer_name_to_block_name:
-        ##packing block
+        # Packing block
+        block = get_module(model, model.last_layer_name_to_block_name[name])
         for gguf_model in gguf_model_instance_global:
             gguf_model.current_packing_block = model.last_layer_name_to_block_name[name]
             gguf_model.prepare_tensors()
 
-        block = get_module(model, model.last_layer_name_to_block_name[name])
         for n, m in block.named_modules():
             if hasattr(m, "weight"):
                 m.weight = None
             if hasattr(m, "bias"):
                 m.bias = None
-        clear_memory()
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             for gguf_model in gguf_model_instance_global:
@@ -197,7 +209,7 @@ def pack_gguf_layer(
 
 
 @torch.inference_mode()
-def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, **kwargs):
+def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, device="cpu", **kwargs):
     """Export the model to gguf format."""
     st = time.time()
     global gguf_model_instance_global
@@ -205,12 +217,19 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
     model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
         gguf_model_instance_global = [
-            create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT)
+            create_model_class(
+                output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device
+            )
         ]
         if vlm:
             gguf_model_instance_global.append(
                 create_model_class(
-                    output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.MMPROJ
+                    output_dir,
+                    model,
+                    layer_config,
+                    backend,
+                    model_type=convert_hf_to_gguf.ModelType.MMPROJ,
+                    device=device,
                 )
             )
 

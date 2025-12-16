@@ -32,10 +32,10 @@ def check_neq_config(config: dict, **expected) -> List[str]:
     if missing_expected:
         raise ValueError(f"Missing expected values for keys: {missing_expected}")
 
-    # 2. Check missing from layer config
-    missing_config = [k for k in scheme_keys if k not in config]
-    if missing_config:
-        raise ValueError(f"Missing config values for keys: {missing_config}")
+    # # 2. Check missing from layer config
+    # missing_config = [k for k in scheme_keys if k not in config] # None
+    # if missing_config:
+    #     raise ValueError(f"Missing config values for keys: {missing_config}")
 
     # 3. Collect mismatches
-    return [key for key in scheme_keys if config[key] != expected[key] and config[key] is not None]
+    return [key for key in scheme_keys if config.get(key) not in (expected[key], None)]

@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import importlib.util
 import os
 import time
+
+from transformers.utils.versions import require_version
 
 from auto_round.utils import (
     clear_memory,
@@ -101,6 +104,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             choices=["hf", "vllm"],
             help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
         )
+        self.add_argument("--add_bos_token", action="store_true", help="add BOS token")
 
         # vllm related arguments
         vllm_args = self.add_argument_group("vllm backend arguments")
@@ -110,7 +114,6 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--tokenizer_mode", default="auto", type=str, help="tokenizer mode for vllm (e.g. auto/fast/slow)"
         )
         vllm_args.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
-        vllm_args.add_argument("--add_bos_token", action="store_true", help="add BOS token when using vllm")
         vllm_args.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
         vllm_args.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
         vllm_args.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
@@ -141,6 +144,10 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
 
 
 def eval(args):
+    require_version(
+        "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
+    )
+
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
         eval_with_vllm(args)
@@ -187,7 +194,13 @@ def eval(args):
         model.eval()
         st = time.time()
         res = simple_evaluate_user_model(
-            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str, limit=args.limit
+            model,
+            tokenizer,
+            tasks=tasks,
+            batch_size=batch_size,
+            device=device_str,
+            limit=args.limit,
+            add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -196,6 +209,7 @@ def eval(args):
         if "auto" in str(batch_size) and args.mllm:
             logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
             batch_size = 16
+        model_args += f",add_bos_token={args.add_bos_token}"
         res = simple_evaluate(
             model="hf" if not args.mllm else "hf-multimodal",
             model_args=model_args,
@@ -222,15 +236,20 @@ def eval_task_by_task(
     eval_model_dtype=None,
     retry_times=3,
     mllm=False,
+    add_bos_token=False,
 ):
+    require_version(
+        "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
+    )
+
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     import traceback
 
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
-    from lm_eval.models.huggingface import HFLM
+    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils import logger
@@ -269,7 +288,7 @@ def eval_task_by_task(
         if batch_size is None or batch_size == "auto":
             logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
             batch_size = 16
-        from lm_eval.models.hf_vlms import HFMultimodalLM
+        from lm_eval.models.hf_vlms import HFMultimodalLM  # pylint: disable=E0401
 
         hflm = HFMultimodalLM(
             pretrained=model,
@@ -280,6 +299,7 @@ def eval_task_by_task(
             parallelize=parallelism,
             trust_remote_code=trust_remote_code,
             dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
         )
     else:
         hflm = HFLM(
@@ -291,12 +311,13 @@ def eval_task_by_task(
             parallelize=parallelism,
             trust_remote_code=trust_remote_code,
             dtype=eval_model_dtype,
+            add_bos_token=add_bos_token,
         )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
 
-    from lm_eval.utils import make_table  # pylint: disable=E0611
+    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]

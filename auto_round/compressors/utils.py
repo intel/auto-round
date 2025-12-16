@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import os
+import random
 import re
 import sys
 from dataclasses import asdict, fields
@@ -146,8 +147,14 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None], act_data_type: Union[str, None] = None, act_bits: Union[int, None] = 16
+    is_act_dynamic: Union[bool, None],
+    act_data_type: Union[str, None] = None,
+    act_bits: Union[int, None] = 16,
+    static_kv_dtype: Union[str, None] = None,
+    static_attention_dtype: Union[str, None] = None,
 ) -> bool:
+    if static_kv_dtype is not None or static_attention_dtype is not None:
+        return True
     if act_bits is None or act_bits > 8:
         return False
     # None is dynamic
@@ -203,11 +210,15 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 def collect_best_params(block, cache_device="cpu"):
     """Collect the best parameters from the block to the specified device."""
     params = {}
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            params[n] = {}
-            for key in m.params.keys():
-                params[n][key] = m.params[key].data.to(cache_device, copy=True)
+    if hasattr(block, "orig_layer"):
+        for key in block.params.keys():
+            params[key] = block.params[key].data.to(cache_device, copy=True)
+    else:
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                params[n] = {}
+                for key in m.params.keys():
+                    params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
 
 
@@ -247,6 +258,7 @@ def set_layer_config(
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
+    fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
@@ -288,6 +300,7 @@ def set_layer_config(
         return config
 
     # ---- main logic ----------------------------------------------
+    extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
 
@@ -319,8 +332,15 @@ def set_layer_config(
     else:
         default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype
+
+    # In AutoScheme with mixed gguf:q4_k_m, the super_group_size of gguf:q8_0 layer is None,
+    # which should not be filled by default q4km again
+    if fill_default_value:
+        tmp_scheme_keys = scheme_keys
+    else:
+        tmp_scheme_keys = extra_scheme_keys
     for cfg in layer_config.values():
-        for key in scheme_keys:
+        for key in tmp_scheme_keys:
             cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
 
     # 5. collect supported modules
@@ -539,7 +559,8 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
         except AttributeError as e:
             raise ImportError(
                 "Please use the latest gguf-py, you can use the following command to install it:\n"
-                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py &&"
+                " pip install . sentencepiece"
             )
         download_convert_file(redownload)
 
@@ -551,7 +572,8 @@ def gguf_args_check(args_or_ar, formats: list[str] = None, model_type=ModelType.
         except ImportError as e:
             raise ImportError(
                 "Please use the latest gguf-py, you can use the following command to install it:\n"
-                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py &&"
+                " pip install . sentencepiece"
             )
         if isinstance(args_or_ar.model, str):
             model_path = args_or_ar.model
@@ -1311,3 +1333,56 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
             clear_memory()
         except Exception as _cleanup_err:
             logger.warning(f"shard cleanup warning: {_cleanup_err}")
+
+
+class IndexSampler:
+    """A cyclic sampler that returns shuffled index batches.
+
+    This sampler maintains internal state so that each call to `next_batch()`
+    continues from where it left off. When the remaining number of samples is
+    less than `batch_size`, the sampler reshuffles all indices and starts from
+    the beginning, discarding the last incomplete batch.
+
+    Attributes:
+        nsamples (int): Total number of samples.
+        batch_size (int): Number of indices to return in each batch.
+        index (int): Current position in the index list.
+        indices (List[int]): Shuffled list of indices.
+    """
+
+    def __init__(self, nsamples: int, batch_size: int) -> None:
+        """Initializes the sampler.
+
+        Args:
+            nsamples (int): Total number of samples (must be >= batch_size).
+            batch_size (int): Number of indices per batch.
+
+        Raises:
+            ValueError: If batch_size is not in the range (0, nsamples].
+        """
+        if batch_size <= 0 or batch_size > nsamples:
+            raise ValueError("batch_size must be > 0 and <= nsamples")
+
+        self.nsamples: int = nsamples
+        self.batch_size: int = batch_size
+        self.index: int = 0
+
+        self.indices: list[int] = list(range(nsamples))
+        random.shuffle(self.indices)
+
+    def next_batch(self) -> list[int]:
+        """Returns the next batch of shuffled indices.
+
+        If the remaining indices are fewer than `batch_size`, the sampler
+        reshuffles the entire list and starts from the beginning.
+
+        Returns:
+            list[int]: A list of size `batch_size` containing sample indices.
+        """
+        if self.index + self.batch_size > self.nsamples:
+            random.shuffle(self.indices)
+            self.index = 0
+
+        batch = self.indices[self.index : self.index + self.batch_size]
+        self.index += self.batch_size
+        return batch

@@ -31,7 +31,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
-from auto_round.export.utils import filter_quantization_config, save_model
+from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -46,8 +46,6 @@ from auto_round.utils import (
 
 
 def pack_layer(name, model, backend, device=None):
-    if name == "lm_head":  ##dese not support lm-head
-        return
     layer = get_module(model, name)
 
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
@@ -77,10 +75,8 @@ def pack_layer(name, model, backend, device=None):
         device=device,
     )
     set_module(model, name, q_linear)
-    if hasattr(layer, "weight"):
-        layer.weight = None
-    if hasattr(layer, "bias"):
-        layer.bias = None
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    release_layer_safely(layer)
 
 
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
