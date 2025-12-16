@@ -2,7 +2,7 @@
 model_path=/mnt/disk8/yiliu7/zai-org/GLM-4.5-Air
 # model_path=/mnt/disk8/zai-org/GLM-4.5/
 # model_path=/mnt/disk8/Qwen/Qwen3-8B-FP8
-model_path=/mnt/disk8/meta-llama/Llama-3.2-3B-Instruct
+# model_path=/mnt/disk8/meta-llama/Llama-3.2-3B-Instruct
 output_dir=/mnt/disk2/Llama-3.2-3B-Instruct-test-no-lm-head-fp8-attn
 # output_dir=/mnt/disk8/yiliu7/zai-org/GLM-4.5-lm-head-fp8-attn-g2
 # output_dir=/mnt/disk8/yiliu7/zai-org/GLM-4.5-air-no-lm-head-fp8-attn-g2

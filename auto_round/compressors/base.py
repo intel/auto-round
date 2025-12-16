@@ -656,7 +656,7 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
-        _is_fp8 = is_wfp8afp8(self.data_type) or is_wfp8afp8(self.act_data_type)
+        _is_fp8 = is_wfp8afp8(self)
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and _is_fp8 and not is_hpex_available():
             self.enable_torch_compile = False

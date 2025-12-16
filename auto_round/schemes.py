@@ -233,18 +233,6 @@ FP8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
-FP8_STATIC_G2 = QuantizationScheme.from_dict(
-    {
-        "bits": 8,
-        "group_size": -1,
-        "data_type": "fp",
-        "act_bits": 8,
-        "act_group_size": 0,
-        "act_data_type": "fp8_g2",
-        "act_dynamic": False,
-        "act_sym": True,
-    }
-)
 
 # For AutoScheme 16 bits options
 BF16 = QuantizationScheme.from_dict(
