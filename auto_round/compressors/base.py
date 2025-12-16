@@ -1110,7 +1110,7 @@ class BaseCompressor(object):
             pack_gguf_layer(
                 name,
                 self.model,
-                self.formats[0].output_format,
+                self.formats[0].get_backend_name(),
                 output_dir,
                 self.layer_config,
                 self.tokenizer,

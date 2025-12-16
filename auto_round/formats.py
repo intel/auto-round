@@ -130,14 +130,15 @@ class OutputFormat:
 
     def __init__(self, format: str, ar: BaseCompressor):
         """Initialize the OutputFormat class."""
-        if not self.is_support_scheme(ar.scheme):
+        self.output_format = format
+        self.backend = None
+
+        if not self.is_fake() and not self.is_support_scheme(ar.scheme):
             logger.error(
                 f"Currently, the {self.format_name} format only supports {self.support_schemes}, "
                 f"but got scheme {ar.scheme}, please change to fake or auto_round etc."
             )
             exit(-1)
-        self.output_format = format
-        self.backend = None
 
     @classmethod
     def register(cls, *names: str) -> Callable[[OutputFormat], OutputFormat]:
@@ -199,8 +200,8 @@ class OutputFormat:
                             ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                             logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
 
-        w_fp8 = self.data_type.startswith("fp") and self.bits == 8
-        act_fp8 = self.act_data_type.startswith("fp") and self.act_bits == 8
+        w_fp8 = ar.data_type.startswith("fp") and ar.bits == 8
+        act_fp8 = ar.act_data_type.startswith("fp") and ar.act_bits == 8
         if w_fp8 or act_fp8:
             error_msg = (
                 f"is only supported to export auto_round or llm_compressor format,"
