@@ -3,6 +3,10 @@ Full Publications/Events
 
 ## 2025
 
+* Blog in Zhihu: [AutoRound x LLM Compressor：让低比特量化 LLM 更准、更好推理](https://zhuanlan.zhihu.com/p/1982167638315664412) (Dec 2025)
+  
+* Blog in Xiaohongshu: [AutoRound x vLLM: 把 4bit LLM 量化到可用](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=) (Dec 2025)
+
 * Blog in Intel: [Advancing Low-Bit Quantization for LLMs: AutoRound x LLM Compressor](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336) (Dec 2025)
 
 * Blog in WeChat: [AutoRound x LLM Compressor：让低比特量化 LLM 更准、更好推理](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg) (Dec 2025)
