@@ -36,7 +36,6 @@ def test_e2e_quant_and_load(scheme_name, weight_data_type, act_data_type):
     # Use a temporary directory for saving the quantized model
     with tempfile.TemporaryDirectory() as temp_dir:
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
-        model_name = "/models/Qwen2.5-0.5B-Instruct"  # Adjust the model path as needed
         config = AutoConfig.from_pretrained(model_name)
         config.num_hidden_layers = 2  # Use a smaller model for testing
         # Fix configuration validation issues
