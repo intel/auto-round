@@ -37,8 +37,8 @@ def is_gaudi2():
         return False
 
 
-@register_dtype("fp8_sym_g2")
-def quant_fp8_sym_g2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):
+@register_dtype("fp8_g2")
+def quant_fp8_g2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):
     """Symmetric quantization using float8 format.
 
     Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
