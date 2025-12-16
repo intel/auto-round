@@ -2986,7 +2986,10 @@ class BaseCompressor(object):
             )
             folders.append(save_folder)
 
-        return compressed_model, folders if return_folders else compressed_model
+        if return_folders:
+            return compressed_model, folders
+        else:
+            return compressed_model
 
     def _get_quantized_layer_names_outside_blocks(self) -> list:
         """Gets the names of quantized layers outside blocks in the model.

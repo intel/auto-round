@@ -3,8 +3,8 @@ import torch
 
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import AutoRoundExportFormat
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _MXFPLinear
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.schemes import PRESET_SCHEMES
 
 mx_schemes = [AutoRoundExportFormat.MXFP8.value, AutoRoundExportFormat.MXFP4.value]

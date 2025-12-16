@@ -178,7 +178,7 @@ class OutputFormat:
 
     @classmethod
     def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:
-        if isinstance(scheme, str) and scheme in cls.support_schemes:
+        if isinstance(scheme, str) and scheme.upper() in cls.support_schemes:
             return True
         if isinstance(scheme, QuantizationScheme):
             return True

@@ -4,8 +4,8 @@ import torch
 from auto_round.data_type.nvfp import calculate_gparam
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import AutoRoundExportFormat
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.schemes import PRESET_SCHEMES
 
 QMODULE_MAPPING = {
