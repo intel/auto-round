@@ -222,7 +222,9 @@ def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
     return qdq_res, scale, None
 
+
 if is_gaudi2():
+
     @register_dtype(("fp8_sym", "fp8", "fp8_e4m3"))
     def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):
         """Symmetric quantization using float8 format.
@@ -265,9 +267,10 @@ if is_gaudi2():
         fp8_res = tensor / scale + v
         fp8_res = torch.clip(fp8_res, info.min, info.max)
         # ste_fn = float8_e4m3fn_ste
-        
+
         # fp8_res2 = ste_fn(fp8_res)
         from auto_round.data_type.utils import float8_e4m3fnuz_hpu_ste as ste_fn
+
         # float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
         # float8_e4m3fn_ste_gaudi = float8_e4m3fnuz_hpu_ste
 

@@ -219,8 +219,8 @@ def float8_e4m3fn_hpu_ste(x: torch.Tensor):
 
     return fp8
 
-def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
 
+def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
     """Straight-Through Estimator (STE) for float8.
 
     Applies a quantization and dequantization step with float8 precision while maintaining
