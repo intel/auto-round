@@ -6,6 +6,5 @@ torchvision
 parameterized
 pillow
 numba
-#TODO: (yiliu30) replace it with the release version
 llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
 lm_eval

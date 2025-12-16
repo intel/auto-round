@@ -235,20 +235,34 @@ def get_gaudi_fp8_ste_func():
 
 # please refer from https://github.com/vllm-project/llm-compressor/blob/
 # 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
-def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weight"):
+def update_fused_layer_global_scales(
+    submodule: Module,
+    base_name: str = "weight",
+):
     """
-    When running NVFP4 quantization, update the global scale
-    such that q,k,v layers are treated as one tensor with the same
-    global_scale and gate_proj/up_proj layers are treated as one tensor
-    with the same global scale. This is requirement currently being set
-    by vLLM and may be removed in the future OR potentially make it
-    an optional step.
+    Update global scales for fused layers under NVFP4 quantization.
 
-    :param model: model to quantize
-    base_name: op name for fuse usage, option: weight, input
+    For attention layers:
+      - q/k/v projections share a single global scale.
+
+    For MLP layers:
+      - gate_proj and up_proj share a single global scale.
+
+    This behavior is currently required by vLLM and may become optional
+    in the future.
     """
     global_scale_name = f"{base_name}_global_scale"
-    max_value_tensor = torch.ones(1, device="cpu", dtype=torch.float32) * torch.finfo(torch.float32).max
+
+    def _collect_scales(mods: List[Module]) -> List[torch.Tensor]:
+        """Collect valid global_scale tensors from modules."""
+        scales = []
+        for m in mods:
+            if hasattr(m, global_scale_name):
+                scale = getattr(m, global_scale_name)
+                if isinstance(scale, torch.Tensor):
+                    # Normalize shape early
+                    scales.append(scale.reshape(1))
+        return scales
 
     def _is_attention_module(module: Module):
         return "attention" in module.__class__.__name__.lower() and (
@@ -257,56 +271,35 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
 
     def _is_mlp_module(module: Module):
         return "mlp" in module.__class__.__name__.lower() and (
-            hasattr(module, "gate_proj") or hasattr(module, "up_proj")
+            hasattr(module, "gate_proj") and hasattr(module, "up_proj")
         )
 
+    # ---------------- Attention ----------------
     if _is_attention_module(submodule):
-        # already fused/treated as one layer
+        # Already fused
         if hasattr(submodule, "qkv_proj"):
             return
 
-        q_global_scale = getattr(submodule.q_proj, global_scale_name, max_value_tensor)
-        q_global_scale = max_value_tensor if q_global_scale is None else q_global_scale
-        k_global_scale = getattr(submodule.k_proj, global_scale_name, max_value_tensor)
-        k_global_scale = max_value_tensor if k_global_scale is None else k_global_scale
-        v_global_scale = getattr(submodule.v_proj, global_scale_name, max_value_tensor)
-        v_global_scale = max_value_tensor if v_global_scale is None else v_global_scale
-
-        global_scale = torch.min(
-            torch.cat(
-                (
-                    q_global_scale.reshape(1),
-                    k_global_scale.reshape(1),
-                    v_global_scale.reshape(1),
-                )
-            )
-        ).reshape([1])
-
-        if math.isclose(global_scale.data, max_value_tensor.data, rel_tol=1e-9):
+        scales = _collect_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
+        if not scales:
             return
-        if hasattr(submodule.q_proj, global_scale_name):
-            setattr(submodule.q_proj, global_scale_name, global_scale.clone())
-        if hasattr(submodule.k_proj, global_scale_name):
-            setattr(submodule.k_proj, global_scale_name, global_scale.clone())
-        if hasattr(submodule.v_proj, global_scale_name):
-            setattr(submodule.v_proj, global_scale_name, global_scale.clone())
 
-        del global_scale
+        global_scale = torch.min(torch.stack(scales), dim=0).values
 
+        for proj in (submodule.q_proj, submodule.k_proj, submodule.v_proj):
+            if hasattr(proj, global_scale_name):
+                setattr(proj, global_scale_name, global_scale.clone())
+
+        return
+
+    # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
-        global_scale = torch.min(
-            torch.cat(
-                (
-                    getattr(submodule.gate_proj, global_scale_name, max_value_tensor).reshape(1),
-                    getattr(submodule.up_proj, global_scale_name, max_value_tensor).reshape(1),
-                )
-            )
-        ).reshape([1])
-        if math.isclose(global_scale.data, max_value_tensor.data, rel_tol=1e-9):
+        scales = _collect_scales([submodule.gate_proj, submodule.up_proj])
+        if not scales:
             return
-        if hasattr(submodule.gate_proj, global_scale_name):
-            setattr(submodule.gate_proj, global_scale_name, global_scale.clone())
-        if hasattr(submodule.up_proj, global_scale_name):
-            setattr(submodule.up_proj, global_scale_name, global_scale.clone())
 
-        del global_scale
+        global_scale = torch.min(torch.stack(scales), dim=0).values
+
+        for proj in (submodule.gate_proj, submodule.up_proj):
+            if hasattr(proj, global_scale_name):
+                setattr(proj, global_scale_name, global_scale.clone())
