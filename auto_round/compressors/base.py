@@ -2943,6 +2943,8 @@ class BaseCompressor(object):
                 "super_bits",
                 "super_group_size",
                 "regex_config",
+                "static_kv_dtype",
+                "static_attention_dtype",
             ]
             if isinstance(self.dataset, str):
                 serialization_keys.append("dataset")
