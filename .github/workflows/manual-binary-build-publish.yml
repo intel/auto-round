@@ -17,7 +17,7 @@ on:
         type: boolean
       test_pypi:
         default: true
-        description: 'Publish to TestPyPI for test'
+        description: 'Publish to TestPyPI, for test only'
         required: false
         type: boolean
 
@@ -72,9 +72,9 @@ jobs:
             twine upload --verbose --repository testpypi dist/*
           else
             if git describe --exact-match --tags >/dev/null 2>&1; then
-                export TWINE_PASSWORD=${TWINE_PASSWORD}
+                export TWINE_PASSWORD=${PYPI_PASSWORD}
                 echo "publish to PyPI"
-                # twine upload dist/*
+                twine upload dist/*
             else
                 echo "This branch is not a tag, shouldn't be uploaded into PyPI."
             fi
