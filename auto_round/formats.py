@@ -107,14 +107,39 @@ def get_formats(
             formats[i] = OutputFormat._format_list[formats[i]](formats[i], ar)
 
         new_format = formats[i].check_and_reset_format(ar)
-        if new_format is not None and new_format not in format:
-            formats[i] = OutputFormat._format_list[new_format](new_format, ar)
+        if new_format is not None:
+            if new_format not in format:
+                formats[i] = OutputFormat._format_list[new_format](new_format, ar)
+            else:
+                formats[i] = None
+
+    formats = [fmt for fmt in formats if fmt is not None]
 
     if len(formats) == 1 and formats[0].is_gguf and ar.scale_dtype != torch.float32:
         ar.scale_dtype = torch.float32
         logger.info("change `scale_dtype` to `torch.float32` for gguf format")
 
     return formats
+
+
+def _check_divisible_by_32(ar):
+    from auto_round.schemes import preset_name_to_scheme
+
+    if isinstance(ar.scheme, str):
+        default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
+    else:
+        default_dict = asdict(ar.scheme)
+    if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
+        for n, m in ar.model.named_modules():
+            if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
+                if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+                    if ar.layer_config is None:
+                        ar.layer_config = {}
+                    if ar.layer_config.get(n) is not None and ar.layer_config[n]["bits"] >= 16:
+                        continue
+                    ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
+                    ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
 
 
 class OutputFormat:
@@ -191,23 +216,6 @@ class OutputFormat:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
 
-        if self.backend is None:
-            from auto_round.schemes import preset_name_to_scheme
-
-            if isinstance(ar.scheme, str):
-                default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
-            else:
-                default_dict = asdict(ar.scheme)
-            if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
-                for n, m in ar.model.named_modules():
-                    if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
-                        if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
-                            if ar.layer_config is None:
-                                ar.layer_config = {}
-                            ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
-                            ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                            logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
-
         w_fp8 = ar.data_type.startswith("fp") and ar.bits == 8
         act_fp8 = ar.act_data_type.startswith("fp") and ar.act_bits == 8
         if w_fp8 or act_fp8:
@@ -249,6 +257,9 @@ class OutputFormat:
 class FakeFormat(OutputFormat):
     support_schemes = None
     format_name = "fake"
+
+    def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        return None
 
 
 @OutputFormat.register("llm_compressor", "llmcompressor")
@@ -329,6 +340,8 @@ class AutoGPTQFormat(OutputFormat):
                 " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
                 "the AutoRound format(2/3/4/8 bits)."
             )
+        if self.backend is None:
+            _check_divisible_by_32(ar)
         return super().check_and_reset_format(ar)
 
 
@@ -387,6 +400,10 @@ class AutoAWQFormat(OutputFormat):
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
         if ar.bits != 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
+
+        if self.backend is None:
+            _check_divisible_by_32(ar)
+
         return super().check_and_reset_format(ar)
 
 
@@ -633,19 +650,5 @@ class AutoRoundFormat(OutputFormat):
                         " may result in failure to export or import normally."
                     )
         if self.backend is None:
-            from auto_round.schemes import preset_name_to_scheme
-
-            if isinstance(ar.scheme, str):
-                default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
-            else:
-                default_dict = asdict(ar.scheme)
-            if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
-                for n, m in ar.model.named_modules():
-                    if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
-                        if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
-                            if ar.layer_config is None:
-                                ar.layer_config = {}
-                            ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
-                            ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                            logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+            _check_divisible_by_32(ar)
         return None
