@@ -11,8 +11,13 @@ on:
         required: true
         type: string
       publish:
-        default: false
-        description: 'Publish the binary to PyPi'
+        default: true
+        description: 'Publish the binary'
+        required: false
+        type: boolean
+      test_pypi:
+        default: true
+        description: 'Publish to TestPyPI for test'
         required: false
         type: boolean
 
@@ -25,12 +30,12 @@ jobs:
       fail-fast: true
     steps:
       - name: Checkout out Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.branch }}
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -48,16 +53,31 @@ jobs:
             python setup.py sdist bdist_wheel ${{ matrix.option }}
           fi
 
-      - name: Publish the binary
-        if: ${{ fromJSON(inputs.publish) }}
-        env:
-          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-        working-directory: ./${{ matrix.repo }}
-        run: |
-          python -m pip install --upgrade twine
-          # python -m twine upload dist/*
-
-      - uses: actions/upload-artifact@v4.3.4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.option }}
           path: dist
+
+      - name: Publish to PypI
+        if: ${{ fromJSON(inputs.publish) }}
+        env:
+          TWINE_USERNAME: "__token__"
+          PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+          TESTPYPI_PASSWORD: ${{ secrets.TESTPYPI_PASSWORD }}
+        run: |
+          python -m pip install --upgrade twine
+          if [ "${{ inputs.test_pypi }}" == "true" ]; then
+            export TWINE_PASSWORD=${TESTPYPI_PASSWORD}
+            echo "publish to TestPyPI"
+            twine upload --verbose --repository testpypi dist/*
+          else
+            if git describe --exact-match --tags >/dev/null 2>&1; then
+                export TWINE_PASSWORD=${TWINE_PASSWORD}
+                echo "publish to PyPI"
+                # twine upload dist/*
+            else
+                echo "This branch is not a tag, shouldn't be uploaded into PyPI."
+            fi
+          fi
+
+
