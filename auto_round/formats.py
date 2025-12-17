@@ -187,6 +187,10 @@ class OutputFormat:
         return False
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        if self.backend is not None:
+            new_format = self.backend.check_and_reset_format(ar)
+            self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
+
         if self.backend is None:
             from auto_round.schemes import preset_name_to_scheme
 
@@ -198,6 +202,8 @@ class OutputFormat:
                 for n, m in ar.model.named_modules():
                     if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
                         if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+                            if ar.layer_config is None:
+                                ar.layer_config = {}
                             ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                             ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                             logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
@@ -220,6 +226,7 @@ class OutputFormat:
                 " reset to fake format and save."
             )
             return "fake"
+
         return None
 
     def is_gguf(self) -> bool:
@@ -284,6 +291,10 @@ class LLMCompressorFormat(OutputFormat):
             self.backend = None
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        if self.backend is not None:
+            new_format = self.backend.check_and_reset_format(ar)
+            self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
+
         if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic):
             if (is_nv_fp(ar.act_data_type) and "static_gs" in ar.act_data_type) or (is_mx_fp(ar.act_data_type)):
                 return None
@@ -606,6 +617,10 @@ class AutoRoundFormat(OutputFormat):
             self.support_schemes = self.backend.support_schemes
 
     def check_and_reset_format(self, ar):
+        if self.backend is not None:
+            new_format = self.backend.check_and_reset_format(ar)
+            self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
+
         if ar.act_bits <= 8:
             if is_standard_fp(ar.act_data_type) and not ar.act_dynamic:
                 if (
@@ -628,6 +643,8 @@ class AutoRoundFormat(OutputFormat):
                 for n, m in ar.model.named_modules():
                     if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
                         if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+                            if ar.layer_config is None:
+                                ar.layer_config = {}
                             ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                             ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                             logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")

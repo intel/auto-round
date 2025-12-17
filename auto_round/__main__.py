@@ -140,7 +140,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--format",
             default="auto_round",
             type=str,
-            help="Output format for the quantized model." "'auto_round' is the recommended format",
+            help="Output format for the quantized model."
+            "'auto_round' is the recommended format"
+            "use command `auto_round list format` to show all supported formats with support scheme.",
         )
         basic.add_argument(
             "--output_dir",
@@ -454,14 +456,25 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
 
-def setup_parser(recipe="default"):
+def list_item():
+    args = argparse.ArgumentParser()
+    args.add_argument("item", type=str, help="item to list, e.g., format")
+    args = args.parse_args()
+    if args.item == "format":
+        from auto_round.formats import OutputFormat
+
+        print("AutoRound supported output formats and quantization scheme:")
+        print(OutputFormat.get_support_matrix())
+
+
+def start(recipe="default"):
     recipe = RECIPES[recipe]
     parser = BasicArgumentParser()
     args = parser.parse_args()
     for k, v in recipe.items():
         if getattr(args, k) is None:
             setattr(args, k, v)
-    return args
+    tune(args)
 
 
 def tune(args):
@@ -870,27 +883,33 @@ def run_eval():
 
 
 def run():
-    if "--eval" in sys.argv:
-        sys.argv.remove("--eval")
+    if "list" in sys.argv or "--list" in sys.argv:
+        if "list" in sys.argv:
+            sys.argv.remove("list")
+        if "--list" in sys.argv:
+            sys.argv.remove("--list")
+        list_item()
+        exit()
+    if "--eval" in sys.argv or "eval" in sys.argv:
+        if "--eval" in sys.argv:
+            sys.argv.remove("--eval")
+        if "eval" in sys.argv:
+            sys.argv.remove("eval")
         run_eval()
     else:
-        args = setup_parser()
-        tune(args)
+        start()
 
 
 def run_best():
-    args = setup_parser("best")
-    tune(args)
+    start("best")
 
 
 def run_light():
-    args = setup_parser("light")
-    tune(args)
+    start("light")
 
 
 def run_fast():
-    args = setup_parser("fast")
-    tune(args)
+    start("fast")
 
 
 if __name__ == "__main__":
