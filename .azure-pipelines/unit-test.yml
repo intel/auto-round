@@ -22,6 +22,8 @@ pr:
       - test/test*hpu*
       - "*.md"
       - "**/*.md"
+      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
+      - .azure-pipelines/scripts/ut/run_ut_cuda.sh
 
 pool: ICX-16C
 
