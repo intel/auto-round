@@ -53,7 +53,8 @@ jobs:
             python setup.py sdist bdist_wheel ${{ matrix.option }}
           fi
 
-      - uses: actions/upload-artifact@v6
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.option }}
           path: dist
