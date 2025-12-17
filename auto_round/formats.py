@@ -51,6 +51,8 @@ class AutoRoundExportFormat(str, Enum):
     FP8 = "fp8"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
+    MX_FP_RECEIL = "mx_fp_rceil"
+    NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
 
 
 if TYPE_CHECKING:
