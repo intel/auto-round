@@ -58,7 +58,7 @@ jobs:
           name: dist-${{ matrix.option }}
           path: dist
 
-      - name: Publish to PypI
+      - name: Publish to PyPI
         if: ${{ fromJSON(inputs.publish) }}
         env:
           TWINE_USERNAME: "__token__"
