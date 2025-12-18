@@ -1,10 +1,8 @@
 import copy
 import re
 import shutil
-import sys
 import unittest
 
-sys.path.insert(0, "../..")
 from auto_round import AutoRound, AutoRoundConfig, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.eval.evaluation import simple_evaluate
@@ -12,14 +10,14 @@ from auto_round.testing_utils import multi_card
 from auto_round.utils import get_module
 
 
-class TestAutoScheme(unittest.TestCase):
+class TestAutoScheme:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
         self.tasks = "lambada_openai"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -265,7 +263,3 @@ class TestAutoScheme(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.10)
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

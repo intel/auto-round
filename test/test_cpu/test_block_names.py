@@ -1,25 +1,13 @@
 import os
 import shutil
-import sys
 import unittest
 
 sys.path.insert(0, ".")
-sys.path.insert(0, "../..")
 import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
-
-class LLMDataLoader:
-    def __init__(self, input_size=10):
-        self.batch_size = 1
-        self.input_size = input_size
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, self.input_size], dtype=torch.long)
 
 
 # ================= simple multimodal model =================
@@ -116,15 +104,15 @@ class NestedMoEModel(nn.Module):
         return output
 
 
-class TestQuantizationBlocks(unittest.TestCase):
+class TestQuantizationBlocks:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -217,7 +205,3 @@ class TestQuantizationBlocks(unittest.TestCase):
         self.assertTrue(block_name == block_name_2)
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue("model.layers.23" == block_name_2[0][-1])
-
-
-if __name__ == "__main__":
-    unittest.main()

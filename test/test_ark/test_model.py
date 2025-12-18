@@ -14,12 +14,10 @@ from ..helpers import model_infer
 
 class TestAutoRoundTorchBackend:
 
-    @classmethod
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
         # ===== SETUP (setup_class) =====
         print("[Setup] Running before any test in class")
-        self.save_dir = "./saved"
 
         # Yield to hand control to the test methods
         yield

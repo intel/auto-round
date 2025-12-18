@@ -1,33 +1,21 @@
 import copy
 import shutil
-import sys
 import unittest
 
-from parameterized import parameterized
-
-sys.path.insert(0, "../..")
-
 import torch
-from _test_helpers import model_infer
+from parameterized import parameterized
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(3):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import model_infer
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -35,7 +23,7 @@ class TestAutoRound(unittest.TestCase):
         self.save_folder = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -826,7 +814,3 @@ class TestAutoRound(unittest.TestCase):
         from auto_round import AutoRound
 
         ar = AutoRound(model=model_name, enable_adam=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

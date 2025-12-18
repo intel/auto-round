@@ -1,27 +1,16 @@
 import copy
 import shutil
-import sys
 import unittest
 
-sys.path.insert(0, "../..")
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRoundFormatGeneration(unittest.TestCase):
+class TestAutoRoundFormatGeneration:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -29,7 +18,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         self.save_folder = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 

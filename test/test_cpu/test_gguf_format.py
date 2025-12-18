@@ -3,8 +3,6 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "../..")
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -21,16 +19,16 @@ class LLMDataLoader:
             yield torch.ones([1, 10], dtype=torch.long)
 
 
-class TestGGUF(unittest.TestCase):
+class TestGGUF:
 
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -413,7 +411,3 @@ class TestGGUF(unittest.TestCase):
             ar.layer_config["model.embed_tokens"]["bits"] == 6
             and ar.layer_config["model.embed_tokens"]["super_bits"] == 8
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

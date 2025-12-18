@@ -1,12 +1,9 @@
 import os
 import shutil
-import sys
 import unittest
 
-from parameterized import parameterized
-
-sys.path.insert(0, "../..")
 import torch
+from parameterized import parameterized
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
@@ -23,18 +20,9 @@ def _get_folder_size(path: str) -> float:
     return total_size / (1024**3)  # convert to GB
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_dir = "./saved"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -42,7 +30,7 @@ class TestAutoRound(unittest.TestCase):
         self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -401,7 +389,3 @@ class TestAutoRound(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

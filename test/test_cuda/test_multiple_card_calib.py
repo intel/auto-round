@@ -4,8 +4,6 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "../..")
-
 from auto_round.testing_utils import multi_card
 
 
@@ -19,14 +17,14 @@ def get_accuracy(data):
         return 0.0
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
         self.tasks = "lambada_openai"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -40,7 +38,3 @@ class TestAutoRound(unittest.TestCase):
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
-
-
-if __name__ == "__main__":
-    unittest.main()

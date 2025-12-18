@@ -1,29 +1,22 @@
-import copy
-import shutil
-import sys
-import unittest
-
-from parameterized import parameterized
-
-sys.path.insert(0, "../..")
-
 from auto_round import AutoRound
 
+from ..helpers import opt_name_or_path, qwen_name_or_path
 
-class TestAlgExt(unittest.TestCase):
+
+class TestAlgExt:
     def test_alg_ext(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = qwen_name_or_path
         ar = AutoRound(model_name, scheme="gguf:q4_k_s", iters=1, nsamples=1, enable_alg_ext=True)
         ar.quantize()
 
         from auto_round.auto_scheme import AutoScheme
 
         scheme = AutoScheme(options=["mxfp4", "mxfp8"], avg_bits=5.5, ignore_scale_zp_bits=True)
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = qwen_name_or_path
         ar = AutoRound(model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True)
         ar.quantize()
 
@@ -31,7 +24,7 @@ class TestAlgExt(unittest.TestCase):
         from auto_round.alg_ext import wrapper_autoround
 
     def test_all_support_dtype(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         for scheme in ["MXFP4", "NVFP4", "W2A16G64"]:
             ar = AutoRound(
                 model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True

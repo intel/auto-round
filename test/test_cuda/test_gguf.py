@@ -3,7 +3,6 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "../..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -12,18 +11,9 @@ from auto_round import AutoRound
 from auto_round.testing_utils import require_gguf
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -252,7 +242,3 @@ class TestAutoRound(unittest.TestCase):
     #     file_size = os.path.getsize(os.path.join(quantized_model_path, "mmproj-model.gguf")) / 1024**2
     #     self.assertAlmostEqual(file_size, 3326.18, delta=5.0)
     #     shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

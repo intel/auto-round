@@ -1,32 +1,21 @@
 import shutil
-import sys
 import unittest
 
 import torch
 
-sys.path.insert(0, "../..")
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -128,7 +117,3 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(device_list, ["cuda:0", "cuda:1", "cpu"])
         device_list = parse_available_devices("0,1")
         self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
-
-
-if __name__ == "__main__":
-    unittest.main()

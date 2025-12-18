@@ -1,12 +1,7 @@
 import shutil
-import sys
 import unittest
 
 import pytest
-
-sys.path.insert(0, "../..")
-
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -14,52 +9,19 @@ from auto_round import AutoRound, AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import require_autogptq, require_gptqmodel, require_package_version_ut
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import model_infer
 
 
-class TestAutoRoundexllamaBackend(unittest.TestCase):
+class TestAutoRoundexllamaBackend:
 
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/models/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
 
-    def model_infer(self, model, tokenizer):
-        prompts = [
-            "Hello,my name is",
-            # "The president of the United States is",
-            # "The capital of France is",
-            # "The future of AI is",
-        ]
-
-        inputs = tokenizer(prompts, return_tensors="pt", padding=False, truncation=True)
-
-        outputs = model.generate(
-            input_ids=inputs["input_ids"].to(model.device),
-            attention_mask=inputs["attention_mask"].to(model.device),
-            do_sample=False,  ## change this to follow official usage
-            max_new_tokens=5,
-        )
-        generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)]
-
-        decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-
-        for i, prompt in enumerate(prompts):
-            print(f"Prompt: {prompt}")
-            print(f"Generated: {decoded_outputs[i]}")
-            print("-" * 50)
-        return decoded_outputs[0]
-
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -80,7 +42,7 @@ class TestAutoRoundexllamaBackend(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
@@ -91,7 +53,7 @@ class TestAutoRoundexllamaBackend(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
@@ -123,7 +85,7 @@ class TestAutoRoundexllamaBackend(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.27)
@@ -158,13 +120,9 @@ class TestAutoRoundexllamaBackend(unittest.TestCase):
             )
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-            self.model_infer(model, tokenizer)
+            model_infer(model, tokenizer)
             result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
             print(result["results"]["lambada_openai"]["acc,none"])
             self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.15)
             torch.cuda.empty_cache()
             shutil.rmtree(self.save_folder, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

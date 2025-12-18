@@ -1,10 +1,6 @@
 import re
 import shutil
-import sys
 import unittest
-
-sys.path.insert(0, "../..")
-
 
 import torch
 from lm_eval.utils import make_table  # pylint: disable=E0401
@@ -27,14 +23,14 @@ def get_accuracy(data):
 
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
         self.tasks = "lambada_openai"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -378,7 +374,3 @@ class TestAutoRound(unittest.TestCase):
         ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
         self.assertEqual(ar.model.model.language_model.layers[0].self_attn.q_proj.tuning_device, "cuda:0")
         self.assertEqual(ar.model.model.visual.blocks[0].mlp.fc1.tuning_device, "cuda:1")
-
-
-if __name__ == "__main__":
-    unittest.main()

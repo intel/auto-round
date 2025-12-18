@@ -1,22 +1,18 @@
 import shutil
-import sys
 import unittest
 
+from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
-sys.path.insert(0, "../..")
 
-from auto_round import AutoRound
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/models/opt-125m"
         self.save_folder = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -97,7 +93,3 @@ class TestAutoRound(unittest.TestCase):
                 self.assertEqual(m.bits, 8)
             if n == "model.decoder.layers.4.self_attn.k_proj":
                 self.assertEqual(m.group_size, 64)
-
-
-if __name__ == "__main__":
-    unittest.main()

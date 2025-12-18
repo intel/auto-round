@@ -1,11 +1,6 @@
 import copy
 import shutil
-import sys
 import unittest
-
-from auto_round.eval.evaluation import simple_evaluate
-
-sys.path.insert(0, "../..")
 from math import isclose
 
 import torch
@@ -13,25 +8,17 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound  # pylint: disable=E0401
+from auto_round.eval.evaluation import simple_evaluate
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.llm_dataloader = LLMDataLoader()
         self.save_dir = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -87,7 +74,3 @@ class TestAutoRound(unittest.TestCase):
         # print(f"accuracy = {accuracy}")
         # assert accuracy > 0.15
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,9 +1,7 @@
 import copy
 import shutil
-import sys
 import unittest
 
-sys.path.insert(0, "../..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -20,20 +18,11 @@ class SimpleDataLoader:
             yield torch.randn([1, 30])
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoroundExport(unittest.TestCase):
+class TestAutoroundExport:
     approach = "weight_only"
 
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.gptj = transformers.AutoModelForCausalLM.from_pretrained(
             "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
             torchscript=True,
@@ -48,7 +37,7 @@ class TestAutoroundExport(unittest.TestCase):
         self.lm_input = torch.ones([1, 10], dtype=torch.long)
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -111,7 +100,3 @@ class TestAutoroundExport(unittest.TestCase):
         self.assertTrue(torch.all(out2[0] == out3[0]))
         self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-3)))
         self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-5)))
-
-
-if __name__ == "__main__":
-    unittest.main()
