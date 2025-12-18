@@ -2090,10 +2090,7 @@ class BaseCompressor(object):
                 new_attention_mask = None
             try:
                 kwargs = {"use_cache": False}
-                if (
-                    new_attention_mask is not None
-                    and not (isinstance(data_new, dict) and "attention_mask" in data_new)
-                ):
+                if new_attention_mask is not None and not (isinstance(data_new, dict) and "attention_mask" in data_new):
                     kwargs["attention_mask"] = new_attention_mask
 
                 if isinstance(data_new, torch.Tensor):
