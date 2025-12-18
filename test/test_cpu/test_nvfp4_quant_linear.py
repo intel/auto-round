@@ -4,12 +4,12 @@ import torch
 from auto_round.data_type.nvfp import calculate_gparam
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.schemes import PRESET_SCHEMES
 
 QMODULE_MAPPING = {
-    AutoRoundFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
+    AutoRoundExportFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
 
 
@@ -26,7 +26,7 @@ def fixed_seed():
     # (Optional) cleanup or reset after test
 
 
-@pytest.mark.parametrize("scheme", [AutoRoundFormat.NVFP4.value])
+@pytest.mark.parametrize("scheme", [AutoRoundExportFormat.NVFP4.value])
 @torch.inference_mode()
 def test_nvfp4_quantlinear_from_original_and_forward(scheme):
     """
