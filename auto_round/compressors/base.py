@@ -2081,8 +2081,13 @@ class BaseCompressor(object):
                         # If there was at least one repeat, set last token mask to 0
                         if repeated:
                             new_attention_mask[i, -1] = 0
-                # Some models will set block input attention mask to None if attention masks
-                # are all 1 which will cause cat issue
+
+                # Workaround: some models treat an all-1 attention mask as equivalent to None and
+                # will internally replace it with None for block inputs, which can cause tensor
+                # concatenation / shape-mismatch issues in downstream code. To avoid providing an
+                # all-1 mask, we force the last token in each sequence to be masked out (set to 0)
+                # so that the mask is never "all ones". This means the model will not attend to the
+                # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
                 new_attention_mask[:, -1] = 0
 
                 self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
