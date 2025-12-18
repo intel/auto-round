@@ -60,7 +60,7 @@ class TestAutoRoundAsym(unittest.TestCase):
         model_name = self.model_name
         model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        for bits in [2, 8]:
+        for bits in [2, 3, 8]:
             group_size, sym = 128, False
             ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1)
             ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
@@ -85,6 +85,70 @@ class TestAutoRoundAsym(unittest.TestCase):
         for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
             bits, group_size, sym = 4, 128, False
             ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1)
+            # TODO when ark is ready, uncomment the following lines to do inference test
+            ar.quantize_and_save(format=format, output_dir=self.save_folder)
+
+            # model = AutoModelForCausalLM.from_pretrained(
+            #     self.save_folder,
+            #     torch_dtype="auto",
+            #     device_map="auto",
+            # )
+
+            # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            # model_infer(model, tokenizer)
+            shutil.rmtree(self.save_folder)
+
+
+    def test_asym_group_size_with_tuning(self):
+        model_name = self.model_name
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        for group_size in [32, 64, 128]:
+            bits, sym = 4, False
+            ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1)
+            ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
+
+            # TODO when ark is ready, uncomment the following lines to do inference test
+
+            # model = AutoModelForCausalLM.from_pretrained(
+            #     self.save_folder,
+            #     torch_dtype="auto",
+            #     device_map="auto",
+            # )
+
+            # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            # model_infer(model, tokenizer)
+            shutil.rmtree(self.save_folder)
+
+    def test_asym_bits_with_tuning(self):
+        model_name = self.model_name
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        for bits in [2, 3, 8]:
+            group_size, sym = 128, False
+            ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1)
+            ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
+
+            # TODO when ark is ready, uncomment the following lines to do inference test
+
+            # model = AutoModelForCausalLM.from_pretrained(
+            #     self.save_folder,
+            #     torch_dtype="auto",
+            #     device_map="auto",
+            # )
+
+            # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            # model_infer(model, tokenizer)
+            shutil.rmtree(self.save_folder)
+
+    # use parameters later
+    def test_asym_format_with_tuning(self):
+        model_name = self.model_name
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
+            bits, group_size, sym = 4, 128, False
+            ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1)
             # TODO when ark is ready, uncomment the following lines to do inference test
             ar.quantize_and_save(format=format, output_dir=self.save_folder)
 
