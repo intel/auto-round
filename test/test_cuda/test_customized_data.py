@@ -56,7 +56,6 @@ class TestCustomizedData(unittest.TestCase):
 
         # 批处理输入（padding 到同长度）
         inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
-        from auto_round import AutoRound
 
         ar = AutoRound(model_name, dataset=inputs, seqlen=9)
         ar.quantize()
@@ -75,7 +74,6 @@ class TestCustomizedData(unittest.TestCase):
 
         # 批处理输入（padding 到同长度）
         inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
-        from auto_round import AutoRound
 
         ar = AutoRound(model_name, dataset=[inputs], seqlen=9)
         ar.quantize()
