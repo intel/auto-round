@@ -2045,37 +2045,17 @@ class BaseCompressor(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new, use_cache=False)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new, use_cache=False)
-                else:
-                    self.model(**data_new, use_cache=False)
-            except NotImplementedError:
-                pass
-            except RuntimeError as error:
-                error_msg = str(error)
-                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
-                logger.warning(
-                    "When quantization encounters tensor shape mismatch error, "
-                    "you can try to avoid it with batch_size=1"
-                )
-                raise error
-            except Exception as error:
-                raise error
             if need_attention_mask:
                 if (
-                    isinstance(data_new, dict)
-                    and "attention_mask" in data_new
-                    and data_new["attention_mask"] is not None
+                        isinstance(data_new, dict)
+                        and "attention_mask" in data_new
+                        and data_new["attention_mask"] is not None
                 ):
                     new_attention_mask = data_new["attention_mask"]
                 elif (
-                    self.tokenizer is not None
-                    and hasattr(self.tokenizer, "pad_token")
-                    and self.tokenizer.pad_token is not None
+                        self.tokenizer is not None
+                        and hasattr(self.tokenizer, "pad_token")
+                        and self.tokenizer.pad_token is not None
                 ):
                     new_attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
                 else:
@@ -2097,8 +2077,33 @@ class BaseCompressor(object):
                         # If there was at least one repeat, set last token mask to 0
                         if repeated:
                             new_attention_mask[i, -1] = 0
+                # Some models will set block input attention mask to None if attention is all 1 which will cause cat issue
+                new_attention_mask[:,0] = 0
 
                 self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
+            else:
+                new_attention_mask=None
+            try:
+                if isinstance(data_new, torch.Tensor):
+                    self.model(data_new, use_cache=False,attention_mask = new_attention_mask)
+                elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                    self.model(*data_new, use_cache=False,attention_mask = new_attention_mask)
+                else:
+                    self.model(**data_new, use_cache=False,attention_mask = new_attention_mask)
+            except NotImplementedError:
+                pass
+            except RuntimeError as error:
+                error_msg = str(error)
+                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
+                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
+                logger.warning(
+                    "When quantization encounters tensor shape mismatch error, "
+                    "you can try to avoid it with batch_size=1"
+                )
+                raise error
+            except Exception as error:
+                raise error
+
 
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
