@@ -2077,7 +2077,8 @@ class BaseCompressor(object):
                         # If there was at least one repeat, set last token mask to 0
                         if repeated:
                             new_attention_mask[i, -1] = 0
-                # Some models will set block input attention mask to None if attention is all 1 which will cause cat issue
+                # Some models will set block input attention mask to None if attention masks
+                # are all 1 which will cause cat issue
                 new_attention_mask[:, 0] = 0
 
                 self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
