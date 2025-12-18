@@ -1,0 +1,2 @@
+llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
+parameterized
