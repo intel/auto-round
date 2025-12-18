@@ -2017,8 +2017,12 @@ class BaseCompressor(object):
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+        if self.dataloader.__class__.__name__ == "BatchEncoding":
+            self.dataloader = [self.dataloader.data]
 
         for data in self.dataloader:
+            if data.__class__.__name__ == "BatchEncoding":
+                data = data.data
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
@@ -2085,12 +2089,16 @@ class BaseCompressor(object):
             else:
                 new_attention_mask = None
             try:
+                kwargs = {"use_cache": False}
+                if not(isinstance(data_new, dict) and "attention_mask" in data_new):
+                    kwargs["attention_mask"] = new_attention_mask
+
                 if isinstance(data_new, torch.Tensor):
-                    self.model(data_new, use_cache=False, attention_mask=new_attention_mask)
+                    self.model(data_new, **kwargs)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new, use_cache=False, attention_mask=new_attention_mask)
+                    self.model(*data_new,  **kwargs)
                 else:
-                    self.model(**data_new, use_cache=False, attention_mask=new_attention_mask)
+                    self.model(**data_new,  **kwargs)
             except NotImplementedError:
                 pass
             except RuntimeError as error:

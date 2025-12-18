@@ -40,3 +40,58 @@ class TestCustomizedData(unittest.TestCase):
         inputs = inputs.split(dim=0, split_size=1)
         ar = AutoRound(model_name, dataset=inputs, seqlen=9)
         ar.quantize()
+
+    def test_batch_encoding(self):
+        model_name = "/models/Qwen3-0.6B"
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype="auto"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        # 多个 prompts
+        texts = [
+            "There is a girl who likes adventure,",
+            "Tell me a story about a brave robot,",
+            "Explain why the sky is blue,"
+        ]
+
+        # 批处理输入（padding 到同长度）
+        inputs = tokenizer(
+            texts,
+            padding=True, truncation=True,
+            max_length=9,
+            return_tensors="pt"
+        ).to(model.device)
+        from auto_round import AutoRound
+        ar = AutoRound(model_name, dataset=inputs, seqlen=9)
+        ar.quantize()
+
+
+    def test_list_batch_encoding(self):
+        model_name = "/models/Qwen3-0.6B"
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype="auto"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        # 多个 prompts
+        texts = [
+            "There is a girl who likes adventure,",
+            "Tell me a story about a brave robot,",
+            "Explain why the sky is blue,"
+        ]
+
+        # 批处理输入（padding 到同长度）
+        inputs = tokenizer(
+            texts,
+            padding=True, truncation=True,
+            max_length=9,
+            return_tensors="pt"
+        ).to(model.device)
+        from auto_round import AutoRound
+        ar = AutoRound(model_name, dataset=[inputs], seqlen=9)
+        ar.quantize()
