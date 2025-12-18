@@ -98,7 +98,6 @@ class TestAutoRoundAsym(unittest.TestCase):
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_folder)
 
-
     def test_asym_group_size_with_tuning(self):
         model_name = self.model_name
         model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
