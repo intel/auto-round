@@ -3,14 +3,14 @@ import torch
 
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
+from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _MXFPLinear
-from auto_round.formats import AutoRoundExportFormat
 from auto_round.schemes import PRESET_SCHEMES
 
-mx_schemes = [AutoRoundExportFormat.MXFP8.value, AutoRoundExportFormat.MXFP4.value]
+mx_schemes = [AutoRoundFormat.MXFP8.value, AutoRoundFormat.MXFP4.value]
 QMODULE_MAPPING = {
-    AutoRoundExportFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
-    AutoRoundExportFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    AutoRoundFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
+    AutoRoundFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
 }
 
 
