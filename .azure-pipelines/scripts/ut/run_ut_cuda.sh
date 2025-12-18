@@ -34,7 +34,7 @@ function create_conda_env() {
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install -v --no-build-isolation .
+    uv pip install --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake==4.0.2
     uv pip install torch==2.8.0 torchvision
 }
@@ -108,7 +108,7 @@ function run_unit_test() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find . -name "test_*.py" ! -name "test_*vlms.py" | sort); do
+    for test_file in $(find . -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
@@ -162,8 +162,39 @@ function run_unit_test_vlm() {
     fi
 }
 
+function run_unit_test_llmc() {
+    # install unit test dependencies
+    create_conda_env
+
+    cd ${REPO_PATH}/test/test_cuda
+    rm -rf .coverage* *.xml *.html
+
+    uv pip install -r requirements_llmc.txt
+
+    pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
+    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    # run unit tests individually with separate logs
+    for test_file in $(find . -name "test_llmc*.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
+        echo "Running ${test_file}..."
+
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+    done
+
+    mv report_llmc.html ${LOG_DIR}/
+    mv coverage_llmc.xml ${LOG_DIR}/
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
+        echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
+    fi
+}
+
 function main() {
     run_unit_test_vlm
+    run_unit_test_llmc
     run_unit_test
     cat ${SUMMARY_LOG}
 }
