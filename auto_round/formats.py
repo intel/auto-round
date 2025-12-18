@@ -608,8 +608,7 @@ class AutoRoundFormat(OutputFormat):
                     enable_awq = True
                 else:
                     enable_awq = all(
-                        config["bits"] == ar.bits or config["bits"] >= 16
-                        for config in ar.layer_config.values()
+                        config["bits"] == ar.bits or config["bits"] >= 16 for config in ar.layer_config.values()
                     )
                 if enable_awq:
                     self.backend = AutoAWQFormat("auto_awq", ar)

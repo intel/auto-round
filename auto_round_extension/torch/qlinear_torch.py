@@ -131,7 +131,7 @@ class QuantLinear(nn.Module):
             )
             i = 0
             col = 0
-            shifts = torch.arange(0, (32 // self.bits),device=zeros.device) * self.bits
+            shifts = torch.arange(0, (32 // self.bits), device=zeros.device) * self.bits
             while col < qzeros.shape[1]:
                 packed_zeros = zeros[:, i : i + (32 // self.bits)].clone().to(dtype=torch.int32)
 

@@ -3,7 +3,6 @@ import shutil
 import sys
 import unittest
 
-
 sys.path.insert(0, "../..")
 
 import torch
@@ -68,18 +67,9 @@ class TestAutoRoudAsym(unittest.TestCase):
         model_name = self.model_name
         model = AutoModelForCausalLM.from_pretrained(model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        for format  in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
+        for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
             bits, group_size, sym = 4, 128, False
-            ar = AutoRound(
-                model,
-                tokenizer,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=0,
-                seqlen=2,
-                nsamples=1
-            )
+            ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1)
             # TODO when ark is ready, uncomment the following lines to do inference test
             ar.quantize_and_save(format=format, output_dir=self.save_folder)
 
