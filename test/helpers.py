@@ -20,6 +20,18 @@ if not os.path.exists(gptj_name_or_path):
     gptj_name_or_path = "hf-internal-testing/tiny-random-GPTJForCausalLM"
 
 
+def get_model_path(model_name: str) -> str:
+    ut_path = f"/tf_dataset/auto_round/models/{model_name}"
+    local_path = f"/models/{model_name.split('/')[-1]}"
+
+    if os.path.exists(ut_path):
+        return ut_path
+    elif os.path.exists(local_path):
+        return local_path
+    else:
+        return model_name
+
+
 # HPU mode checking
 def is_pytest_mode_compile():
     return pytest.mode == "compile"
