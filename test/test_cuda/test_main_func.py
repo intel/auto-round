@@ -1,10 +1,8 @@
 import copy
 import re
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from lm_eval.utils import make_table  # pylint: disable=E0401
@@ -26,14 +24,14 @@ def get_accuracy(data):
         return 0.0
 
 
-class TestMainFunc(unittest.TestCase):
+class TestMainFunc:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
         self.tasks = "lambada_openai"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -216,7 +214,3 @@ class TestMainFunc(unittest.TestCase):
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

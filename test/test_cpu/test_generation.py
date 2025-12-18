@@ -1,39 +1,27 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRoundFormatGeneration(unittest.TestCase):
+class TestAutoRoundFormatGeneration:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
         self.save_folder = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_4bits_sym(self):
+    def test_4bits_sym(self, dataloader):
         bits = 4
         group_size = 128
         sym = True
@@ -45,7 +33,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_folder
 
@@ -72,7 +60,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         print(res)
         assert "!!!" not in res
 
-    def test_autoround_sym(self):
+    def test_autoround_sym(self, dataloader):
         for bits in [4]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -85,7 +73,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
                 sym=sym,
                 iters=2,
                 seqlen=2,
-                dataset=self.llm_dataloader,
+                dataset=dataloader,
             )
             quantized_model_path = "./saved"
 

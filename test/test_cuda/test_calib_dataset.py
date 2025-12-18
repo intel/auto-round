@@ -1,20 +1,17 @@
+import json
 import os
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
-import json
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class TestLocalCalibDataset(unittest.TestCase):
+class TestLocalCalibDataset:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         json_data = [{"text": "awefdsfsddfd"}, {"text": "fdfdfsdfdfdfd"}, {"text": "dfdsfsdfdfdfdf"}]
         os.makedirs("./saved", exist_ok=True)
         self.json_file = "./saved/tmp.json"
@@ -40,7 +37,3 @@ class TestLocalCalibDataset(unittest.TestCase):
             self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset
         )
         autoround.quantize()
-
-
-if __name__ == "__main__":
-    unittest.main()

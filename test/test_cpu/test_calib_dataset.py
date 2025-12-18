@@ -1,29 +1,17 @@
+import json
 import os
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
-import json
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestLocalCalibDataset(unittest.TestCase):
+class TestLocalCalibDataset:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         json_data = [{"text": "awefdsfsddfd"}, {"text": "fdfdfsdfdfdfd"}, {"text": "dfdsfsdfdfdfdf"}]
         os.makedirs("./saved", exist_ok=True)
         self.json_file = "./saved/tmp.json"
@@ -130,10 +118,6 @@ class TestLocalCalibDataset(unittest.TestCase):
     #     autoround.quantize()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,9 +1,7 @@
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -11,15 +9,15 @@ from auto_round import AutoRound, AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
 
 
-class TestAlgExt(unittest.TestCase):
+class TestAlgExt:
 
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/models/opt-125m"
         self.save_folder = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -68,7 +66,3 @@ class TestAlgExt(unittest.TestCase):
                 model_name, scheme=scheme, iters=1, nsamples=1, enable_alg_ext=True, enable_torch_compile=True
             )
             ar.quantize()
-
-
-if __name__ == "__main__":
-    unittest.main()

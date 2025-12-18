@@ -1,48 +1,22 @@
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
 from auto_round.testing_utils import require_gptqmodel, require_itrex
 
+from ..helpers import model_infer
 
-class TestAutoRound(unittest.TestCase):
+
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/models/opt-125m"
         self.save_folder = "./saved"
 
-    def model_infer(self, model, tokenizer):
-        prompts = [
-            "Hello,my name is",
-            # "The president of the United States is",
-            # "The capital of France is",
-            # "The future of AI is",
-        ]
-
-        inputs = tokenizer(prompts, return_tensors="pt", padding=False, truncation=True)
-
-        outputs = model.generate(
-            input_ids=inputs["input_ids"].to(model.device),
-            attention_mask=inputs["attention_mask"].to(model.device),
-            do_sample=False,  ## change this to follow official usage
-            max_new_tokens=5,
-        )
-        generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)]
-
-        decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-
-        for i, prompt in enumerate(prompts):
-            print(f"Prompt: {prompt}")
-            print(f"Generated: {decoded_outputs[i]}")
-            print("-" * 50)
-
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
     ## require torch 2.6
@@ -58,7 +32,7 @@ class TestAutoRound(unittest.TestCase):
             quantization_config=quantization_config,
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
 
     @require_itrex
     def test_load_gptq_model_2bits(self):
@@ -72,7 +46,7 @@ class TestAutoRound(unittest.TestCase):
             quantization_config=quantization_config,
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
 
     @require_itrex
     def test_mixed_precision(self):

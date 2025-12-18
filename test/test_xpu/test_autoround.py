@@ -1,9 +1,7 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -11,23 +9,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound, AutoRoundConfig
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(3):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRoundXPU(unittest.TestCase):
+class TestAutoRoundXPU:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
 
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
         pass
@@ -48,7 +36,7 @@ class TestAutoRoundXPU(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path)
@@ -80,7 +68,7 @@ class TestAutoRoundXPU(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
@@ -97,7 +85,3 @@ class TestAutoRoundXPU(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert "!!!" not in res
-
-
-if __name__ == "__main__":
-    unittest.main()

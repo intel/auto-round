@@ -1,14 +1,14 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+
+from ..helper import gptj_name_or_path
 
 
 class SimpleDataLoader:
@@ -20,35 +20,23 @@ class SimpleDataLoader:
             yield torch.randn([1, 30])
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoroundExport(unittest.TestCase):
+class TestAutoroundExport:
     approach = "weight_only"
 
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.gptj = transformers.AutoModelForCausalLM.from_pretrained(
-            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
+            gptj_name_or_path,
             torchscript=True,
         )
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM", trust_remote_code=True
-        )
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(gptj_name_or_path, trust_remote_code=True)
         self.gptj_no_jit = transformers.AutoModelForCausalLM.from_pretrained(
-            "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM",
+            gptj_name_or_path,
         )
-        self.llm_dataloader = LLMDataLoader()
         self.lm_input = torch.ones([1, 10], dtype=torch.long)
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -87,10 +75,10 @@ class TestAutoroundExport(unittest.TestCase):
         config = QuantConfig.from_pretrained("/tf_dataset/auto_round/models/TheBloke/Llama-2-7B-Chat-GPTQ")
         config.save_pretrained("quantization_config_dir")
         loaded_config = QuantConfig.from_pretrained("quantization_config_dir")
-        self.assertEqual(config.group_size, loaded_config.group_size)
-        self.assertEqual(config.desc_act, loaded_config.desc_act)
-        self.assertEqual(config.bits, loaded_config.bits)
-        self.assertEqual(config.sym, loaded_config.sym)
+        assert config.group_size == loaded_config.group_size
+        assert config.desc_act == loaded_config.desc_act
+        assert config.bits == loaded_config.bits
+        assert config.sym == loaded_config.sym
 
     def test_xpu_export(self):
         model = copy.deepcopy(self.gptj)
@@ -111,7 +99,3 @@ class TestAutoroundExport(unittest.TestCase):
         self.assertTrue(torch.all(out2[0] == out3[0]))
         self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-3)))
         self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-5)))
-
-
-if __name__ == "__main__":
-    unittest.main()

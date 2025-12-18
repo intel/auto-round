@@ -1,40 +1,29 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
-from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_gptqmodel
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import model_infer
 
 
-class TestQuantizationConv1d(unittest.TestCase):
+class TestQuantizationConv1d:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "MBZUAI/LaMini-GPT-124M"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gptqmodel
-    def test_quant(self):
+    def test_quant(self, dataloader):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         from auto_round import AutoRoundConfig
@@ -47,7 +36,7 @@ class TestQuantizationConv1d(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
 
         autoround.quantize()
@@ -55,7 +44,3 @@ class TestQuantizationConv1d(unittest.TestCase):
 
         model = AutoModelForCausalLM.from_pretrained("./saved", device_map="cuda", trust_remote_code=True)
         model_infer(model, self.tokenizer)
-
-
-if __name__ == "__main__":
-    unittest.main()

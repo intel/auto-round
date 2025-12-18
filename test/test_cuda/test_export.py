@@ -1,9 +1,7 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
@@ -12,29 +10,19 @@ from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "facebook/opt-125m"
         self.save_dir = "./saved"
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
-    def test_autogptq_format(self):
+    def test_autogptq_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
@@ -46,7 +34,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = "./saved"
@@ -65,7 +53,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_optimum
-    def test_autogptq_format_fp_layers(self):
+    def test_autogptq_format_fp_layers(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         layer_config = {}
@@ -82,7 +70,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         autoround.quantize()
@@ -102,7 +90,7 @@ class TestAutoRound(unittest.TestCase):
         #     "there there there there there there")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autogptq_format_qsave_fp_layers(self):
+    def test_autogptq_format_qsave_fp_layers(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         layer_config = {}
@@ -119,7 +107,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = "./saved"
@@ -153,7 +141,7 @@ class TestAutoRound(unittest.TestCase):
         ##print(res)
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_format(self):
+    def test_autoround_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -165,7 +153,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = "./saved"
@@ -186,7 +174,7 @@ class TestAutoRound(unittest.TestCase):
 
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_autoawq_format(self):
+    def test_autoawq_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
@@ -198,7 +186,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = "./saved"
@@ -220,7 +208,7 @@ class TestAutoRound(unittest.TestCase):
     @require_optimum
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_autoawq_format_fp_qsave_layers(self):
+    def test_autoawq_format_fp_qsave_layers(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 16},
@@ -236,7 +224,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = "./saved/test_export"
@@ -261,7 +249,7 @@ class TestAutoRound(unittest.TestCase):
 
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_3bit_asym_torch_format(self):
+    def test_autoround_3bit_asym_torch_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 3, 128, False
@@ -273,7 +261,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = "./saved"
@@ -290,7 +278,7 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_3bit_sym_torch_format(self):
+    def test_autoround_3bit_sym_torch_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 3, 128, True
@@ -302,7 +290,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = "./saved"
@@ -322,7 +310,7 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_awq_lmhead_export(self):
+    def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = "/models/phi-2"
         layer_config = {
@@ -336,7 +324,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             layer_config=layer_config,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
@@ -354,7 +342,7 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_gptq_lmhead_export(self):
+    def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         model_name = "/models/phi-2"
         layer_config = {
@@ -368,7 +356,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             layer_config=layer_config,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
@@ -384,7 +372,3 @@ class TestAutoRound(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

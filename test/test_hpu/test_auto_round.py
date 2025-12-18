@@ -1,8 +1,9 @@
 import pytest
 import torch
-from _test_helpers import is_pytest_mode_compile, is_pytest_mode_lazy
 
 from auto_round.utils import is_hpex_available
+
+from ..helpers import is_pytest_mode_compile, is_pytest_mode_lazy
 
 
 def run_opt_125m_on_hpu():

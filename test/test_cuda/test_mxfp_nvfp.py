@@ -1,9 +1,7 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -12,28 +10,18 @@ from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "facebook/opt-125m"
         self.save_dir = "./saved"
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_fp8input_mxfp4_llmcompressor_format(self):
+    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader):
         model_name = "/models/Qwen3-0.6B-FP8"
         scheme = "mxfp4"
         ar = AutoRound(
@@ -41,7 +29,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             scheme=scheme,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
         tmp_layer = compressed_model.model.layers[3].self_attn.q_proj
@@ -59,14 +47,14 @@ class TestAutoRound(unittest.TestCase):
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_nvfp4_llmcompressor_format(self):
+    def test_nvfp4_llmcompressor_format(self, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
             self.model_name,
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
@@ -110,7 +98,7 @@ class TestAutoRound(unittest.TestCase):
         #     if "France" in prompt:
         #         assert "Paris" in generated_text
 
-    def test_nvfp4_moe_actmax_rtn(self):
+    def test_nvfp4_moe_actmax_rtn(self, dataloader):
         model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -119,13 +107,13 @@ class TestAutoRound(unittest.TestCase):
             iters=0,
             seqlen=2,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-    def test_nvfp4_moe_actmax_ar(self):
+    def test_nvfp4_moe_actmax_ar(self, dataloader):
         model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -134,13 +122,13 @@ class TestAutoRound(unittest.TestCase):
             iters=1,
             seqlen=2,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-    def test_qwen_moe_quant_infer(self):
+    def test_qwen_moe_quant_infer(self, dataloader):
         model_name = "/models/Qwen1.5-MoE-A2.7B"
         layer_config = {
             "layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
@@ -152,7 +140,7 @@ class TestAutoRound(unittest.TestCase):
             iters=1,
             seqlen=2,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -165,7 +153,3 @@ class TestAutoRound(unittest.TestCase):
         print(result["results"]["piqa"]["acc,none"])
         self.assertGreater(result["results"]["piqa"]["acc,none"], 0.7)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

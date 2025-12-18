@@ -1,9 +1,23 @@
 import os
+import sys
 from typing import Mapping
 
 import pytest
 
+from .fixtures import (
+    dataloader,
+    model,
+    tiny_opt_model,
+    tiny_opt_model_path,
+    tokenizer,
+)
+from .helpers import model_infer
 
+# Easy debugging without installing auto-round.
+sys.path.insert(0, "..")
+
+
+### HPU related configuration, usage: `pytest --mode=compile/lazy``
 def pytest_addoption(parser):
     parser.addoption(
         "--mode",

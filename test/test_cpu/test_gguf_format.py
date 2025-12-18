@@ -1,36 +1,23 @@
 import os
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class LLMDataLoader:
-
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestGGUF(unittest.TestCase):
+class TestGGUF:
 
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -241,7 +228,7 @@ class TestGGUF(unittest.TestCase):
         # print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         # shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_q4_k_m(self):
+    def test_q4_k_m(self, dataloader):
         model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -265,21 +252,21 @@ class TestGGUF(unittest.TestCase):
             iters=0,
             seqlen=1,
             nsamples=8,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             disable_opt_rtn=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
-        self.assertEqual(autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"], 16)
-        self.assertEqual(autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"], "int_sym_dq")
-        self.assertEqual(autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"], "int_asym_dq")
-        self.assertEqual(autoround.model.model.layers[0].self_attn.v_proj.bits, 6)
-        self.assertEqual(autoround.model.model.layers[12].self_attn.v_proj.bits, 4)
-        self.assertEqual(autoround.model.model.embed_tokens.bits, 6)
-        self.assertEqual(autoround.model.model.embed_tokens.group_size, 16)
-        self.assertEqual(autoround.model.model.layers[12].mlp.gate_proj.bits, 3)
-        self.assertEqual(autoround.model.model.layers[10].mlp.gate_proj.bits, 8)
-        self.assertEqual(autoround.layer_config["model.layers.10.mlp.gate_proj"]["mostly"], "gguf:q8_0")
+        assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"] == 16
+        assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"] == "int_sym_dq"
+        assert autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"] == "int_asym_dq"
+        assert autoround.model.model.layers[0].self_attn.v_proj.bits == 6
+        assert autoround.model.model.layers[12].self_attn.v_proj.bits == 4
+        assert autoround.model.model.embed_tokens.bits == 6
+        assert autoround.model.model.embed_tokens.group_size == 16
+        assert autoround.model.model.layers[12].mlp.gate_proj.bits == 3
+        assert autoround.model.model.layers[10].mlp.gate_proj.bits == 8
+        assert autoround.layer_config["model.layers.10.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
         shutil.rmtree("./saved", ignore_errors=True)
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -413,7 +400,3 @@ class TestGGUF(unittest.TestCase):
             ar.layer_config["model.embed_tokens"]["bits"] == 6
             and ar.layer_config["model.embed_tokens"]["super_bits"] == 8
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

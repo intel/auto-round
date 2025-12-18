@@ -14,8 +14,8 @@
 import gc
 import os
 import tempfile
-import unittest
 
+import pytest
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from transformers.testing_utils import (
     require_accelerate,
@@ -34,7 +34,7 @@ if is_torch_available():
 # @slow
 @require_torch_gpu
 @require_accelerate
-class AutoRoundTest(unittest.TestCase):
+class AutoRoundTest:
     model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
     input_text = "There is a girl who likes adventure,"
     EXPECTED_OUTPUTS = set()
@@ -53,7 +53,7 @@ class AutoRoundTest(unittest.TestCase):
 
     # called only once for all test in this class
     @classmethod
-    def setUpClass(cls):
+    def setup_class(cls):
         """
         Setup quantized model
         """
@@ -203,7 +203,3 @@ class AutoRoundTest(unittest.TestCase):
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
-
-
-if __name__ == "__main__":
-    unittest.main()

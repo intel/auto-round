@@ -1,10 +1,9 @@
 import copy
 import re
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
+
 from auto_round import AutoRound, AutoRoundConfig, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.eval.evaluation import simple_evaluate
@@ -12,14 +11,14 @@ from auto_round.testing_utils import multi_card
 from auto_round.utils import get_module
 
 
-class TestAutoScheme(unittest.TestCase):
+class TestAutoScheme:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
         self.tasks = "lambada_openai"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -79,7 +78,7 @@ class TestAutoScheme(unittest.TestCase):
         from auto_round.auto_scheme.utils import parse_shared_layers
 
         res = parse_shared_layers(model, shared_layers)
-        self.assertEqual(len(res), 24)
+        assert len(res) == 24
         assert [
             "model.decoder.layers.2.self_attn.out_proj",
             "model.decoder.layers.2.self_attn.q_proj",
@@ -101,7 +100,7 @@ class TestAutoScheme(unittest.TestCase):
                 else:
                     bits.append(module.bits)
             bits = set(bits)
-            self.assertEqual(len(bits), 1)
+            assert len(bits) == 1
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
@@ -187,7 +186,7 @@ class TestAutoScheme(unittest.TestCase):
         model, layer_config = ar.quantize()
         for n, m in model.named_modules():
             if hasattr(m, "group_size"):
-                self.assertEqual(m.group_size, 32)
+                assert m.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -199,13 +198,13 @@ class TestAutoScheme(unittest.TestCase):
         user_layer_config = {"model.decoder.layers.10.fc1": {"bits": 8, "group_size": 32, "sym": False}}
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()
-        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["bits"], 8)
-        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["sym"], False)
-        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["group_size"], 32)
+        assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
+        assert layer_config["model.decoder.layers.10.fc1"]["sym"] == False
+        assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
         layer = get_module(model, "model.decoder.layers.10.fc1")
-        self.assertEqual(layer.bits, 8)
-        self.assertEqual(layer.sym, False)
-        self.assertEqual(layer.group_size, 32)
+        assert layer.bits == 8
+        assert layer.sym == False
+        assert layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -216,13 +215,13 @@ class TestAutoScheme(unittest.TestCase):
         user_layer_config = {"model.decoder.layers.10.fc1": {"bits": 8, "group_size": 32, "sym": False}}
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()
-        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["bits"], 8)
-        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["sym"], False)
-        self.assertEqual(layer_config["model.decoder.layers.10.fc1"]["group_size"], 32)
+        assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
+        assert layer_config["model.decoder.layers.10.fc1"]["sym"] == False
+        assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
         layer = get_module(model, "model.decoder.layers.10.fc1")
-        self.assertEqual(layer.orig_layer.bits, 8)
-        self.assertEqual(layer.orig_layer.sym, False)
-        self.assertEqual(layer.orig_layer.group_size, 32)
+        assert layer.orig_layer.bits == 8
+        assert layer.orig_layer.sym == False
+        assert layer.orig_layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -265,7 +264,3 @@ class TestAutoScheme(unittest.TestCase):
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.10)
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

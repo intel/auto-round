@@ -1,10 +1,8 @@
 import os
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 import requests
 from PIL import Image
 
@@ -12,15 +10,15 @@ from auto_round import AutoRoundConfig  # # must import for auto-round format
 from auto_round.testing_utils import require_gptqmodel, require_package_version_ut, require_vlm_env
 
 
-class TestSupportVLMS(unittest.TestCase):
+class TestSupportVLMS:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = os.path.join(os.path.dirname(__file__), "ut_saved")
         self.python_path = sys.executable
         self.device = 0
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gptqmodel
@@ -192,7 +190,3 @@ class TestSupportVLMS(unittest.TestCase):
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
         self.assertFalse(res > 0 or res == -1, msg="granite-vision-3.2-2b tuning fail")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,25 +1,16 @@
 import os
 import shutil
-import sys
-import unittest
+
+import pytest
 
 sys.path.insert(0, ".")
-sys.path.insert(0, "../..")
 import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-
-class LLMDataLoader:
-    def __init__(self, input_size=10):
-        self.batch_size = 1
-        self.input_size = input_size
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, self.input_size], dtype=torch.long)
+from ..helper import lamini_name_or_path
 
 
 # ================= simple multimodal model =================
@@ -116,24 +107,22 @@ class NestedMoEModel(nn.Module):
         return output
 
 
-class TestQuantizationBlocks(unittest.TestCase):
+class TestQuantizationBlocks:
     @classmethod
-    def setUpClass(self):
-        self.model_name = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
+    def setup_class(self):
+        self.model_name = lamini_name_or_path
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_moe_quant(self):
+    def test_moe_quant(self, dataloader):
         input_size = 10
         hidden_size = 10
         num_groups = 2
         experts_per_group = 2
-        self.llm_dataloader = LLMDataLoader(input_size)
         self.model = NestedMoEModel(input_size, hidden_size, num_groups, experts_per_group)
         from auto_round.utils import get_block_names
 
@@ -159,7 +148,7 @@ class TestQuantizationBlocks(unittest.TestCase):
         assert block_names_wo_vision == llm_block_names
         assert len(block_names_wo_vision) != (block_names_with_vision)
 
-    def test_block_name_quant(self):
+    def test_block_name_quant(self, dataloader):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         from auto_round.utils import get_block_names
 
@@ -174,7 +163,7 @@ class TestQuantizationBlocks(unittest.TestCase):
             iters=2,
             seqlen=2,
             batch_size=batch_size,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             to_quant_block_names=llm_block_names,
         )
         autoround.quantize()
@@ -217,7 +206,3 @@ class TestQuantizationBlocks(unittest.TestCase):
         self.assertTrue(block_name == block_name_2)
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue("model.layers.23" == block_name_2[0][-1])
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,11 +1,9 @@
 import os
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 
 
-class TestScript(unittest.TestCase):
+class TestScript:
     def test_default(self):
         os.system(
             """
@@ -15,7 +13,3 @@ class TestScript(unittest.TestCase):
                     --deployment_device fake
                     --output_dir ./tmp_script_test"""
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

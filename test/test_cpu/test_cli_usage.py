@@ -1,18 +1,17 @@
 import os
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 
 
-class TestAutoRoundCmd(unittest.TestCase):
+class TestAutoRoundCmd:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         pass
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
         shutil.rmtree("../../saved", ignore_errors=True)
@@ -68,7 +67,3 @@ class TestAutoRoundCmd(unittest.TestCase):
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
-
-
-if __name__ == "__main__":
-    unittest.main()

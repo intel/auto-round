@@ -1,9 +1,7 @@
 import os
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -12,13 +10,13 @@ from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -128,7 +126,3 @@ class TestAutoRound(unittest.TestCase):
                 ar = AutoRound(model=model_name, iters=iters, scheme=scheme)
                 ar.quantize_and_save(output_dir=self.save_dir)
                 shutil.rmtree(self.save_dir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

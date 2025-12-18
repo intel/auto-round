@@ -1,10 +1,6 @@
-import sys
-import unittest
-
-sys.path.insert(0, "../..")
-
 import shutil
 
+import pytest
 from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
 from auto_round import AutoRoundMLLM
@@ -27,18 +23,18 @@ class FakeDataLoader:
             yield self.data
 
 
-class TestAutoRoundMLLM(unittest.TestCase):
+class TestAutoRoundMLLM:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
         self.dataset = FakeDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-        return super().tearDownClass()
+        return super().teardown_class()
 
     def test_tune(self):
         bits, group_size = 4, 128
@@ -105,11 +101,11 @@ class TestAutoRoundMLLM(unittest.TestCase):
         dataset = MLLM_DATASET["liuhaotian/llava"](
             template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=32, nsamples=32
         )
-        self.assertEqual(len(dataset.questions), 32)
+        assert len(dataset.questions) == 32
         dataset = MLLM_DATASET["liuhaotian/llava"](
             template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=2048, nsamples=512
         )
-        self.assertEqual(len(dataset.questions), 512)
+        assert len(dataset.questions) == 512
 
     def test_diff_dataset(self):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
@@ -265,7 +261,3 @@ class TestAutoRoundMLLM(unittest.TestCase):
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         print(output_text)
-
-
-if __name__ == "__main__":
-    unittest.main()

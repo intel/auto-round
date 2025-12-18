@@ -1,6 +1,27 @@
+import os
+
 import pytest
 
 
+# Automatic choose local path or model name.
+opt_name_or_path = "/tf_dataset/auto_round/models/facebook/opt-125m"
+if not os.path.exists(opt_name_or_path):
+    opt_name_or_path = "facebook/opt-125m"
+
+qwen_name_or_path = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+if not os.path.exists(qwen_name_or_path):
+    qwen_name_or_path = "Qwen/Qwen3-0.6B"
+
+lamini_name_or_path = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
+if not os.path.exists(lamini_name_or_path):
+    lamini_name_or_path = "MBZUAI/LaMini-GPT-124M"
+
+gptj_name_or_path = "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM"
+if not os.path.exists(gptj_name_or_path):
+    gptj_name_or_path = "hf-internal-testing/tiny-random-GPTJForCausalLM"
+
+
+# HPU mode checking
 def is_pytest_mode_compile():
     return pytest.mode == "compile"
 
@@ -9,6 +30,7 @@ def is_pytest_mode_lazy():
     return pytest.mode == "lazy"
 
 
+# General model inference code
 def model_infer(model, tokenizer, apply_chat_template=False):
     prompts = [
         "Hello,my name is",

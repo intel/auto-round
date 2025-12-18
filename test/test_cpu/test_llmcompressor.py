@@ -1,25 +1,22 @@
 import os
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class TestLLMC(unittest.TestCase):
+class TestLLMC:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "/tf_dataset/auto_round/models/stas/tiny-random-llama-2"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -60,9 +57,9 @@ class TestLLMC(unittest.TestCase):
 
         config = json.load(open("./saved/config.json"))
         self.assertIn("group_0", config["quantization_config"]["config_groups"])
-        self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"], 8)
-        self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"], "channel")
-        self.assertEqual(config["quantization_config"]["quant_method"], "compressed-tensors")
+        assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
+        assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
+        assert config["quantization_config"]["quant_method"] == "compressed-tensors"
 
     def test_autoround_llmcompressor_fp8(self):
         ## quantize the model
@@ -81,13 +78,9 @@ class TestLLMC(unittest.TestCase):
 
         config = json.load(open("./saved/config.json"))
         self.assertIn("group_0", config["quantization_config"]["config_groups"])
-        self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"], 8)
-        self.assertEqual(config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"], "tensor")
+        assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
+        assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"
         self.assertEqual(
             config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["strategy"], "tensor"
         )
-        self.assertEqual(config["quantization_config"]["quant_method"], "compressed-tensors")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert config["quantization_config"]["quant_method"] == "compressed-tensors"

@@ -1,9 +1,8 @@
 import os
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -12,23 +11,14 @@ from auto_round import AutoRound
 from auto_round.testing_utils import require_gguf
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gguf
-    def test_gguf_format(self):
+    def test_gguf_format(self, dataloader):
         model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
@@ -39,7 +29,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             nsamples=2,
-            dataset=LLMDataLoader(),
+            dataset=dataloader,
         )
         autoround.quantize()
         quantized_model_path = "./saved"
@@ -71,7 +61,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_gguf
-    def test_q2_k_export(self):
+    def test_q2_k_export(self, dataloader):
         bits, group_size, sym = 2, 16, False
         model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         autoround = AutoRound(
@@ -81,7 +71,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=1,
-            dataset=LLMDataLoader(),
+            dataset=dataloader,
             data_type="int_asym_dq",
         )
         autoround.quantize()
@@ -252,7 +242,3 @@ class TestAutoRound(unittest.TestCase):
     #     file_size = os.path.getsize(os.path.join(quantized_model_path, "mmproj-model.gguf")) / 1024**2
     #     self.assertAlmostEqual(file_size, 3326.18, delta=5.0)
     #     shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

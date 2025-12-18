@@ -1,9 +1,7 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -18,69 +16,24 @@ from auto_round.testing_utils import (
     require_package_version_ut,
 )
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import model_infer
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.model_name = "facebook/opt-125m"
 
-        self.llm_dataloader = LLMDataLoader()
         self.save_folder = "./saved"
 
-    def model_infer(self, model, tokenizer):
-        prompts = [
-            "Hello,my name is",
-            # "The president of the United States is",
-            # "The capital of France is",
-            # "The future of AI is",
-        ]
-
-        ##texts = []
-        # for prompt in prompts:
-        #     messages = [
-        #         {"role": "user", "content": prompt}
-        #     ]
-        #     text = tokenizer.apply_chat_template(
-        #         messages,
-        #         tokenize=False,
-        #         add_generation_prompt=True
-        #     )
-        #     texts.append(text)
-
-        inputs = tokenizer(prompts, return_tensors="pt", padding=False, truncation=True)
-
-        outputs = model.generate(
-            input_ids=inputs["input_ids"].to(model.device),
-            attention_mask=inputs["attention_mask"].to(model.device),
-            do_sample=False,  ## change this to follow official usage
-            max_new_tokens=5,
-        )
-        generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)]
-
-        decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-
-        for i, prompt in enumerate(prompts):
-            print(f"Prompt: {prompt}")
-            print(f"Generated: {decoded_outputs[i]}")
-            print("-" * 50)
-
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_greater_than_050
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_autoround_asym(self):
+    def test_autoround_asym(self, dataloader):
         for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -93,7 +46,7 @@ class TestAutoRound(unittest.TestCase):
                 sym=sym,
                 iters=2,
                 seqlen=2,
-                dataset=self.llm_dataloader,
+                dataset=dataloader,
             )
             quantized_model_path = self.save_folder
 
@@ -132,7 +85,7 @@ class TestAutoRound(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.32)
@@ -161,7 +114,7 @@ class TestAutoRound(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.18)
@@ -172,7 +125,7 @@ class TestAutoRound(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @require_greater_than_050
@@ -184,12 +137,12 @@ class TestAutoRound(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
 
         torch.cuda.empty_cache()
 
     @require_ipex
-    def test_autoround_gptq_sym_format(self):
+    def test_autoround_gptq_sym_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -201,7 +154,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
 
@@ -244,7 +197,7 @@ class TestAutoRound(unittest.TestCase):
     @require_awq
     @require_ipex
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_autoround_awq_sym_format(self):
+    def test_autoround_awq_sym_format(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -256,7 +209,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
 
@@ -283,7 +236,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_greater_than_050
-    def test_autoround_sym(self):
+    def test_autoround_sym(self, dataloader):
         for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -296,7 +249,7 @@ class TestAutoRound(unittest.TestCase):
                 sym=sym,
                 iters=2,
                 seqlen=2,
-                dataset=self.llm_dataloader,
+                dataset=dataloader,
             )
             quantized_model_path = "./saved"
 
@@ -325,8 +278,4 @@ class TestAutoRound(unittest.TestCase):
             quantization_config=quantization_config,
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model_infer(model, tokenizer)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        model_infer(model, tokenizer)

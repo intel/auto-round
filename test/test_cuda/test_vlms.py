@@ -2,26 +2,22 @@ import copy
 import os
 import re
 import shutil
-import sys
-import unittest
 
+import pytest
 import requests
-
-sys.path.insert(0, "../..")
-
 from PIL import Image
 
 from auto_round import AutoRoundConfig
 from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -155,7 +151,3 @@ class TestAutoRound(unittest.TestCase):
             self.assertFalse(is_mllm_model(model_name))
             model, _ = llm_load_model(model_name)
             self.assertFalse(is_mllm_model(model))
-
-
-if __name__ == "__main__":
-    unittest.main()
