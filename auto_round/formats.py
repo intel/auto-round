@@ -604,12 +604,9 @@ class AutoRoundFormat(OutputFormat):
             if ar.sym and "int" in ar.data_type:
                 self.backend = AutoGPTQFormat("auto_gptq", ar)
             elif ar.bits == 4 and not ar.sym and "int" in ar.data_type:
-                if ar.layer_config is None:
-                    enable_awq = True
-                else:
-                    enable_awq = all(
-                        config["bits"] == ar.bits or config["bits"] >= 16 for config in ar.layer_config.values()
-                    )
+                enable_awq = all(
+                    config["bits"] == ar.bits or config["bits"] >= 16 for config in ar.layer_config.values()
+                )
                 if enable_awq:
                     self.backend = AutoAWQFormat("auto_awq", ar)
             elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
