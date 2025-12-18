@@ -2,7 +2,6 @@ import os
 
 import pytest
 
-
 # Automatic choose local path or model name.
 opt_name_or_path = "/tf_dataset/auto_round/models/facebook/opt-125m"
 if not os.path.exists(opt_name_or_path):
