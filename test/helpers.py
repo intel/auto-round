@@ -1,25 +1,10 @@
 import os
-
 import pytest
+import torch
+import transformers
+
 
 # Automatic choose local path or model name.
-opt_name_or_path = "/tf_dataset/auto_round/models/facebook/opt-125m"
-if not os.path.exists(opt_name_or_path):
-    opt_name_or_path = "facebook/opt-125m"
-
-qwen_name_or_path = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
-if not os.path.exists(qwen_name_or_path):
-    qwen_name_or_path = "Qwen/Qwen3-0.6B"
-
-lamini_name_or_path = "/tf_dataset/auto_round/models/MBZUAI/LaMini-GPT-124M"
-if not os.path.exists(lamini_name_or_path):
-    lamini_name_or_path = "MBZUAI/LaMini-GPT-124M"
-
-gptj_name_or_path = "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM"
-if not os.path.exists(gptj_name_or_path):
-    gptj_name_or_path = "hf-internal-testing/tiny-random-GPTJForCausalLM"
-
-
 def get_model_path(model_name: str) -> str:
     ut_path = f"/tf_dataset/auto_round/models/{model_name}"
     local_path = f"/models/{model_name.split('/')[-1]}"
@@ -30,6 +15,32 @@ def get_model_path(model_name: str) -> str:
         return local_path
     else:
         return model_name
+
+opt_name_or_path = get_model_path("facebook/opt-125m")
+qwen_name_or_path = get_model_path("Qwen/Qwen3-0.6B")
+lamini_name_or_path = get_model_path("MBZUAI/LaMini-GPT-124M")
+gptj_name_or_path = get_model_path("hf-internal-testing/tiny-random-GPTJForCausalLM")
+
+
+# Slice model into tiny model for speedup
+def get_tiny_model(model_name_or_path, num_layers=3):
+    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, dtype="auto", trust_remote_code=True)
+
+    if hasattr(model.config, "num_hidden_layers"):
+        model.config.num_hidden_layers = num_layers
+    
+    def slice_layers(module):
+        for name, child in module.named_children():
+            if isinstance(child, torch.nn.ModuleList) and len(child) > num_layers:
+                new_layers = torch.nn.ModuleList(child[:num_layers])
+                setattr(module, name, new_layers)
+                return True
+            if slice_layers(child):
+                return True
+        return False
+
+    slice_layers(model)
+    return model
 
 
 # HPU mode checking
