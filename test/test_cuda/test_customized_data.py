@@ -7,24 +7,9 @@ import sys
 import unittest
 
 sys.path.insert(0, "../..")
-import torch
-import transformers
-from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
-from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.testing_utils import require_autogptq, require_greater_than_050, require_greater_than_051
-
-
-def get_accuracy(data):
-    match = re.search(r"\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|", data)
-
-    if match:
-        accuracy = float(match.group(1))
-        return accuracy
-    else:
-        return 0.0
 
 
 class TestCustomizedData(unittest.TestCase):
@@ -62,7 +47,6 @@ class TestCustomizedData(unittest.TestCase):
             max_length=9,
             return_tensors="pt"
         ).to(model.device)
-        from auto_round import AutoRound
         inputs = inputs["input_ids"]
         inputs = inputs.split(dim=0, split_size=1)
         ar = AutoRound(model_name, dataset=inputs, seqlen=9)
