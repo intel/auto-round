@@ -200,7 +200,7 @@ class MLLMCompressor(BaseCompressor):
         self.image_processor = image_processor
         from transformers import PreTrainedModel
 
-        if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
+        if isinstance(model, PreTrainedModel) and model.config.model_type == "llava":
             template = "default"
         if hasattr(model, "name_or_path") and any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
             template = "mistral3_2"
