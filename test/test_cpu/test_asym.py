@@ -41,17 +41,8 @@ class TestAutoRoundAsym(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         for group_size in [32, 64, 128]:
             bits, sym = 4, False
-            ar = AutoRound(
-                model,
-                tokenizer,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=0,
-                seqlen=2,
-                nsamples=1
-            )
-            ar.quantize_and_save(format='auto_round', output_dir=self.save_folder)
+            ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1)
+            ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
 
             # TODO when ark is ready, uncomment the following lines to do inference test
 
@@ -71,17 +62,8 @@ class TestAutoRoundAsym(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         for bits in [2, 8]:
             group_size, sym = 128, False
-            ar = AutoRound(
-                model,
-                tokenizer,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=0,
-                seqlen=2,
-                nsamples=1
-            )
-            ar.quantize_and_save(format='auto_round', output_dir=self.save_folder)
+            ar = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1)
+            ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
 
             # TODO when ark is ready, uncomment the following lines to do inference test
 
