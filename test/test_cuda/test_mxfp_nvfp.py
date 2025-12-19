@@ -150,7 +150,7 @@ class TestAutoRound(unittest.TestCase):
             model_name,
             scheme=scheme,
             iters=1,
-            seqlen=2,
+            seqlen=3,
             nsamples=2,
             dataset=self.llm_dataloader,
             layer_config=layer_config,
