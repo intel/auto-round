@@ -39,7 +39,8 @@ class QuantLinearAWQ(nn.Module):
 
     def __init__(self, w_bit, group_size, in_features, out_features, bias, zero_point, dev):
         super().__init__()
-        assert ARK_INSTALLED, "Please install auto_round_kernel package."
+        if not ARK_INSTALLED:
+            raise ModuleNotFoundError("Please install auto_round_kernel package.")
 
         self.use_bf16 = ark.check_isa_supported("AMX")
 
@@ -55,8 +56,9 @@ class QuantLinearAWQ(nn.Module):
         ark.set_threads(torch.get_num_threads())
 
         # quick sanity check (make sure alignment)
-        assert self.in_features % self.group_size == 0
-        assert out_features % (32 // self.w_bit) == 0
+        if not (self.in_features % self.group_size == 0 and out_features % (32 // self.w_bit) == 0):
+            raise NotImplementedError("")
+            
         self.pack_num = 32 // self.w_bit
         self.register_buffer(
             "qzeros",
@@ -146,7 +148,6 @@ class QuantLinearAWQ(nn.Module):
 
     @torch.no_grad()
     def forward(self, x):
-        assert ARK_INSTALLED, "ARK kernels could not be loaded. "
         raw_input_dtype = x.dtype
         if x.device.type == "cpu":
             odt = torch.float32
@@ -206,7 +207,8 @@ class QuantLinear(nn.Module):
 
         if bits not in [2, 4, 8]:
             raise NotImplementedError("Only 2, 4,8 bits are supported for ARK.")
-        assert ARK_INSTALLED, "Please install auto_round_kernel."
+        if not ARK_INSTALLED:
+            raise ModuleNotFoundError("Please install auto_round_kernel.")
 
         self.infeatures = infeatures
         self.outfeatures = outfeatures
@@ -246,7 +248,8 @@ class QuantLinear(nn.Module):
         self.trainable = trainable
 
     def post_init(self):
-        assert self.qweight.device.type in ["cpu", "xpu"]
+        if self.qweight.device.type not in ["cpu", "xpu"]:
+            raise NotImplementedError("Only for CPU/XPU")
         # intweight: k x n, zeros: k / group_size x n
         intweight, zeros = unpack_to_8bit_signed(self.qweight, self.qzeros, self.bits, self.ZP_BIAS)
         if zeros is None:
@@ -258,8 +261,8 @@ class QuantLinear(nn.Module):
                 zeros = (zeros.to(torch.int32) - (2 ** (self.bits - 1))).to(torch.int8)
             else:
                 zeros -= 2 ** (self.bits - 1)
-        if self.qweight.device.type != "cpu":
-            assert not self.asym
+        if self.qweight.device.type != "cpu" and self.asym:
+            raise NotImplementedError()
         if not self.asym:
             intweight -= 2 ** (self.bits - 1)
         intweight = intweight.to(torch.uint8 if self.asym else torch.int8)
