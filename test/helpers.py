@@ -42,6 +42,8 @@ def get_tiny_model(model_name_or_path, num_layers=3):
         return False
 
     slice_layers(model)
+    if hasattr(model.config, "layer_types"):
+        model.config.layer_types = model.config.layer_types[:num_layers]
     return model
 
 

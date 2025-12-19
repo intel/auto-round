@@ -1,3 +1,4 @@
+import os
 import shutil
 
 import pytest
@@ -26,7 +27,8 @@ class DataLoader:
 @pytest.fixture(scope="session")
 def tiny_opt_model_path():
     model_name_or_path = opt_name_or_path
-    tiny_model_path = "./tmp_tiny_opt_model_path"
+    test_path = os.path.dirname(__file__)
+    tiny_model_path = os.path.join(test_path, "tmp_tiny_opt_model_path")
     model = get_tiny_model(model_name_or_path, num_layers=3)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     model.save_pretrained(tiny_model_path)
@@ -39,7 +41,8 @@ def tiny_opt_model_path():
 @pytest.fixture(scope="session")
 def tiny_qwen_model_path():
     model_name_or_path = qwen_name_or_path
-    tiny_model_path = "./tmp_tiny_qwen_model_path"
+    test_path = os.path.dirname(__file__)
+    tiny_model_path = os.path.join(test_path, "tmp_tiny_qwen_model_path")
     model = get_tiny_model(model_name_or_path, num_layers=3)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     model.save_pretrained(tiny_model_path)
@@ -52,7 +55,8 @@ def tiny_qwen_model_path():
 @pytest.fixture(scope="session")
 def tiny_lamini_model_path():
     model_name_or_path = lamini_name_or_path
-    tiny_model_path = "./tmp_tiny_lamini_model_path"
+    test_path = os.path.dirname(__file__)
+    tiny_model_path = os.path.join(test_path, "tmp_tiny_lamini_model_path")
     model = get_tiny_model(model_name_or_path, num_layers=3)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     model.save_pretrained(tiny_model_path)
@@ -65,7 +69,8 @@ def tiny_lamini_model_path():
 @pytest.fixture(scope="session")
 def tiny_gptj_model_path():
     model_name_or_path = gptj_name_or_path
-    tiny_model_path = "./tmp_tiny_gptj_model_path"
+    test_path = os.path.dirname(__file__)
+    tiny_model_path = os.path.join(test_path, "tmp_tiny_gptj_model_path")
     model = get_tiny_model(model_name_or_path, num_layers=3)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     model.save_pretrained(tiny_model_path)
