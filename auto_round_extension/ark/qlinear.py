@@ -279,7 +279,7 @@ class QuantLinear(nn.Module):
             scales = self.scales.to(torch.float16).contiguous()
         else:
             self.sdt = "fp32"
-            self.cdt = "fp32"
+            self.cdt = "auto"
             scales = self.scales.float().contiguous()
         self.wdt = BITS_DTYPE_MAPPING[self.bits]
 
