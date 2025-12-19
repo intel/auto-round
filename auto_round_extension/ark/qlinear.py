@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 
 from auto_round.utils import convert_dtype_torch2str, logger
+from auto_round.export.export_to_awq.utils import unpack_awq, reverse_awq_order, dequantize_gemm
 
 try:
     import auto_round_kernel as ark
@@ -31,46 +32,6 @@ BITS_DTYPE_MAPPING = {
     4: "int4",
     8: "int8",
 }
-
-AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
-
-
-def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
-    shifts = torch.arange(0, 32, bits, device="cpu")
-
-    # unpacking columnwise
-    iweights = torch.bitwise_right_shift(qweight[:, :, None], shifts[None, None, :]).to(
-        torch.int8  # smallest dtype available
-    )
-    iweights = iweights.view(iweights.shape[0], -1)
-
-    # unpacking columnwise
-    if qzeros is not None:
-        izeros = torch.bitwise_right_shift(qzeros[:, :, None], shifts[None, None, :]).to(
-            torch.int8  # smallest dtype available
-        )
-        izeros = izeros.view(izeros.shape[0], -1)
-    else:
-        izeros = qzeros
-
-    return iweights, izeros
-
-
-def reverse_awq_order(iweights: torch.Tensor, izeros: torch.Tensor, bits: int):
-    reverse_order_tensor = torch.arange(
-        iweights.shape[-1],
-        dtype=torch.int32,
-        device="cpu",
-    )
-    reverse_order_tensor = reverse_order_tensor.view(-1, 32 // bits)
-    reverse_order_tensor = reverse_order_tensor[:, AWQ_REVERSE_ORDER]
-    reverse_order_tensor = reverse_order_tensor.view(-1)
-
-    if izeros is not None:
-        izeros = izeros[:, reverse_order_tensor]
-    iweights = iweights[:, reverse_order_tensor]
-    return iweights, izeros
-
 
 class QuantLinearAWQ(nn.Module):
     QUANT_TYPE = "ark_awq"
@@ -90,6 +51,7 @@ class QuantLinearAWQ(nn.Module):
         self.group_size = group_size if group_size != -1 else in_features
         self.zero_point = zero_point
         self.scale_dtype = torch.float32
+        ark.set_threads(torch.get_num_threads())
 
         # quick sanity check (make sure alignment)
         assert self.in_features % self.group_size == 0
@@ -99,7 +61,7 @@ class QuantLinearAWQ(nn.Module):
             "qzeros",
             torch.zeros(
                 (in_features // self.group_size, out_features // self.pack_num),
-                dtype=torch.int8,
+                dtype=torch.int32,
                 device=dev,
             ),
         )
@@ -126,27 +88,46 @@ class QuantLinearAWQ(nn.Module):
 
     def post_init(self):
         assert self.qweight.device.type == "cpu"
-
+        self.asym = self.qzeros.min() != self.qzeros.max()
         intweight, zeros = unpack_awq(self.qweight, self.qzeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
         intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
-        if self.zero_point:  ## asym has accuracy issue, have not root caused yet
-            intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-            zeros = torch.bitwise_and(zeros, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
+        intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1)
+        zeros = torch.bitwise_and(zeros, (2**self.w_bit) - 1)
+        
+        intweight = intweight - (2 ** (self.w_bit - 1)) # from uint8_t to int8_t
+        zeros = zeros - (2 ** (self.w_bit - 1)) # from uint8_t to int8_t
+            
+  
+        if self.qweight.device.type == "xpu":
+            self.sdt = "fp16"
+            self.cdt = "fp16"
+            scales = self.scales.to(torch.float16).contiguous()
         else:
-            ##symmetric, our default zp is 8
-            intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-        g_idx = torch.empty(0, dtype=torch.int32)
+            self.sdt = "fp32"
+            self.cdt = "auto"
+            scales = self.scales.float().contiguous()
+        self.wdt = BITS_DTYPE_MAPPING[self.w_bit]
         self.qweight = ark.repack_quantized_weight(
-            intweight,
-            self.scales.float(),
-            zeros,
-            g_idx,
-            BITS_DTYPE_MAPPING[self.w_bit],
-            convert_dtype_torch2str(self.scale_dtype),
-            convert_dtype_torch2str(self.scales.dtype),
-            self.zero_point,
+            intweight.contiguous(),
+            scales,
+            zeros.contiguous(),
+            torch.Tensor(),
+            # compute_dtype
+            self.cdt,
+            # weight_dtype
+            self.wdt,
+            # scale_dtype
+            self.sdt,
+            self.asym,
             self.group_size,
         )
+        if self.bias is not None:
+            if self.bias.device.type == "cpu":
+                self.bias = self.bias.to(torch.float32)
+            else:
+                self.bias = self.bias.to(torch.float16)
+        else:
+            self.bias = torch.Tensor()
 
     @classmethod
     def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None, has_zero_points=False):
@@ -167,31 +148,34 @@ class QuantLinearAWQ(nn.Module):
     @torch.no_grad()
     def forward(self, x):
         assert ARK_INSTALLED, "ARK kernels could not be loaded. "
+        raw_input_dtype = x.dtype
+        if x.device.type == "cpu":
+            odt = torch.float32
+            if raw_input_dtype != torch.float32:
+                x = x.to(torch.float32)
+        else:
+            odt = x.dtype
 
-        input_dtype = x.dtype
         out_shape = x.shape[:-1] + (self.out_features,)
         x = x.view(-1, x.shape[-1])  # convert xd to 2d
         out_2d_shape = x.shape[:-1] + (self.out_features,)
-
-        outputs = torch.zeros(out_2d_shape, dtype=input_dtype)
-        bias = (
-            self.bias
-            if self.bias is not None
-            else torch.empty(0, dtype=torch.bfloat16 if self.use_bf16 else torch.float32)
-        )
+        outputs = torch.empty(out_2d_shape, device=x.device, dtype=odt)
+        bias = self.bias if self.bias is not None else torch.empty(0, dtype=torch.float)
 
         ark.woq_linear(
             x,
             self.qweight,
             bias,
             outputs,
-            convert_dtype_torch2str(input_dtype),
-            BITS_DTYPE_MAPPING[self.w_bit],
-            convert_dtype_torch2str(self.scale_dtype),
-            True,
+            self.cdt,  # compute_dtype
+            self.wdt,  # weight_dtype
+            self.sdt,  # scale_dtype
+            self.asym,
+            self.group_size,
         )
-
-        return outputs.view(out_shape)
+        if x.device.type == "xpu":
+            outputs = outputs + bias
+        return outputs.to(raw_input_dtype).view(out_shape)
 
     def extra_repr(self) -> str:
         return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
