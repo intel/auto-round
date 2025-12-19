@@ -857,9 +857,12 @@ class BaseCompressor(object):
                 if self.sym and "int" in self.data_type:
                     format = "auto_round:auto_gptq"
                 elif self.bits == 4 and not self.sym and "int" in self.data_type:
-                    enable_awq = all(
-                        config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
-                    )
+                    if self.layer_config is None:
+                        enable_awq = True
+                    else:
+                        enable_awq = all(
+                            config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
+                        )
                     if enable_awq:
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):

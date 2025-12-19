@@ -4,7 +4,9 @@
 
 **Personal view by Wenhua, welcome to discuss**
 
-**Work in Progress** 
+**Performance is poor in most scenarios, so it is not recommended for use at this time.**
+
+
 <div align="left">
 Recent studies have found that tuning LayerNorm and bias through optimizer like Adam can lead to better results, especially for low-bit quantization such as 2-bit. However, I personally do not favor the use of Adam for this purpose, as detailed in the following section, and introduce an alternative way, detailed in the last section.
 
