@@ -395,9 +395,9 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     bias = layer.bias is not None
 
     # Special handling for AWQ layers
-    from auto_round_extension.qbits.qbits_awq import QuantLinear as QBitsAWQQuantLinear
+    from auto_round_extension.ark.qlinear import QuantLinearAWQ
 
-    if "awq" in layer_backend and isinstance(QuantLinear, QBitsAWQQuantLinear):
+    if "awq" in layer_backend and isinstance(QuantLinear, QuantLinearAWQ):
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
         )
@@ -474,7 +474,6 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     need_gptqmodel_init = False
     need_ipex_itrex_init = False
     used_gptq_exllamav2 = False
-
     # Determine which backends require post-init
     for backend in used_backends:
         if backend.startswith("auto_gptq"):
@@ -483,7 +482,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 used_gptq_exllamav2 = True
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
-        elif backend.startswith(("ipex", "qbit")):
+        elif backend.startswith(("ipex", "auto_round_kernel")):
             need_ipex_itrex_init = True
 
     # AutoGPTQ post-init
@@ -503,7 +502,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         message = "repacking to CPU/XPU format"
         layers = []  ## ipex post_init  will add one more layer
         for n, m in model.named_modules():
-            if hasattr(m, "QUANT_TYPE") and ("qbits" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
+            if hasattr(m, "QUANT_TYPE") and ("ark" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
                 layers.append(m)
 
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):

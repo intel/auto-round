@@ -652,11 +652,12 @@ class BaseCompressor(object):
             and self.iters > 0
         ):
             logger.info(
+                "%s",
                 "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%%, but it might throw an exception."
+                "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
-
-        if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
+        # On HPU, we rely on torch.compile to speed up the model execution.
+        if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
@@ -664,9 +665,9 @@ class BaseCompressor(object):
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
-            self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
+            self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
             self.super_group_size = (
-                gguf_config["super_group_size"] if self.super_group_size is None else self.super_group_size
+                gguf_config.get("super_group_size", None) if self.super_group_size is None else self.super_group_size
             )
 
     def _check_configs(self) -> None:
@@ -856,9 +857,12 @@ class BaseCompressor(object):
                 if self.sym and "int" in self.data_type:
                     format = "auto_round:auto_gptq"
                 elif self.bits == 4 and not self.sym and "int" in self.data_type:
-                    enable_awq = all(
-                        config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
-                    )
+                    if self.layer_config is None:
+                        enable_awq = True
+                    else:
+                        enable_awq = all(
+                            config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
+                        )
                     if enable_awq:
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
@@ -1141,14 +1145,17 @@ class BaseCompressor(object):
             dtype = module.weight.dtype
             # As typically float32 are used in RTN to search scale zp,
             # to avoid cache a bf16 copy we'd better use float32
-            if config["super_group_size"] is not None:
+            if config.get("super_group_size", None) is not None:
                 dtype = torch.float32
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
                     module.weight.to(dtype=dtype, device=self.device),
-                    **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
+                    **{
+                        k: config.get(k, None)
+                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                    },
                 )
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
@@ -1158,7 +1165,7 @@ class BaseCompressor(object):
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
-                            k: config[k]
+                            k: config.get(k, None)
                             for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
                         },
                     )
@@ -1920,7 +1927,6 @@ class BaseCompressor(object):
         Returns:
         The output tensor of the block.
         """
-
         output = []
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):

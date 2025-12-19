@@ -220,6 +220,22 @@ def float8_e4m3fn_hpu_ste(x: torch.Tensor):
     return fp8
 
 
+def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
+    """Straight-Through Estimator (STE) for float8.
+
+    Applies a quantization and dequantization step with float8 precision while maintaining
+    gradient flow using a straight-through estimator.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+
+    Returns:
+        torch.Tensor: Quantized and dequantized tensor using float8 format.
+    """
+    fp8 = ((torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, torch.float8_e4m3fn)[0]).to(x.dtype) - x).detach() + x
+    return fp8
+
+
 @lru_cache(None)
 def get_gaudi_fp8_ste_func():
     from auto_round.utils import is_hpex_available
