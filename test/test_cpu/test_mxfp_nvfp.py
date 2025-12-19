@@ -111,7 +111,6 @@ class TestAutoRoundFP(unittest.TestCase):
         self.assertGreater(result["results"]["piqa"]["acc,none"], 0.7)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-
     def test_mxfp4_moe_ar(self):
         model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
         layer_config = {
