@@ -12,5 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .gpt_oss import *
-from .llama4 import *
+
+import importlib
+import pkgutil
+from auto_round.utils import logger
+
+for module_info in pkgutil.iter_modules(__path__, prefix=__name__ + "."):
+    module_name = module_info.name
+    # Skip private modules
+    if module_name.split(".")[-1].startswith("_"):
+        continue
+    try:
+        mod = importlib.import_module(module_name)
+        # Re-export symbols
+        if hasattr(mod, "__all__"):
+            for name in mod.__all__:
+                globals()[name] = getattr(mod, name)
+    except (ImportError, ModuleNotFoundError) as e:
+        logger.warning("Optional module %s not available: %s", module_name, e)
