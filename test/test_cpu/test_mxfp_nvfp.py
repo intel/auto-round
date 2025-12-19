@@ -74,7 +74,7 @@ class TestAutoRoundFP(unittest.TestCase):
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_nvfp4_moe_actmax_ar(self):
-        model_name = "/models/deepseek-ai/DeepSeek-V2-Lite"
+        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
         layer_config = {
             "q_proj": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
