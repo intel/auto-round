@@ -88,7 +88,6 @@ class QuantLinearAWQ(nn.Module):
         self.register_buffer("qweight", qweight)
 
     def post_init(self):
-        assert self.qweight.device.type == "cpu"
         self.asym = self.qzeros.min() != self.qzeros.max()
         intweight, zeros = unpack_awq(self.qweight, self.qzeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
         intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
