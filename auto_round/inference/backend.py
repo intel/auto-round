@@ -485,6 +485,22 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     systems=["linux"],
 )
 
+BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
+    device=["xpu"],
+    sym=[True],
+    packing_format=AWQ_FORMAT,
+    bits=[4, 8],
+    group_size=None,
+    priority=6,
+    checkers=[],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
+)
+
 BackendInfos["ipex_gptq"] = BackendInfo(
     device=["cpu", "xpu"],
     sym=[True, False],
