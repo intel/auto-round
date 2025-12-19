@@ -236,7 +236,9 @@ class MLLMCompressor(BaseCompressor):
                     " switching to liuhaotian/llava_conv_58k"
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            elif self.template is not None and not _only_text_test(model, tokenizer, self.device, self.template.model_type):
+            elif self.template is not None and not _only_text_test(
+                model, tokenizer, self.device, self.template.model_type
+            ):
                 logger.warning(
                     f"{model.config.model_type} does not support for {dataset},"
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
