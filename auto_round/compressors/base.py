@@ -663,9 +663,9 @@ class BaseCompressor(object):
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
-            self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
+            self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
             self.super_group_size = (
-                gguf_config["super_group_size"] if self.super_group_size is None else self.super_group_size
+                gguf_config.get("super_group_size", None) if self.super_group_size is None else self.super_group_size
             )
 
     def _check_configs(self) -> None:
@@ -875,14 +875,17 @@ class BaseCompressor(object):
             dtype = module.weight.dtype
             # As typically float32 are used in RTN to search scale zp,
             # to avoid cache a bf16 copy we'd better use float32
-            if config["super_group_size"] is not None:
+            if config.get("super_group_size", None) is not None:
                 dtype = torch.float32
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
                     module.weight.to(dtype=dtype, device=self.device),
-                    **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
+                    **{
+                        k: config.get(k, None)
+                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                    },
                 )
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
@@ -892,7 +895,7 @@ class BaseCompressor(object):
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
-                            k: config[k]
+                            k: config.get(k, None)
                             for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
                         },
                     )

@@ -289,6 +289,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
         )
         scheme.add_argument(
+            "--shared_layers",
+            type=str,
+            nargs="+",
+            action="append",
+            default=None,
+            help="[mix-precision] ensure that listed layers are using same data type for quantization",
+        )
+        scheme.add_argument(
             "--quant_lm_head",
             action="store_true",
             help="Quantize the lm_head. " "Usually kept in higher precision for better output quality.",
@@ -615,7 +623,10 @@ def tune(args):
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
         scheme = AutoScheme(
-            options=args.options, avg_bits=args.avg_bits, ignore_scale_zp_bits=args.ignore_scale_zp_bits
+            options=args.options,
+            avg_bits=args.avg_bits,
+            shared_layers=args.shared_layers,
+            ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
 
     autoround: BaseCompressor = AutoRound(
