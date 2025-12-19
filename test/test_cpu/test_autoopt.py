@@ -24,7 +24,7 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_Adam(self, tiny_opt_model, tokenizer, dataloader):
+    def test_Adam(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 128, False
         from auto_round.utils import get_block_names
 
@@ -32,7 +32,7 @@ class TestAutoRound:
         bits, group_size, sym, batch_size = 4, 128, False, 20
         adamround = AutoRoundAdam(
             tiny_opt_model,
-            tokenizer,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,

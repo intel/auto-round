@@ -6,11 +6,13 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 
 from auto_round import AutoRound
 
+from ..helpers import get_model_path
+
 
 @pytest.fixture
 def setup_gpt_oss():
     """Fixture to set up the GPT-OSS model and tokenizer."""
-    model_name = "/tf_dataset/auto_round/models/unsloth/gpt-oss-20b-BF16"
+    model_name = get_model_path("unsloth/gpt-oss-20b-BF16")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -22,7 +24,7 @@ def setup_gpt_oss():
 @pytest.fixture
 def setup_llama4():
     """Fixture to set up the llama4 model and tokenizer."""
-    model_name = "/tf_dataset/auto_round/models/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+    model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.vision_config.num_hidden_layers = 2  # Reduce layers for testing

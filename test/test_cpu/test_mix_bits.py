@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 import torch
-from parameterized import parameterized
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_gptqmodel
+
+from ..helpers import opt_name_or_path
 
 
 def _get_folder_size(path: str) -> float:
@@ -26,7 +27,7 @@ def _get_folder_size(path: str) -> float:
 class TestAutoRound:
     @classmethod
     def setup_class(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        self.model_name = opt_name_or_path
         self.save_dir = ".saved/"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -233,5 +234,5 @@ class TestAutoRound:
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.14)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.14
         shutil.rmtree(quantized_model_path, ignore_errors=True)

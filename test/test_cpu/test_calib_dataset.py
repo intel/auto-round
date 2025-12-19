@@ -8,6 +8,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
+from ..helpers import get_model_path, opt_name_or_path
+
 
 class TestLocalCalibDataset:
     @classmethod
@@ -26,7 +28,7 @@ class TestLocalCalibDataset:
                 json.dump(item, jsonl_file, ensure_ascii=False)
                 jsonl_file.write("\n")
 
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
@@ -59,7 +61,7 @@ class TestLocalCalibDataset:
         autoround.quantize()
 
     def test_apply_chat_template(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         dataset = "NeelNanda/pile-10k:apply_chat_template:system_prompt=''"

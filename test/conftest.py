@@ -4,17 +4,7 @@ from typing import Mapping
 
 import pytest
 
-from .fixtures import (
-    dataloader,
-    opt_model,
-    opt_tokenizer,
-    tiny_gptj_model_path,
-    tiny_lamini_model_path,
-    tiny_opt_model,
-    tiny_opt_model_path,
-    tiny_qwen_model_path,
-)
-from .helpers import model_infer
+from .fixtures import *
 
 # Easy debugging without installing auto-round.
 sys.path.insert(0, "..")

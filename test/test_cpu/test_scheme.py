@@ -6,11 +6,13 @@ import torch
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
+from ..helpers import get_model_path, opt_name_or_path, qwen_name_or_path
+
 
 class TestAutoRound:
     @classmethod
     def setup_class(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        self.model_name = opt_name_or_path
         self.save_folder = "./saved"
 
     @classmethod
@@ -20,7 +22,7 @@ class TestAutoRound:
 
     def test_gguf(self, dataloader):
         ar = AutoRound(
-            "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B",
+            qwen_name_or_path,
             scheme="W2A16",
             nsamples=1,
             iters=1,
@@ -52,9 +54,7 @@ class TestAutoRound:
     def test_vllm(self):
         from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM(
-            "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16", nsamples=1, iters=1, seqlen=2
-        )
+        ar = AutoRoundMLLM(get_model_path("Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16"), nsamples=1, iters=1, seqlen=2)
         assert ar.bits == 2
         assert ar.act_bits == 16
 
@@ -73,7 +73,7 @@ class TestAutoRound:
         for scheme in preset_schemes:
             model_name = self.model_name
             if "gguf" in scheme.lower():
-                model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
+                model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
             print(f"scheme={scheme}")
             ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
             ar.quantize_and_save(self.save_folder)
@@ -86,7 +86,7 @@ class TestAutoRound:
             "model.decoder.layers.4.self_attn.k_proj": QuantizationScheme.from_dict({"group_size": 64}),
         }
         ar = AutoRound(
-            "/tf_dataset/auto_round/models/facebook/opt-125m",
+            opt_name_or_path,
             scheme="W3A16",
             nsamples=1,
             iters=1,
@@ -110,9 +110,9 @@ class TestAutoRound:
         from auto_round.utils.device import parse_available_devices
 
         device_list = parse_available_devices("auto")
-        self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
+        assert len(device_list) == 1 and "cpu" in device_list
         device_list = parse_available_devices("a:cuda:0,b:cuda:1,c:cpu")
-        self.assertTrue(len(device_list) == 3)
+        assert len(device_list) == 3
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
-        self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
+        assert len(device_list) == 1 and "cpu" in device_list

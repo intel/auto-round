@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 import torch
-from parameterized import parameterized
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
@@ -228,7 +227,7 @@ class TestAutoRound:
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.32)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.32
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_autoround_format_vllm(self, dataloader):

@@ -8,7 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ..helper import gptj_name_or_path
+from ..helpers import get_model_path, gptj_name_or_path
 
 
 class SimpleDataLoader:
@@ -52,11 +52,11 @@ class TestAutoroundExport:
         out2 = model(self.lm_input)
         out3 = q_model(self.lm_input)
         out4 = compressed_model(self.lm_input)
-        self.assertTrue(torch.all(torch.isclose(out1[0], out2[0], atol=1e-1)))
-        self.assertFalse(torch.all(out1[0] == out2[0]))
-        self.assertTrue(torch.all(out2[0] == out3[0]))
-        self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-3)))
-        self.assertTrue("transformer.h.0.attn.k_proj.qzeros" in compressed_model.state_dict().keys())
+        assert torch.all(torch.isclose(out1[0], out2[0], atol=1e-1))
+        assert not torch.all(out1[0] == out2[0])
+        assert torch.all(out2[0] == out3[0])
+        assert torch.all(torch.isclose(out3[0], out4[0], atol=1e-3))
+        assert "transformer.h.0.attn.k_proj.qzeros" in compressed_model.state_dict().keys()
 
         model = copy.deepcopy(self.gptj)
         out6 = model(self.lm_input)
@@ -66,13 +66,13 @@ class TestAutoroundExport:
         compressed_model = compressed_model.to(torch.float32)
         out4 = q_model(self.lm_input)
         out5 = compressed_model(self.lm_input)
-        self.assertTrue(torch.all(out1[0] == out6[0]))
-        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=5e-3)))
+        assert torch.all(out1[0] == out6[0])
+        assert torch.all(torch.isclose(out4[0], out5[0], atol=5e-3))
 
     def test_config(self):
         from auto_round.export.export_to_itrex import QuantConfig
 
-        config = QuantConfig.from_pretrained("/tf_dataset/auto_round/models/TheBloke/Llama-2-7B-Chat-GPTQ")
+        config = QuantConfig.from_pretrained(get_model_path("TheBloke/Llama-2-7B-Chat-GPTQ"))
         config.save_pretrained("quantization_config_dir")
         loaded_config = QuantConfig.from_pretrained("quantization_config_dir")
         assert config.group_size == loaded_config.group_size
@@ -94,8 +94,8 @@ class TestAutoroundExport:
         out3 = q_model(self.lm_input)
         out4 = compressed_model_xpu(self.lm_input)
         out5 = compressed_model_cpu(self.lm_input)
-        self.assertTrue(torch.all(torch.isclose(out1[0], out2[0], atol=1e-1)))
-        self.assertFalse(torch.all(out1[0] == out2[0]))
-        self.assertTrue(torch.all(out2[0] == out3[0]))
-        self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-3)))
-        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-5)))
+        assert torch.all(torch.isclose(out1[0], out2[0], atol=1e-1))
+        assert not torch.all(out1[0] == out2[0])
+        assert torch.all(out2[0] == out3[0])
+        assert torch.all(torch.isclose(out3[0], out4[0], atol=1e-3))
+        assert torch.all(torch.isclose(out4[0], out5[0], atol=1e-5))

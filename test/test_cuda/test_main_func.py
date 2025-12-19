@@ -81,7 +81,7 @@ class TestMainFunc:
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_gptqmodel
     def test_fp_layers(self):
         model_name = "/models/opt-125m"
@@ -105,7 +105,7 @@ class TestMainFunc:
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_fp_layers_awq(self):
@@ -130,7 +130,7 @@ class TestMainFunc:
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_undivided_group_size_tuning(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")

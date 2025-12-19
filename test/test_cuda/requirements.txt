@@ -6,7 +6,6 @@ intel-extension-for-pytorch
 lm-eval>=0.4.9.1
 optimum
 pandas
-parameterized
 pillow
 torchvision
 numba

@@ -26,11 +26,11 @@ class TestAutoRoundTorchBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_torch_4bits_sym_cpu(self, model, tokenizer, dataloader):
+    def test_torch_4bits_sym_cpu(self, opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            model,
-            tokenizer,
+            opt_model,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -50,15 +50,15 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=1000)
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.28
 
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_torch_4bits_sym_xpu(self, model, tokenizer, dataloader):
+    def test_torch_4bits_sym_xpu(self, opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            model,
-            tokenizer,
+            opt_model,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -78,6 +78,6 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=1000)
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.28
         torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)

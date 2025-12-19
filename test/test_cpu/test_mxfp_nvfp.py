@@ -3,10 +3,11 @@ import shutil
 
 import pytest
 import torch
-from parameterized import parameterized
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+
+from ..helpers import get_model_path, opt_name_or_path
 
 
 def _get_folder_size(path: str) -> float:
@@ -23,7 +24,7 @@ def _get_folder_size(path: str) -> float:
 class TestAutoRoundFP:
     @classmethod
     def setup_class(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        self.model_name = opt_name_or_path
         self.save_dir = "./saved"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -34,7 +35,7 @@ class TestAutoRoundFP:
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_nvfp4_moe_actmax_rtn(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        model_name = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
         layer_config = {
             "self_attn": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
@@ -61,7 +62,7 @@ class TestAutoRoundFP:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_nvfp4_moe_actmax_ar(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        model_name = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
         layer_config = {
             "q_proj": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
@@ -95,11 +96,11 @@ class TestAutoRoundFP:
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=4, tasks="piqa", limit=4)
         print(result["results"]["piqa"]["acc,none"])
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.7)
+        assert result["results"]["piqa"]["acc,none"] > 0.7
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_mxfp4_moe_ar(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+        model_name = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
         layer_config = {
             "q_proj": {"bits": 16, "act_bits": 16, "data_type": "float"},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16, "data_type": "float"},
@@ -332,7 +333,7 @@ class TestAutoRoundFP:
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_qwen_moe_quant_infer(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
+        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
             "layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
         }
@@ -354,10 +355,11 @@ class TestAutoRoundFP:
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa", limit=10)
         print(result["results"]["piqa"]["acc,none"])
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.60)
+        assert result["results"]["piqa"]["acc,none"] > 0.60
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @parameterized.expand(
+    @pytest.mark.parametrize(
+        "scheme, static_kv_dtype, static_attention_dtype",
         [
             # scheme,  static_kv_dtype, static_attention_dtype
             ("MXFP4", None, "fp8"),
@@ -366,7 +368,7 @@ class TestAutoRoundFP:
             ("MXFP8", "fp8", None),
             ("NVFP4", None, "fp8"),
             ("NVFP4", "fp8", None),
-        ]
+        ],
     )
     def test_fp8_kv_attn(self, scheme, static_kv_dtype, static_attention_dtype, dataloader):
         model_name = self.model_name
