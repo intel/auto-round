@@ -6,10 +6,10 @@ import pytest
 
 from .fixtures import (
     dataloader,
-    model,
+    opt_model,
     tiny_opt_model,
     tiny_opt_model_path,
-    tokenizer,
+    opt_tokenizer,
 )
 from .helpers import model_infer
 
