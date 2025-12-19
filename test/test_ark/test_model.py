@@ -107,7 +107,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format='auto_round:auto_awq')
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
         quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(
@@ -121,7 +121,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
 
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
     def test_torch_4bits_sym_xpu(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -151,7 +151,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
         torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
-    
+
     def test_torch_4bits_sym_xpu_awq(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -167,7 +167,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq") 
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
         quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(

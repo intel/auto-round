@@ -17,8 +17,8 @@ import math
 import torch
 import torch.nn as nn
 
+from auto_round.export.export_to_awq.utils import dequantize_gemm, reverse_awq_order, unpack_awq
 from auto_round.utils import convert_dtype_torch2str, logger
-from auto_round.export.export_to_awq.utils import unpack_awq, reverse_awq_order, dequantize_gemm
 
 try:
     import auto_round_kernel as ark
@@ -32,6 +32,7 @@ BITS_DTYPE_MAPPING = {
     4: "int4",
     8: "int8",
 }
+
 
 class QuantLinearAWQ(nn.Module):
     QUANT_TYPE = "ark_awq"
@@ -93,11 +94,10 @@ class QuantLinearAWQ(nn.Module):
         intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
         intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1)
         zeros = torch.bitwise_and(zeros, (2**self.w_bit) - 1)
-        
-        intweight = intweight - (2 ** (self.w_bit - 1)) # from uint8_t to int8_t
-        zeros = zeros - (2 ** (self.w_bit - 1)) # from uint8_t to int8_t
-            
-  
+
+        intweight = intweight - (2 ** (self.w_bit - 1))  # from uint8_t to int8_t
+        zeros = zeros - (2 ** (self.w_bit - 1))  # from uint8_t to int8_t
+
         if self.qweight.device.type == "xpu":
             self.sdt = "fp16"
             self.cdt = "fp16"
