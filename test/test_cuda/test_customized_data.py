@@ -14,7 +14,6 @@ class TestCustomizedData(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.save_dir = "./saved"
-        self.tasks = "lambada_openai"
 
     @classmethod
     def tearDownClass(self):
@@ -23,17 +22,12 @@ class TestCustomizedData(unittest.TestCase):
 
     def test_mixed_attention_mask(self):
         model_name = "/models/Qwen3-0.6B"
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-        # 多个 prompts
         texts = [
             "There is a girl who likes adventure,",
             "Tell me a story about a brave robot,",
             "Explain why the sky is blue,",
         ]
-
-        # 批处理输入（padding 到同长度）
 
         inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
 
@@ -47,14 +41,12 @@ class TestCustomizedData(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-        # 多个 prompts
         texts = [
             "There is a girl who likes adventure,",
             "Tell me a story about a brave robot,",
             "Explain why the sky is blue,",
         ]
 
-        # 批处理输入（padding 到同长度）
         inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
 
         ar = AutoRound(model_name, dataset=inputs, seqlen=9)
@@ -62,17 +54,13 @@ class TestCustomizedData(unittest.TestCase):
 
     def test_list_batch_encoding(self):
         model_name = "/models/Qwen3-0.6B"
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-        # 多个 prompts
         texts = [
             "There is a girl who likes adventure,",
             "Tell me a story about a brave robot,",
             "Explain why the sky is blue,",
         ]
-
-        # 批处理输入（padding 到同长度）
         inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
 
         ar = AutoRound(model_name, dataset=[inputs], seqlen=9)
