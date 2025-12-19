@@ -40,7 +40,7 @@ class TestAutoRoundMarlinBackend:
             model_infer(model, tokenizer)
             result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
             print(result["results"]["lambada_openai"]["acc,none"])
-            self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.14)
+            assert result["results"]["lambada_openai"]["acc,none"] > 0.14
 
         for group_size in [32, 128]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
@@ -69,7 +69,7 @@ class TestAutoRoundMarlinBackend:
             model_infer(model, tokenizer)
             result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
             print(result["results"]["lambada_openai"]["acc,none"])
-            self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.14)
+            assert result["results"]["lambada_openai"]["acc,none"] > 0.14
 
     @classmethod
     def setup_class(self):
@@ -107,7 +107,7 @@ class TestAutoRoundMarlinBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.27)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -118,7 +118,7 @@ class TestAutoRoundMarlinBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.27)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -151,7 +151,7 @@ class TestAutoRoundMarlinBackend:
     #     model_infer(model, tokenizer)
     #     result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
     #     print(result['results']['lambada_openai']['acc,none'])
-    #     self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
+    #     assert result['results']['lambada_openai']['acc,none'] > 0.27
     #     torch.cuda.empty_cache()
     #
     #     model = AutoModelForCausalLM.from_pretrained(
@@ -165,6 +165,6 @@ class TestAutoRoundMarlinBackend:
     #     model_infer(model, tokenizer)
     #     result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
     #     print(result['results']['lambada_openai']['acc,none'])
-    #     self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
+    #     assert result['results']['lambada_openai']['acc,none'] > 0.27
     #     torch.cuda.empty_cache()
     #     shutil.rmtree("./saved", ignore_errors=True)

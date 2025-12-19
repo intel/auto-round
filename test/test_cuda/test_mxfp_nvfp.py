@@ -151,5 +151,5 @@ class TestAutoRound:
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa")
         print(result["results"]["piqa"]["acc,none"])
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.7)
+        assert result["results"]["piqa"]["acc,none"] > 0.7
         shutil.rmtree(quantized_model_path, ignore_errors=True)

@@ -199,11 +199,11 @@ class TestAutoScheme:
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()
         assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
-        assert layer_config["model.decoder.layers.10.fc1"]["sym"] == False
+        assert not layer_config["model.decoder.layers.10.fc1"]["sym"]
         assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
         layer = get_module(model, "model.decoder.layers.10.fc1")
         assert layer.bits == 8
-        assert layer.sym == False
+        assert not layer.sym
         assert layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
@@ -216,11 +216,11 @@ class TestAutoScheme:
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()
         assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
-        assert layer_config["model.decoder.layers.10.fc1"]["sym"] == False
+        assert not layer_config["model.decoder.layers.10.fc1"]["sym"]
         assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
         layer = get_module(model, "model.decoder.layers.10.fc1")
         assert layer.orig_layer.bits == 8
-        assert layer.orig_layer.sym == False
+        assert not layer.orig_layer.sym
         assert layer.orig_layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
@@ -232,7 +232,7 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "MXFP8"))
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, quant_lm_head=True)
         model, layer_config = ar.quantize()
-        self.assertLessEqual(layer_config["lm_head"]["bits"], 8)
+        assert layer_config["lm_head"]["bits"] <= 8
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -245,7 +245,7 @@ class TestAutoScheme:
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
         model_name = "/models/Qwen3-0.6B"
@@ -262,5 +262,5 @@ class TestAutoScheme:
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.10)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.10
         shutil.rmtree(self.save_dir, ignore_errors=True)

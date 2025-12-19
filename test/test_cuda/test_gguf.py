@@ -50,7 +50,7 @@ class TestAutoRound:
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
-        self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
+        assert not (res > 0 or res == -1), "qwen2 tuning fail"
 
         from llama_cpp import Llama
 
@@ -88,7 +88,7 @@ class TestAutoRound:
         from auto_round.eval.evaluation import simple_evaluate_user_model
 
         result = simple_evaluate_user_model(model, autoround.tokenizer, batch_size=16, tasks="piqa")
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.45)
+        assert result["results"]["piqa"]["acc,none"] > 0.45
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
@@ -122,7 +122,7 @@ class TestAutoRound:
         from auto_round.eval.evaluation import simple_evaluate_user_model
 
         result = simple_evaluate_user_model(model, autoround.tokenizer, batch_size=16, tasks="piqa")
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.54)
+        assert result["results"]["piqa"]["acc,none"] > 0.54
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_gguf
@@ -143,7 +143,7 @@ class TestAutoRound:
         from auto_round.eval.evaluation import simple_evaluate_user_model
 
         result = simple_evaluate_user_model(model, autoround.tokenizer, batch_size=16, tasks="piqa")
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.54)
+        assert result["results"]["piqa"]["acc,none"] > 0.54
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_gguf
@@ -187,11 +187,11 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
+        assert "mmproj-model.gguf" in os.listdir("./saved")
         file_size = os.path.getsize("./saved/Qwen2.5-VL-7B-Instruct-Q4_0.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 4242, delta=5.0)
+        assert abs(file_size - 4242) < 5.0
         file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 2580, delta=5.0)
+        assert abs(file_size - 2580) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
 
         model_name = "/models/gemma-3-12b-it"
@@ -208,11 +208,11 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
-        self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
+        assert "mmproj-model.gguf" in os.listdir("./saved")
         file_size = os.path.getsize("./saved/gemma-3-12B-it-Q4_K_M.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 6568, delta=5.0)
+        assert abs(file_size - 6568) < 5.0
         file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        self.assertAlmostEqual(file_size, 1599, delta=5.0)
+        assert abs(file_size - 1599) < 5.0
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     # @require_gguf
@@ -233,12 +233,12 @@ class TestAutoRound:
     #     quantized_model_path = "/dataset/Llam-4-test"
     #     shutil.rmtree(quantized_model_path, ignore_errors=True)
     #     autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-    #     self.assertTrue("mmproj-model.gguf" in os.listdir(quantized_model_path))
+    #     assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
     #     file_size = (
     #         os.path.getsize(os.path.join(quantized_model_path, "Llama-4-Scout-17B-16E-Instruct-16x17B-Q4_0.gguf"))
     #         / 1024**2
     #     )
-    #     self.assertAlmostEqual(file_size, 58093.62, delta=1.0)
+    #     assert abs(file_size - 58093.62) < 1.0
     #     file_size = os.path.getsize(os.path.join(quantized_model_path, "mmproj-model.gguf")) / 1024**2
-    #     self.assertAlmostEqual(file_size, 3326.18, delta=5.0)
+    #     assert abs(file_size - 3326.18) < 5.0
     #     shutil.rmtree(quantized_model_path, ignore_errors=True)

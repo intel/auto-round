@@ -8,11 +8,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
 
+from ..helpers import get_model_path
+
 
 class TestAutoRoundXPU:
     @classmethod
     def setup_class(self):
-
+        pass
 
     @classmethod
     def teardown_class(self):
@@ -20,8 +22,8 @@ class TestAutoRoundXPU:
         shutil.rmtree("runs", ignore_errors=True)
         pass
 
-    def test_gptq_format(self):
-        model_name = "facebook/opt-125m"
+    def test_gptq_format(self, dataloader):
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype="auto", trust_remote_code=True, device_map="auto"
         )
@@ -53,8 +55,8 @@ class TestAutoRoundXPU:
         print(res)
         assert "!!!" not in res
 
-    def test_awq_format(self):
-        model_name = "facebook/opt-125m"
+    def test_awq_format(self, dataloader):
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype="auto", trust_remote_code=True, device_map="xpu"
         )

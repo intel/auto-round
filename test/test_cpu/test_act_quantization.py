@@ -24,11 +24,11 @@ class TestAutoRoundAct:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_mx_fp4(self, tiny_opt_model, tokenizer, dataloader):
+    def test_mx_fp4(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             tiny_opt_model,
-            tokenizer,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -40,11 +40,11 @@ class TestAutoRoundAct:
         )
         autoround.quantize()
 
-    def test_wint4fp8_dynamic(self, tiny_opt_model, tokenizer, dataloader):
+    def test_wint4fp8_dynamic(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size = 4, 128
         autoround = AutoRound(
             tiny_opt_model,
-            tokenizer,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             iters=2,
@@ -56,11 +56,11 @@ class TestAutoRoundAct:
         )
         autoround.quantize()
 
-    def test_wint4fp8_static(self, tiny_opt_model, tokenizer, dataloader):
+    def test_wint4fp8_static(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             tiny_opt_model,
-            tokenizer,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -75,12 +75,12 @@ class TestAutoRoundAct:
         autoround.quantize()
 
     @pytest.mark.parametrize("act_group_size", [-1, 128])
-    def test_wfp8afp8_static(self, act_group_size, tiny_opt_model, tokenizer, dataloader):
+    def test_wfp8afp8_static(self, act_group_size, tiny_opt_model, opt_tokenizer, dataloader):
         from auto_round.wrapper import WrapperWALayer
 
         autoround = AutoRound(
             tiny_opt_model,
-            tokenizer,
+            opt_tokenizer,
             group_size=128,
             act_group_size=act_group_size,
             iters=2,
@@ -92,7 +92,7 @@ class TestAutoRoundAct:
         )
         autoround.quantize()
 
-        k_proj = autoround.model.model.decoder.layers[2].self_attn.k_proj
+        k_proj = autoround.model.model.decoder.layers[1].self_attn.k_proj
         assert isinstance(k_proj, WrapperWALayer), "k_proj should be WrapperWALayer"
         if act_group_size == -1:
             assert k_proj.orig_layer.act_scale.shape[0] == 20, "act_scale shape[0] should be 20"

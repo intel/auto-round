@@ -17,7 +17,7 @@ This project uses `pytest` for unit testing. All test cases are under the `test/
 - Example:
   ```python
   # test_example.py
-    from ..helper import model_infer
+    from ..helpers import model_infer
 
     def test_model_infer(tiny_opt_model, opt_tokenizer):
         result = model_infer(tiny_opt_model, opt_tokenizer, input_text="hello world")

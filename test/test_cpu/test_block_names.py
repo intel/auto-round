@@ -2,15 +2,13 @@ import os
 import shutil
 
 import pytest
-
-sys.path.insert(0, ".")
 import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ..helper import lamini_name_or_path
+from ..helpers import get_model_path, lamini_name_or_path
 
 
 # ================= simple multimodal model =================
@@ -118,7 +116,7 @@ class TestQuantizationBlocks:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_moe_quant(self, dataloader):
+    def test_moe_quant(self):
         input_size = 10
         hidden_size = 10
         num_groups = 2
@@ -185,24 +183,24 @@ class TestQuantizationBlocks:
 
         from auto_round.utils import get_block_names
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
-        self.assertTrue(len(block_name) == 2)
-        self.assertTrue(all(["visual.merger.mlp" not in n for n in block_name]))
+        assert len(block_name) == 2
+        assert all(["visual.merger.mlp" not in n for n in block_name])
         block_name = get_block_names(model, quant_vision=False)
-        self.assertTrue(len(block_name) == 1)
-        self.assertTrue(block_name == get_block_names(model))
+        assert len(block_name) == 1
+        assert block_name == get_block_names(model)
 
     def test_moe(self):
         from auto_round.utils import get_block_names
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
+        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
         # config = AutoConfig.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(model_name)
 
         block_name = get_block_names(model)
         block_name_2 = get_block_names(model, quant_vision=True)
-        self.assertTrue(block_name == block_name_2)
-        self.assertTrue(len(block_name_2) == 1)
-        self.assertTrue("model.layers.23" == block_name_2[0][-1])
+        assert block_name == block_name_2
+        assert len(block_name_2) == 1
+        assert "model.layers.23" == block_name_2[0][-1]

@@ -69,7 +69,7 @@ class TestAutoRound:
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model
 
-        self.assertTrue(is_diffusion_model("/dataset/FLUX.1-dev"))
-        self.assertTrue(is_diffusion_model("/models/stable-diffusion-2-1"))
-        self.assertTrue(is_diffusion_model("/models/stable-diffusion-xl-base-1.0"))
-        self.assertFalse(is_diffusion_model("/models/Qwen3-8B"))
+        assert is_diffusion_model("/dataset/FLUX.1-dev")
+        assert is_diffusion_model("/models/stable-diffusion-2-1")
+        assert is_diffusion_model("/models/stable-diffusion-xl-base-1.0")
+        assert not is_diffusion_model("/models/Qwen3-8B")

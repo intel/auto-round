@@ -49,7 +49,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.34)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.34
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -60,7 +60,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.34)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.34
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -82,7 +82,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.19)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.19
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -93,7 +93,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.19)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.19
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -124,7 +124,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         # print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.26)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.26
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -135,7 +135,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         # print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.26)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.26
         torch.cuda.empty_cache()
 
         shutil.rmtree("./saved", ignore_errors=True)
@@ -158,7 +158,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.27)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -169,7 +169,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         # print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.27)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -197,7 +197,7 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.18)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.18
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -208,6 +208,6 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         # print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.18)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.18
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)

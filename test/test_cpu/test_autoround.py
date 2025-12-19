@@ -3,20 +3,19 @@ import shutil
 
 import pytest
 import torch
-from parameterized import parameterized
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-from ..helpers import model_infer
+from ..helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path
 
 
 class TestAutoRound:
     @classmethod
     def setup_class(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.save_folder = "./saved"
@@ -26,18 +25,16 @@ class TestAutoRound:
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_bits_setting(self):
+    def test_bits_setting(self, tiny_opt_model_path):
         layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
-        autoround = AutoRound(
-            "/tf_dataset/auto_round/models/facebook/opt-125m", iters=2, seqlen=2, nsamples=1, layer_config=layer_config
-        )
+        autoround = AutoRound(tiny_opt_model_path, iters=2, seqlen=2, nsamples=1, layer_config=layer_config)
         autoround.quantize()
         module = get_module(autoround.model, "model.decoder.layers.0.self_attn.k_proj")
         if module.bits != 8:
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
-    def test_layer_config(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_layer_config(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}
         autoround = AutoRound(
             model_name,
@@ -52,8 +49,8 @@ class TestAutoRound:
         autoround.quantize_and_save(self.save_folder, inplace=False, format="fake")
         shutil.rmtree(self.save_folder)
 
-    def test_remove_whole_block(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_remove_whole_block(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 32},
             "model.decoder.layers.0.self_attn.v_proj": {"bits": 32},
@@ -75,11 +72,10 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_consecutive_quant(self, dataloader):
+    def test_consecutive_quant(self, tiny_opt_model_path, tiny_phi2_model_path, dataloader):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -89,15 +85,8 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-        model = AutoModelForCausalLM.from_pretrained(
-            "/tf_dataset/auto_round/models/microsoft/phi-2", torch_dtype="auto", trust_remote_code=True
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            "/tf_dataset/auto_round/models/microsoft/phi-2", trust_remote_code=True
-        )
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_phi2_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -108,7 +97,7 @@ class TestAutoRound:
         autoround.quantize()
 
     def test_mx_fp4(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
             model_name,
@@ -127,10 +116,10 @@ class TestAutoRound:
             model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
         )
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)  # 0.375
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.3  # 0.375
 
     def test_nv_fp4(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         bits, group_size, sym = 4, 16, False
         autoround = AutoRound(
             model_name,
@@ -147,10 +136,10 @@ class TestAutoRound:
             model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
         )
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.35
 
-    def test_w4g1(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_w4g1(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
             model_name,
@@ -163,9 +152,9 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    @parameterized.expand([(2,), (3,), (4,)])
+    @pytest.mark.parametrize("bits", [2, 3, 4])
     def test_g128(self, bits, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         group_size, sym = 128, True
         autoround = AutoRound(
             model_name,
@@ -182,7 +171,7 @@ class TestAutoRound:
                 model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
             )
             print(result["results"]["lambada_openai"]["acc,none"])
-            self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.3)
+            assert result["results"]["lambada_openai"]["acc,none"] > 0.3
 
     def test_disable_quanted_input(self, dataloader):
         bits, group_size, sym = 4, -1, True
@@ -199,9 +188,9 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_enable_norm_bias_tuning_qwen3(self, dataloader):
+    def test_enable_norm_bias_tuning_qwen3(self, tiny_qwen_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = tiny_qwen_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         autoround = AutoRound(
@@ -249,8 +238,8 @@ class TestAutoRound:
         autoround.quantize()
 
     #
-    def test_signround(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_signround(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
             model_name,
@@ -283,8 +272,8 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_wa_quant(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_wa_quant(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym, act_bits = 4, 128, False, 4
         autoround = AutoRound(
             model_name,
@@ -298,9 +287,9 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_auto_device_map(self, dataloader):
+    def test_auto_device_map(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, False
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype="auto", trust_remote_code=True, device_map="auto"
         )
@@ -316,7 +305,7 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_device_map_dict(self, dataloader):
+    def test_device_map_dict(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, False
         device_map = {".*": "cpu"}
         autoround = AutoRound(
@@ -333,7 +322,7 @@ class TestAutoRound:
         autoround.quantize()
 
         # test model_name
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = tiny_opt_model_path
         autoround = AutoRound(
             model_name,
             self.tokenizer,
@@ -347,9 +336,9 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_fp32(self, dataloader):
+    def test_fp32(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, False
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float32, trust_remote_code=True, device_map="auto"
         )
@@ -380,8 +369,8 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_rtn(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_rtn(self, tiny_opt_model_path):
+        model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
@@ -399,9 +388,9 @@ class TestAutoRound:
         model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder)
 
-    def test_embed_quant(self, dataloader):
+    def test_embed_quant(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = tiny_opt_model_path
         layer_config = {
             "model.decoder.embed_tokens": {"bits": 4},
         }
@@ -418,9 +407,9 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_fallback_layers(self, dataloader):
+    def test_fallback_layers(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float32, trust_remote_code=True, device_map="auto"
         )
@@ -462,17 +451,17 @@ class TestAutoRound:
 
         from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct-AWQ"
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct-AWQ")
         quantization_config = AutoRoundConfig()
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
         )
-        self.assertTrue(isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear))
-        self.assertFalse(isinstance(model.visual.merger.mlp[0], QuantLinear))
+        assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+        assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
         if hasattr(model.model, "language_model"):
-            self.assertTrue(isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear))
+            assert isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear)
         else:
-            self.assertTrue(isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear))
+            assert isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear)
 
         processor = AutoProcessor.from_pretrained(model_name, size=None)
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
@@ -507,8 +496,8 @@ class TestAutoRound:
         )
         print(output_text)
 
-    def test_fallback_layers_regex_awq(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_fallback_layers_regex_awq(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -543,8 +532,8 @@ class TestAutoRound:
         print(res)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_fallback_layers_regex_gptq(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_fallback_layers_regex_gptq(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -579,8 +568,8 @@ class TestAutoRound:
         print(res)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_fallback_layers_regex_round(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_fallback_layers_regex_round(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -615,13 +604,13 @@ class TestAutoRound:
         print(res)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_fallback_layers_regex_exception(self, dataloader):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_fallback_layers_regex_exception(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         bits, group_size, sym = 4, 128, True
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {"model.decoder.layers.12.self_attn.k_proj": {"bits": 16}}
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             autoround = AutoRound(
                 model,
                 tokenizer=tokenizer,
@@ -664,8 +653,8 @@ class TestAutoRound:
         assert dequant_weight.shape[0] == 32
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
 
-    def test_mixed_bit_setting(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_mixed_bit_setting(self, tiny_opt_model_path):
+        model_name = tiny_opt_model_path
         layer_config = {"model.decoder.layers.7.fc1": {"bits": 8, "act_bits": 8}}
         ar = AutoRound(model_name, data_type="mx_fp4", act_bits=4, iters=0, layer_config=layer_config)
         ar.quantize()
@@ -676,21 +665,21 @@ class TestAutoRound:
         ):
             raise ValueError("mixed bits is not correct")
 
-    def test_invalid_layer_config(self):
-        with self.assertRaises(ValueError):
+    def test_invalid_layer_config(self, tiny_opt_model_path):
+        with pytest.raises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
             ar = AutoRound(
-                "/tf_dataset/auto_round/models/facebook/opt-125m",
+                tiny_opt_model_path,
                 scheme="W3A16",
                 nsamples=1,
                 iters=1,
                 layer_config=layer_config,
             )
             ar.quantize()
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             layer_config = {"model.decoder.layers.2.self_attn": {"bit": 2}}  # should be bits
             ar = AutoRound(
-                "/tf_dataset/auto_round/models/facebook/opt-125m",
+                tiny_opt_model_path,
                 scheme="W3A16",
                 nsamples=1,
                 iters=1,
@@ -699,7 +688,7 @@ class TestAutoRound:
             ar.quantize()
 
     def test_quant_lm_head(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
+        model_name = get_model_path("Qwen/Qwen3-8B")
         ar = AutoRound(model_name, quant_lm_head=True, iters=0, seqlen=8, nsamples=1, disable_opt_rtn=True)
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
@@ -722,7 +711,7 @@ class TestAutoRound:
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
     def test_quant_lm_head_layer_config(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-8B"
+        model_name = get_model_path("Qwen/Qwen3-8B")
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(
             model_name,
@@ -739,21 +728,21 @@ class TestAutoRound:
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
     def test_compressor(self):
-        model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         ar = AutoRound(model_name, enable_adam=True)
         assert ar.optimizer == torch.optim.AdamW
-        self.assertTrue(ar.mllm)
+        assert ar.mllm
 
         # test old api
         from auto_round import AutoRoundMLLM
 
         ar = AutoRoundMLLM(model_name)
-        self.assertTrue(ar.mllm)
+        assert ar.mllm
 
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = qwen_name_or_path
         # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         text = ["haha", "hello world"]
@@ -771,7 +760,7 @@ class TestAutoRound:
     def test_attention_mask_via_tokenize_in_dataset(self):
         from transformers import AutoTokenizer
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = qwen_name_or_path
         # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         text = ["haha", "hello world"]
@@ -788,9 +777,9 @@ class TestAutoRound:
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
-    def test_low_cpu_mem_usage(self, dataloader):
+    def test_low_cpu_mem_usage(self, tiny_opt_model_path, dataloader):
         bits, group_size = 4, 32
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         quantized_model_path = self.save_folder
@@ -809,7 +798,7 @@ class TestAutoRound:
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_create_adam(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = qwen_name_or_path
         from auto_round import AutoRound
 
         ar = AutoRound(model=model_name, enable_adam=True)

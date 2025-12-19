@@ -44,11 +44,11 @@ class TestAutoScheme:
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()
         assert layer_config["model.decoder.layers.1.fc1"]["bits"] == 8
-        assert layer_config["model.decoder.layers.1.fc1"]["sym"] == False
+        assert not layer_config["model.decoder.layers.1.fc1"]["sym"]
         assert layer_config["model.decoder.layers.1.fc1"]["group_size"] == 32
         layer = get_module(model, "model.decoder.layers.1.fc1")
         assert layer.bits == 8
-        assert layer.sym == False
+        assert not layer.sym
         assert layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)

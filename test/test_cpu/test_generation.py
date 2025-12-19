@@ -7,11 +7,13 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
+from ..helpers import opt_name_or_path
+
 
 class TestAutoRoundFormatGeneration:
     @classmethod
     def setup_class(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        self.model_name = opt_name_or_path
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.save_folder = "./saved"

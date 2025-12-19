@@ -119,12 +119,12 @@ class TestAutoRound:
 
         model = MllamaForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
-        self.assertTrue(len(block_name) == 3)
-        self.assertTrue(any(["vision_model.global_transformer.layers.0" not in n for n in block_name]))
-        self.assertTrue(any(["vision_model.transformer.layers.0" not in n for n in block_name]))
+        assert len(block_name) == 3
+        assert any(["vision_model.global_transformer.layers.0" not in n for n in block_name])
+        assert any(["vision_model.transformer.layers.0" not in n for n in block_name])
         block_name = get_block_names(model, quant_vision=False)
-        self.assertTrue(len(block_name) == 1)
-        self.assertTrue(get_block_names(model) == block_name)
+        assert len(block_name) == 1
+        assert get_block_names(model) == block_name
 
     def test_mllm_detect(self):
         from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
@@ -140,14 +140,14 @@ class TestAutoRound:
             "/models/InternVL3-1B",
             "/models/pixtral-12b",
         ]:
-            self.assertTrue(is_mllm_model(model_name))
+            assert is_mllm_model(model_name)
             try:
                 model, _, _, _ = mllm_load_model(model_name)
             except:
                 continue
-            self.assertTrue(is_mllm_model(model))
+            assert is_mllm_model(model)
 
         for model_name in ["/models/glm-4-9b-chat", "/models/Qwen2.5-1.5B-Instruct/"]:
-            self.assertFalse(is_mllm_model(model_name))
+            assert not is_mllm_model(model_name)
             model, _ = llm_load_model(model_name)
-            self.assertFalse(is_mllm_model(model))
+            assert not is_mllm_model(model)

@@ -7,6 +7,8 @@ import torch
 
 from auto_round import AutoRound
 
+from ..helpers import get_model_path
+
 
 class TestModelScope:
     @classmethod
@@ -29,14 +31,14 @@ class TestModelScope:
         return super().teardown_class()
 
     def test_llm(self):
-        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         autoround = AutoRound(
             model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=self.dataset
         )
         autoround.quantize_and_save()
 
     def test_mllm(self):
-        model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         autoround = AutoRound(
             model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=self.dataset, batch_size=2
         )

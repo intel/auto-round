@@ -22,14 +22,11 @@ opt_name_or_path = get_model_path("facebook/opt-125m")
 qwen_name_or_path = get_model_path("Qwen/Qwen3-0.6B")
 lamini_name_or_path = get_model_path("MBZUAI/LaMini-GPT-124M")
 gptj_name_or_path = get_model_path("hf-internal-testing/tiny-random-GPTJForCausalLM")
+phi2_name_or_path = get_model_path("microsoft/phi-2")
 
 
 # Slice model into tiny model for speedup
-def get_tiny_model(model_name_or_path, num_layers=3):
-    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, dtype="auto", trust_remote_code=True)
-
-    if hasattr(model.config, "num_hidden_layers"):
-        model.config.num_hidden_layers = num_layers
+def get_tiny_model(model_name_or_path, num_layers=2):
 
     def slice_layers(module):
         for name, child in module.named_children():
@@ -41,10 +38,27 @@ def get_tiny_model(model_name_or_path, num_layers=3):
                 return True
         return False
 
+    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, dtype="auto", trust_remote_code=True)
     slice_layers(model)
+
+    if hasattr(model.config, "num_hidden_layers"):
+        model.config.num_hidden_layers = num_layers
     if hasattr(model.config, "layer_types"):
         model.config.layer_types = model.config.layer_types[:num_layers]
+
     return model
+
+
+# for fixture usage only
+def save_tiny_model(model_name_or_path, tiny_model_path):
+    model = get_tiny_model(model_name_or_path, num_layers=2)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    test_path = os.path.dirname(__file__)
+    tiny_model_path = os.path.join(test_path, tiny_model_path)
+    model.save_pretrained(tiny_model_path)
+    tokenizer.save_pretrained(tiny_model_path)
+    print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
+    return tiny_model_path
 
 
 # HPU mode checking

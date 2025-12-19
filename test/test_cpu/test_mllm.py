@@ -5,6 +5,8 @@ from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGene
 
 from auto_round import AutoRoundMLLM
 
+from ..helpers import get_model_path, opt_name_or_path
+
 
 class FakeDataLoader:
     def __init__(self):
@@ -26,7 +28,7 @@ class FakeDataLoader:
 class TestAutoRoundMLLM:
     @classmethod
     def setup_class(self):
-        self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
+        self.model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         self.dataset = FakeDataLoader()
 
     @classmethod
@@ -137,11 +139,9 @@ class TestAutoRoundMLLM:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto"
         )
-        self.assertFalse(is_pure_text_model(model))
-        model = AutoModelForCausalLM.from_pretrained(
-            "/tf_dataset/auto_round/models/facebook/opt-125m", trust_remote_code=True
-        )
-        self.assertTrue(is_pure_text_model(model))
+        assert not is_pure_text_model(model)
+        model = AutoModelForCausalLM.from_pretrained(opt_name_or_path, trust_remote_code=True)
+        assert is_pure_text_model(model)
 
     def test_str_input(self):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
@@ -210,7 +210,7 @@ class TestAutoRoundMLLM:
     def test_qwen2_5(self):
         from auto_round.utils import mllm_load_model
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-VL-3B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2.5-VL-3B-Instruct")
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
         autoround = AutoRoundMLLM(
             model,

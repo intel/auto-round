@@ -49,7 +49,7 @@ class TestAutoRound:
         assert ar.data_type == "fp"
         assert ar.act_data_type == "fp"
         assert ar.group_size == -1
-        assert ar.act_dynamic == False
+        assert not ar.act_dynamic
         ar.quantize()
 
     ## RTN tests
@@ -73,7 +73,7 @@ class TestAutoRound:
         assert ar.data_type == "fp"
         assert ar.act_data_type == "fp"
         assert ar.group_size == -1
-        assert ar.act_dynamic == False
+        assert not ar.act_dynamic
         ar.quantize()
 
     def test_scheme_in_layer_config(self):

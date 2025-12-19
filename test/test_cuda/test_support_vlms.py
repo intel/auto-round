@@ -29,7 +29,7 @@ class TestSupportVLMS:
             f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
+        assert not (res > 0 or res == -1), "qwen2 tuning fail"
 
         # test infer
         quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128")
@@ -84,7 +84,7 @@ class TestSupportVLMS:
             f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
+        assert not (res > 0 or res == -1), "Phi-3.5 tuning fail"
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
@@ -134,7 +134,7 @@ class TestSupportVLMS:
             f"--nsample 64 --seqlen 32 "
             f"--format auto_awq --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
+        assert not (res > 0 or res == -1), "Phi-3.5 tuning fail"
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
@@ -180,7 +180,7 @@ class TestSupportVLMS:
             f"cd ../.. && {self.python_path} -m auto_round "
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="glm-4v-9b tuning fail")
+        assert not (res > 0 or res == -1), "glm-4v-9b tuning fail"
 
     def test_granite_vision(self):
         model_path = "/models/granite-vision-3.2-2b"
@@ -189,4 +189,4 @@ class TestSupportVLMS:
             f"cd ../.. && {self.python_path} -m auto_round "
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="granite-vision-3.2-2b tuning fail")
+        assert not (res > 0 or res == -1), "granite-vision-3.2-2b tuning fail"

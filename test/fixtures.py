@@ -10,7 +10,9 @@ from .helpers import (
     gptj_name_or_path,
     lamini_name_or_path,
     opt_name_or_path,
+    phi2_name_or_path,
     qwen_name_or_path,
+    save_tiny_model,
 )
 
 
@@ -27,13 +29,8 @@ class DataLoader:
 @pytest.fixture(scope="session")
 def tiny_opt_model_path():
     model_name_or_path = opt_name_or_path
-    test_path = os.path.dirname(__file__)
-    tiny_model_path = os.path.join(test_path, "tmp_tiny_opt_model_path")
-    model = get_tiny_model(model_name_or_path, num_layers=3)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model.save_pretrained(tiny_model_path)
-    tokenizer.save_pretrained(tiny_model_path)
-    print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
+    tiny_model_path = "./tmp_tiny_opt_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 
@@ -41,13 +38,8 @@ def tiny_opt_model_path():
 @pytest.fixture(scope="session")
 def tiny_qwen_model_path():
     model_name_or_path = qwen_name_or_path
-    test_path = os.path.dirname(__file__)
-    tiny_model_path = os.path.join(test_path, "tmp_tiny_qwen_model_path")
-    model = get_tiny_model(model_name_or_path, num_layers=3)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model.save_pretrained(tiny_model_path)
-    tokenizer.save_pretrained(tiny_model_path)
-    print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
+    tiny_model_path = "./tmp_tiny_qwen_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 
@@ -55,13 +47,8 @@ def tiny_qwen_model_path():
 @pytest.fixture(scope="session")
 def tiny_lamini_model_path():
     model_name_or_path = lamini_name_or_path
-    test_path = os.path.dirname(__file__)
-    tiny_model_path = os.path.join(test_path, "tmp_tiny_lamini_model_path")
-    model = get_tiny_model(model_name_or_path, num_layers=3)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model.save_pretrained(tiny_model_path)
-    tokenizer.save_pretrained(tiny_model_path)
-    print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
+    tiny_model_path = "./tmp_tiny_lamini_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 
@@ -69,13 +56,17 @@ def tiny_lamini_model_path():
 @pytest.fixture(scope="session")
 def tiny_gptj_model_path():
     model_name_or_path = gptj_name_or_path
-    test_path = os.path.dirname(__file__)
-    tiny_model_path = os.path.join(test_path, "tmp_tiny_gptj_model_path")
-    model = get_tiny_model(model_name_or_path, num_layers=3)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model.save_pretrained(tiny_model_path)
-    tokenizer.save_pretrained(tiny_model_path)
-    print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
+    tiny_model_path = "./tmp_tiny_gptj_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_phi2_model_path():
+    model_name_or_path = phi2_name_or_path
+    tiny_model_path = "./tmp_tiny_phi2_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 
@@ -84,7 +75,7 @@ def tiny_gptj_model_path():
 @pytest.fixture(scope="function")
 def tiny_opt_model():
     model_name_or_path = opt_name_or_path
-    return get_tiny_model(model_name_or_path, num_layers=3)
+    return get_tiny_model(model_name_or_path, num_layers=2)
 
 
 @pytest.fixture(scope="function")
@@ -96,6 +87,20 @@ def opt_model():
 
 @pytest.fixture(scope="session")
 def opt_tokenizer():
+    model_name_or_path = opt_name_or_path
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    return tokenizer
+
+
+@pytest.fixture(scope="function")
+def model():
+    model_name_or_path = opt_name_or_path
+    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, dtype="auto", trust_remote_code=True)
+    return model
+
+
+@pytest.fixture(scope="session")
+def tokenizer():
     model_name_or_path = opt_name_or_path
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     return tokenizer

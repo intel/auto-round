@@ -55,7 +55,7 @@ class TestAutoRound:
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -66,7 +66,7 @@ class TestAutoRound:
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -77,7 +77,7 @@ class TestAutoRound:
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.55)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.55
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -89,7 +89,7 @@ class TestAutoRound:
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.55)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.55
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
