@@ -8,21 +8,36 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
+from auto_round.utils import llm_load_model
+
+from ..helpers import get_model_path, get_tiny_model
 
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.save_dir = "./saved"
+    save_dir = "./saved"
 
-    @classmethod
-    def teardown_class(self):
-        shutil.rmtree(self.save_dir, ignore_errors=True)
+    def tiny_fp8_model(self):
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        model, tokenizer = llm_load_model(model_name)
+        model.model.layers = model.model.layers[:3]
+        return model, tokenizer
+
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
+        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_small_model_rtn_generation(self):
-        model_name = "/models/Qwen3-0.6B-FP8"
-        ar = AutoRound(model=model_name, iters=0)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         ar.quantize_and_save(output_dir=self.save_dir)
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
@@ -32,8 +47,8 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gguf_imatrix(self):
-        model_name = "/models/Qwen3-0.6B-FP8"
-        ar = AutoRound(model=model_name, iters=0)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
         # from llama_cpp import Llama
         #
@@ -49,8 +64,8 @@ class TestAutoRound:
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
     def test_small_model_rtn(self):
-        model_name = "/models/Qwen3-0.6B-FP8"
-        ar = AutoRound(model=model_name, iters=0)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
@@ -60,8 +75,8 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_small_model_iters1(self):
-        model_name = "/models/Qwen3-0.6B-FP8"
-        ar = AutoRound(model=model_name, iters=1)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
@@ -71,8 +86,8 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_medium_model_rtn(self):
-        model_name = "/models/Qwen3-8B-FP8"
-        ar = AutoRound(model=model_name, iters=0)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
@@ -82,9 +97,9 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_medium_model_rtn_with_lm_head(self):
-        model_name = "/models/Qwen3-8B-FP8"
+        model, tokenizer = self.tiny_fp8_model()
         layer_config = {"lm_head": {"bits": 4}}
-        ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
@@ -96,9 +111,8 @@ class TestAutoRound:
     def test_fp8_model_gguf(self):
         from llama_cpp import Llama
 
-        model_name = "Qwen/Qwen3-0.6B-FP8"
-
-        ar = AutoRound(model=model_name, iters=0)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
         for file in os.listdir(self.save_dir):
             if file.endswith(".gguf"):
@@ -108,7 +122,8 @@ class TestAutoRound:
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-        ar = AutoRound(model=model_name, iters=1)
+        model, tokenizer = self.tiny_fp8_model()
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=1)
         ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
         for file in os.listdir(self.save_dir):
             if file.endswith(".gguf"):
@@ -119,10 +134,10 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_diff_datatype(self):
-        model_name = "/models/Qwen3-0.6B-FP8"
         for scheme in ["NVFP4", "MXFP4"]:
+            model, tokenizer = self.tiny_fp8_model()
             for iters in [0, 1]:
                 print(f"Testing scheme: {scheme}, iters: {iters}")
-                ar = AutoRound(model=model_name, iters=iters, scheme=scheme)
+                ar = AutoRound(model=model, tokenizer=tokenizer, iters=iters, scheme=scheme)
                 ar.quantize_and_save(output_dir=self.save_dir)
                 shutil.rmtree(self.save_dir, ignore_errors=True)

@@ -13,12 +13,19 @@ from auto_round.testing_utils import require_gptqmodel, require_optimum, require
 
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.model_name = "/dataset/FLUX.1-dev"
+    model_name = "/dataset/FLUX.1-dev"
 
-    @classmethod
-    def teardown_class(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
+        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
@@ -69,7 +76,7 @@ class TestAutoRound:
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model
 
-        self.assertTrue(is_diffusion_model("/dataset/FLUX.1-dev"))
-        self.assertTrue(is_diffusion_model("/models/stable-diffusion-2-1"))
-        self.assertTrue(is_diffusion_model("/models/stable-diffusion-xl-base-1.0"))
-        self.assertFalse(is_diffusion_model("/models/Qwen3-8B"))
+        assert is_diffusion_model("/dataset/FLUX.1-dev")
+        assert is_diffusion_model("/models/stable-diffusion-2-1")
+        assert is_diffusion_model("/models/stable-diffusion-xl-base-1.0")
+        assert is_diffusion_model("/models/Qwen3-8B") is False

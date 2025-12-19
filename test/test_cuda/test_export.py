@@ -9,26 +9,31 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
+from ..helpers import get_model_path, get_tiny_model
+
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.model_name = "facebook/opt-125m"
-        self.save_dir = "./saved"
+    save_dir = "./saved"
 
-    @classmethod
-    def teardown_class(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
     def test_autogptq_format(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        model_path = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -53,10 +58,10 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_optimum
-    def test_autogptq_format_fp_layers(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_autogptq_format_fp_layers(self, tiny_opt_model_path, dataloader):
         layer_config = {}
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
         for n, m in model.named_modules():
             if "q_proj" in n:
                 layer_config[n] = {"bits": 16}
@@ -91,8 +96,9 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autogptq_format_qsave_fp_layers(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        model_path = get_model_path("facebook/opt-125m")
+        model = AutoModelForCausalLM.from_pretrained(model_path)
+
         layer_config = {}
         for n, m in model.named_modules():
             if "q_proj" in n:
@@ -100,8 +106,7 @@ class TestAutoRound:
 
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -141,13 +146,10 @@ class TestAutoRound:
         ##print(res)
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_format(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_autoround_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -175,12 +177,10 @@ class TestAutoRound:
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        model_path = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -209,16 +209,14 @@ class TestAutoRound:
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format_fp_qsave_layers(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model_path = get_model_path("facebook/opt-125m")
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 16},
             "model.decoder.layers.9.self_attn.v_proj": {"bits": 16},
         }
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -249,13 +247,10 @@ class TestAutoRound:
 
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_3bit_asym_torch_format(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_autoround_3bit_asym_torch_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 3, 128, False
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -278,13 +273,10 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_3bit_sym_torch_format(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_autoround_3bit_sym_torch_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 3, 128, True
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -312,12 +304,15 @@ class TestAutoRound:
 
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
-        model_name = "/models/phi-2"
+        model_name = get_model_path("microsoft/phi-2")
+        tiny_model = get_tiny_model(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
         }
         autoround = AutoRound(
-            model=model_name,
+            model=tiny_model,
+            tokenizer=tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -342,14 +337,17 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_gptq_lmhead_export(self, dataloader):
+    def test_gptq_lmhead_export(self, tiny_qwen_model_path, dataloader):
         bits, sym, group_size = 4, True, 128
-        model_name = "/models/phi-2"
+        model_name = get_model_path("microsoft/phi-2")
+        tiny_model = get_tiny_model(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
         }
         autoround = AutoRound(
-            model=model_name,
+            model=tiny_model,
+            tokenizer=tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,

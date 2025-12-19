@@ -25,8 +25,10 @@ gptj_name_or_path = get_model_path("hf-internal-testing/tiny-random-GPTJForCausa
 
 
 # Slice model into tiny model for speedup
-def get_tiny_model(model_name_or_path, num_layers=3):
-    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, dtype="auto", trust_remote_code=True)
+def get_tiny_model(model_name_or_path, num_layers=3, **kwargs):
+    kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
+    kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
+    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, **kwargs)
 
     if hasattr(model.config, "num_hidden_layers"):
         model.config.num_hidden_layers = num_layers

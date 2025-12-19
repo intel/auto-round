@@ -8,14 +8,22 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_gptqmodel
 
-from ..helpers import model_infer
+from ..helpers import get_model_path, get_tiny_model, model_infer
 
 
 class TestQuantizationConv1d:
-    @classmethod
-    def setup_class(self):
-        self.model_name = "MBZUAI/LaMini-GPT-124M"
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
+        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree("runs", ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
@@ -24,13 +32,15 @@ class TestQuantizationConv1d:
 
     @require_gptqmodel
     def test_quant(self, dataloader):
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        model_name = get_model_path("MBZUAI/LaMini-GPT-124M")
+        model = get_tiny_model(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         from auto_round import AutoRoundConfig
 
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model,
+            tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
