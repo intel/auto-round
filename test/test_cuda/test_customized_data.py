@@ -29,7 +29,7 @@ class TestCustomizedData(unittest.TestCase):
             "Explain why the sky is blue,",
         ]
 
-        inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
+        inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt")
 
         inputs = inputs["input_ids"]
         inputs = inputs.split(dim=0, split_size=1)
@@ -61,7 +61,7 @@ class TestCustomizedData(unittest.TestCase):
             "Tell me a story about a brave robot,",
             "Explain why the sky is blue,",
         ]
-        inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt").to(model.device)
+        inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt")
 
         ar = AutoRound(model_name, dataset=[inputs], seqlen=9)
         ar.quantize()
