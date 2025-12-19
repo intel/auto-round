@@ -19,7 +19,26 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import logger
+from auto_round.utils import LazyImport, logger
+
+BUILTIN_MODULES = {
+    "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
+    "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
+}
+
+
+def _import_required_replacements(model: torch.nn.Module) -> None:
+    """Scan model and trigger lazy imports for registered replacement modules."""
+    imported = set()
+
+    for _, module in model.named_modules():
+        class_name = module.__class__.__name__
+
+        if class_name in BUILTIN_MODULES and class_name not in imported:
+            # Trigger import by accessing the LazyImport object
+            _ = BUILTIN_MODULES[class_name].__name__  # or any attribute
+            imported.add(class_name)
+            logger.debug(f"Loaded replacement module for {class_name}")
 
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
@@ -125,10 +144,11 @@ def apply_replacements(
     Returns:
         The model with modules replaced.
     """
+    _import_required_replacements(model)
     replaced = {}
 
     # Step 1: Collect all modules that need replacement
-    logger.info("Scanning for modules to replace")
+    logger.debug("Scanning for modules to replace")
     modules_to_replace = []
     for name, module in model.named_modules():
         class_name = (
@@ -151,7 +171,7 @@ def apply_replacements(
             model.set_submodule(name, replacement)
             replaced[name] = (module, replacement)
     else:
-        logger.info("No modules found for replacement")
+        logger.debug("No modules found for replacement")
 
     # Log what was replaced
     if replaced:
