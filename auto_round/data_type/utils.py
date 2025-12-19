@@ -232,9 +232,7 @@ def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    # breakpoint()
     fp8 = ((torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, torch.float8_e4m3fn)[0]).to(x.dtype) - x).detach() + x
-    # htcore.mark_step()
     return fp8
 
 
