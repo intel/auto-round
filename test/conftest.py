@@ -7,9 +7,9 @@ import pytest
 from .fixtures import (
     dataloader,
     opt_model,
+    opt_tokenizer,
     tiny_opt_model,
     tiny_opt_model_path,
-    opt_tokenizer,
 )
 from .helpers import model_infer
 

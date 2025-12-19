@@ -1,4 +1,5 @@
 import os
+
 import pytest
 import torch
 import transformers
@@ -16,6 +17,7 @@ def get_model_path(model_name: str) -> str:
     else:
         return model_name
 
+
 opt_name_or_path = get_model_path("facebook/opt-125m")
 qwen_name_or_path = get_model_path("Qwen/Qwen3-0.6B")
 lamini_name_or_path = get_model_path("MBZUAI/LaMini-GPT-124M")
@@ -28,7 +30,7 @@ def get_tiny_model(model_name_or_path, num_layers=3):
 
     if hasattr(model.config, "num_hidden_layers"):
         model.config.num_hidden_layers = num_layers
-    
+
     def slice_layers(module):
         for name, child in module.named_children():
             if isinstance(child, torch.nn.ModuleList) and len(child) > num_layers:
