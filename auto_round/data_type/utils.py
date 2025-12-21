@@ -300,11 +300,16 @@ def update_fused_layer_global_scales(
         if not scales:
             return
 
-        global_scale = torch.min(torch.stack(scales), dim=0).values
+        # Move all scales to the same device before stacking
+        target_device = scales[0].device
+        scales_on_device = [s.to(target_device) for s in scales]
+        global_scale = torch.min(torch.stack(scales_on_device), dim=0).values
 
         for proj in (submodule.q_proj, submodule.k_proj, submodule.v_proj):
             if hasattr(proj, global_scale_name):
-                setattr(proj, global_scale_name, global_scale.clone())
+                # Move global_scale to the same device as the projection's current scale
+                proj_scale = getattr(proj, global_scale_name)
+                setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
 
         return
 
