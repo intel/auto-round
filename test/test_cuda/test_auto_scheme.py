@@ -10,6 +10,7 @@ from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import multi_card
 from auto_round.utils import get_module
+from ..helpers import get_model_path
 
 from ..helpers import get_model_path, get_tiny_model
 

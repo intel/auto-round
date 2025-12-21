@@ -54,7 +54,7 @@ class TestAutoRound:
     def test_vllm(self):
         from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM(get_model_path("Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16"), nsamples=1, iters=1, seqlen=2)
+        ar = AutoRoundMLLM(get_model_path("Qwen/Qwen2-VL-2B-Instruct"), scheme="W2A16", nsamples=1, iters=1, seqlen=2)
         assert ar.bits == 2
         assert ar.act_bits == 16
 
