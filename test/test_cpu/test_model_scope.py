@@ -28,18 +28,14 @@ class TestModelScope:
         if os.path.exists(self.cache_path):
             shutil.rmtree(self.cache_path, ignore_errors=True)
 
-        return super().teardown_class()
-
-    def test_llm(self):
+    def test_llm(self, dataloader):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
-        autoround = AutoRound(
-            model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=self.dataset
-        )
+        autoround = AutoRound(model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=dataloader)
         autoround.quantize_and_save()
 
-    def test_mllm(self):
+    def test_mllm(self, dataloader):
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         autoround = AutoRound(
-            model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=self.dataset, batch_size=2
+            model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=dataloader, batch_size=2
         )
         autoround.quantize_and_save(self.saved_path)

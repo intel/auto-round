@@ -6,23 +6,18 @@ import torch
 import transformers
 
 from .helpers import (
+    DataLoader,
+    deepseek_v2_name_or_path,
     get_tiny_model,
     gptj_name_or_path,
     lamini_name_or_path,
     opt_name_or_path,
     phi2_name_or_path,
+    qwen_moe_name_or_path,
     qwen_name_or_path,
+    qwen_vl_name_or_path,
     save_tiny_model,
 )
-
-
-class DataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
 
 
 # Create tiny model path fixtures for testing
@@ -30,15 +25,6 @@ class DataLoader:
 def tiny_opt_model_path():
     model_name_or_path = opt_name_or_path
     tiny_model_path = "./tmp_tiny_opt_model_path"
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
-    yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
-
-
-@pytest.fixture(scope="session")
-def tiny_qwen_model_path():
-    model_name_or_path = qwen_name_or_path
-    tiny_model_path = "./tmp_tiny_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
@@ -67,6 +53,42 @@ def tiny_phi2_model_path():
     model_name_or_path = phi2_name_or_path
     tiny_model_path = "./tmp_tiny_phi2_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_deepseek_v2_model_path():
+    model_name_or_path = deepseek_v2_name_or_path
+    tiny_model_path = "./tmp_tiny_deepseek_v2_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen_model_path():
+    model_name_or_path = qwen_name_or_path
+    tiny_model_path = "./tmp_tiny_qwen_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen_moe_model_path():
+    model_name_or_path = qwen_moe_name_or_path
+    tiny_model_path = "./tmp_tiny_qwen_moe_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen_vl_model_path():
+    model_name_or_path = qwen_vl_name_or_path
+    tiny_model_path = "./tmp_tiny_qwen_vl_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 

@@ -37,9 +37,9 @@ class TestAutoScheme:
         from auto_round.auto_scheme.utils import compute_avg_bits_for_model
         from auto_round.utils import get_module
 
-        target_bits = 3.0
+        target_bits = 3.5
         model_name = tiny_opt_model_path
-        scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))
+        scheme = AutoScheme(avg_bits=target_bits, options=("W2A16", "W4A16", "BF16"))
         user_layer_config = {"model.decoder.layers.1.fc1": {"bits": 8, "group_size": 32, "sym": False}}
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()

@@ -2,7 +2,7 @@ import os
 import shutil
 import sys
 
-import pytest
+from ..helpers import get_model_path
 
 
 class TestAutoRoundCmd:
@@ -56,13 +56,13 @@ class TestAutoRoundCmd:
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --mllm --model /tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct --iter 2 --nsamples 2 --seqlen 32 --format auto_round --output_dir ./saved"
+            f"cd ../.. && {python_path} -m auto_round --mllm --model {get_model_path('Qwen/Qwen2-VL-2B-Instruct')} --iter 2 --nsamples 2 --seqlen 32 --format auto_round --output_dir ./saved"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --mllm --iter 2 --nsamples 2 --model /tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct --seqlen 32 --format auto_round"
+            f"cd ../.. && {python_path} -m auto_round --mllm --iter 2 --nsamples 2 --model {get_model_path('Qwen/Qwen2-VL-2B-Instruct')} --seqlen 32 --format auto_round"
             " --quant_nontext_module --output_dir ./saved "
         )
         if res > 0 or res == -1:

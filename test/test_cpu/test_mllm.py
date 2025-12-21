@@ -36,12 +36,10 @@ class TestAutoRoundMLLM:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-        return super().teardown_class()
-
-    def test_tune(self):
+    def test_tune(self, tiny_qwen_vl_model_path):
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
-            model=self.model_name,
+            model=tiny_qwen_vl_model_path,
             bits=bits,
             group_size=group_size,
             nsamples=1,
@@ -54,11 +52,11 @@ class TestAutoRoundMLLM:
         autoround.save_quantized("./saved/", format="auto_gptq", inplace=False)
         autoround.save_quantized("./saved/", format="auto_round", inplace=False)
 
-    def test_quant_vision(self):  ## bug need to fix
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_quant_vision(self, tiny_qwen_vl_model_path):  ## bug need to fix
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_vl_model_path)
+        processor = AutoProcessor.from_pretrained(tiny_qwen_vl_model_path, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
+            tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
@@ -109,11 +107,11 @@ class TestAutoRoundMLLM:
         )
         assert len(dataset.questions) == 512
 
-    def test_diff_dataset(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_diff_dataset(self, tiny_qwen_vl_model_path):
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_vl_model_path)
+        processor = AutoProcessor.from_pretrained(tiny_qwen_vl_model_path, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
+            tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
         bits, group_size = 4, 128
         dataset = ["dataset test", "list test"]
@@ -131,13 +129,13 @@ class TestAutoRoundMLLM:
         )
         autoround.quantize()
 
-    def test_pure_text_model_check(self):
+    def test_pure_text_model_check(self, tiny_qwen_vl_model_path):
         from transformers import AutoModelForCausalLM
 
         from auto_round.utils import is_pure_text_model
 
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
+            tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
         assert not is_pure_text_model(model)
         model = AutoModelForCausalLM.from_pretrained(opt_name_or_path, trust_remote_code=True)

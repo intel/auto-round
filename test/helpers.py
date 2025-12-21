@@ -4,6 +4,8 @@ import pytest
 import torch
 import transformers
 
+from auto_round.utils import llm_load_model
+
 
 # Automatic choose local path or model name.
 def get_model_path(model_name: str) -> str:
@@ -23,6 +25,9 @@ qwen_name_or_path = get_model_path("Qwen/Qwen3-0.6B")
 lamini_name_or_path = get_model_path("MBZUAI/LaMini-GPT-124M")
 gptj_name_or_path = get_model_path("hf-internal-testing/tiny-random-GPTJForCausalLM")
 phi2_name_or_path = get_model_path("microsoft/phi-2")
+deepseek_v2_name_or_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
+qwen_moe_name_or_path = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
+qwen_vl_name_or_path = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
 
 
 # Slice model into tiny model for speedup
@@ -44,7 +49,7 @@ def get_tiny_model(model_name_or_path, num_layers=3, **kwargs):
                 return True
         return False
 
-    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, dtype="auto", trust_remote_code=True)
+    model, tokenizer = llm_load_model(model_name_or_path)
     slice_layers(model)
 
     if hasattr(model.config, "num_hidden_layers"):
@@ -56,11 +61,11 @@ def get_tiny_model(model_name_or_path, num_layers=3, **kwargs):
 
 
 # for fixture usage only
-def save_tiny_model(model_name_or_path, tiny_model_path):
-    model = get_tiny_model(model_name_or_path, num_layers=2)
+def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2):
+    model = get_tiny_model(model_name_or_path, num_layers=num_layers)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     test_path = os.path.dirname(__file__)
-    tiny_model_path = os.path.join(test_path, tiny_model_path)
+    tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
     model.save_pretrained(tiny_model_path)
     tokenizer.save_pretrained(tiny_model_path)
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
@@ -109,3 +114,92 @@ def model_infer(model, tokenizer, apply_chat_template=False):
         print(f"Generated: {decoded_outputs[i]}")
         print("-" * 50)
     return decoded_outputs[0]
+
+
+# Dummy dataloader for testing
+class DataLoader:
+    def __init__(self):
+        self.batch_size = 1
+
+    def __iter__(self):
+        for i in range(2):
+            yield torch.ones([1, 10], dtype=torch.long)
+
+
+fixed_input = torch.tensor([[10, 20, 30, 40, 50]], dtype=torch.long)
+
+
+def get_output(model_name_or_path):
+    """Get model output for fixed input."""
+    model, tokenizer = llm_load_model(model_name_or_path)
+    outputs = model(fixed_input)[0]
+    return outputs.detach().cpu()
+
+
+def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similarity", threshold=0.98, k=5, verbose=True):
+    """
+    Compare outputs from two models using specified metric and return pass/fail.
+
+    Args:
+        model_path_1: Path to first model
+        model_path_2: Path to second model
+        metric: Metric to use - "mse", "cosine_similarity"/"cos_sim", or "topk"
+        threshold: Threshold value for pass/fail
+        k: K value for top-k metric (only used when metric="topk")
+        verbose: Whether to print detailed results
+
+    Returns:
+        bool: True if metric passes threshold, False otherwise
+    """
+    if verbose:
+        print(f"\n{'='*70}")
+        print("Comparing Model Outputs")
+        print(f"{'='*70}")
+        print(f"Model 1: {model_path_1}")
+        print(f"Model 2: {model_path_2}")
+        print(f"Metric:  {metric} | Threshold: {threshold}" + (f" | K: {k}" if "top" in metric.lower() else ""))
+        print(f"{'='*70}\n")
+
+    output_1 = get_output(model_path_1)
+    output_2 = get_output(model_path_2)
+    metric = metric.lower().replace("-", "_")
+
+    # Calculate metric and check threshold
+    if metric == "mse":
+        value = torch.mean((output_1.float() - output_2.float()) ** 2).item()
+        passed = value <= threshold
+        if verbose:
+            print(f"MSE: {value:.6f} | Threshold: <= {threshold} | {'✓ PASS' if passed else '✗ FAIL'}\n")
+
+    elif metric in ["cosine_similarity", "cos_sim", "cosine"]:
+        out1 = output_1.float().flatten()
+        out2 = output_2.float().flatten()
+        value = torch.nn.functional.cosine_similarity(out1.unsqueeze(0), out2.unsqueeze(0)).item()
+        passed = value >= threshold
+        if verbose:
+            print(f"Cosine Similarity: {value:.6f} | Threshold: >= {threshold} | {'✓ PASS' if passed else '✗ FAIL'}\n")
+
+    elif metric in ["topk", "top_k"]:
+        _, topk_1 = torch.topk(output_1, k=min(k, output_1.size(-1)), dim=-1)
+        _, topk_2 = torch.topk(output_2, k=min(k, output_2.size(-1)), dim=-1)
+
+        total_agreement = 0
+        total_positions = topk_1.numel() // topk_1.size(-1)
+
+        for i in range(topk_1.size(0)):
+            for j in range(topk_1.size(1)):
+                set1 = set(topk_1[i, j].tolist())
+                set2 = set(topk_2[i, j].tolist())
+                total_agreement += len(set1 & set2) / k
+
+        value = total_agreement / total_positions
+        passed = value >= threshold
+        if verbose:
+            print(
+                f"Top-{k} Agreement: {value:.4%} | Threshold: >= {threshold:.4%} | {'✓ PASS' if passed else '✗ FAIL'}\n"
+            )
+
+    else:
+        raise ValueError(f"Unknown metric: {metric}. Choose from: 'mse', 'cosine_similarity', 'topk'")
+
+    return passed

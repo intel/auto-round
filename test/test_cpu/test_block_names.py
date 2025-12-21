@@ -178,12 +178,12 @@ class TestQuantizationBlocks:
         assert quant_config.block_name_to_quantize is not None
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_mm_block_name(self):
+    def test_mm_block_name(self, tiny_qwen_vl_model_path):
         from transformers import Qwen2VLForConditionalGeneration
 
         from auto_round.utils import get_block_names
 
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+        model_name = tiny_qwen_vl_model_path
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
         assert len(block_name) == 2

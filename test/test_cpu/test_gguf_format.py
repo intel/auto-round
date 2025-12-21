@@ -8,7 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ..helpers import get_model_path
+from ..helpers import get_model_path, get_tiny_model
 
 
 class TestGGUF:
@@ -26,7 +26,7 @@ class TestGGUF:
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model /tf_dataset/auto_round/models/benzart/gemma-2b-it-fine-tuning-for-code-test "
+            f"cd ../.. && {python_path} -m auto_round --model {get_model_path('benzart/gemma-2b-it-fine-tuning-for-code-test')} "
             f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
@@ -62,39 +62,12 @@ class TestGGUF:
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
-        # from auto_round.eval.evaluation import simple_evaluate_user_model
-        # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
-        # # 0.246
-        # assert result['results']['openbookqa']['acc,none'] > 0.23
         shutil.rmtree("./saved", ignore_errors=True)
-
-    # def test_q4_1(self):
-    #     bits, group_size, sym = 4, 32, False
-    #     autoround = AutoRound(
-    #         self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
-    #     )
-    #     quantized_model_path = "./saved"
-    #
-    #     autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
-    #     gguf_file = os.listdir(quantized_model_path)[0]
-    #     model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-    #     text = "There is a girl who likes adventure,"
-    #     inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-    #     print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-    #
-    #     # from auto_round.eval.evaluation import simple_evaluate_user_model
-    #     # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
-    #     # # 0.23
-    #     # assert result['results']['openbookqa']['acc,none'] > 0.22
-    #     shutil.rmtree("./saved", ignore_errors=True)
 
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model_name,
-            # bits=bits,
-            # group_size=group_size,
-            # sym=sym,
             iters=1,
             nsamples=1,
             seqlen=10,
@@ -110,78 +83,6 @@ class TestGGUF:
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-
-        # model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-        # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        # autoround = AutoRound(
-        #     model,
-        #     self.tokenizer,
-        #     bits=3,
-        #     group_size=16,
-        #     sym=True,
-        #     iters=1,
-        #     nsamples=1,
-        #     data_type="int_sym_dq",
-        #     super_group_size=16,
-        #     super_bits=6,
-        # )
-        quantized_model_path = "./saved"
-        # autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
-        # from auto_round.eval.evaluation import simple_evaluate_user_model
-        # gguf_file = os.listdir("saved")[0]
-        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai", eval_model_dtype="bf16")
-        # assert result['results']['lambada_openai']['acc,none'] > 0.5
-        shutil.rmtree("./saved", ignore_errors=True)
-
-    #
-    # def test_q5_k(self):
-    #     model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-    #     autoround = AutoRound(
-    #         model,
-    #         self.tokenizer,
-    #         bits=5,
-    #         group_size=32,
-    #         sym=False,
-    #         iters=1,
-    #         nsamples=1,
-    #         data_type="int_asym_dq",
-    #         super_group_size=8,
-    #         super_bits=6,
-    #     )
-    #     quantized_model_path = "./saved"
-    #     autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
-    #     gguf_file = os.listdir("saved")[0]
-    #     model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-    #     text = "There is a girl who likes adventure,"
-    #     inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-    #     print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-    #     shutil.rmtree("./saved", ignore_errors=True)
-
-    # def test_q6_k(self):
-    #     model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-    #     autoround = AutoRound(
-    #         model,
-    #         self.tokenizer,
-    #         bits=6,
-    #         group_size=16,
-    #         sym=True,
-    #         iters=1,
-    #         nsamples=1,
-    #         data_type="int_sym_dq",
-    #         super_group_size=16,
-    #         super_bits=8,
-    #     )
-    #     quantized_model_path = "./saved"
-    #     autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k")
-    #     gguf_file = os.listdir("saved")[0]
-    #     model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-    #     text = "There is a girl who likes adventure,"
-    #     inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-    #     print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-    #     shutil.rmtree("./saved", ignore_errors=True)
 
     def test_gguf_baseline(self):
         model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
@@ -207,28 +108,6 @@ class TestGGUF:
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-        #
-        # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        # autoround = AutoRound(
-        #     model,
-        #     self.tokenizer,
-        #     bits=5,
-        #     group_size=32,
-        #     sym=True,
-        #     iters=0,
-        #     nsamples=8,
-        #     data_type="int_asym_dq",
-        #     super_group_size=8,
-        #     super_bits=6,
-        #     disable_opt_rtn=True,
-        # )
-        # quantized_model_path = "./saved"
-        # autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q5_k_s,fake")
-        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path + "/fake", device_map="auto")
-        # text = "There is a girl who likes adventure,"
-        # inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-        # print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-        # shutil.rmtree("./saved", ignore_errors=True)
 
     def test_q4_k_m(self, dataloader):
         model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
@@ -307,8 +186,8 @@ class TestGGUF:
             assert False, "cmd line test fail, please have a check"
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    def test_vlm_gguf(self):
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+    def test_vlm_gguf(self, tiny_qwen_vl_model_path):
+        model_name = tiny_qwen_vl_model_path
         from auto_round import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
 

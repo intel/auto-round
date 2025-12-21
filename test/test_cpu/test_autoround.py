@@ -624,16 +624,6 @@ class TestAutoRound:
             )
             autoround.quantize()
 
-    # def test_fp8_model_input_rtn_generation(self):
-    #     model_name = "Qwen/Qwen3-0.6B-FP8"
-    #     ar = AutoRound(model=model_name, iters=0)
-    #     ar.quantize_and_save(output_dir=self.save_folder)
-    #     model = AutoModelForCausalLM.from_pretrained(self.save_folder, torch_dtype="auto", trust_remote_code=True)
-    #     tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-    #     text = "There is a girl who likes adventure,"
-    #     inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-
     def test_dequant_fp8_weight(self):
         from auto_round.utils import dequant_block_fp8_weight
 
@@ -655,13 +645,13 @@ class TestAutoRound:
 
     def test_mixed_bit_setting(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
-        layer_config = {"model.decoder.layers.7.fc1": {"bits": 8, "act_bits": 8}}
+        layer_config = {"model.decoder.layers.1.fc1": {"bits": 8, "act_bits": 8}}
         ar = AutoRound(model_name, data_type="mx_fp4", act_bits=4, iters=0, layer_config=layer_config)
         ar.quantize()
         layer_config = ar.layer_config
         if (
-            layer_config["model.decoder.layers.7.fc1"]["bits"] != 8
-            or layer_config["model.decoder.layers.7.fc1"]["act_bits"] != 8
+            layer_config["model.decoder.layers.1.fc1"]["bits"] != 8
+            or layer_config["model.decoder.layers.1.fc1"]["act_bits"] != 8
         ):
             raise ValueError("mixed bits is not correct")
 
@@ -727,8 +717,8 @@ class TestAutoRound:
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
-    def test_compressor(self):
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+    def test_compressor(self, tiny_qwen_vl_model_path):
+        model_name = tiny_qwen_vl_model_path
         ar = AutoRound(model_name, enable_adam=True)
         assert ar.optimizer == torch.optim.AdamW
         assert ar.mllm
