@@ -151,6 +151,7 @@ class QuantLinearAWQ(nn.Module):
         raw_input_dtype = x.dtype
         if x.device.type == "cpu":
             odt = torch.float32
+            self.bias = self.bias.to(torch.float32)
             if raw_input_dtype != torch.float32:
                 x = x.to(torch.float32)
         else:
@@ -160,12 +161,11 @@ class QuantLinearAWQ(nn.Module):
         x = x.view(-1, x.shape[-1])  # convert xd to 2d
         out_2d_shape = x.shape[:-1] + (self.out_features,)
         outputs = torch.empty(out_2d_shape, device=x.device, dtype=odt)
-        bias = self.bias if self.bias is not None else torch.empty(0, dtype=torch.float)
 
         ark.woq_linear(
             x,
             self.qweight,
-            bias,
+            self.bias,
             outputs,
             self.cdt,  # compute_dtype
             self.wdt,  # weight_dtype
@@ -174,7 +174,7 @@ class QuantLinearAWQ(nn.Module):
             self.group_size,
         )
         if x.device.type == "xpu":
-            outputs = outputs + bias
+            outputs = outputs + self.bias
         return outputs.to(raw_input_dtype).view(out_shape)
 
     def extra_repr(self) -> str:
@@ -300,10 +300,6 @@ class QuantLinear(nn.Module):
             self.group_size,
         )
 
-        # self.revert_wei = torch.zeros(self.infeatures, self.outfeatures, dtype=scales.dtype, device=self.qweight.device)
-        # # print(packw, packw.device, packw.dtype)
-        # ark.dequantize_packed_weight(
-        #     self.qweight, self.revert_wei, False, self.cdt, self.wdt, self.sdt, self.group_size, self.outfeatures, self.infeatures)
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
@@ -312,11 +308,14 @@ class QuantLinear(nn.Module):
                 self.bias = self.bias.to(torch.float32)
             else:
                 self.bias = self.bias.to(torch.float16)
+        else:
+            self.bias = torch.Tensor()
 
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
         if x.device.type == "cpu":
             odt = torch.float32
+            self.bias = self.bias.to(torch.float32)
             if raw_input_dtype != torch.float32:
                 x = x.to(torch.float32)
         else:
@@ -326,12 +325,11 @@ class QuantLinear(nn.Module):
         x = x.view(-1, x.shape[-1])  # convert xd to 2d
         out_2d_shape = x.shape[:-1] + (self.outfeatures,)
         outputs = torch.empty(out_2d_shape, device=x.device, dtype=odt)
-        bias = self.bias if self.bias is not None else torch.empty(0, dtype=torch.float)
 
         ark.woq_linear(
             x,
             self.qweight,
-            bias,
+            self.bias,
             outputs,
             self.cdt,  # compute_dtype
             self.wdt,  # weight_dtype
@@ -340,7 +338,7 @@ class QuantLinear(nn.Module):
             self.group_size,
         )
         if x.device.type == "xpu":
-            outputs = outputs + bias
+            outputs = outputs + self.bias
         return outputs.to(raw_input_dtype).view(out_shape)
 
 
