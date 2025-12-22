@@ -177,6 +177,7 @@ gptqmodel_marlin_feature_checker = functools.partial(
 
 mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
 
+ark_feature_checker = functools.partial(in_feature_checker_group_size)
 
 def fp8_static_scheme_checker(
     in_feature: int,
@@ -438,13 +439,29 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
 )
 
 BackendInfos["auto_round_kernel"] = BackendInfo(
-    device=["cpu", "xpu"],
-    sym=[True],
+    device=["cpu"],
+    sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[2, 4, 8],
     group_size=None,
     priority=6,
-    checkers=[],
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
+)
+
+BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
+    device=["xpu"],
+    sym=[True],
+    packing_format=GPTQ_FORMAT_NO_ZP,
+    bits=[4, 8],
+    group_size=None,
+    priority=6,
+    checkers=[ark_feature_checker],
     alias=["ark"],
     compute_dtype=["float32", "float16"],
     data_type=["int"],
@@ -454,13 +471,29 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
 )
 
 BackendInfos["auto_round_kernel_zp"] = BackendInfo(
-    device=["cpu", "xpu"],
-    sym=[True],
+    device=["cpu"],
+    sym=[True, False],
     packing_format=GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
     priority=6,
-    checkers=[],
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
+)
+
+BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
+    device=["xpu"],
+    sym=[True],
+    packing_format=GPTQ_FORMAT,
+    bits=[4, 8],
+    group_size=None,
+    priority=6,
+    checkers=[ark_feature_checker],
     alias=["ark"],
     compute_dtype=["float32", "float16"],
     data_type=["int"],
@@ -476,7 +509,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     bits=[2, 4, 8],
     group_size=None,
     priority=6,
-    checkers=[],
+    checkers=[ark_feature_checker],
     alias=["ark"],
     compute_dtype=["float32", "float16"],
     data_type=["int"],
@@ -492,7 +525,7 @@ BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     bits=[4, 8],
     group_size=None,
     priority=6,
-    checkers=[],
+    checkers=[ark_feature_checker],
     alias=["ark"],
     compute_dtype=["float32", "float16"],
     data_type=["int"],
