@@ -55,8 +55,7 @@ class QuantLinearAWQ(nn.Module):
         self.scale_dtype = torch.float32
         ark.set_threads(torch.get_num_threads())
 
-        # quick sanity check (make sure alignment)
-        if not (self.in_features % self.group_size == 0 and out_features % (32 // self.w_bit) == 0):
+        if not self.in_features % self.group_size == 0:
             raise NotImplementedError("")
 
         self.pack_num = 32 // self.w_bit
