@@ -14,6 +14,7 @@ from .helpers import (
     lamini_name_or_path,
     opt_name_or_path,
     phi2_name_or_path,
+    qwen_2_5_vl_name_or_path,
     qwen_moe_name_or_path,
     qwen_name_or_path,
     qwen_vl_name_or_path,
@@ -107,6 +108,15 @@ def tiny_qwen_moe_model_path():
 def tiny_qwen_vl_model_path():
     model_name_or_path = qwen_vl_name_or_path
     tiny_model_path = "./tmp_tiny_qwen_vl_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen_2_5_vl_model_path():
+    model_name_or_path = qwen_2_5_vl_name_or_path
+    tiny_model_path = "./tmp_tiny_qwen_2_5_vl_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)

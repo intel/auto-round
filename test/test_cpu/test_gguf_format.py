@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ..helpers import get_tiny_model, qwen_name_or_path
+from ..helpers import get_tiny_model, qwen_name_or_path, qwen_vl_name_or_path
 
 
 class TestGGUF:
@@ -185,8 +185,10 @@ class TestGGUF:
             assert False, "cmd line test fail, please have a check"
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    def test_vlm_gguf(self, tiny_qwen_vl_model_path):
-        model_name = tiny_qwen_vl_model_path
+    def test_vlm_gguf(self):
+        # TODO: Using two-layers tiny model will return ValueError:
+        # Can not map tensor 'model.layers.10.input_layernorm.weight'
+        model_name = qwen_vl_name_or_path
         from auto_round import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
 

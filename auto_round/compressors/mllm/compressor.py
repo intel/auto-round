@@ -205,6 +205,9 @@ class MLLMCompressor(BaseCompressor):
         if hasattr(model, "name_or_path") and any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
             template = "mistral3_2"
         if iters > 0:
+            # TODO: Remove after fixing https://github.com/huggingface/transformers/issues/43005
+            model.config.model_type = model.config.to_dict()["model_type"]
+
             self.template = template if template is not None else model.config.model_type
             if not isinstance(dataset, torch.utils.data.DataLoader):
                 self.template = get_template(

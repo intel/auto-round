@@ -29,6 +29,7 @@ phi2_name_or_path = get_model_path("microsoft/phi-2")
 deepseek_v2_name_or_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
 qwen_moe_name_or_path = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
 qwen_vl_name_or_path = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+qwen_2_5_vl_name_or_path = get_model_path("Qwen/Qwen2.5-VL-3B-Instruct")
 gemma_name_or_path = get_model_path("benzart/gemma-2b-it-fine-tuning-for-code-test")
 
 
@@ -51,6 +52,11 @@ def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
     kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
     if is_mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path, **kwargs)
+        if hasattr(model.config, "vision_config"):
+            if hasattr(model.config.vision_config, "num_hidden_layers"):  # mistral, etc.
+                model.config.num_hidden_layers = num_layers
+            elif hasattr(model.config.vision_config, "depth"):  # qwen vl
+                model.config.vision_config.depth = num_layers
     else:
         model, tokenizer = llm_load_model(model_name_or_path, **kwargs)
     slice_layers(model)
@@ -80,8 +86,8 @@ def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=F
     tokenizer.save_pretrained(tiny_model_path)
     if is_mllm:
         processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
-        processor.save_pretrained(tiny_model_path)
         image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
+        processor.save_pretrained(tiny_model_path)
         image_processor.save_pretrained(tiny_model_path)
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
     return tiny_model_path

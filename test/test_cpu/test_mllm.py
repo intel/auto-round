@@ -205,10 +205,10 @@ class TestAutoRoundMLLM:
         )
         print(output_text[0])
 
-    def test_qwen2_5(self, tiny_qwen_vl_model_path):
+    def test_qwen2_5(self, tiny_qwen_2_5_vl_model_path):
         from auto_round.utils import mllm_load_model
 
-        model_name = tiny_qwen_vl_model_path
+        model_name = tiny_qwen_2_5_vl_model_path
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
         autoround = AutoRoundMLLM(
             model,
