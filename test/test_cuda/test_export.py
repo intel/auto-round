@@ -342,6 +342,7 @@ class TestAutoRound(unittest.TestCase):
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
@@ -379,4 +380,3 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
