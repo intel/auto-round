@@ -4,29 +4,29 @@ import sys
 
 import pytest
 import torch
+import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ..helpers import get_model_path, get_tiny_model
+from ..helpers import get_tiny_model, qwen_name_or_path
 
 
 class TestGGUF:
 
     @classmethod
     def setup_class(self):
-        self.model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(qwen_name_or_path, trust_remote_code=True)
 
     @classmethod
     def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_basic_usage(self):
+    def test_basic_usage(self, tiny_gemma_model_path, tiny_qwen_model_path):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {get_model_path('benzart/gemma-2b-it-fine-tuning-for-code-test')} "
+            f"cd ../.. && {python_path} -m auto_round --model {tiny_gemma_model_path} "
             f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
@@ -34,17 +34,17 @@ class TestGGUF:
         shutil.rmtree("./saved", ignore_errors=True)
 
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {self.model_name}"
+            f"cd ../.. && {python_path} -m auto_round --model {tiny_qwen_model_path}"
             f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_q4_0(self):
+    def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            self.model_name,
+            tiny_qwen_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -61,13 +61,12 @@ class TestGGUF:
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_func(self):
+    def test_func(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            self.model_name,
+            tiny_qwen_model_path,
             iters=1,
             nsamples=1,
             seqlen=10,
@@ -84,8 +83,8 @@ class TestGGUF:
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_gguf_baseline(self):
-        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
+    def test_gguf_baseline(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -103,16 +102,16 @@ class TestGGUF:
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_q4_k_m(self, dataloader):
-        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    def test_q4_k_m(self, tiny_qwen_model_path, dataloader):
+        model = get_tiny_model(qwen_name_or_path, num_layers=4)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(qwen_name_or_path, trust_remote_code=True)
         layer_config = {
             "lm_head": {
                 "bits": 4,
@@ -123,8 +122,8 @@ class TestGGUF:
                 "super_group_size": 8,
             },
             "model.embed_tokens": {"bits": 6, "group_size": 32, "super_bits": 6, "super_group_size": 8},
-            "model.layers.12.mlp.gate_proj": {"bits": 3},
-            "model.layers.10.mlp.gate_proj": {"bits": 8},
+            "model.layers.3.mlp.gate_proj": {"bits": 3},
+            "model.layers.1.mlp.gate_proj": {"bits": 8},
         }
         autoround = AutoRound(
             model,
@@ -138,26 +137,26 @@ class TestGGUF:
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
-        assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"] == 16
-        assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"] == "int_sym_dq"
-        assert autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"] == "int_asym_dq"
+        assert autoround.layer_config["model.layers.2.self_attn.v_proj"]["super_group_size"] == 16
+        assert autoround.layer_config["model.layers.2.self_attn.v_proj"]["data_type"] == "int_sym_dq"
+        assert autoround.layer_config["model.layers.0.self_attn.v_proj"]["data_type"] == "int_asym_dq"
         assert autoround.model.model.layers[0].self_attn.v_proj.bits == 6
-        assert autoround.model.model.layers[12].self_attn.v_proj.bits == 4
+        assert autoround.model.model.layers[3].self_attn.v_proj.bits == 4
         assert autoround.model.model.embed_tokens.bits == 6
         assert autoround.model.model.embed_tokens.group_size == 16
-        assert autoround.model.model.layers[12].mlp.gate_proj.bits == 3
-        assert autoround.model.model.layers[10].mlp.gate_proj.bits == 8
-        assert autoround.layer_config["model.layers.10.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
+        assert autoround.model.model.layers[3].mlp.gate_proj.bits == 3
+        assert autoround.model.model.layers[1].mlp.gate_proj.bits == 8
+        assert autoround.layer_config["model.layers.1.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
         shutil.rmtree("./saved", ignore_errors=True)
 
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_model_path, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(model, tokenizer, iters=0, nsamples=1, seqlen=128, disable_opt_rtn=False)
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_all_format(self):
-        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
+    def test_all_format(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
         python_path = sys.executable
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
         for gguf_format in ["gguf:q4_k_m"]:
@@ -211,7 +210,7 @@ class TestGGUF:
                 assert abs(file_size - 892) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_qtype_setting(self):
+    def test_qtype_setting(self, tiny_qwen_model_path):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
         # Qwen3-0.6B output q6_k, token_embed q4_0  448M
         # Qwen3-8B output q6_k, token_embed q4_0 4.5G
@@ -219,7 +218,7 @@ class TestGGUF:
         from auto_round.compressors.utils import set_layer_config
         from auto_round.export.export_to_gguf.config import ModelType
 
-        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
+        model_name = tiny_qwen_model_path
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
         ar.layer_config, _, _ = set_layer_config(
@@ -238,7 +237,7 @@ class TestGGUF:
         assert ar.layer_config["model.embed_tokens"]["bits"] == 8
         assert "lm_head" not in ar.layer_config
 
-        model_name = "Qwen/Qwen3-0.6B"
+        model_name = tiny_qwen_model_path
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
         ar.layer_config, _, _ = set_layer_config(

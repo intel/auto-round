@@ -223,8 +223,8 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    def test_lm_head_and_mix_dtype(self):
-        model_name = get_model_path("qwen/Qwen3-8B")
+    def test_lm_head_and_mix_dtype(self, tiny_untied_qwen_model_path):
+        model_name = tiny_untied_qwen_model_path
         model = get_tiny_model(model_name)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         target_bits = 6

@@ -1,18 +1,16 @@
 import shutil
 
-import pytest
-import torch
+import transformers
 
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
-from ..helpers import get_model_path, opt_name_or_path, qwen_name_or_path
+from ..helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path
 
 
 class TestAutoRound:
     @classmethod
     def setup_class(self):
-        self.model_name = opt_name_or_path
         self.save_folder = "./saved"
 
     @classmethod
@@ -20,9 +18,9 @@ class TestAutoRound:
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_gguf(self, dataloader):
+    def test_gguf(self, tiny_qwen_model_path, dataloader):
         ar = AutoRound(
-            qwen_name_or_path,
+            tiny_qwen_model_path,
             scheme="W2A16",
             nsamples=1,
             iters=1,
@@ -33,60 +31,63 @@ class TestAutoRound:
         assert ar.bits == 4
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_w4a16(self, dataloader):
-        ar = AutoRound(self.model_name, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+    def test_w4a16(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         assert ar.bits == 4
         ar.quantize()
 
-    def test_w2a16_rtn(self, dataloader):
-        ar = AutoRound(self.model_name, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
+    def test_w2a16_rtn(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
         assert ar.bits == 2
         ar.quantize()
 
-    def test_mxfp4(self, dataloader):
-        ar = AutoRound(self.model_name, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+    def test_mxfp4(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
         assert ar.act_data_type == "mx_fp_rceil"
         ar.quantize()
 
-    def test_vllm(self):
+    def test_vllm(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM(get_model_path("Qwen/Qwen2-VL-2B-Instruct"), scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar = AutoRoundMLLM(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
         assert ar.bits == 2
         assert ar.act_bits == 16
 
-    def test_nvfp4(self, dataloader):
-        ar = AutoRound(self.model_name, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+    def test_nvfp4(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "nv_fp"
         assert ar.act_data_type == "nv_fp4_with_static_gs"
         ar.quantize()
 
-    def test_all_scheme(self, dataloader):
+    def test_all_scheme(self, tiny_opt_model_path, tiny_qwen_model_path, dataloader):
         import copy
 
         preset_schemes = ["W8A16", "MXFP8", "FPW8A16", "FP8_STATIC", "GGUF:Q2_K_S", "GGUF:Q4_K_M"]
         for scheme in preset_schemes:
-            model_name = self.model_name
+            model_name = tiny_opt_model_path
             if "gguf" in scheme.lower():
-                model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
+                model_name = tiny_qwen_model_path
             print(f"scheme={scheme}")
             ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
             ar.quantize_and_save(self.save_folder)
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_scheme_in_layer_config(self, dataloader):
+        model = get_tiny_model(opt_name_or_path, num_layers=5)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(opt_name_or_path, trust_remote_code=True)
         layer_config = {
             "model.decoder.layers.2.self_attn": {"bits": 2},
             "model.decoder.layers.3.self_attn.v_proj": "W8A16",
             "model.decoder.layers.4.self_attn.k_proj": QuantizationScheme.from_dict({"group_size": 64}),
         }
         ar = AutoRound(
-            opt_name_or_path,
+            model,
+            tokenizer,
             scheme="W3A16",
             nsamples=1,
             iters=1,

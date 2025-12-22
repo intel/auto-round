@@ -8,6 +8,7 @@ import transformers
 from .helpers import (
     DataLoader,
     deepseek_v2_name_or_path,
+    gemma_name_or_path,
     get_tiny_model,
     gptj_name_or_path,
     lamini_name_or_path,
@@ -67,10 +68,28 @@ def tiny_deepseek_v2_model_path():
 
 
 @pytest.fixture(scope="session")
+def tiny_gemma_model_path():
+    model_name_or_path = gemma_name_or_path
+    tiny_model_path = "./tmp_tiny_gemma_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
 def tiny_qwen_model_path():
     model_name_or_path = qwen_name_or_path
     tiny_model_path = "./tmp_tiny_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path)
+
+
+@pytest.fixture(scope="session")
+def tiny_untied_qwen_model_path():
+    model_name_or_path = qwen_name_or_path
+    tiny_model_path = "./tmp_tiny_untied_qwen_model_path"
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, force_untie=True)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 
@@ -88,7 +107,7 @@ def tiny_qwen_moe_model_path():
 def tiny_qwen_vl_model_path():
     model_name_or_path = qwen_vl_name_or_path
     tiny_model_path = "./tmp_tiny_qwen_vl_model_path"
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path)
 

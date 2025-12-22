@@ -1,10 +1,11 @@
+import copy
 import os
 
 import pytest
 import torch
 import transformers
 
-from auto_round.utils import llm_load_model
+from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
 
 
 # Automatic choose local path or model name.
@@ -28,18 +29,15 @@ phi2_name_or_path = get_model_path("microsoft/phi-2")
 deepseek_v2_name_or_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
 qwen_moe_name_or_path = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
 qwen_vl_name_or_path = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+gemma_name_or_path = get_model_path("benzart/gemma-2b-it-fine-tuning-for-code-test")
 
 
 # Slice model into tiny model for speedup
-def get_tiny_model(model_name_or_path, num_layers=3, **kwargs):
-    kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
-    kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
-    model = transformers.AutoModelForCausalLM.from_pretrained(model_name_or_path, **kwargs)
-
-    if hasattr(model.config, "num_hidden_layers"):
-        model.config.num_hidden_layers = num_layers
+def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
+    """Generate a tiny model by slicing layers from the original model."""
 
     def slice_layers(module):
+        """slice layers in the model."""
         for name, child in module.named_children():
             if isinstance(child, torch.nn.ModuleList) and len(child) > num_layers:
                 new_layers = torch.nn.ModuleList(child[:num_layers])
@@ -49,7 +47,12 @@ def get_tiny_model(model_name_or_path, num_layers=3, **kwargs):
                 return True
         return False
 
-    model, tokenizer = llm_load_model(model_name_or_path)
+    kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
+    kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
+    if is_mllm:
+        model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path, **kwargs)
+    else:
+        model, tokenizer = llm_load_model(model_name_or_path, **kwargs)
     slice_layers(model)
 
     if hasattr(model.config, "num_hidden_layers"):
@@ -61,13 +64,25 @@ def get_tiny_model(model_name_or_path, num_layers=3, **kwargs):
 
 
 # for fixture usage only
-def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2):
-    model = get_tiny_model(model_name_or_path, num_layers=num_layers)
+def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=False, force_untie=False, **kwargs):
+    """Generate  a tiny model and save to the specified path."""
+    model = get_tiny_model(model_name_or_path, num_layers=num_layers, is_mllm=is_mllm, **kwargs)
+    if force_untie:
+        if getattr(getattr(model, "config", None), "tie_word_embeddings", False):
+            model.config.tie_word_embeddings = False
+            for key in model._tied_weights_keys:
+                weight = get_attr(model, key)
+                set_attr(model, key, copy.deepcopy(weight))
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
     model.save_pretrained(tiny_model_path)
     tokenizer.save_pretrained(tiny_model_path)
+    if is_mllm:
+        processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
+        processor.save_pretrained(tiny_model_path)
+        image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
+        image_processor.save_pretrained(tiny_model_path)
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
     return tiny_model_path
 
@@ -83,6 +98,7 @@ def is_pytest_mode_lazy():
 
 # General model inference code
 def model_infer(model, tokenizer, apply_chat_template=False):
+    """Run model inference and print generated outputs."""
     prompts = [
         "Hello,my name is",
         # "The president of the United States is",
@@ -131,7 +147,10 @@ fixed_input = torch.tensor([[10, 20, 30, 40, 50]], dtype=torch.long)
 
 def get_output(model_name_or_path):
     """Get model output for fixed input."""
-    model, tokenizer = llm_load_model(model_name_or_path)
+    try:
+        model, tokenizer = llm_load_model(model_name_or_path)
+    except:
+        model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path)
     outputs = model(fixed_input)[0]
     return outputs.detach().cpu()
 
