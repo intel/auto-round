@@ -27,16 +27,14 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
-    pip uninstall auto-round -y
+    uv pip install torch==2.8.0 torchvision
     uv pip install -r requirements.txt
-    sed -i '/^torch==/d;/^transformers==/d;/^lm-eval==/d' requirements.txt
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
     uv pip install --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake==4.0.2
-    uv pip install torch==2.8.0 torchvision
 }
 
 function print_test_results_table() {
@@ -92,7 +90,7 @@ function run_unit_test() {
     # install unit test dependencies
     create_conda_env
 
-    cd ${REPO_PATH}/test/test_cuda
+    cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
@@ -100,15 +98,15 @@ function run_unit_test() {
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r requirements.txt
-    uv pip install -r requirements_diffusion.txt
+    uv pip install -r test_cuda/requirements.txt
+    uv pip install -r test_cuda/requirements_diffusion.txt
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find . -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" | sort); do
+    for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
@@ -128,7 +126,7 @@ function run_unit_test() {
 function run_unit_test_vlm() {
     # install unit test dependencies
     create_conda_env
-    cd ${REPO_PATH}/test/test_cuda
+    cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
@@ -138,14 +136,14 @@ function run_unit_test_vlm() {
     uv pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git timm attrdict --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.7.4.post1 --no-build-isolation
-    uv pip install -r requirements_vlm.txt
+    uv pip install -r test_cuda/requirements_vlm.txt
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run VLM unit tests individually with separate logs
-    for test_file in $(find . -name "test*vlms.py"); do
+    for test_file in $(find ./test_cuda -name "test*vlms.py"); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
@@ -166,17 +164,17 @@ function run_unit_test_llmc() {
     # install unit test dependencies
     create_conda_env
 
-    cd ${REPO_PATH}/test/test_cuda
+    cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install -r requirements_llmc.txt
+    uv pip install -r test_cuda/requirements_llmc.txt
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find . -name "test_llmc*.py" | sort); do
+    for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."

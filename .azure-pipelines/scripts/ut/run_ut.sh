@@ -19,8 +19,7 @@ cd /auto-round && uv pip install .
 echo "##[endgroup]"
 uv pip list
 
-cd /auto-round/test/test_cpu || exit 1
-find . -type f -exec sed -i '/sys\.path\.insert(0, "\.\.")/d' {} +
+cd /auto-round/test || exit 1
 
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export FORCE_BF16=1
@@ -32,7 +31,7 @@ mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
 # Split test files into 5 parts
-find . -name "test*.py" | sort > all_tests.txt
+find ./test_cpu -name "test*.py" | sort > all_tests.txt
 total_lines=$(wc -l < all_tests.txt)
 NUM_CHUNKS=5
 q=$(( total_lines / NUM_CHUNKS ))
