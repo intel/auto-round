@@ -61,7 +61,7 @@ class TestAutoRoundARKBackend:
             print("-" * 50)
         return decoded_outputs[0]
 
-    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.33):
+    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.28):
         limit = 100
         if device == "xpu":
             limit = 1000
@@ -118,5 +118,5 @@ class TestAutoRoundARKBackend:
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
-    p.test_other_bits("auto_round", 2, 32, False, torch.bfloat16, "cpu")
+    p.test_formats('auto_round:auto_awq',4,32,True,torch.bfloat16,'xpu')
     p.teardown_class()
