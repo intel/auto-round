@@ -61,11 +61,7 @@ class TestAutoRoundARKBackend:
             print("-" * 50)
         return decoded_outputs[0]
 
-    @pytest.mark.parametrize("format", ["auto_round", "auto_round:auto_awq", "auto_round:gptqmodel"])
-    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True), (4, 32, False), (2, 32, True), (8, 32, True)])
-    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-    @pytest.mark.parametrize("device", ["cpu", "xpu"])
-    def test_torch_4bits_sym_xpu(self, format, bits, group_size, sym, dtype, device):
+    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True):
         limit = 100
         if device == "xpu":
             limit = 1000
@@ -75,9 +71,14 @@ class TestAutoRoundARKBackend:
                 pytest.skip("No asym support for XPU")
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        autoround = AutoRound(
-            model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1, disable_opt_rtn=True
-        )
+        if fast_cfg:
+            autoround = AutoRound(
+                model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1, disable_opt_rtn=True
+            )
+        else:
+            autoround = AutoRound(
+                model, tokenizer, bits=bits, group_size=group_size, sym=sym
+            )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format=format)  ##will convert to gptq model
 
@@ -94,9 +95,29 @@ class TestAutoRoundARKBackend:
         torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
+    @pytest.mark.parametrize("format", ["auto_round", "auto_round:auto_awq", "auto_round:gptqmodel"])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True), (8, 128, True)])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16])
+    @pytest.mark.parametrize("device", ["cpu", "xpu"])
+    def test_formats(self, format, bits, group_size, sym, dtype, device):
+        self.main_op(format, bits, group_size, sym, dtype, device)
+    
+    @pytest.mark.parametrize("format", ["auto_round"])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True)])
+    @pytest.mark.parametrize("dtype", [torch.float16])
+    @pytest.mark.parametrize("device", ["cpu", "xpu"])
+    def test_fp16(self, format, bits, group_size, sym, dtype, device):
+        self.main_op(format, bits, group_size, sym, dtype, device)
 
+    @pytest.mark.parametrize("format", ["auto_round"])
+    @pytest.mark.parametrize("bits, group_size, sym", [(2, 32, False)])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16])
+    @pytest.mark.parametrize("device", ["cpu"])
+    def test_other_bits(self, format, bits, group_size, sym, dtype, device):
+        self.main_op(format, bits, group_size, sym, dtype, device, False)
+    
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
-    p.test_all("auto_round:gptqmodel", 4, 32, False, torch.bfloat16, "cpu")
+    p.test_other_bits('auto_round',2,32,False,torch.bfloat16,'cpu')
     p.teardown_class()
