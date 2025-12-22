@@ -135,6 +135,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Enable memory-efficient mode by offloading intermediate features to CPU. "
             "Useful when working with large models that don't fit in GPU memory.",
         )
+        basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
         basic.add_argument(
             "--format",
             default="auto_round",
@@ -284,6 +285,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         scheme.add_argument(
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--shared_layers",
+            type=str,
+            nargs="+",
+            action="append",
+            default=None,
+            help="[mix-precision] ensure that listed layers are using same data type for quantization",
         )
         scheme.add_argument(
             "--quant_lm_head",
@@ -601,7 +610,10 @@ def tune(args):
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
         scheme = AutoScheme(
-            options=args.options, avg_bits=args.avg_bits, ignore_scale_zp_bits=args.ignore_scale_zp_bits
+            options=args.options,
+            avg_bits=args.avg_bits,
+            shared_layers=args.shared_layers,
+            ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
 
     autoround: BaseCompressor = AutoRound(
@@ -615,6 +627,7 @@ def tune(args):
         batch_size=args.batch_size,
         gradient_accumulate_steps=args.gradient_accumulate_steps,
         low_gpu_mem_usage=args.low_gpu_mem_usage,
+        low_cpu_mem_usage=args.low_cpu_mem_usage,
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,

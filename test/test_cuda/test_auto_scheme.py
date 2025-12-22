@@ -249,7 +249,7 @@ class TestAutoScheme(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B"
+        model_name = "/models/Qwen3-0.6B"
         scheme = AutoScheme(avg_bits=3, options=("gguf:q2_k_s,gguf:q4_k_s"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         ar.quantize_and_save(self.save_dir)

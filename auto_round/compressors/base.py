@@ -652,11 +652,12 @@ class BaseCompressor(object):
             and self.iters > 0
         ):
             logger.info(
+                "%s",
                 "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%%, but it might throw an exception."
+                "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
-
-        if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
+        # On HPU, we rely on torch.compile to speed up the model execution.
+        if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
@@ -664,9 +665,9 @@ class BaseCompressor(object):
         """Reset the default value of super_bits and super_group_size"""
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
-            self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
+            self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
             self.super_group_size = (
-                gguf_config["super_group_size"] if self.super_group_size is None else self.super_group_size
+                gguf_config.get("super_group_size", None) if self.super_group_size is None else self.super_group_size
             )
 
     def _check_configs(self) -> None:
@@ -856,9 +857,12 @@ class BaseCompressor(object):
                 if self.sym and "int" in self.data_type:
                     format = "auto_round:auto_gptq"
                 elif self.bits == 4 and not self.sym and "int" in self.data_type:
-                    enable_awq = all(
-                        config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
-                    )
+                    if self.layer_config is None:
+                        enable_awq = True
+                    else:
+                        enable_awq = all(
+                            config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
+                        )
                     if enable_awq:
                         format = "auto_round:auto_awq"
                 elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
@@ -1141,14 +1145,17 @@ class BaseCompressor(object):
             dtype = module.weight.dtype
             # As typically float32 are used in RTN to search scale zp,
             # to avoid cache a bf16 copy we'd better use float32
-            if config["super_group_size"] is not None:
+            if config.get("super_group_size", None) is not None:
                 dtype = torch.float32
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
                     module.weight.to(dtype=dtype, device=self.device),
-                    **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
+                    **{
+                        k: config.get(k, None)
+                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                    },
                 )
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
@@ -1158,7 +1165,7 @@ class BaseCompressor(object):
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
                         **{
-                            k: config[k]
+                            k: config.get(k, None)
                             for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
                         },
                     )
@@ -1919,7 +1926,6 @@ class BaseCompressor(object):
         Returns:
         The output tensor of the block.
         """
-
         output = []
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):
@@ -2012,8 +2018,12 @@ class BaseCompressor(object):
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+        if self.dataloader.__class__.__name__ == "BatchEncoding":
+            self.dataloader = [self.dataloader.data]
 
         for data in self.dataloader:
+            if data.__class__.__name__ == "BatchEncoding":
+                data = data.data
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
@@ -2040,26 +2050,6 @@ class BaseCompressor(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new, use_cache=False)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new, use_cache=False)
-                else:
-                    self.model(**data_new, use_cache=False)
-            except NotImplementedError:
-                pass
-            except RuntimeError as error:
-                error_msg = str(error)
-                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
-                logger.warning(
-                    "When quantization encounters tensor shape mismatch error, "
-                    "you can try to avoid it with batch_size=1"
-                )
-                raise error
-            except Exception as error:
-                raise error
             if need_attention_mask:
                 if (
                     isinstance(data_new, dict)
@@ -2093,7 +2083,41 @@ class BaseCompressor(object):
                         if repeated:
                             new_attention_mask[i, -1] = 0
 
+                # Workaround: some models treat an all-1 attention mask as equivalent to None and
+                # will internally replace it with None for block inputs, which can cause tensor
+                # concatenation / shape-mismatch issues in downstream code. To avoid providing an
+                # all-1 mask, we force the last token in each sequence to be masked out (set to 0)
+                # so that the mask is never "all ones". This means the model will not attend to the
+                # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
+                new_attention_mask[:, -1] = 0
+
                 self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
+            else:
+                new_attention_mask = None
+            try:
+                kwargs = {"use_cache": False}
+                if new_attention_mask is not None and not (isinstance(data_new, dict) and "attention_mask" in data_new):
+                    kwargs["attention_mask"] = new_attention_mask
+
+                if isinstance(data_new, torch.Tensor):
+                    self.model(data_new, **kwargs)
+                elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                    self.model(*data_new, **kwargs)
+                else:
+                    self.model(**data_new, **kwargs)
+            except NotImplementedError:
+                pass
+            except RuntimeError as error:
+                error_msg = str(error)
+                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
+                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
+                logger.warning(
+                    "When quantization encounters tensor shape mismatch error, "
+                    "you can try to avoid it with batch_size=1"
+                )
+                raise error
+            except Exception as error:
+                raise error
 
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:

@@ -62,10 +62,10 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_torch_4bits_asym(self):
+    def test_torch_4bits_sym_cpu(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, False
+        bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
             model,
             tokenizer,
@@ -79,31 +79,20 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
 
-        quantization_config = AutoRoundConfig(backend="torch")
+        quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
+        result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=1000)
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
-        torch.cuda.empty_cache()
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
-        print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
-        torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_torch_4bits_sym(self):
+    def test_torch_4bits_sym_xpu(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 32, True
@@ -120,9 +109,9 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
 
-        quantization_config = AutoRoundConfig(backend="torch")
+        quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, dtype=torch.float16, device_map="xpu", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -130,7 +119,7 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=1000)
         print(result["results"]["lambada_openai"]["acc,none"])
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.28)
-        torch.cuda.empty_cache()
+        torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
 
