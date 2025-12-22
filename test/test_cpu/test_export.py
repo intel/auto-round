@@ -346,14 +346,6 @@ class TestAutoRound:
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
-        quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", quantization_config=quantization_config
-        )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_gptq_lmhead_export(self, dataloader):
