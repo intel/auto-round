@@ -179,6 +179,7 @@ mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
 
 ark_feature_checker = functools.partial(in_feature_checker_group_size)
 
+
 def fp8_static_scheme_checker(
     in_feature: int,
     out_feature: int,

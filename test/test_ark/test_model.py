@@ -98,5 +98,5 @@ class TestAutoRoundARKBackend:
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
-    p.test_all('auto_round:gptqmodel',4,32,False,torch.bfloat16,'cpu')
+    p.test_all("auto_round:gptqmodel", 4, 32, False, torch.bfloat16, "cpu")
     p.teardown_class()
