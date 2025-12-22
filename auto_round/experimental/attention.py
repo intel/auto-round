@@ -31,6 +31,7 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 from auto_round.experimental.kv_cache import kvcache_quant_context
 from auto_round.experimental.utils import (
+    clean_model_parameters_and_buffers_,
     is_attention_module,
     per_tensor_fp8_qdq,
     update_parameter_data,
@@ -146,6 +147,7 @@ def prep_attention_module_for_calibration(module: torch.nn.Module, config):
 
 def clean_up_hooked_attention(module, model):
     if is_attention_module(module):
+        clean_model_parameters_and_buffers_(module, (QUERY_MAX_NAME,))
         # Cleanup phase: Restore the original attention implementation
         if hasattr(model.config, "_attn_implementation") and hasattr(model, "_original_impl"):
             model.config._attn_implementation = model._original_impl

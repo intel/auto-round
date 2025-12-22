@@ -299,7 +299,6 @@ def llm_load_model(
         model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
             torch_dtype=torch_dtype,
-            attn_implementation="eager",
             trust_remote_code=trust_remote_code,
             device_map="auto" if use_auto_mapping else None,
         )
@@ -548,7 +547,8 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     from auto_round.utils.common import MM_KEYS
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
-    if not os.path.isdir(model_path):
+    # For dummy model, model_path could be "".
+    if model_path and not os.path.isdir(model_path):
         model_path = download_or_get_path(model_path, platform=platform)
 
     if isinstance(model_path, str):
