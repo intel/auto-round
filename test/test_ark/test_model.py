@@ -62,7 +62,7 @@ class TestAutoRoundARKBackend:
         return decoded_outputs[0]
 
     @pytest.mark.parametrize("format", ["auto_round", "auto_round:auto_awq", "auto_round:gptqmodel"])
-    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True), (4, 32, False)])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True), (4, 32, False), (2, 32, True), (8, 32, True)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     @pytest.mark.parametrize("device", ["cpu", "xpu"])
     def test_torch_4bits_sym_xpu(self, format, bits, group_size, sym, dtype, device):
@@ -96,4 +96,7 @@ class TestAutoRoundARKBackend:
 
 
 if __name__ == "__main__":
-    pytest.main()
+    p = TestAutoRoundARKBackend()
+    p.setup_class()
+    p.test_all('auto_round:gptqmodel',4,32,False,torch.bfloat16,'cpu')
+    p.teardown_class()
