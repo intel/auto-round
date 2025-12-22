@@ -24,6 +24,7 @@ pr:
       - "**/*.md"
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
+      - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
 pool: ICX-16C
 
