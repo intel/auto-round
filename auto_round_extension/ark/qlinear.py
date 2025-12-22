@@ -33,6 +33,7 @@ BITS_DTYPE_MAPPING = {
     8: "int8",
 }
 
+
 class QuantLinear(nn.Module):
     QUANT_TYPE = "ark_gptq_nozp"
     ZP_BIAS = 0
@@ -70,10 +71,9 @@ class QuantLinear(nn.Module):
         ark.set_threads(torch.get_num_threads())
         if not self.infeatures % self.group_size == 0:
             raise NotImplementedError("in_features must be divisible by group_size")
-        if 'awq' in self.QUANT_TYPE:
+        if "awq" in self.QUANT_TYPE:
             self.register_buffer(
-                "qweight", 
-                torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32)
+                "qweight", torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32)
             )
         else:
             self.register_buffer(
@@ -101,7 +101,7 @@ class QuantLinear(nn.Module):
             self.register_buffer("bias", torch.zeros((self.outfeatures), dtype=torch.float))
         else:
             self.bias = None
-            
+
     def extra_repr(self) -> str:
         return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
             self.infeatures,
@@ -113,11 +113,15 @@ class QuantLinear(nn.Module):
 
     def post_init(self):
         if self.qweight.device.type not in ["cpu", "xpu"]:
-            raise NotImplementedError(f'Device type {self.qweight.device.type} is not supported. Only CPU and XPU devices are supported.')
+            raise NotImplementedError(
+                f"Device type {self.qweight.device.type} is not supported. Only CPU and XPU devices are supported."
+            )
         if self.qweight.device.type != "cpu" and self.asym:
             raise NotImplementedError("Asymmetric quantization is only supported on CPU devices")
-        if 'awq' in self.QUANT_TYPE:
-            intweight, zeros = unpack_awq(self.qweight, self.qzeros, self.bits)  # weight: k x n zeros: k / group_size x n
+        if "awq" in self.QUANT_TYPE:
+            intweight, zeros = unpack_awq(
+                self.qweight, self.qzeros, self.bits
+            )  # weight: k x n zeros: k / group_size x n
             intweight, zeros = reverse_awq_order(intweight, zeros, self.bits)  # weight: k x n zeros: k / group_size x n
             intweight = torch.bitwise_and(intweight, self.maxq)
             zeros = torch.bitwise_and(zeros, self.maxq)
@@ -137,7 +141,6 @@ class QuantLinear(nn.Module):
             else:
                 intweight -= self.qbias
                 intweight = intweight.to(torch.int8)
-           
 
         logger.debug(
             f"ARK repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, group_size:{self.group_size}"
@@ -149,9 +152,9 @@ class QuantLinear(nn.Module):
             scales = self.scales.to(torch.float16).contiguous()
         else:
             self.sdt = "fp32"
-            self.cdt = "auto" 
-            if self.asym and self.bits==8:
-                self.cdt = 'fp32'
+            self.cdt = "auto"
+            if self.asym and self.bits == 8:
+                self.cdt = "fp32"
             scales = self.scales.float().contiguous()
         self.wdt = BITS_DTYPE_MAPPING[self.bits]
 
@@ -216,8 +219,10 @@ class QuantLinearGPTQ(QuantLinear):
     QUANT_TYPE = "ark_gptq"
     ZP_BIAS = 1
 
+
 class QuantLinearAWQ(QuantLinear):
     QUANT_TYPE = "ark_awq"
+
 
 @torch.no_grad()
 def unpack_to_8bit_signed(qweight, qzeros, bits, gptq_bias, asym):

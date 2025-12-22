@@ -396,7 +396,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
 
     # Special handling for AWQ layers
     from auto_round_extension.ark.qlinear import QuantLinearAWQ
-    if 'auto_round_kernel' in layer_backend:
+
+    if "auto_round_kernel" in layer_backend:
         return QuantLinear(
             bits=config["bits"],
             group_size=config["group_size"],
@@ -405,7 +406,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
             weight_dtype=layer.weight.dtype,
-            )
+        )
     if "awq" in layer_backend and isinstance(QuantLinear, QuantLinearAWQ):
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]

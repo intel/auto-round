@@ -99,7 +99,7 @@ class TestAutoRoundARKBackend:
     @pytest.mark.parametrize("device", ["cpu", "xpu"])
     def test_formats(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
-    
+
     @pytest.mark.parametrize("format", ["auto_round:auto_awq"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True)])
     @pytest.mark.parametrize("dtype", [torch.float16])
@@ -118,5 +118,5 @@ class TestAutoRoundARKBackend:
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
-    p.test_formats('auto_round:auto_awq',4,32,True,torch.bfloat16,'xpu')
+    p.test_formats("auto_round:auto_awq", 4, 32, True, torch.bfloat16, "xpu")
     p.teardown_class()
