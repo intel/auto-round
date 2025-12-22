@@ -40,7 +40,11 @@ class QuantLinearAWQ(nn.Module):
     def __init__(self, w_bit, group_size, in_features, out_features, bias, zero_point, dev):
         super().__init__()
         if not ARK_INSTALLED:
-            raise ModuleNotFoundError("Please install auto_round_kernel package.")
+            raise ModuleNotFoundError(
+                "The 'auto_round_kernel' module is required but not installed. "
+                "Please install the 'auto-round-kernel' package, for example:\n"
+                "  pip install auto-round-kernel"
+            )
 
         self.use_bf16 = ark.check_isa_supported("AMX")
 
