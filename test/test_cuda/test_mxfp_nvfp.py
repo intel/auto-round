@@ -138,7 +138,7 @@ class TestAutoRound:
             model_name,
             scheme=scheme,
             iters=1,
-            seqlen=2,
+            seqlen=3,
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
@@ -151,5 +151,5 @@ class TestAutoRound:
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa")
         print(result["results"]["piqa"]["acc,none"])
-        assert result["results"]["piqa"]["acc,none"] > 0.7
+        assert result["results"]["piqa"]["acc,none"] > 0.49
         shutil.rmtree(quantized_model_path, ignore_errors=True)

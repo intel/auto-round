@@ -72,7 +72,7 @@ class TestAutoRoundFP:
             model_name,
             scheme=scheme,
             iters=1,
-            seqlen=2,
+            seqlen=3,
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
