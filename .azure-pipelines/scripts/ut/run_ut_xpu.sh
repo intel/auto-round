@@ -11,6 +11,7 @@ cd /auto-round && uv pip install .
 echo "##[endgroup]"
 uv pip list
 
+# test ark cpu part only before external xpu available
 cd /auto-round/test/test_ark || exit 1
 find . -type f -exec sed -i '/sys\.path\.insert(0, "\.\.")/d' {} +
 
