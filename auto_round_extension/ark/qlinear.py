@@ -60,7 +60,7 @@ class QuantLinearAWQ(nn.Module):
         ark.set_threads(torch.get_num_threads())
 
         if not self.in_features % self.group_size == 0:
-            raise NotImplementedError("")
+            raise NotImplementedError("in_features must be divisible by group_size")
 
         self.pack_num = 32 // self.w_bit
         self.register_buffer(
