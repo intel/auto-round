@@ -1047,6 +1047,11 @@ def set_module(model, key, new_module):
     setattr(module, name_list[-1], new_module)
 
 
+# For getting and setting attribution, such as 'lm_head.weight'
+get_attr = get_module
+set_attr = set_module
+
+
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
     from auto_round.utils import deepspeed_exists

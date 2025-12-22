@@ -677,8 +677,8 @@ class TestAutoRound:
             )
             ar.quantize()
 
-    def test_quant_lm_head(self):
-        model_name = get_model_path("Qwen/Qwen3-8B")
+    def test_quant_lm_head(self, tiny_untied_qwen_model_path):
+        model_name = tiny_untied_qwen_model_path
         ar = AutoRound(model_name, quant_lm_head=True, iters=0, seqlen=8, nsamples=1, disable_opt_rtn=True)
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
@@ -700,8 +700,8 @@ class TestAutoRound:
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
-    def test_quant_lm_head_layer_config(self):
-        model_name = get_model_path("Qwen/Qwen3-8B")
+    def test_quant_lm_head_layer_config(self, tiny_untied_qwen_model_path):
+        model_name = tiny_untied_qwen_model_path
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(
             model_name,
