@@ -58,7 +58,7 @@ class QuantLinearAWQ(nn.Module):
         # quick sanity check (make sure alignment)
         if not (self.in_features % self.group_size == 0 and out_features % (32 // self.w_bit) == 0):
             raise NotImplementedError("")
-            
+
         self.pack_num = 32 // self.w_bit
         self.register_buffer(
             "qzeros",

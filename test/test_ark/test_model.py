@@ -1,5 +1,6 @@
 import shutil
 import sys
+
 import pytest
 
 sys.path.insert(0, "../..")
@@ -21,14 +22,14 @@ class LLMDataLoader:
             yield torch.ones([1, 10], dtype=torch.long)
 
 
-class TestAutoRoundARKBackend():
-    
+class TestAutoRoundARKBackend:
+
     @classmethod
     def setup_class(self):
         self.model_name = "facebook/opt-125m"
         self.save_folder = "./saved"
         self.llm_dataloader = LLMDataLoader()
-    
+
     @classmethod
     def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
@@ -63,10 +64,10 @@ class TestAutoRoundARKBackend():
     @pytest.mark.parametrize("format", ["auto_round", "auto_round:auto_awq", "auto_round:gptqmodel"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True), (4, 32, False)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-    @pytest.mark.parametrize("device", ['cpu','xpu'])
+    @pytest.mark.parametrize("device", ["cpu", "xpu"])
     def test_torch_4bits_sym_xpu(self, format, bits, group_size, sym, dtype, device):
         limit = 100
-        if device == 'xpu':
+        if device == "xpu":
             limit = 1000
             if not torch.xpu.is_available():
                 pytest.skip("No XPU device")
@@ -75,13 +76,7 @@ class TestAutoRoundARKBackend():
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=0,
-            nsamples=1, disable_opt_rtn=True
+            model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1, disable_opt_rtn=True
         )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format=format)  ##will convert to gptq model
