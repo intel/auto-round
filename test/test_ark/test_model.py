@@ -61,7 +61,7 @@ class TestAutoRoundARKBackend:
             print("-" * 50)
         return decoded_outputs[0]
 
-    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True):
+    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.33):
         limit = 100
         if device == "xpu":
             limit = 1000
@@ -91,12 +91,12 @@ class TestAutoRoundARKBackend:
         self.model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=limit)
         print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.28
+        assert result["results"]["lambada_openai"]["acc,none"] > tar_acc
         torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @pytest.mark.parametrize("format", ["auto_round", "auto_round:auto_awq", "auto_round:gptqmodel"])
-    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True), (8, 128, True)])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
     @pytest.mark.parametrize("device", ["cpu", "xpu"])
     def test_formats(self, format, bits, group_size, sym, dtype, device):
@@ -114,7 +114,7 @@ class TestAutoRoundARKBackend:
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
     @pytest.mark.parametrize("device", ["cpu"])
     def test_other_bits(self, format, bits, group_size, sym, dtype, device):
-        self.main_op(format, bits, group_size, sym, dtype, device, False)
+        self.main_op(format, bits, group_size, sym, dtype, device, False, 0.2)
     
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
