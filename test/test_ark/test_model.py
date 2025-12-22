@@ -93,18 +93,18 @@ class TestAutoRoundARKBackend:
         torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    @pytest.mark.parametrize("format", ["auto_round", "auto_round:auto_awq", "auto_round:gptqmodel"])
+    @pytest.mark.parametrize("format", ["auto_round", "auto_round:gptqmodel"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
     @pytest.mark.parametrize("device", ["cpu", "xpu"])
     def test_formats(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
-
-    @pytest.mark.parametrize("format", ["auto_round"])
+    
+    @pytest.mark.parametrize("format", ["auto_round:auto_awq"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True)])
     @pytest.mark.parametrize("dtype", [torch.float16])
     @pytest.mark.parametrize("device", ["cpu", "xpu"])
-    def test_fp16(self, format, bits, group_size, sym, dtype, device):
+    def test_awq_fp16(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
 
     @pytest.mark.parametrize("format", ["auto_round"])

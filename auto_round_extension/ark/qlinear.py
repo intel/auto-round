@@ -311,7 +311,7 @@ class QuantLinear(nn.Module):
             intweight.contiguous(),
             scales,
             zeros.contiguous(),
-            torch.Tensor(),
+            torch.empty(0),
             # compute_dtype
             self.cdt,
             # weight_dtype
@@ -331,7 +331,7 @@ class QuantLinear(nn.Module):
             else:
                 self.bias = self.bias.to(torch.float16)
         else:
-            self.bias = torch.Tensor()
+            self.bias = torch.empty(0)
 
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
