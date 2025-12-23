@@ -319,4 +319,3 @@ def update_fused_layer_global_scales(
         for proj in (submodule.gate_proj, submodule.up_proj):
             if hasattr(proj, global_scale_name):
                 setattr(proj, global_scale_name, global_scale.clone())
-
