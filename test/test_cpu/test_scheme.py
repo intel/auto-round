@@ -58,7 +58,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(ar.bits, 4)
         self.assertEqual(ar.act_bits, 4)
         self.assertEqual(ar.data_type, "mx_fp")
-        self.assertEqual(ar.act_data_type, "mx_fp")
+        self.assertEqual(ar.act_data_type, "mx_fp_rceil")
         ar.quantize()
 
     def test_vllm(self):
