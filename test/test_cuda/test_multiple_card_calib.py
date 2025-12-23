@@ -19,13 +19,19 @@ def get_accuracy(data):
 
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.save_dir = "./saved"
-        self.tasks = "lambada_openai"
+    save_dir = "./saved"
+    tasks = "lambada_openai"
 
-    @classmethod
-    def teardown_class(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 

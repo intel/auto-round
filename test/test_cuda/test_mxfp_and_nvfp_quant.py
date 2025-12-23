@@ -12,6 +12,8 @@ from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 from auto_round.testing_utils import has_module
 
+from ..helpers import get_model_path
+
 testing_schemes = [AutoRoundFormat.MXFP8.value, AutoRoundFormat.MXFP4.value, AutoRoundFormat.NVFP4.value]
 QMODULE_MAPPING = {
     AutoRoundFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
@@ -22,15 +24,14 @@ QMODULE_MAPPING = {
 
 @pytest.mark.parametrize("scheme", testing_schemes)
 @torch.inference_mode()
-def test_e2e_quant_and_infer(scheme):
+def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):
     # Use a temporary directory for saving the quantized model
     with tempfile.TemporaryDirectory() as temp_dir:
-        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
         # Load the tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_model_path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            tiny_qwen_model_path,
             device_map="cpu",
             torch_dtype="auto",
             trust_remote_code=True,

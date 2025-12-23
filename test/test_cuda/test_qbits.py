@@ -6,17 +6,23 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound, AutoRoundConfig
 from auto_round.testing_utils import require_gptqmodel, require_itrex
 
-from ..helpers import model_infer
+from ..helpers import get_model_path, model_infer
 
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.model_name = "/models/opt-125m"
-        self.save_folder = "./saved"
+    save_dir = "./saved"
 
-    @classmethod
-    def teardown_class(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
+        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     ## require torch 2.6
@@ -50,8 +56,9 @@ class TestAutoRound:
 
     @require_itrex
     def test_mixed_precision(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        model_path = get_model_path("facebook/opt-125m")
+        model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         layer_config = {}
 
         layer_config["model.decoder.layers.0.self_attn.k_proj"] = {"bits": 8}
@@ -64,27 +71,29 @@ class TestAutoRound:
         autoround = AutoRound(
             model, tokenizer, bits=bits, group_size=group_size, iters=1, nsamples=1, sym=sym, layer_config=layer_config
         )
-        quantized_model_path = self.save_folder
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
+            self.save_dir,
             torch_dtype=torch.float16,
             device_map="cpu",
         )
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert "!!!" not in res
-        shutil.rmtree(self.save_folder, ignore_errors=True)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gptqmodel
-    def test_autoround_sym(self):
+    def test_autoround_sym(self, tiny_opt_model_path):
         for bits in [4]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                tiny_opt_model_path, torch_dtype="auto", trust_remote_code=True
+            )
+            tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
             bits, group_size, sym = bits, 128, True
             autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=2)
             quantized_model_path = "./saved"
@@ -100,4 +109,4 @@ class TestAutoRound:
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
             assert "!!!" not in res
-            shutil.rmtree(self.save_folder, ignore_errors=True)
+            shutil.rmtree(self.save_dir, ignore_errors=True)

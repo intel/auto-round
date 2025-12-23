@@ -9,20 +9,27 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum
 
+from ..helpers import get_model_path, get_tiny_model
+
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.model_name = "facebook/opt-125m"
-        self.save_dir = "./saved"
+    save_dir = "./saved"
 
-    @classmethod
-    def teardown_class(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_fp8input_mxfp4_llmcompressor_format(self, dataloader):
-        model_name = "/models/Qwen3-0.6B-FP8"
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         scheme = "mxfp4"
         ar = AutoRound(
             model=model_name,
@@ -47,10 +54,10 @@ class TestAutoRound:
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_nvfp4_llmcompressor_format(self, dataloader):
+    def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
-            self.model_name,
+            tiny_opt_model_path,
             scheme=scheme,
             iters=2,
             seqlen=2,
@@ -58,7 +65,7 @@ class TestAutoRound:
         )
         quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_global_scale")
@@ -98,11 +105,11 @@ class TestAutoRound:
         #     if "France" in prompt:
         #         assert "Paris" in generated_text
 
-    def test_nvfp4_moe_actmax_rtn(self, dataloader):
-        model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+    def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
+        # model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
         scheme = "nvfp4"
         autoround = AutoRound(
-            model_name,
+            tiny_deepseek_v2_model_path,
             scheme=scheme,
             iters=0,
             seqlen=2,
@@ -113,11 +120,10 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-    def test_nvfp4_moe_actmax_ar(self, dataloader):
-        model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+    def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
-            model_name,
+            tiny_deepseek_v2_model_path,
             scheme=scheme,
             iters=1,
             seqlen=2,
@@ -129,7 +135,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
     def test_qwen_moe_quant_infer(self, dataloader):
-        model_name = "/models/Qwen1.5-MoE-A2.7B"
+        model_name = get_model_path("qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
             "layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
         }

@@ -13,6 +13,9 @@ def get_model_path(model_name: str) -> str:
     ut_path = f"/tf_dataset/auto_round/models/{model_name}"
     local_path = f"/models/{model_name.split('/')[-1]}"
 
+    if "DeepSeek-V2-Lite" in model_name and os.path.exists("/data0/deepseek-ai/DeepSeek-V2-Lite"):
+        return "/data0/deepseek-ai/DeepSeek-V2-Lite"
+
     if os.path.exists(ut_path):
         return ut_path
     elif os.path.exists(local_path):
@@ -36,6 +39,7 @@ gemma_name_or_path = get_model_path("benzart/gemma-2b-it-fine-tuning-for-code-te
 # Slice model into tiny model for speedup
 def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
     """Generate a tiny model by slicing layers from the original model."""
+    model_name_or_path = get_model_path(model_name_or_path)
 
     def slice_layers(module):
         """slice layers in the model."""
