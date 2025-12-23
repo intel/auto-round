@@ -171,11 +171,24 @@ MXFP4 = QuantizationScheme.from_dict(
         "group_size": 32,
         "data_type": "mx_fp",
         "act_bits": 4,
+        "act_data_type": "mx_fp",
+        "act_group_size": 32,
+        "act_sym": True,
+    }
+)
+
+MXFP4_RCEIL = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 32,
+        "data_type": "mx_fp",
+        "act_bits": 4,
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
         "act_sym": True,
     }
 )
+
 
 MXFP8 = QuantizationScheme.from_dict(
     {
@@ -250,6 +263,7 @@ PRESET_SCHEMES = {
     "W3A16": W3A16,
     "W8A16": W8A16,
     "MXFP4": MXFP4,
+    "MXFP4_RCEIL": MXFP4_RCEIL,
     "MXFP8": MXFP8,
     "NVFP4": NVFP4,
     "FPW8A16": FPW8A16,
