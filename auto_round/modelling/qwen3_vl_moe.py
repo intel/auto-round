@@ -13,13 +13,15 @@
 # limitations under the License.
 
 import torch
-from torch import nn
-from transformers.activations import ACT2FN
 import transformers
 from packaging import version
-from auto_round.utils import logger
-from auto_round.utils import unsupported_meta_device
+from torch import nn
+from transformers.activations import ACT2FN
+
+from auto_round.utils import logger, unsupported_meta_device
+
 transformers_version = version.parse(transformers.__version__)
+
 
 def _update_parameter(
     module: torch.nn.Module,
@@ -43,7 +45,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
         self,
         original: "Qwen3VLMoeTextSparseMoeBlock",
         config: "Qwen3VLMoeConfig",
-        calibrate_all_experts: bool=True,
+        calibrate_all_experts: bool = True,
     ):
         super().__init__()
         text_config: "Qwen3VLMoeTextConfig" = config.get_text_config()
@@ -56,10 +58,12 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
         self.gate = original.gate
         self.calibrate_all_experts = calibrate_all_experts
         self.experts = SequentialQwen3VLMoeTextExperts(text_config, original.experts)
-        if not transformers_version <= version.parse("4.57.3"): # remove conversion_mapping for qwen3_vl_moe when transformers>=5.0
+        if not transformers_version <= version.parse(
+            "4.57.3"
+        ):  # remove conversion_mapping for qwen3_vl_moe when transformers>=5.0
             from transformers.conversion_mapping import register_checkpoint_conversion_mapping
-            register_checkpoint_conversion_mapping(config.model_type, [], overwrite=True)
 
+            register_checkpoint_conversion_mapping(config.model_type, [], overwrite=True)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -67,15 +71,11 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
 
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
-        routing_weights = torch.nn.functional.softmax(
-            router_logits, dim=1, dtype=torch.float
-        )
+        routing_weights = torch.nn.functional.softmax(router_logits, dim=1, dtype=torch.float)
         # get topk experts per token
         # routing_weight: (num_tokens, top_k)
         # routing_indices: (num_tokens, top_k)
-        routing_weights, router_indices = torch.topk(
-            routing_weights, self.top_k, dim=-1
-        )
+        routing_weights, router_indices = torch.topk(routing_weights, self.top_k, dim=-1)
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         routing_weights = routing_weights.to(hidden_states.dtype)
 
@@ -87,9 +87,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
 
         # convert router indices into OHE list
         # reshape to be (num_experts, top_k, batch_size * sequence_length)
-        expert_mask = torch.nn.functional.one_hot(
-            router_indices, num_classes=self.num_experts
-        ).permute(2, 1, 0)
+        expert_mask = torch.nn.functional.one_hot(router_indices, num_classes=self.num_experts).permute(2, 1, 0)
 
         for expert_idx, expert_layer in enumerate(self.experts):
             idx, token_idx = torch.where(expert_mask[expert_idx].squeeze(0))
@@ -103,9 +101,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
                 # if there are tokens meant for this expert, further scale the expert
                 # output by the score
                 weighted_output = expert_out * routing_weights[token_idx, idx, None]
-                next_states.index_add_(
-                    0, token_idx, weighted_output.to(hidden_states.dtype)
-                )
+                next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
 
         if transformers_version <= version.parse("4.57.3"):
@@ -125,10 +121,9 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
         from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
             Qwen3VLMoeTextMLP,
         )
-        super().__init__(
-            [Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)]
-        )
-        
+
+        super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+
         if not unsupported_meta_device(original):
             for i in range(self.num_experts):
                 gate_up = original.gate_up_proj[i]
@@ -141,9 +136,6 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
 
+
 def get_replacement_info(config):
-    return (
-        LinearQwen3VLMoeTextSparseMoeBlock,
-        config,
-        "Qwen3VLMoeTextSparseMoeBlock"
-    )
+    return (LinearQwen3VLMoeTextSparseMoeBlock, config, "Qwen3VLMoeTextSparseMoeBlock")
