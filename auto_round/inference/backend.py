@@ -48,11 +48,11 @@ class BackendInfo:
 
     Attributes:
         device: A list of strings representing the devices the backend supports
-            (e.g., 'cuda', 'cpu').
+            (e.g., 'cpu', 'xpu', 'cuda').
         sym: A list of booleans indicating whether the backend supports symmetric
             quantization for weights (True if symmetric, False if not).
         packing_format: A list of strings representing the packing formats used by the backend
-            (e.g., 'triton', 'qbits').
+            (e.g., 'ark', 'triton').
         bits: A list of integers specifying the bit-widths supported by the backend
             for weight quantization (e.g., [2, 4, 8]).
         group_size: An optional list of integers specifying the group sizes supported
@@ -176,6 +176,8 @@ gptqmodel_marlin_feature_checker = functools.partial(
 )
 
 mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
+
+ark_feature_checker = functools.partial(in_feature_checker_group_size)
 
 
 def fp8_static_scheme_checker(
@@ -437,51 +439,102 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     requirements=["autoawq", "transformers"],
 )
 
-BackendInfos["qbits"] = BackendInfo(
+BackendInfos["auto_round_kernel"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[2, 4, 8],
     group_size=None,
-    priority=1,
-    checkers=[],
-    alias=["itrex", "qbits"],
-    compute_dtype=["float16", "bfloat16"],
+    priority=6,
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
 )
 
-BackendInfos["qbits_zp"] = BackendInfo(
+BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
+    device=["xpu"],
+    sym=[True],
+    packing_format=GPTQ_FORMAT_NO_ZP,
+    bits=[4, 8],
+    group_size=None,
+    priority=6,
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
+)
+
+BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
-    compute_dtype=["float16", "bfloat16"],
+    priority=6,
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    priority=1,
-    checkers=[],
-    alias=["itrex", "qbits"],
-    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
 )
 
+BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
+    device=["xpu"],
+    sym=[True],
+    packing_format=GPTQ_FORMAT,
+    bits=[4, 8],
+    group_size=None,
+    priority=6,
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
+)
 
-BackendInfos["qbits_awq"] = BackendInfo(
+BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     device=["cpu"],
     sym=[True, False],
     packing_format=AWQ_FORMAT,
     bits=[2, 4, 8],
     group_size=None,
-    compute_dtype=["float16", "bfloat16"],
+    priority=6,
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    priority=1,
-    checkers=[],
-    alias=["itrex", "qbits"],
-    requirements=["torch<2.7.0", "intel-extension-for-transformers"],
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
 )
+
+BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
+    device=["xpu"],
+    sym=[True],
+    packing_format=AWQ_FORMAT,
+    bits=[4, 8],
+    group_size=None,
+    priority=6,
+    checkers=[ark_feature_checker],
+    alias=["ark"],
+    compute_dtype=["float32", "float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    systems=["linux"],
+)
+
 BackendInfos["ipex_gptq"] = BackendInfo(
     device=["cpu", "xpu"],
     sym=[True, False],
@@ -613,12 +666,12 @@ def dynamic_import_inference_linear(backend, config):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
-    configuration (e.g., qbits, marlin, hpu, gptq, awq, auto_round). It imports specific modules or raises
+    configuration (e.g., ark, marlin, hpu, gptq, awq). It imports specific modules or raises
     errors if the required packages are not installed or the environment is not set up.
 
     Args:
         backend (str):
-            The backend to be used for quantization (e.g., 'qbits', 'marlin', 'hpu', 'gptq', 'awq', 'auto_round').
+            The backend to be used for quantization (e.g., 'ark', 'marlin', 'hpu', 'gptq', 'awq').
         config (QuantizationScheme):
             The quantization configuration containing parameters like bits, group_size, and sym.
 
@@ -628,7 +681,7 @@ def dynamic_import_inference_linear(backend, config):
 
     Raises:
         ImportError:
-            If required modules are missing for a backend (e.g., Intel Extension, GPTQ, auto_awq).
+            If required modules are missing for a backend (e.g., ark, GPTQ, auto_awq).
     """
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
 
@@ -641,26 +694,20 @@ def dynamic_import_inference_linear(backend, config):
     if "torch_nvfp4" in backend:
         return ar_qmodules.NVFP4QuantLinear
 
-    if "qbits" in backend:
+    if "auto_round_kernel" in backend or "ark" in backend:
         try:
-            from intel_extension_for_transformers import qbits  # pylint: disable=E0401
+            import auto_round_kernel as ark  # pylint: disable=E0611, E0401
         except Exception as e:
-            raise ImportError(
-                "Please install Intel Extension for Transformers via 'pip install "
-                "intel-extension-for-transformers' to inference on X86 CPU"
-            )
+            raise ImportError("Please install auto_round_kernel version for CPU/XPU")
+        import auto_round_extension.ark.qlinear as qlinear
+
         if "zp" in backend:
-            import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
-
-            return qlinear_qbits_gptq.QuantLinear
+            return qlinear.QuantLinearGPTQ
         elif "awq" in backend:
-            import auto_round_extension.qbits.qbits_awq as qlinear_qbits_awq
-
-            return qlinear_qbits_awq.QuantLinear
+            return qlinear.QuantLinearAWQ
         else:  # auto_round must be at the end
-            import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits_autoround
+            return qlinear.QuantLinear
 
-            return qlinear_qbits_autoround.QuantLinear
     if "ipex_gptq" in backend:
         from auto_round_extension.ipex.qlinear_ipex_gptq import QuantLinear
 

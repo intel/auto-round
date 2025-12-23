@@ -21,6 +21,8 @@ pr:
       - auto_round/export/export_to_awq
       - "*.md"
       - "**/*.md"
+      - .azure-pipelines/scripts/ut/run_ut_cuda.sh
+      - .azure-pipelines/scripts/ut/run_ut.sh
 
 pool: GAUDI
 
