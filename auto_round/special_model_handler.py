@@ -48,7 +48,7 @@ def _handle_special_model(model):
     return model
 
 
-def update_module_if_needed(model, formats=None):
+def update_module(model, formats=None):
     if formats is not None and any(["gguf" in format_ for format_ in formats]):
         return model
 
