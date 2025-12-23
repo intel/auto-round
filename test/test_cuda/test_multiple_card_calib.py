@@ -56,4 +56,3 @@ class TestAutoRound:
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
-
