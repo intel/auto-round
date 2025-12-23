@@ -118,7 +118,7 @@ AutoRound supports several Schemes:
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
-- **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 are supported)
+- **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 provided by llamacpp are supported)
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature,no real kernel**, standard MXFP4, data_type mxfp,act_data_type mxfp,bits 4, act_bits 4, group_size 32)
