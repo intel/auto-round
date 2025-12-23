@@ -654,8 +654,8 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
-
-        if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
+        # On HPU, we rely on torch.compile to speed up the model execution.
+        if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
@@ -1651,7 +1651,6 @@ class BaseCompressor(object):
         Returns:
         The output tensor of the block.
         """
-
         output = []
         nsamples = len(input_ids)
         for i in range(0, nsamples, bs):
@@ -1744,8 +1743,12 @@ class BaseCompressor(object):
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+        if self.dataloader.__class__.__name__ == "BatchEncoding":
+            self.dataloader = [self.dataloader.data]
 
         for data in self.dataloader:
+            if data.__class__.__name__ == "BatchEncoding":
+                data = data.data
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
@@ -1772,26 +1775,6 @@ class BaseCompressor(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new, use_cache=False)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new, use_cache=False)
-                else:
-                    self.model(**data_new, use_cache=False)
-            except NotImplementedError:
-                pass
-            except RuntimeError as error:
-                error_msg = str(error)
-                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
-                logger.warning(
-                    "When quantization encounters tensor shape mismatch error, "
-                    "you can try to avoid it with batch_size=1"
-                )
-                raise error
-            except Exception as error:
-                raise error
             if need_attention_mask:
                 if (
                     isinstance(data_new, dict)
@@ -1825,7 +1808,41 @@ class BaseCompressor(object):
                         if repeated:
                             new_attention_mask[i, -1] = 0
 
+                # Workaround: some models treat an all-1 attention mask as equivalent to None and
+                # will internally replace it with None for block inputs, which can cause tensor
+                # concatenation / shape-mismatch issues in downstream code. To avoid providing an
+                # all-1 mask, we force the last token in each sequence to be masked out (set to 0)
+                # so that the mask is never "all ones". This means the model will not attend to the
+                # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
+                new_attention_mask[:, -1] = 0
+
                 self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
+            else:
+                new_attention_mask = None
+            try:
+                kwargs = {"use_cache": False}
+                if new_attention_mask is not None and not (isinstance(data_new, dict) and "attention_mask" in data_new):
+                    kwargs["attention_mask"] = new_attention_mask
+
+                if isinstance(data_new, torch.Tensor):
+                    self.model(data_new, **kwargs)
+                elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                    self.model(*data_new, **kwargs)
+                else:
+                    self.model(**data_new, **kwargs)
+            except NotImplementedError:
+                pass
+            except RuntimeError as error:
+                error_msg = str(error)
+                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
+                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
+                logger.warning(
+                    "When quantization encounters tensor shape mismatch error, "
+                    "you can try to avoid it with batch_size=1"
+                )
+                raise error
+            except Exception as error:
+                raise error
 
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
