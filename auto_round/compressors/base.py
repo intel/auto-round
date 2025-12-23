@@ -660,6 +660,10 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        # TODO: fix https://github.com/intel/auto-round/issues/1109
+        if self.enable_torch_compile and is_nv_fp(self.act_data_type):
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -3003,10 +3007,16 @@ class BaseCompressor(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = (
-            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        )
+        if self.iters > 0:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+            )
+        else:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                "layers in the block"
+            )
 
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training

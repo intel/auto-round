@@ -19,11 +19,15 @@ pr:
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/template/docker-template.yml
     exclude:
-      - test/test*hpu*
+      - auto_round_extension/ark
+      - test/test_hpu
+      - test/test_ark
+      - test/test_xpu
       - "*.md"
       - "**/*.md"
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
+      - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
 pool: ICX-16C
 

@@ -45,3 +45,15 @@ class TestAutoRound:
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
+
+    @multi_card
+    def test_multiple_card_nvfp4(self):
+        python_path = sys.executable
+
+        ##test llm script
+        res = os.system(
+            f"cd ../.. && {python_path} -m auto_round --model facebook/opt-125m  --scheme NVFP4 --devices '0,1' --iters 1 --nsamples 1 --enable_torch_compile --low_gpu_mem_usage"
+        )
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+
