@@ -41,7 +41,7 @@ MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
 
 def _handle_special_model(model):
-    if model.config.model_type == "deepseek_vl_v2":
+    if hasattr(model, "config") and model.config.model_type == "deepseek_vl_v2":
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
