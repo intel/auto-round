@@ -27,6 +27,8 @@ from transformers.testing_utils import (
 )
 from transformers.utils import is_torch_available
 
+from ..helpers import get_model_path
+
 if is_torch_available():
     import torch
 
@@ -76,8 +78,8 @@ class AutoRoundTest:
         output = self.quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
         assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
-    def test_raise_if_non_quantized(self):
-        model_id = "facebook/opt-125m"
+    def test_raise_if_non_quantized(self, tiny_opt_model_path):
+        model_id = tiny_opt_model_path
         quantization_config = AutoRoundConfig(bits=4)
         with pytest.raises(ValueError):
             _ = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config)
@@ -185,7 +187,7 @@ class AutoRoundTest:
         """
         Simple test that checks if auto-round work properly with mixed bits
         """
-        model_name = "facebook/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         layer_config = {

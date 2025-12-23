@@ -8,14 +8,14 @@ from auto_round import AutoRound, AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import require_autogptq, require_gptqmodel
 
-from ..helpers import model_infer
+from ..helpers import get_model_path, model_infer
 
 
 class TestAutoRoundTorchBackend:
 
     @classmethod
     def setup_class(self):
-        self.model_name = "facebook/opt-125m"
+        self.model_name = get_model_path("facebook/opt-125m")
         self.save_folder = "./saved"
 
     @classmethod
