@@ -158,7 +158,7 @@ class TestAutoRoundAct(unittest.TestCase):
 
         # check inblock layer config values
         kproj_config = model.config.quantization_config.extra_config["model.decoder.layers.1.self_attn.k_proj"]
-        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "mx_fp_rceil"
+        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "mx_fp"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 8
         assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 32
         assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]

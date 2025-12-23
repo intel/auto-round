@@ -60,7 +60,7 @@ def _get_moe_converter(config):
 
 
 def _handle_special_model(model):
-    if model.config.model_type == "deepseek_vl_v2":
+    if hasattr(model, "config") and model.config.model_type == "deepseek_vl_v2":
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
