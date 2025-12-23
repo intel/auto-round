@@ -43,14 +43,15 @@ def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
 
     def slice_layers(module):
         """slice layers in the model."""
+        sliced = False
         for name, child in module.named_children():
             if isinstance(child, torch.nn.ModuleList) and len(child) > num_layers:
                 new_layers = torch.nn.ModuleList(child[:num_layers])
                 setattr(module, name, new_layers)
-                return True
-            if slice_layers(child):
-                return True
-        return False
+                sliced = True
+            elif slice_layers(child):
+                sliced = True
+        return sliced
 
     kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
     kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
@@ -63,6 +64,7 @@ def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
                 model.config.vision_config.depth = num_layers
     else:
         model, tokenizer = llm_load_model(model_name_or_path, **kwargs)
+
     slice_layers(model)
 
     if hasattr(model.config, "num_hidden_layers"):
