@@ -17,6 +17,7 @@ import math
 import torch
 import torch.nn as nn
 
+from auto_round.export.export_to_awq.utils import dequantize_gemm, reverse_awq_order, unpack_awq
 from auto_round.utils import convert_dtype_torch2str, logger
 
 try:
@@ -32,176 +33,6 @@ BITS_DTYPE_MAPPING = {
     8: "int8",
 }
 
-AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
-
-
-def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
-    shifts = torch.arange(0, 32, bits, device="cpu")
-
-    # unpacking columnwise
-    iweights = torch.bitwise_right_shift(qweight[:, :, None], shifts[None, None, :]).to(
-        torch.int8  # smallest dtype available
-    )
-    iweights = iweights.view(iweights.shape[0], -1)
-
-    # unpacking columnwise
-    if qzeros is not None:
-        izeros = torch.bitwise_right_shift(qzeros[:, :, None], shifts[None, None, :]).to(
-            torch.int8  # smallest dtype available
-        )
-        izeros = izeros.view(izeros.shape[0], -1)
-    else:
-        izeros = qzeros
-
-    return iweights, izeros
-
-
-def reverse_awq_order(iweights: torch.Tensor, izeros: torch.Tensor, bits: int):
-    reverse_order_tensor = torch.arange(
-        iweights.shape[-1],
-        dtype=torch.int32,
-        device="cpu",
-    )
-    reverse_order_tensor = reverse_order_tensor.view(-1, 32 // bits)
-    reverse_order_tensor = reverse_order_tensor[:, AWQ_REVERSE_ORDER]
-    reverse_order_tensor = reverse_order_tensor.view(-1)
-
-    if izeros is not None:
-        izeros = izeros[:, reverse_order_tensor]
-    iweights = iweights[:, reverse_order_tensor]
-    return iweights, izeros
-
-
-class QuantLinearAWQ(nn.Module):
-    QUANT_TYPE = "ark_awq"
-
-    def __init__(self, w_bit, group_size, in_features, out_features, bias, zero_point, dev):
-        super().__init__()
-        assert ARK_INSTALLED, "Please install auto_round_kernel package."
-
-        self.use_bf16 = ark.check_isa_supported("AMX")
-
-        if w_bit not in [2, 3, 4, 8]:
-            raise NotImplementedError("Only 2, 3, 4, 8 bits are supported for now.")
-
-        self.in_features = in_features
-        self.out_features = out_features
-        self.w_bit = w_bit
-        self.group_size = group_size if group_size != -1 else in_features
-        self.zero_point = zero_point
-        self.scale_dtype = torch.float32
-
-        # quick sanity check (make sure alignment)
-        assert self.in_features % self.group_size == 0
-        assert out_features % (32 // self.w_bit) == 0
-        self.pack_num = 32 // self.w_bit
-        self.register_buffer(
-            "qzeros",
-            torch.zeros(
-                (in_features // self.group_size, out_features // self.pack_num),
-                dtype=torch.int8,
-                device=dev,
-            ),
-        )
-        self.register_buffer(
-            "scales",
-            torch.zeros(
-                (in_features // self.group_size, out_features),
-                dtype=torch.bfloat16 if self.use_bf16 else torch.float32,
-                device=dev,
-            ),
-        )
-        if bias:
-            self.register_buffer(
-                "bias",
-                torch.zeros((out_features), dtype=torch.bfloat16 if self.use_bf16 else torch.float32, device=dev),
-            )
-        else:
-            self.register_buffer(
-                "bias",
-                None,
-            )
-        qweight = torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32, device=dev)
-        self.register_buffer("qweight", qweight)
-
-    def post_init(self):
-        assert self.qweight.device.type == "cpu"
-
-        intweight, zeros = unpack_awq(self.qweight, self.qzeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
-        intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
-        if self.zero_point:  ## asym has accuracy issue, have not root caused yet
-            intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-            zeros = torch.bitwise_and(zeros, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-        else:
-            ##symmetric, our default zp is 8
-            intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-        g_idx = torch.empty(0, dtype=torch.int32)
-        self.qweight = ark.repack_quantized_weight(
-            intweight,
-            self.scales.float(),
-            zeros,
-            g_idx,
-            BITS_DTYPE_MAPPING[self.w_bit],
-            convert_dtype_torch2str(self.scale_dtype),
-            convert_dtype_torch2str(self.scales.dtype),
-            self.zero_point,
-            self.group_size,
-        )
-
-    @classmethod
-    def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None, has_zero_points=False):
-        awq_linear = cls(
-            w_bit,
-            group_size,
-            linear.in_features,
-            linear.out_features,
-            linear.bias is not None,
-            has_zero_points,
-            linear.weight.device,
-        )
-        if init_only:  # just prepare for loading sd
-            return awq_linear
-
-        raise NotImplementedError("Only inference is supported for Exllama kernels")
-
-    @torch.no_grad()
-    def forward(self, x):
-        assert ARK_INSTALLED, "ARK kernels could not be loaded. "
-
-        input_dtype = x.dtype
-        out_shape = x.shape[:-1] + (self.out_features,)
-        x = x.view(-1, x.shape[-1])  # convert xd to 2d
-        out_2d_shape = x.shape[:-1] + (self.out_features,)
-
-        outputs = torch.zeros(out_2d_shape, dtype=input_dtype)
-        bias = (
-            self.bias
-            if self.bias is not None
-            else torch.empty(0, dtype=torch.bfloat16 if self.use_bf16 else torch.float32)
-        )
-
-        ark.woq_linear(
-            x,
-            self.qweight,
-            bias,
-            outputs,
-            convert_dtype_torch2str(input_dtype),
-            BITS_DTYPE_MAPPING[self.w_bit],
-            convert_dtype_torch2str(self.scale_dtype),
-            True,
-        )
-
-        return outputs.view(out_shape)
-
-    def extra_repr(self) -> str:
-        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
-            self.in_features,
-            self.out_features,
-            self.bias is not None,
-            self.w_bit,
-            self.group_size,
-        )
-
 
 class QuantLinear(nn.Module):
     QUANT_TYPE = "ark_gptq_nozp"
@@ -211,38 +42,50 @@ class QuantLinear(nn.Module):
         self,
         bits,
         group_size,
-        infeatures,
-        outfeatures,
+        sym,
+        in_features,
+        out_features,
         bias,
-        kernel_switch_threshold=128,
-        trainable=False,
         weight_dtype=torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
-
         if bits not in [2, 4, 8]:
-            raise NotImplementedError("Only 2, 4,8 bits are supported for ARK.")
-        assert ARK_INSTALLED, "Please install auto_round_kernel."
+            raise NotImplementedError("Only 2, 4, 8 bits are supported for ARK.")
+        if not ARK_INSTALLED:
+            raise ModuleNotFoundError(
+                "The 'auto_round_kernel' module is required but not installed. "
+                "Please install the 'auto-round-kernel' package, for example:\n"
+                "  pip install auto-round-kernel"
+            )
 
-        self.infeatures = infeatures
-        self.outfeatures = outfeatures
+        self.infeatures = in_features
+        self.outfeatures = out_features
         self.bits = bits
-        self.group_size = group_size if group_size != -1 else infeatures
+        self.group_size = group_size if group_size != -1 else self.infeatures
         self.maxq = 2**self.bits - 1
+        self.qbias = 2 ** (self.bits - 1)
+        self.pack_num = 32 // self.bits
         self.weight_dtype = weight_dtype
-        self.asym = True
+        self.asym = not sym
         ark.set_threads(torch.get_num_threads())
-        self.register_buffer(
-            "qweight",
-            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
-        )
+        if not self.infeatures % self.group_size == 0:
+            raise NotImplementedError("in_features must be divisible by group_size")
+        if "awq" in self.QUANT_TYPE:
+            self.register_buffer(
+                "qweight", torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32)
+            )
+        else:
+            self.register_buffer(
+                "qweight",
+                torch.zeros((self.infeatures // 32 * self.bits, self.outfeatures), dtype=torch.int32),
+            )
         self.register_buffer(
             "qzeros",
             torch.zeros(
                 (
-                    math.ceil(infeatures / self.group_size),
-                    outfeatures // 32 * self.bits,
+                    math.ceil(self.infeatures / self.group_size),
+                    self.outfeatures // 32 * self.bits,
                 ),
                 dtype=torch.int32,
             ),
@@ -250,40 +93,54 @@ class QuantLinear(nn.Module):
         self.register_buffer(
             "scales",
             torch.zeros(
-                (math.ceil(infeatures / self.group_size), outfeatures),
+                (math.ceil(self.infeatures / self.group_size), self.outfeatures),
                 dtype=weight_dtype,
             ),
         )
         if bias:
-            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float))
+            self.register_buffer("bias", torch.zeros((self.outfeatures), dtype=torch.float))
         else:
             self.bias = None
 
-        self.kernel_switch_threshold = kernel_switch_threshold
-        self.trainable = trainable
+    def extra_repr(self) -> str:
+        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
+            self.infeatures,
+            self.outfeatures,
+            self.bias is not None,
+            self.bits,
+            self.group_size,
+        )
 
     def post_init(self):
-        assert self.qweight.device.type in ["cpu", "xpu"]
-        # intweight: k x n, zeros: k / group_size x n
-        intweight, zeros = unpack_to_8bit_signed(self.qweight, self.qzeros, self.bits, self.ZP_BIAS)
-        if zeros is None:
-            zeros = torch.empty(0, dtype=torch.int8)
-            self.asym = False
+        if self.qweight.device.type not in ["cpu", "xpu"]:
+            raise NotImplementedError(
+                f"Device type {self.qweight.device.type} is not supported. Only CPU and XPU devices are supported."
+            )
+        if self.qweight.device.type != "cpu" and self.asym:
+            raise NotImplementedError("Asymmetric quantization is only supported on CPU devices")
+        if "awq" in self.QUANT_TYPE:
+            intweight, zeros = unpack_awq(
+                self.qweight, self.qzeros, self.bits
+            )  # weight: k x n zeros: k / group_size x n
+            intweight, zeros = reverse_awq_order(intweight, zeros, self.bits)  # weight: k x n zeros: k / group_size x n
+            intweight = torch.bitwise_and(intweight, self.maxq)
+            zeros = torch.bitwise_and(zeros, self.maxq)
+
+            intweight = intweight - self.qbias  # from uint8_t to int8_t
+            zeros = zeros - self.qbias  # from uint8_t to int8_t
         else:
-            # change it to int8 with offset 128
-            if self.bits == 8:
-                zeros = (zeros.to(torch.int32) - (2 ** (self.bits - 1))).to(torch.int8)
+            # intweight: k x n, zeros: k / group_size x n
+            intweight, zeros = unpack_to_8bit_signed(self.qweight, self.qzeros, self.bits, self.ZP_BIAS, self.asym)
+            if zeros is None:
+                zeros = torch.empty(0, dtype=torch.int8)
             else:
-                zeros -= 2 ** (self.bits - 1)
-        if self.qweight.device.type != "cpu":
-            assert not self.asym
-        if not self.asym:
-            intweight -= 2 ** (self.bits - 1)
-        intweight = intweight.to(torch.uint8 if self.asym else torch.int8)
-        # due to asym return torch.uint8 but backend request int8,
-        # change it to int8 with offset 128
-        if self.asym:
-            intweight = (intweight.to(torch.int32) - (2 ** (self.bits - 1))).to(torch.int8)
+                # change it to int8 with offset 128
+                zeros = (zeros.to(torch.int32) - self.qbias).to(torch.int8)
+            if self.asym:
+                intweight = (intweight.to(torch.int32) - self.qbias).to(torch.int8)
+            else:
+                intweight -= self.qbias
+                intweight = intweight.to(torch.int8)
 
         logger.debug(
             f"ARK repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, group_size:{self.group_size}"
@@ -295,7 +152,9 @@ class QuantLinear(nn.Module):
             scales = self.scales.to(torch.float16).contiguous()
         else:
             self.sdt = "fp32"
-            self.cdt = "fp32"
+            self.cdt = "auto"
+            if self.asym and self.bits == 8:
+                self.cdt = "fp32"
             scales = self.scales.float().contiguous()
         self.wdt = BITS_DTYPE_MAPPING[self.bits]
 
@@ -303,7 +162,7 @@ class QuantLinear(nn.Module):
             intweight.contiguous(),
             scales,
             zeros.contiguous(),
-            torch.Tensor(),
+            torch.empty(0),
             # compute_dtype
             self.cdt,
             # weight_dtype
@@ -314,10 +173,6 @@ class QuantLinear(nn.Module):
             self.group_size,
         )
 
-        # self.revert_wei = torch.zeros(self.infeatures, self.outfeatures, dtype=scales.dtype, device=self.qweight.device)
-        # # print(packw, packw.device, packw.dtype)
-        # ark.dequantize_packed_weight(
-        #     self.qweight, self.revert_wei, False, self.cdt, self.wdt, self.sdt, self.group_size, self.outfeatures, self.infeatures)
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
@@ -326,11 +181,14 @@ class QuantLinear(nn.Module):
                 self.bias = self.bias.to(torch.float32)
             else:
                 self.bias = self.bias.to(torch.float16)
+        else:
+            self.bias = torch.empty(0)
 
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
         if x.device.type == "cpu":
             odt = torch.float32
+            self.bias = self.bias.to(torch.float32)
             if raw_input_dtype != torch.float32:
                 x = x.to(torch.float32)
         else:
@@ -340,12 +198,11 @@ class QuantLinear(nn.Module):
         x = x.view(-1, x.shape[-1])  # convert xd to 2d
         out_2d_shape = x.shape[:-1] + (self.outfeatures,)
         outputs = torch.empty(out_2d_shape, device=x.device, dtype=odt)
-        bias = self.bias if self.bias is not None else torch.empty(0, dtype=torch.float)
 
         ark.woq_linear(
             x,
             self.qweight,
-            bias,
+            self.bias,
             outputs,
             self.cdt,  # compute_dtype
             self.wdt,  # weight_dtype
@@ -354,7 +211,7 @@ class QuantLinear(nn.Module):
             self.group_size,
         )
         if x.device.type == "xpu":
-            outputs = outputs + bias
+            outputs = outputs + self.bias
         return outputs.to(raw_input_dtype).view(out_shape)
 
 
@@ -363,11 +220,15 @@ class QuantLinearGPTQ(QuantLinear):
     ZP_BIAS = 1
 
 
+class QuantLinearAWQ(QuantLinear):
+    QUANT_TYPE = "ark_awq"
+
+
 @torch.no_grad()
-def unpack_to_8bit_signed(qweight, qzeros, bits, gptq_bias=1):
+def unpack_to_8bit_signed(qweight, qzeros, bits, gptq_bias, asym):
     wf = torch.tensor(list(range(0, 32, bits)), dtype=torch.int32, device=qweight.device).unsqueeze(0)
     zeros = None
-    if not torch.all(torch.eq(qzeros, 2004318071 if bits == 4 else 0b01111111011111110111111101111111)):
+    if asym:
         zp_shape = list(qzeros.shape)
         zp_shape[1] = zp_shape[1] * (32 // bits)
 
