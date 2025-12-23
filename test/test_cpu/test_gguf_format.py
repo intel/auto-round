@@ -23,10 +23,10 @@ class TestGGUF:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_basic_usage(self):
+    def test_basic_usage(self, tiny_gemma_model_path, tiny_qwen_model_path):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {get_model_path('benzart/gemma-2b-it-fine-tuning-for-code-test')} "
+            f"cd ../.. && {python_path} -m auto_round --model {tiny_gemma_model_path} "
             f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
@@ -34,7 +34,7 @@ class TestGGUF:
         shutil.rmtree("./saved", ignore_errors=True)
 
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {self.model_name}"
+            f"cd ../.. && {python_path} -m auto_round --model {tiny_qwen_model_path}"
             f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
@@ -156,8 +156,8 @@ class TestGGUF:
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_all_format(self):
-        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
+    def test_all_format(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
         python_path = sys.executable
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
         for gguf_format in ["gguf:q4_k_m"]:
