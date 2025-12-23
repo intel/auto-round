@@ -34,12 +34,19 @@ steps:
 
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
-        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && uv pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu \
-          && uv pip install intel-extension-for-pytorch==2.8.0 \
-          && uv pip install -r requirements.txt \
-          && uv pip install -r requirements-cpu.txt \
-          && uv pip list"
+        if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
+          docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+            && uv pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install -r requirements.txt \
+            && uv pip list"
+        else 
+          docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+            && uv pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu \
+            && uv pip install intel-extension-for-pytorch==2.8.0 \
+            && uv pip install -r requirements.txt \
+            && uv pip install -r requirements-cpu.txt \
+            && uv pip list"
+        fi
       displayName: "Env Setup"
 
   - ${{ if eq(parameters.imageSource, 'pull') }}:

@@ -8,23 +8,19 @@ pr:
       - main
   paths:
     include:
-      - auto_round
-      - auto_round_extension
-      - test/test_hpu
+      - auto_round/utils
+      - auto_round_extension/ark
+      - test/test_ark
       - setup.py
-      - requirements-lib.txt
-      - .azure-pipelines/scripts/ut
-      - .azure-pipelines/template/docker-template.yml
       - .azure-pipelines/template/ut-template.yml
+      - .azure-pipelines/unit-test-xpu.yml
+      - .azure-pipelines/scripts/ut/run_ut_xpu.sh
     exclude:
-      - auto_round/export/export_to_autogptq
-      - auto_round/export/export_to_awq
       - "*.md"
       - "**/*.md"
-      - .azure-pipelines/scripts/ut/run_ut_cuda.sh
-      - .azure-pipelines/scripts/ut/run_ut.sh
 
-pool: GAUDI
+# test kernel cpu ut only before public xpu available
+pool: ICX-16C
 
 variables:
   IMAGE_NAME: "auto-round"
@@ -44,9 +40,8 @@ stages:
         steps:
           - template: template/ut-template.yml
             parameters:
-              imageSource: "pull"
               dockerConfigName: "commonDockerConfig"
-              utScriptFileName: "run_ut_hpu"
+              utScriptFileName: "run_ut_xpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
 
