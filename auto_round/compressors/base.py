@@ -660,6 +660,10 @@ class BaseCompressor(object):
         if (self.data_type.startswith("fp") or self.act_data_type.startswith("fp")) and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        # TODO: fix https://github.com/intel/auto-round/issues/1109
+        if self.enable_torch_compile and is_nv_fp(self.act_data_type):
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
