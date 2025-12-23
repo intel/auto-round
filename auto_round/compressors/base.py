@@ -252,7 +252,10 @@ class BaseCompressor(object):
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
-        scale_dtype = kwargs.pop("scale_dtype", "fp32") if gguf_scheme_name else kwargs.pop("scale_dtype", "fp16")
+        scale_dtype = kwargs.pop("scale_dtype", None)
+        if scale_dtype is None:
+            scale_dtype = "fp32" if gguf_scheme_name else "fp16"
+
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
         amp = kwargs.pop("amp", True)
