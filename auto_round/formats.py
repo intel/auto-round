@@ -607,6 +607,12 @@ class AutoRoundFormat(OutputFormat):
                 enable_awq = all(
                     config["bits"] == ar.bits or config["bits"] >= 16 for config in ar.layer_config.values()
                 )
+                if self.layer_config is None:
+                    enable_awq = True
+                else:
+                    enable_awq = all(
+                        config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
+                    )
                 if enable_awq:
                     self.backend = AutoAWQFormat("auto_awq", ar)
             elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
