@@ -27,6 +27,7 @@ import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_max_memory
+from sympy.polys.subresultants_qq_zz import sign_seq
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -2668,7 +2669,10 @@ class BaseCompressor(object):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
-            self._step(scaler, optimizer, lr_schedule)
+
+
+
+
 
         last_loss = total_loss
         best_iter = self.iters
@@ -2952,6 +2956,52 @@ class BaseCompressor(object):
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
+        max_m = 0
+
+        class SignRoundScheduler:
+            def __init__(self, total_iters, max_lr=5e-3, min_lr=0, warmup_ratio=0.1, noise_ratio=0.2):
+                """
+                Args:
+                    total_iters: 总迭代次数
+                    max_lr: 最大学习率 (SignGD 步长)
+                    min_lr: 最小学习率
+                    warmup_ratio: 预热阶段占比 (0.1 表示前 10% 迭代进行 warmup)
+                    noise_ratio: 噪声注入阶段占比 (0.2 表示最后 20% 迭代加入噪声)
+                """
+                self.total_iters = total_iters
+                self.max_lr = max_lr
+                self.min_lr = min_lr
+                self.warmup_iters = int(total_iters * warmup_ratio)
+                self.noise_start_iter = int(total_iters * (1 - noise_ratio))
+
+            def get_params(self, current_iter):
+                """
+                根据当前迭代次数，返回学习率和噪声缩放系数
+                """
+                # 1. 计算基础学习率 (Warmup + Cosine Decay)
+                if current_iter < self.warmup_iters:
+                    # Linear Warmup
+                    lr = self.max_lr * (current_iter / self.warmup_iters)
+                else:
+                    # Cosine Annealing
+                    progress = (current_iter - self.warmup_iters) / (self.total_iters - self.warmup_iters)
+                    import math
+                    lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (1 + math.cos(math.pi * progress))
+
+                # 2. 计算噪声缩放系数 (Noise Scale)
+                # 仅在 noise_ratio 指定的最后阶段产生非零值
+                if current_iter >= self.noise_start_iter:
+                    # 噪声强度随学习率同步衰减，防止后期噪声过大破坏收敛
+                    noise_scale = self.max_lr/10
+                else:
+                    noise_scale = 0.0
+
+                return lr, noise_scale
+
+        sign_round_scheduler = SignRoundScheduler(total_iters=self.iters, max_lr=self.lr)
+
+
+
         for i in range(self.iters):
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
@@ -2996,8 +3046,33 @@ class BaseCompressor(object):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
-            self._step(scaler, optimizer, lr_schedule)
+            if i < 20:
+                self._step(scaler, optimizer, lr_schedule)
+            else:
+                with torch.no_grad():
+                    params = round_params + minmax_params
+                    # current_lr = self.lr * (1.0 - i / self.iters)
+                    current_lr, n_scale = sign_round_scheduler.get_params(i)
+                    for param in params:
+                        if param.grad is None:
+                            continue
+                        if not hasattr(param, "momentum"):
+                            param.momentum = torch.sign(param.grad)
+                        else:
+                            param.momentum = 0.5 * param.momentum + torch.sign(param.grad)
+                        # param.momentum = torch.sign(param.grad)
 
+                        if n_scale > 0:
+                            noise = torch.randn_like(param) * n_scale
+                            param.momentum.add_(noise)
+                        if torch.max(torch.abs(param.momentum)) > max_m:
+                            max_m =  torch.max(torch.abs(param.momentum))
+                        param.momentum.clamp_(-5.0,5.0)
+                        param.grad.zero_()
+                        param.data.add_(-param.momentum*current_lr)
+
+
+        logger.info(f"max momentum is {max_m}")
         last_loss = total_loss
         best_iter = self.iters
         if not self.not_use_best_mse:
