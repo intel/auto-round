@@ -1,6 +1,22 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import vllm
 from vllm.logger import init_logger
+
 logger = init_logger(__name__)
+
 
 def oot_maybe_remap_kv_scale_name(name: str, params_dict: dict) -> str | None:
     """Remap the name of FP8 k/v_scale parameters.
@@ -42,8 +58,7 @@ def oot_maybe_remap_kv_scale_name(name: str, params_dict: dict) -> str | None:
     if any("mla_attn" in key for key in params_dict):
         attn_str = "mla_attn.mla_attn"
         logger.debug_once(
-            f"Found mla_attn with k_scale and v_scale in "
-            f"the checkpoint, using {attn_str} as attn_str"
+            f"Found mla_attn with k_scale and v_scale in " f"the checkpoint, using {attn_str} as attn_str"
         )
     else:
         attn_str = "attn"
@@ -100,4 +115,5 @@ def oot_maybe_remap_kv_scale_name(name: str, params_dict: dict) -> str | None:
 
 
 import vllm.model_executor.model_loader.weight_utils as vllm_weight_utils
+
 vllm_weight_utils.maybe_remap_kv_scale_name = oot_maybe_remap_kv_scale_name
