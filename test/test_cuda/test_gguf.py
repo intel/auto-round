@@ -56,7 +56,7 @@ class TestAutoRound:
 
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
-            f"cd ../.. && {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
+            f"cd .. && {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
@@ -103,7 +103,7 @@ class TestAutoRound:
     def test_basic_usage(self, tiny_qwen_model_path):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {tiny_qwen_model_path} --eval_task_by_task"
+            f"cd .. && {python_path} -m auto_round --model {tiny_qwen_model_path} --eval_task_by_task"
             f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0 --eval_model_dtype bf16"
         )
         if res > 0 or res == -1:
