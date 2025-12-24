@@ -117,8 +117,6 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
         else:
             return next_states
 
-        return original
-
 
 class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
