@@ -12,8 +12,7 @@ echo "##[endgroup]"
 uv pip list
 
 # test ark cpu part only before external xpu available
-cd /auto-round/test/test_ark || exit 1
-find . -type f -exec sed -i '/sys\.path\.insert(0, "\.\.")/d' {} +
+cd /auto-round/test || exit 1
 
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
@@ -23,7 +22,7 @@ LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
-find . -name "test*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
+find ./test_ark -name "test*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
 cat run.sh
 bash run.sh 2>&1 | tee "${ut_log_name}"
 
