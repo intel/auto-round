@@ -2978,6 +2978,7 @@ class BaseCompressor(object):
                 """
                 根据当前迭代次数，返回学习率和噪声缩放系数
                 """
+                # return self.max_lr*(1.0-current_iter/self.total_iters), 0.0
                 # 1. 计算基础学习率 (Warmup + Cosine Decay)
                 if current_iter < self.warmup_iters:
                     # Linear Warmup
@@ -3046,30 +3047,29 @@ class BaseCompressor(object):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
-            if i < 20:
-                self._step(scaler, optimizer, lr_schedule)
-            else:
-                with torch.no_grad():
-                    params = round_params + minmax_params
-                    # current_lr = self.lr * (1.0 - i / self.iters)
-                    current_lr, n_scale = sign_round_scheduler.get_params(i)
-                    for param in params:
-                        if param.grad is None:
-                            continue
-                        if not hasattr(param, "momentum"):
-                            param.momentum = torch.sign(param.grad)
-                        else:
-                            param.momentum = 0.5 * param.momentum + torch.sign(param.grad)
-                        # param.momentum = torch.sign(param.grad)
+            # if i < 0:
+            #     self._step(scaler, optimizer, lr_schedule)
+            # else:
+            with torch.no_grad():
+                params = round_params + minmax_params
+                current_lr, n_scale = sign_round_scheduler.get_params(i)
+                for param in params:
+                    if param.grad is None:
+                        continue
+                    if not hasattr(param, "momentum"):
+                        param.momentum = torch.sign(param.grad)
+                    else:
+                        param.momentum = 0.75 * param.momentum + torch.sign(param.grad)
+                    # param.momentum = torch.sign(param.grad)
 
-                        if n_scale > 0:
-                            noise = torch.randn_like(param) * n_scale
-                            param.momentum.add_(noise)
-                        if torch.max(torch.abs(param.momentum)) > max_m:
-                            max_m =  torch.max(torch.abs(param.momentum))
-                        param.momentum.clamp_(-5.0,5.0)
-                        param.grad.zero_()
-                        param.data.add_(-param.momentum*current_lr)
+                    if n_scale > 0:
+                        noise = torch.randn_like(param) * n_scale
+                        param.momentum.add_(noise)
+                    if torch.max(torch.abs(param.momentum)) > max_m:
+                        max_m =  torch.max(torch.abs(param.momentum))
+                    param.momentum.clamp_(-5.0,5.0)
+                    param.grad.zero_()
+                    param.data.add_(-param.momentum*current_lr)
 
 
         logger.info(f"max momentum is {max_m}")
