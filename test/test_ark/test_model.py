@@ -48,7 +48,7 @@ class TestAutoRoundARKBackend:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=limit)
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > tar_acc
