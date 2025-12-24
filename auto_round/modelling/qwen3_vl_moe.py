@@ -117,7 +117,6 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
         else:
             return next_states
 
-    def restore(self, original: torch.nn.Module) -> torch.nn.Module:
         return original
 
 
