@@ -222,7 +222,7 @@ class WrapperLinear(torch.nn.Module):
         """
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
-        value.data.clamp_(-1.0,1.0)
+        value.data.clamp_(-1.0, 1.0)
         min_scale.data.clamp_(0, 2.0)
         max_scale.data.clamp_(0, 2.0)
         weight = self.orig_layer.weight
