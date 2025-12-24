@@ -53,7 +53,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
         self,
         original: "Qwen3VLMoeTextSparseMoeBlock",
         config: "Qwen3VLMoeConfig",
-        calibrate_all_experts: bool = True,
+        calibrate_all_experts: bool = False,
     ):
         super().__init__()
         text_config: "Qwen3VLMoeTextConfig" = config.get_text_config()
