@@ -31,8 +31,8 @@ def setup_llama4():
     model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    config.vision_config.num_hidden_layers = 2  # Reduce layers for testing
-    config.text_config.num_hidden_layers = 2
+    config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
+    config.text_config.num_hidden_layers = 1
     model = Llama4ForConditionalGeneration(config)
     output_dir = "test_quantized_llama4"
     return model, tokenizer, output_dir, config
@@ -61,6 +61,7 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
         scheme=scheme,
         nsamples=2,
         iters=iters,
+        seqlen=32,
         fp_layers="self_attn,router,lm_head,mlp.gate",
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
