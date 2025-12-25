@@ -8,17 +8,21 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.testing_utils import has_module
 
 from ..helpers import get_model_path
 
-testing_schemes = [AutoRoundFormat.MXFP8.value, AutoRoundFormat.MXFP4.value, AutoRoundFormat.NVFP4.value]
+testing_schemes = [
+    AutoRoundExportFormat.MXFP8.value,
+    AutoRoundExportFormat.MXFP4.value,
+    AutoRoundExportFormat.NVFP4.value,
+]
 QMODULE_MAPPING = {
-    AutoRoundFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
-    AutoRoundFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
-    AutoRoundFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
+    AutoRoundExportFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
+    AutoRoundExportFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    AutoRoundExportFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
 
 

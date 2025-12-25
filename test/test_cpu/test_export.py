@@ -381,3 +381,33 @@ class TestAutoRound:
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_export_format(self):
+        from auto_round.formats import get_formats
+
+        autoround = AutoRound(
+            self.model_name,
+            scheme="FP8_STATIC",
+        )
+        format_list = get_formats("auto_round, llm_compressor, auto_round:llm_compressor", autoround)
+        assert len(format_list) == 3
+        assert format_list[0].output_format == "auto_round"
+        assert format_list[0].get_backend_name() == "auto_round:fp8_static"
+        assert format_list[1].output_format == "llm_compressor"
+        assert format_list[1].get_backend_name() == "llm_compressor:fp8_static"
+        assert format_list[2].output_format == "auto_round"
+        assert format_list[2].get_backend_name() == "auto_round:llm_compressor:fp8_static"
+
+        autoround = AutoRound(
+            self.model_name,
+            scheme="W4A16",
+        )
+        format_list = get_formats("auto_round:auto_awq, auto_gptq", autoround)
+        assert format_list[0].output_format == "auto_round"
+        assert format_list[0].get_backend_name() == "auto_round:auto_awq"
+        assert format_list[1].output_format == "auto_gptq"
+        assert format_list[1].get_backend_name() == "auto_gptq"
+
+
+if __name__ == "__main__":
+    unittest.main()
