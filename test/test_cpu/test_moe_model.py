@@ -92,7 +92,7 @@ def test_llama4(setup_llama4):
     delattr(model.config.text_config, "moe_layers")
     delattr(model.config.text_config, "layer_types")
 
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4", iters=1)
+    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
