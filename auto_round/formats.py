@@ -564,14 +564,23 @@ class AutoAWQFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
-        from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
+        backend = self.get_backend_name()
+        if backend == "auto_round:auto_awq":
+            from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
 
-        return save_quantized_as_autoawq(
+            export_func = save_quantized_as_autoround
+        else:
+            from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
+
+            export_func = save_quantized_as_autoawq
+
+        return export_func(
             output_dir=output_dir,
             model=model,
             tokenizer=tokenizer,
             layer_config=layer_config,
             inplace=inplace,
+            backend=backend,
             device=device,
             serialization_dict=serialization_dict,
             **kwargs,

@@ -250,7 +250,6 @@ def save_quantized_as_autoround(
     Raises:
         ValueError: If the backend is not supported.
     """
-    data_type = serialization_dict.get("data_type", None)
     # IF using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (
         (serialization_dict.get("sym") is None or serialization_dict.get("sym"))
