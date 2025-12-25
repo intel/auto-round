@@ -138,6 +138,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
         basic.add_argument(
             "--format",
+            "--formats",
             default="auto_round",
             type=str,
             help="Output format for the quantized model."

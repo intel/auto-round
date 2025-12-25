@@ -15,7 +15,7 @@
 import copy
 import json
 import os
-from typing import Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import torch
 import transformers
@@ -61,23 +61,32 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     return int_weight
 
 
-def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
+def save_quantized_as_itrex(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    serialization_dict: dict = None,
+    **kwargs,
+) -> torch.nn.Module:
     """Save configure file and weights for CPU backend inference."""
-    model = kwargs["model"]
-    layer_config = kwargs["layer_config"]
-    sym = kwargs["sym"]
-    bits = kwargs["bits"]
-    group_size = kwargs["group_size"]
-    iters = kwargs["iters"]
-    lr = kwargs["lr"]
-    minmax_lr = kwargs["minmax_lr"]
-    enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    enable_quanted_input = kwargs["enable_quanted_input"]
-    scale_dtype = kwargs["scale_dtype"]
-    tokenizer = kwargs["tokenizer"]
+    sym = serialization_dict["sym"]
+    bits = serialization_dict["bits"]
+    group_size = serialization_dict["group_size"]
+    iters = serialization_dict["iters"]
+    lr = serialization_dict["lr"]
+    minmax_lr = serialization_dict["minmax_lr"]
+    enable_minmax_tuning = serialization_dict["enable_minmax_tuning"]
+    enable_quanted_input = serialization_dict["enable_quanted_input"]
+    scale_dtype = serialization_dict["scale_dtype"]
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
 
-    compressed_model = pack_model(model, layer_config, inplace=inplace)
+    processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
+
+    compressed_model = pack_model(model, layer_config, inplace=inplace, device=device)
     if output_dir is None:
         return compressed_model
     quantize_config = QuantConfig(
@@ -101,27 +110,39 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         compressed_model.save_pretrained(output_dir, safe_serialization=safe_serialization)
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
+        if processor is not None:
+            processor.save_pretrained(output_dir)
+        if image_processor is not None:
+            image_processor.save_pretrained(output_dir)
         logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
     except IOError as e:  # pragma: no cover
         logger.error("Fail to save configure file and weights due to {}.".format(e))
     return compressed_model
 
 
-def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
+def save_quantized_as_itrex_xpu(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    serialization_dict: dict = None,
+    **kwargs,
+) -> torch.nn.Module:
     """Save configure file and weights for XPU backend inference."""
-    model = kwargs["model"]
-    layer_config = kwargs["layer_config"]
-    sym = kwargs["sym"]
-    bits = kwargs["bits"]
-    group_size = kwargs["group_size"]
-    iters = kwargs["iters"]
-    lr = kwargs["lr"]
-    minmax_lr = kwargs["minmax_lr"]
-    enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    enable_quanted_input = kwargs["enable_quanted_input"]
-    scale_dtype = kwargs["scale_dtype"]
-    tokenizer = kwargs.get("tokenizer", None)
+    sym = serialization_dict["sym"]
+    bits = serialization_dict["bits"]
+    group_size = serialization_dict["group_size"]
+    iters = serialization_dict["iters"]
+    lr = serialization_dict["lr"]
+    minmax_lr = serialization_dict["minmax_lr"]
+    enable_minmax_tuning = serialization_dict["enable_minmax_tuning"]
+    enable_quanted_input = serialization_dict["enable_quanted_input"]
+    scale_dtype = serialization_dict["scale_dtype"]
+
     processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
 
     compressed_model = pack_model(inplace=inplace, **kwargs)
     if output_dir is None:
@@ -151,6 +172,8 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
             tokenizer.save_pretrained(output_dir)
         if processor is not None:
             processor.save_pretrained(output_dir)
+        if image_processor is not None:
+            image_processor.save_pretrained(output_dir)
         logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
     except IOError as e:  # pragma: no cover
         logger.error("Fail to save configure file and weights due to {}.".format(e))
