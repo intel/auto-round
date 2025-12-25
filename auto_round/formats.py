@@ -321,7 +321,8 @@ class LLMCompressorFormat(OutputFormat):
                 f"but got scheme {ar.scheme}, please change to fake or auto_round etc."
             )
             exit(-1)
-        if format.startswith("llm_compressor"):
+        # if format.startswith("llm_compressor"):
+        if re.search("^(auto_round:)?llm_compressor", format):
             self.output_format = format
             self.backend = None
             if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
@@ -376,11 +377,11 @@ class LLMCompressorFormat(OutputFormat):
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.backend is not None:
             return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
-        if AutoRoundExportFormat.MX_FP in self.output_format or AutoRoundExportFormat.MXFP4 in self.output_format:
+        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
             return pack_layer(layer_name, model, device=device)
-        elif AutoRoundExportFormat.FP8_STATIC in self.output_format:
+        elif re.search(f"{AutoRoundExportFormat.FP8_STATIC.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)

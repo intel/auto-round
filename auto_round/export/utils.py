@@ -200,7 +200,7 @@ def filter_quantization_config(quantization_config):
         elif isinstance(quantization_config[key], (list, tuple)):
             if any([callable(item) for item in quantization_config[key]]):
                 quantization_config.pop(key)
-        elif key in clean_list:
+        if key in clean_list and key in quantization_config:
             quantization_config.pop(key)
 
 

@@ -199,7 +199,7 @@ def save_quantized_as_fp(
                 def wrapper(name):
                     pbar.set_description(f"packing {name}")
                     with tctl.threadpool_limits(limits=1):
-                        pack_layer(name, model, backend, device)
+                        pack_layer(name, model, device)
                     pbar.update(1)
 
                 for _ in executor.map(wrapper, names):
