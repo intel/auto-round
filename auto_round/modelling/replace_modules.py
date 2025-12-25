@@ -151,11 +151,10 @@ def apply_replacements(
     logger.debug("Scanning for modules to replace")
     modules_to_replace = []
     for name, module in model.named_modules():
-        class_name = (
-            module.original_module_class()
-            if hasattr(module, "original_module_class") and callable(module.original_module_class)
-            else module.__class__.__name__
-        )
+        # skip replaced modules
+        if isinstance(module, ReplacementModuleBase):
+            continue
+        class_name = module.__class__.__name__
         if ReplacementModuleBase.is_to_be_replaced(module, class_name):
             modules_to_replace.append((name, module, class_name))
 
