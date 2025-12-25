@@ -159,10 +159,10 @@ class TestAutoRound:
                 model_path = get_model_path(model_name)
                 tiny_model_path = "tmp_tiny_model"
                 tiny_model_path = save_tiny_model(model_path, tiny_model_path, num_layers=2)
-                ar = AutoRound(tiny_model_path, scheme=gguf_format, iters=0, nsampels=1, seqlen=16)
+                ar = AutoRound(tiny_model_path, scheme=gguf_format, iters=0, nsamples=1, seqlen=16)
                 ar.quantize_and_save(output_dir=self.save_dir, format=gguf_format)
 
-                ar = AutoRound(tiny_model_path, scheme=gguf_format, iters=1, nsampels=1, seqlen=16)
+                ar = AutoRound(tiny_model_path, scheme=gguf_format, iters=1, nsamples=1, seqlen=16)
                 ar.quantize_and_save(output_dir=self.save_dir, format=gguf_format)
 
                 shutil.rmtree(tiny_model_path, ignore_errors=True)
