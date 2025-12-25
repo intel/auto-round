@@ -9,22 +9,22 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.inference.backend import MX_TENSOR_DATA_TYPES
 from auto_round.testing_utils import has_module
 
 testing_scheme_name_lst = [
-    AutoRoundFormat.MXFP8.value,
-    AutoRoundFormat.MXFP4.value,
+    AutoRoundExportFormat.MXFP8.value,
+    AutoRoundExportFormat.MXFP4.value,
 ]
 QMODULE_MAPPING = {
-    AutoRoundFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
-    AutoRoundFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    AutoRoundExportFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
+    AutoRoundExportFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
 }
 SCHEMES_MAPPING = {
-    AutoRoundFormat.MXFP8.value: ar_schemes.MXFP8,
-    AutoRoundFormat.MXFP4.value: ar_schemes.MXFP4,
+    AutoRoundExportFormat.MXFP8.value: ar_schemes.MXFP8,
+    AutoRoundExportFormat.MXFP4.value: ar_schemes.MXFP4,
 }
 
 

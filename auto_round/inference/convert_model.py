@@ -20,7 +20,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.export.export_to_autoround import AutoRoundFormat
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
@@ -424,10 +424,10 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
         )
     elif (
-        AutoRoundFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundFormat.MXFP8.value in layer_backend
-        or AutoRoundFormat.MXFP4.value in layer_backend
-        or AutoRoundFormat.NVFP4.value in layer_backend
+        AutoRoundExportFormat.FP8_STATIC.value in layer_backend
+        or AutoRoundExportFormat.MXFP8.value in layer_backend
+        or AutoRoundExportFormat.MXFP4.value in layer_backend
+        or AutoRoundExportFormat.NVFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 

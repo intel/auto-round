@@ -14,6 +14,7 @@
 import torch
 
 import auto_round.modelling as auto_round_modelling
+from auto_round.formats import OutputFormat
 from auto_round.modelling.replace_modules import apply_replacements
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
@@ -51,8 +52,8 @@ def _handle_special_model(model):
     return model
 
 
-def update_module(model, formats=None):
-    if formats is not None and any(["gguf" in format_ for format_ in formats]):
+def update_module(model, formats: list[OutputFormat] = None):
+    if formats is not None and any([format_.is_gguf() for format_ in formats]):
         return model
 
     return apply_replacements(model)
