@@ -220,6 +220,22 @@ def float8_e4m3fn_hpu_ste(x: torch.Tensor):
     return fp8
 
 
+def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
+    """Straight-Through Estimator (STE) for float8.
+
+    Applies a quantization and dequantization step with float8 precision while maintaining
+    gradient flow using a straight-through estimator.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+
+    Returns:
+        torch.Tensor: Quantized and dequantized tensor using float8 format.
+    """
+    fp8 = ((torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, torch.float8_e4m3fn)[0]).to(x.dtype) - x).detach() + x
+    return fp8
+
+
 @lru_cache(None)
 def get_gaudi_fp8_ste_func():
     from auto_round.utils import is_hpex_available
@@ -274,32 +290,31 @@ def update_fused_layer_global_scales(
             hasattr(module, "gate_proj") and hasattr(module, "up_proj")
         )
 
+    def _update_global_scales(modules: List[Module]):
+        """Update global scales for a list of modules."""
+        scales = _collect_scales(modules)
+        if not scales:
+            return
+
+        # Move all scales to the same device before stacking
+        target_device = scales[0].device
+        scales_on_device = [s.to(target_device) for s in scales]
+        global_scale = torch.min(torch.stack(scales_on_device), dim=0).values
+
+        for proj in modules:
+            if hasattr(proj, global_scale_name):
+                # Move global_scale to the same device as the projection's current scale
+                proj_scale = getattr(proj, global_scale_name)
+                setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
+
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
         # Already fused
         if hasattr(submodule, "qkv_proj"):
             return
-
-        scales = _collect_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
-        if not scales:
-            return
-
-        global_scale = torch.min(torch.stack(scales), dim=0).values
-
-        for proj in (submodule.q_proj, submodule.k_proj, submodule.v_proj):
-            if hasattr(proj, global_scale_name):
-                setattr(proj, global_scale_name, global_scale.clone())
-
+        _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
         return
 
     # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
-        scales = _collect_scales([submodule.gate_proj, submodule.up_proj])
-        if not scales:
-            return
-
-        global_scale = torch.min(torch.stack(scales), dim=0).values
-
-        for proj in (submodule.gate_proj, submodule.up_proj):
-            if hasattr(proj, global_scale_name):
-                setattr(proj, global_scale_name, global_scale.clone())
+        _update_global_scales([submodule.gate_proj, submodule.up_proj])

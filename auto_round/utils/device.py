@@ -1336,6 +1336,17 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
     raise TypeError(f"Unsupported device_map type: {type(device_map)}")
 
 
+@lru_cache(maxsize=None)
+def is_gaudi2():
+    try:
+        import habana_frameworks.torch.utils.experimental as htexp
+
+        is_hpu_gaudi2 = htexp._get_device_type() == htexp.synDeviceType.synDeviceGaudi2
+        return is_hpu_gaudi2
+    except ImportError:
+        return False
+
+
 class MemoryMonitor:
     """Global memory monitor for tracking peak RAM and VRAM usage."""
 

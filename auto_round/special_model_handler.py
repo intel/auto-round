@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import torch
+
 import auto_round.modelling as auto_round_modelling
 from auto_round.formats import OutputFormat
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
@@ -29,6 +31,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "llama4",
     "internvl_chat",
     "glm4v_moe",
+    "qwen3_vl_moe",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -38,7 +41,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
-CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss"]
+CONVERT_EXPERT_TO_LINEAR_MODELS = ["llama4", "gpt_oss", "qwen3_vl_moe"]
 
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
@@ -48,6 +51,7 @@ def _get_moe_converter(config):
     moe_converters = {
         "gpt_oss": LazyImport("auto_round.modelling.gpt_oss.get_replacement_info"),
         "llama4": LazyImport("auto_round.modelling.llama4.get_replacement_info"),
+        "qwen3_vl_moe": LazyImport("auto_round.modelling.qwen3_vl_moe.get_replacement_info"),
     }
 
     # Retrieve the appropriate function based on model_type
@@ -61,7 +65,7 @@ def _get_moe_converter(config):
 
 
 def _handle_special_model(model):
-    if model.config.model_type == "deepseek_vl_v2":
+    if hasattr(model, "config") and model.config.model_type == "deepseek_vl_v2":
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)

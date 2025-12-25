@@ -31,7 +31,18 @@ from typing import Optional
 
 import torch
 
-kE2M1ToFloat = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32)
+_DEVICE_E2M1_TENSORS = {}
+
+# Constants for FP4 values (E2M1 format)
+_E2M1_VALUES = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+
+
+def get_e2m1_tensor(device):
+    """Get device-specific E2M1 lookup tensor, creating it if needed."""
+    device_str = str(device)
+    if device_str not in _DEVICE_E2M1_TENSORS:
+        _DEVICE_E2M1_TENSORS[device_str] = torch.tensor(_E2M1_VALUES, dtype=torch.float32, device=device)
+    return _DEVICE_E2M1_TENSORS[device_str]
 
 
 def unpack_fp4_from_uint8(
@@ -91,7 +102,7 @@ def _unpack_fp4_from_uint8(
     abs_vals = (combined & 0x07).to(torch.long)  # Magnitude indices
 
     # Device-aware lookup and sign application
-    kE2M1 = kE2M1ToFloat.to(device=a.device)
+    kE2M1 = get_e2m1_tensor(device=a.device)
     values = kE2M1[abs_vals] * torch.where(signs, -1.0, 1.0)
 
     # Reshape to final form
