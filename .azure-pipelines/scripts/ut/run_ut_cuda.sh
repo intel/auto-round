@@ -64,9 +64,10 @@ function print_test_results_table() {
             local result="UNKNOWN"
             local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || echo 0)
             local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || echo 0)
+            local killed_count=$(grep -c 'Killed' "${log_file}" 2>/dev/null || echo 0)
             local passed_count=$(grep -c ' passed' "${log_file}" 2>/dev/null || echo 0)
 
-            if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ]; then
+            if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ] || [ ${killed_count} -gt 0 ]; then
                 result="FAILED"
                 failed_tests=$((failed_tests + 1))
             elif [ ${passed_count} -gt 0 ]; then
