@@ -214,6 +214,8 @@ def pack_layer(layer_name, model, backend, device=None):
     else:
         qlayer.pack(layer, scale, zp, None, device=device)
     qlayer.to(orig_device)
+    # Note: release weight and bias explicitly, in case they are referenced elsewhere
+    release_layer_safely(layer)
 
 
 def save_quantized_as_autoround(

@@ -51,7 +51,7 @@ __all__ = [
 ]
 
 
-def pack_layer(name, model, backend, device=None):
+def pack_layer(name, model, device=None):
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return

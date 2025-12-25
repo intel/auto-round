@@ -379,11 +379,11 @@ class LLMCompressorFormat(OutputFormat):
         if AutoRoundExportFormat.MX_FP in self.output_format or AutoRoundExportFormat.MXFP4 in self.output_format:
             from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
-            return pack_layer(layer_name, model, backend=self.output_format, device=device)
+            return pack_layer(layer_name, model, device=device)
         elif AutoRoundExportFormat.FP8_STATIC in self.output_format:
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
-            return pack_layer(layer_name, model, backend=self.output_format, device=device)
+            return pack_layer(layer_name, model, self.get_backend_name(), device=device)
 
         ## passed as no other llm_compressor format is supported yet
         logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
@@ -668,6 +668,7 @@ class GGUFFormat(OutputFormat):
         return super().check_and_reset_format(ar)
 
     def pack_layer(
+        self,
         name,
         model,
         backend,
