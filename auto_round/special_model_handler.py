@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import torch
+
 import auto_round.modelling as auto_round_modelling
 from auto_round.modelling.replace_modules import apply_replacements
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
@@ -29,6 +31,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "llama4",
     "internvl_chat",
     "glm4v_moe",
+    "qwen3_vl_moe",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
