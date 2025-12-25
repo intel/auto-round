@@ -407,7 +407,3 @@ class TestAutoRound:
         assert format_list[0].get_backend_name() == "auto_round:auto_awq"
         assert format_list[1].output_format == "auto_gptq"
         assert format_list[1].get_backend_name() == "auto_gptq"
-
-
-if __name__ == "__main__":
-    unittest.main()
