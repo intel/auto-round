@@ -31,7 +31,7 @@ from auto_round.inference.backend import (
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.special_model_handler import _handle_moe_model
+from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -593,7 +593,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_gptq"
 
     # Preprocess model before replace layers
-    model = _handle_moe_model(model)
+    model = update_module(model)
 
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
