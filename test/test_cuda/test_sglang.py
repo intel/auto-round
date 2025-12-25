@@ -3,14 +3,16 @@ import sys
 from pathlib import Path
 
 import pytest
-import torch
 import sglang as sgl
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound
 
 # -----------------------------------------------------------------------------
 # Utils
 # -----------------------------------------------------------------------------
+
 
 class LLMDataLoader:
     def __init__(self):
@@ -25,6 +27,7 @@ class LLMDataLoader:
 # Fixtures
 # -----------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def model_name():
     return "/models/opt-125m"
@@ -38,12 +41,8 @@ def save_dir(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def model_and_tokenizer(model_name):
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype="auto", device_map="auto"
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
 
@@ -64,6 +63,7 @@ def cleanup():
 # -----------------------------------------------------------------------------
 # Tests
 # -----------------------------------------------------------------------------
+
 
 def _run_sglang_inference(model_path: Path):
     llm = sgl.Engine(model_path=str(model_path), mem_fraction_static=0.7)
@@ -124,4 +124,3 @@ def test_mixed_ar_format_sglang(model_name, save_dir, llm_dataloader):
     assert "!!!" not in generated_text
 
     shutil.rmtree(save_dir, ignore_errors=True)
-
