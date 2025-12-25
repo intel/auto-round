@@ -166,37 +166,6 @@ def setup_qwen3():
     return model, tokenizer, output_dir, config
 
 
-def has_module(model: torch.nn.Module, module_name: str) -> bool:
-    for n, m in model.named_modules():
-        if module_name in n:
-            return True
-    return False
-
-
-def test_register_module_out_of_tree_base():
-    from auto_round.modelling.replace_modules import ReplacementModuleBase
-
-    for name, subclass in ReplacementModuleBase._replacement_registry.items():
-        if name == "Qwen3MLP":
-            assert subclass == NewQwen3MLP, "Qwen3MLP not registered correctly."
-
-
-def test_register_module_out_of_tree_model(setup_qwen3):
-    model, tokenizer, output_dir, config = setup_qwen3
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
-    # Ensure the quantized model is not None
-    assert quantized_model is not None, "Quantized model should not be None."
-    check_module_names = ["new_gate_proj", "new_up_proj", "new_down_proj"]
-    for name in check_module_names:
-        assert has_module(quantized_model, name), f"Module {name} not found in quantized model."
-    loaded_model = Qwen3ForCausalLM.from_pretrained(output_dir)
-    quantized_model.to("cuda")
-
-    for name in check_module_names:
-        assert has_module(loaded_model, name), f"Module {name} not found in loaded model."
-    loaded_model.to("cuda")
-
-
 def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     model, tokenizer, processor, output_dir, config = setup_qwen3_vl_moe
     autoround = AutoRound(
@@ -230,3 +199,34 @@ def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def has_module(model: torch.nn.Module, module_name: str) -> bool:
+    for n, m in model.named_modules():
+        if module_name in n:
+            return True
+    return False
+
+
+def test_register_module_out_of_tree_base():
+    from auto_round.modelling.replace_modules import ReplacementModuleBase
+
+    for name, subclass in ReplacementModuleBase._replacement_registry.items():
+        if name == "Qwen3MLP":
+            assert subclass == NewQwen3MLP, "Qwen3MLP not registered correctly."
+
+
+def test_register_module_out_of_tree_model(setup_qwen3):
+    model, tokenizer, output_dir, config = setup_qwen3
+    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
+    # Ensure the quantized model is not None
+    assert quantized_model is not None, "Quantized model should not be None."
+    check_module_names = ["new_gate_proj", "new_up_proj", "new_down_proj"]
+    for name in check_module_names:
+        assert has_module(quantized_model, name), f"Module {name} not found in quantized model."
+    loaded_model = Qwen3ForCausalLM.from_pretrained(output_dir)
+    quantized_model.to("cuda")
+
+    for name in check_module_names:
+        assert has_module(loaded_model, name), f"Module {name} not found in loaded model."
+    loaded_model.to("cuda")
