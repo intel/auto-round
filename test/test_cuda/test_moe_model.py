@@ -49,7 +49,7 @@ def setup_qwen3_vl_moe():
     config.num_hidden_layers = 1  # Reduce layers for testing
     processor = AutoProcessor.from_pretrained(model_name)
     model = Qwen3VLMoeForConditionalGeneration(config)
-    output_dir = "/tmp/test_quantized_qwen3_vl_moe"
+    output_dir = "test_quantized_qwen3_vl_moe"
     return model, tokenizer, processor, output_dir, config
 
 

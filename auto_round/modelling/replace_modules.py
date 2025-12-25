@@ -24,6 +24,7 @@ from auto_round.utils import LazyImport, logger
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
     "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
+    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
 }
 
 
