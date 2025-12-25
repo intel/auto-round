@@ -31,7 +31,7 @@ bash run_compile.sh 2>&1 | tee ${ut_log_name}
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
 
-if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
+if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
     echo "##[error]Find errors in pytest case, please check the output..."
     exit 1
 fi

@@ -40,7 +40,6 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    gguf_args_check,
     immediate_saving,
     infer_bits_by_data_type,
     init_cache,
@@ -54,8 +53,8 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-from auto_round.export.export_to_autoround import AutoRoundFormat
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
+from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.schemes import (
     SPECIAL_SCHEMES,
@@ -65,11 +64,10 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import _handle_moe_model
+from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
-    SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
@@ -663,6 +661,10 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        # TODO: fix https://github.com/intel/auto-round/issues/1109
+        if self.enable_torch_compile and is_nv_fp(self.act_data_type):
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -739,35 +741,6 @@ class BaseCompressor(object):
 
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
-        # Check gguf and others
-        has_gguf = False
-        if hasattr(self, "formats"):
-            has_besides_gguf = False
-            for format_ in self.formats:
-                if "gguf" in format_:
-                    has_gguf = True
-                elif format_ != "fake":
-                    has_besides_gguf = True
-            if has_gguf and has_besides_gguf:
-                raise ValueError("GGUF format is not compatible with other formats, please choose only one of them")
-            if has_gguf:
-                from transformers.utils.versions import require_version
-
-                require_version(
-                    "sentencepiece",
-                    "GGUF format requires SentencePiece to be installed. "
-                    "Please install it with `pip install sentencepiece`",
-                )
-            if has_gguf and self.iters != 0 and self.bits != 3 and not self.enable_alg_ext:
-                logger.warning(
-                    "`iters=0` is recommended when exporting to current GGUF format"
-                    " or add `enable_alg_ext` for better accuracy with much more tuning cost."
-                    " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
-                    " for the accuracy results."
-                )
-            elif self.bits >= 8 and self.iters != 0:
-                logger.warning("`iters=0` is recommended for bits>=8")
-
         if (
             self.seqlen is not None
             and hasattr(self.model, "config")
@@ -791,233 +764,6 @@ class BaseCompressor(object):
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
-
-    def _parse_format_to_list(self, format: str) -> list:
-        """Parses the format string into a list of formats.
-
-        This method checks the requested format(s) against the model's
-        quantization settings and adjusts them if necessary. It ensures that
-        the formats are compatible with the model's data type, bit width,
-        and activation quantization settings.
-
-        Args:
-            format (str): The requested format(s) for quantization, separated by commas.
-
-        Returns:
-            list: A list of validated and updated formats.
-        """
-
-        # Remove duplicates from formats list
-        def remove_duplicates(lst):
-            seen = set()
-            return [x for x in lst if not (x in seen or seen.add(x))]
-
-        formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
-        formats = remove_duplicates(formats)  # need the keep origin order
-
-        gguf_format_name = get_gguf_scheme(self.scheme)
-
-        if gguf_format_name:
-            for i in range(len(formats)):
-                if gguf_format_name.lower().endswith("mixed"):
-                    gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
-                if formats[i] != "fake" and formats[i] != gguf_format_name.lower():
-                    logger.warning(
-                        f"reset format {formats[i]} to {gguf_format_name.lower()} "
-                        f"since scheme {gguf_format_name} can only be exported to format {gguf_format_name.lower()}"
-                    )
-                    formats[i] = gguf_format_name.lower()
-
-        gguf_args_check(self, formats, model_type=ModelType.TEXT)
-        if self.mllm:
-            gguf_args_check(self, formats, model_type=ModelType.MMPROJ)
-
-        for f in formats:
-            if f.startswith("gguf"):
-                self.scheme = f.upper()
-                break
-
-        for format_ in formats:
-            if format_ not in SUPPORTED_FORMATS:
-                logger.error(f"Unsupported format {format_}, please choose from {SUPPORTED_FORMATS}")
-                exit(-1)
-        if self.scale_dtype != torch.float32:
-            only_gguf = True
-            for format_ in formats:
-                if not ("gguf" in format_ or "fake" in format_):
-                    only_gguf = False
-                    break
-            if len(formats) == 1 and "fake" == formats[0]:
-                only_gguf = False
-            if only_gguf:
-                self.scale_dtype = torch.float32
-                logger.info("change `scale_dtype` to `torch.float32`")
-
-        # Adjust format settings based on compatibility
-        for index in range(len(formats)):
-            format = formats[index]
-            if format == "auto_round":
-                if self.sym and "int" in self.data_type:
-                    format = "auto_round:auto_gptq"
-                elif self.bits == 4 and not self.sym and "int" in self.data_type:
-                    if self.layer_config is None:
-                        enable_awq = True
-                    else:
-                        enable_awq = all(
-                            config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
-                        )
-                    if enable_awq:
-                        format = "auto_round:auto_awq"
-                elif is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
-                    format = f"auto_round:{self.data_type}"
-                elif is_static_wfp8afp8(self):  # static wfp8afp8
-                    format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
-                elif self.data_type.startswith("fp") and self.bits == 8 and self.act_bits >= 16:  # woq fp8
-                    format = f"auto_round:{AutoRoundFormat.FP8.value}"
-                elif self.act_bits < 16:
-                    raise ValueError(
-                        "AutoRound format does not support exporting "
-                        "for the current quantization configuration, "
-                        "please change to `fake` format for research purpose"
-                    )
-                formats[index] = format
-            elif format == "llm_compressor":
-                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
-
-                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type):
-                    check_compressed_tensors_supported()
-                    format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
-                    formats[index] = format
-                elif is_static_wfp8afp8(self):
-                    format = f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}"
-                    formats[index] = format
-                    if self.act_group_size != 0:
-                        logger.warning(
-                            f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
-                            f" ,but got act_group_size={self.act_group_size}, reset = 0"
-                        )
-                        self.act_group_size = 0
-                    if self.group_size > 0:
-                        logger.warning(
-                            f"please note that group_size={self.group_size}"
-                            " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
-                        )
-                elif not is_wfp8afp8(self):
-                    logger.error(
-                        "Currently, the llm_compressor format only supports MXFP/NVFP/FP8. "
-                        "Please change format to fake or auto_round etc."
-                    )
-            elif "auto_awq" in format:
-                from auto_round.compressors.utils import check_awq_gemm_compatibility
-
-                awq_supported, info = check_awq_gemm_compatibility(
-                    self.model, self.bits, self.group_size, self.sym, self.layer_config
-                )
-                if not awq_supported:
-                    logger.warning(f"The AutoAWQ format may not be supported due to {info}")
-            else:
-                if (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)) and format != "fake":
-                    logger.warning(f"nv_fp and mx_fp dtypes are not supported for export format: {format}")
-
-        formats = remove_duplicates(formats)
-        for i in range(len(formats)):
-            formats[i] = self._check_supported_format(formats[i])
-        formats = remove_duplicates(formats)
-        return formats
-
-    def _check_supported_format(self, format: str) -> bool:
-        """Checks if the specified format is supported.
-
-        This method validates the requested format against the model's bit width,
-        group size, symmetry, and activation quantization settings. It raises an
-        error if the format is incompatible with the current model configuration.
-
-        Args:
-            format (str): The requested format for quantization.
-
-        Returns:
-            bool: True if the format is supported, False otherwise.
-        """
-        if format == "fake":
-            return format
-        format = format.replace("q*_", f"q{self.bits}_")
-
-        # format check for fp8
-        w_fp8 = self.data_type.startswith("fp") and self.bits == 8
-        act_fp8 = self.act_data_type.startswith("fp") and self.act_bits == 8
-        if (w_fp8 or act_fp8) and re.search("^auto_round|^llm_compressor", format) is None:
-            error_msg = (
-                f"is only supported to export auto_round or llm_compressor format," f" but got {format}, please check."
-            )
-            error_msg = ("act_data_type<fp8> " + error_msg) if act_fp8 else error_msg
-            error_msg = ("data_type<fp8> " + error_msg) if w_fp8 else error_msg
-            logger.error(error_msg)
-            sys.exit(-1)
-
-        # Only support to export afp8/nv_fp/mx_fp
-        if self.act_bits <= 8:
-            if not is_standard_fp(self.act_data_type) or self.act_dynamic:
-                if "llm_compressor" in format:
-                    if (is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type) or (
-                        is_mx_fp(self.act_data_type)
-                    ):
-                        return format
-                    bits, group_size, sym, act_bits = 8, -1, True, 8
-                    assert (
-                        self.bits == bits
-                        and self.group_size == group_size
-                        and self.sym == sym
-                        and self.act_bits == act_bits
-                        and self.act_dynamic
-                    ), (
-                        f"Currently only support to export llm_compressor format for sym dynamic quantized"
-                        f" W{self.bits}A{self.act_bits} model with group_size={group_size},"
-                        f" but got bits={self.bits}, group_size={self.group_size}, sym={self.sym},"
-                        f" act_bits={self.act_bits}"
-                    )
-                elif "auto_round" in format and (
-                    is_mx_fp(self.act_data_type) or (is_nv_fp(self.act_data_type) and "static_gs" in self.act_data_type)
-                ):
-                    pass
-                elif format != "fake":
-                    logger.warning(
-                        "Currently only support to export auto_round format quantized model"
-                        " with fp8, mx_fp and nv_fp4 dtype activation for activation quantization."
-                        " Change format to fake and save."
-                    )
-                    format = "fake"
-            else:
-                if format not in [
-                    "auto_round",
-                    f"auto_round:{AutoRoundFormat.FP8_STATIC.value}",
-                    f"llm_compressor:{AutoRoundFormat.FP8_STATIC.value}",
-                    "auto_round:llm_compressor",
-                ]:
-                    logger.warning(
-                        f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
-                        f" change format {format} to auto_round"
-                    )
-                    if is_static_wfp8afp8(self):
-                        format = f"auto_round:{AutoRoundFormat.FP8_STATIC.value}"
-                    else:
-                        format = f"auto_round:{AutoRoundFormat.FP8.value}"
-            if (
-                self.act_group_size != 0
-                and not self.act_dynamic
-                and format == f"auto_round:{AutoRoundFormat.FP8.value}"
-            ):
-                logger.warning(
-                    f"Please note that quantize activation with act_group_size={self.act_group_size}"
-                    " may result in failure to export or import normally."
-                )
-        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
-            logger.error(
-                f"datatype<{self.data_type}> not support to export {format} format."
-                " Please change export format or `data_type`."
-            )
-            sys.exit(-1)
-
-        return format
 
     def quantize_and_save(
         self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs
@@ -1048,7 +794,7 @@ class BaseCompressor(object):
         self.orig_output_dir = output_dir
 
         # check and update the format based on the current configuration
-        format_list = self._parse_format_to_list(format)
+        format_list = get_formats(format, self)
         self.formats = format_list
 
         # If multiple formats are specified, enforce inplace=False
@@ -1071,24 +817,12 @@ class BaseCompressor(object):
         else:
             model, _ = self.quantize()
         # Save the quantized model in the specified format_list
-        folders = []
-        for format in format_list:
-            if "gptq" in format and not self.sym:
-                logger.warning(
-                    "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
-                    " particularly for 2-bit quantization and smaller models."
-                    " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                    "the AutoRound format(2/3/4/8 bits)."
-                )
-            save_folder = self._get_save_folder_name(format)
-            self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
-
-            folders.append(save_folder)
+        model, folders = self.save_quantized(output_dir, format=format, inplace=inplace, return_folders=True, **kwargs)
         memory_monitor.log_summary()
 
         return model, folders
 
-    def _get_save_folder_name(self, format_str: str) -> str:
+    def _get_save_folder_name(self, format: OutputFormat) -> str:
         """Generates the save folder name based on the provided format string.
 
         If there are multiple formats to handle, the function creates a subfolder
@@ -1102,7 +836,7 @@ class BaseCompressor(object):
             str: The path to the folder where results should be saved.
         """
         # Replace special characters to make the folder name filesystem-safe
-        sanitized_format = format_str.replace(":", "-").replace("_", "-")
+        sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
 
         # Use a subfolder only if there are multiple formats
         if len(self.formats) > 1:
@@ -1316,7 +1050,7 @@ class BaseCompressor(object):
             set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
-        if self.immediate_packing and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
+        if self.immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
             m = m.to(tuning_device)
             m.scale = None
             m.zp = None
@@ -1376,8 +1110,8 @@ class BaseCompressor(object):
             return
         from auto_round.export import PACKING_LAYER_WITH_FORMAT
 
-        target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-        has_gguf = any("gguf" in fmt for fmt in self.formats)
+        target_backend = self.formats[0].output_format
+        has_gguf = any(fmt.is_gguf() for fmt in self.formats)
 
         if has_gguf:
             from auto_round.export.export_to_gguf.export import pack_gguf_layer
@@ -1387,7 +1121,7 @@ class BaseCompressor(object):
             pack_gguf_layer(
                 name,
                 self.model,
-                self.formats[0],
+                self.formats[0].get_backend_name(),
                 output_dir,
                 self.layer_config,
                 self.tokenizer,
@@ -1397,7 +1131,9 @@ class BaseCompressor(object):
                 device=self.device,
             )
         else:
-            PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], device=self.device)
+            PACKING_LAYER_WITH_FORMAT[target_backend](
+                name, self.model, self.formats[0].get_backend_name(), device=self.device
+            )
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1432,7 +1168,7 @@ class BaseCompressor(object):
                 update_fused_layer_global_scales(module)
             logger.info("Finished updating fused layer global scales.")
 
-        if not (any("gguf" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
+        if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
 
         self.model.to("cpu")
@@ -1442,7 +1178,8 @@ class BaseCompressor(object):
         enable_imatrix = False
         if not self.disable_opt_rtn:
             has_gguf_k = (
-                any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", [])) or self.super_bits is not None
+                any(fmt.is_gguf() and "k" in fmt.output_format for fmt in getattr(self, "formats", []))
+                or self.super_bits is not None
             )
             if has_gguf_k:
                 enable_imatrix = True
@@ -1611,7 +1348,6 @@ class BaseCompressor(object):
 
                 memory_monitor.log_summary()
                 pbar.update(1)
-
         pbar.close()
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
@@ -1663,7 +1399,7 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = _handle_moe_model(self.model, formats=formats)
+        self.model = update_module(self.model, formats=formats)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
@@ -1681,20 +1417,11 @@ class BaseCompressor(object):
         else:
             # Determine if immediate packing is required
             formats = self.formats
-            if (
-                len(formats) == 1
-                and (
-                    "awq" in formats[0]
-                    or "gptq" in formats[0]
-                    or "auto_round" in formats[0]
-                    or "gguf" in formats[0]
-                    or "llm_compressor" in formats[0]
-                )
-                and self.inplace
-            ):
+            if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
                 self.immediate_packing = True
-                if "gguf" not in formats[0] and self.low_cpu_mem_usage:
+                if not formats[0].is_gguf() and self.low_cpu_mem_usage:
                     self.immediate_saving = True
+
         if self.immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
             self.immediate_saving = False
@@ -1871,7 +1598,7 @@ class BaseCompressor(object):
         has_gguf = False
 
         if hasattr(self, "formats"):
-            has_gguf = any("gguf" in format_ for format_ in self.formats)
+            has_gguf = any(format_.is_gguf() for format_ in self.formats)
         if has_gguf and self.immediate_packing:
             enable_quanted_input = False
 
@@ -3165,7 +2892,12 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
 
     def save_quantized(
-        self, output_dir: str = None, format: str = "auto_round", inplace: bool = True, **kwargs
+        self,
+        output_dir: str = None,
+        format: Union[str, list[OutputFormat]] = "auto_round",
+        inplace: bool = True,
+        return_folders=False,
+        **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
 
@@ -3178,122 +2910,118 @@ class BaseCompressor(object):
         Returns:
             object: The compressed model object.
         """
-        format = self._check_supported_format(format)
+        self.orig_output_dir = output_dir
+        if isinstance(format, str):
+            formats = get_formats(format, self)
+            if not hasattr(self, "formats"):
+                self.formats = formats
 
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq":  # TODO fix act quantization later
-            self.model = self.model.to("cpu")
-            self.model.save_pretrained(output_dir)
-            if self.tokenizer is not None and hasattr(self.tokenizer, "save_pretrained"):
-                self.tokenizer.save_pretrained(output_dir)
-            processor = kwargs.get("processor", None)
-            if processor is not None:
-                processor.save_pretrained(output_dir)
-            try:
-                copy_python_files_from_model_cache(self.model, output_dir)
-            except Exception as e:
-                logger.warning("Skipping source model Python file copy due to error: %s", e)
-            return
-        if self.act_bits <= 8 and format == "qdq":
-            logger.warning(
-                "Support for exporting activation quantization is limited. "
-                "Please ensure that your configuration is supported."
+        folders = []
+        for format in formats:
+            save_folder = self._get_save_folder_name(format)
+            if format.is_fake():  # TODO fix act quantization later
+                self.model = self.model.to("cpu")
+                self.model.save_pretrained(output_dir)
+                if self.tokenizer is not None and hasattr(self.tokenizer, "save_pretrained"):
+                    self.tokenizer.save_pretrained(output_dir)
+                processor = kwargs.get("processor", None)
+                if processor is not None:
+                    processor.save_pretrained(output_dir)
+                try:
+                    copy_python_files_from_model_cache(self.model, output_dir)
+                except Exception as e:
+                    logger.warning("Skipping source model Python file copy due to error: %s", e)
+                compressed_model = self.model
+                continue
+            if self.act_bits <= 8 and format.is_fake():
+                logger.warning(
+                    "Support for exporting activation quantization is limited. "
+                    "Please ensure that your configuration is supported."
+                )
+            from auto_round.export import EXPORT_FORMAT
+
+            backend = format.get_backend_name()
+            output_format = format.output_format
+            if output_format not in EXPORT_FORMAT:
+                raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {output_format}")
+            save_quantized_as_format = EXPORT_FORMAT.get(output_format)
+            serialization_keys = [
+                "bits",
+                "group_size",
+                "sym",
+                "data_type",
+                "enable_quanted_input",
+                "enable_minmax_tuning",
+                "seqlen",
+                "batch_size",
+                "scale_dtype",
+                "lr",
+                "minmax_lr",
+                "gradient_accumulate_steps",
+                "iters",
+                "amp",
+                "nsamples",
+                "low_gpu_mem_usage",
+                "to_quant_block_names",
+                "enable_norm_bias_tuning",
+                "act_bits",
+                "act_group_size",
+                "act_sym",
+                "act_dynamic",
+                "act_data_type",
+                "super_bits",
+                "super_group_size",
+                "regex_config",
+                "static_kv_dtype",
+                "static_attention_dtype",
+            ]
+            if isinstance(self.dataset, str):
+                serialization_keys.append("dataset")
+            serialization_dict = {}
+            for key in serialization_keys:
+                serialization_dict[key] = getattr(self, key)
+            from auto_round.version import __version__
+
+            serialization_dict["autoround_version"] = __version__
+            if "scale_dtype" in serialization_dict.keys():
+                serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
+            compressed_model = save_quantized_as_format(  # TODO refine the code
+                save_folder,
+                model=self.model,
+                layer_config=self.layer_config,
+                inplace=inplace,
+                bits=self.bits,
+                act_bits=self.act_bits,
+                group_size=self.group_size,
+                sym=self.sym,
+                iters=self.iters,
+                lr=self.lr,
+                minmax_lr=self.minmax_lr,
+                enable_minmax_tuning=self.enable_minmax_tuning,
+                enable_quanted_input=self.enable_quanted_input,
+                scale_dtype=self.scale_dtype,
+                tokenizer=self.tokenizer,
+                supported_types=self.supported_types,
+                data_type=self.data_type,
+                act_data_type=self.act_data_type,
+                serialization_dict=serialization_dict,
+                backend=backend,
+                to_quant_block_names=self.to_quant_block_names,
+                quant_block_list=self.quant_block_list,
+                device=self.device,
+                static_kv_dtype=self.static_kv_dtype,
+                static_attention_dtype=self.static_attention_dtype,
+                **kwargs,
             )
-        # if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-        #     format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
-        if format == "llm_compressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
-            format = format.replace("llm_compressor", f"llm_compressor:{self.data_type}")
-        if format == "llm_compressor" and is_static_wfp8afp8(self):
-            format = format.replace("llm_compressor", "llm_compressor:{AutoRoundFormat.FP8_STATIC.value}")
+            folders.append(save_folder)
 
-        from auto_round.export import EXPORT_FORMAT
-
-        backend = format
-        format = format.split(":")[0]
-        if format not in EXPORT_FORMAT:
-            logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
-            raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {format}")
-        save_quantized_as_format = EXPORT_FORMAT.get(format)
-        if "gptq" in format and not self.sym:
-            logger.warning(
-                "the asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
-                " particularly for 2-bit quantization and smaller models."
-                " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                "the AutoRound format(2/3/4/8 bits)."
-            )
-        if "awq" in format and not self.bits == 4:
-            raise ValueError("The AWQ format only supports W4 quantization ")
-        serialization_keys = [
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "seqlen",
-            "batch_size",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "nsamples",
-            "low_gpu_mem_usage",
-            "to_quant_block_names",
-            "enable_norm_bias_tuning",
-            "act_bits",
-            "act_group_size",
-            "act_sym",
-            "act_dynamic",
-            "act_data_type",
-            "super_bits",
-            "super_group_size",
-            "regex_config",
-            "static_kv_dtype",
-            "static_attention_dtype",
-        ]
-        if isinstance(self.dataset, str):
-            serialization_keys.append("dataset")
-        serialization_dict = {}
-        for key in serialization_keys:
-            serialization_dict[key] = getattr(self, key)
-        from auto_round.version import __version__
-
-        serialization_dict["autoround_version"] = __version__
-        if "scale_dtype" in serialization_dict.keys():
-            serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-        compressed_model = save_quantized_as_format(  # TODO refine the code
-            output_dir,
-            model=self.model,
-            layer_config=self.layer_config,
-            inplace=inplace,
-            bits=self.bits,
-            act_bits=self.act_bits,
-            group_size=self.group_size,
-            sym=self.sym,
-            iters=self.iters,
-            lr=self.lr,
-            minmax_lr=self.minmax_lr,
-            enable_minmax_tuning=self.enable_minmax_tuning,
-            enable_quanted_input=self.enable_quanted_input,
-            scale_dtype=self.scale_dtype,
-            tokenizer=self.tokenizer,
-            supported_types=self.supported_types,
-            data_type=self.data_type,
-            act_data_type=self.act_data_type,
-            serialization_dict=serialization_dict,
-            backend=backend,
-            to_quant_block_names=self.to_quant_block_names,
-            quant_block_list=self.quant_block_list,
-            device=self.device,
-            static_kv_dtype=self.static_kv_dtype,
-            static_attention_dtype=self.static_attention_dtype,
-            **kwargs,
-        )
-        return compressed_model
+        if return_folders:
+            return compressed_model, folders
+        else:
+            return compressed_model
 
     def _get_quantized_layer_names_outside_blocks(self) -> list:
         """Gets the names of quantized layers outside blocks in the model.
