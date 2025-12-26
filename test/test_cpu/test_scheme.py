@@ -40,7 +40,7 @@ class TestAutoRound:
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
         assert ar.bits == 2
         ar.quantize()
-        
+
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         assert ar.bits == 4

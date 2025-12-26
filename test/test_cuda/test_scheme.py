@@ -41,7 +41,6 @@ class TestAutoRound:
         assert ar.bits == 2
         ar.quantize()
 
-
     def test_mxfp4(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1)
         assert ar.bits == 4
@@ -65,7 +64,6 @@ class TestAutoRound:
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0)
         assert ar.bits == 2
         ar.quantize()
-
 
     def test_mxfp4_rtn(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=0)
