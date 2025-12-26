@@ -1,127 +1,88 @@
 import shutil
 import sys
 from pathlib import Path
-
 import pytest
 import torch
 import sglang as sgl
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
-
-# -----------------------------------------------------------------------------
-# Utils
-# -----------------------------------------------------------------------------
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for _ in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import get_model_path, opt_name_or_path
 
 
-# -----------------------------------------------------------------------------
-# Fixtures
-# -----------------------------------------------------------------------------
+class TestAutoRound:
+    save_dir = "./saved"
+    model_name = opt_name_or_path
+    
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
 
-@pytest.fixture(scope="session")
-def model_name():
-    return "/models/opt-125m"
+        # Yield to hand control to the test methods
+        yield
 
-
-@pytest.fixture(scope="session")
-def save_dir(tmp_path_factory):
-    # pytest-managed temp directory
-    return tmp_path_factory.mktemp("autoround_saved")
-
-
-@pytest.fixture(scope="session")
-def model_and_tokenizer(model_name):
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype="auto", device_map="auto"
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name
-    )
-    return model, tokenizer
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
+        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree("runs", ignore_errors=True)
 
 
-@pytest.fixture(scope="session")
-def llm_dataloader():
-    return LLMDataLoader()
+    def _run_sglang_inference(self, model_path: Path):
+        llm = sgl.Engine(model_path=str(model_path), mem_fraction_static=0.7)
+        prompts = ["Hello, my name is"]
+        sampling_params = {"temperature": 0.6, "top_p": 0.95}
+        outputs = llm.generate(prompts, sampling_params)
+        return outputs[0]["text"]
 
 
-@pytest.fixture(autouse=True)
-def cleanup():
-    """
-    Auto cleanup after each test
-    """
-    yield
-    shutil.rmtree("runs", ignore_errors=True)
+    def test_ar_format_sglang(self, dataloader):
+        autoround = AutoRound(
+            self.model_name,
+            scheme="W4A16",
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+        )
+
+        autoround.quantize_and_save(
+            output_dir=self.save_dir,
+            inplace=True,
+            format="auto_round",
+        )
+
+        generated_text = self._run_sglang_inference(self.save_dir)
+        print(generated_text)
+
+        assert "!!!" not in generated_text
+
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
 
-# -----------------------------------------------------------------------------
-# Tests
-# -----------------------------------------------------------------------------
+    def test_mixed_ar_format_sglang(self, dataloader):
+        layer_config = {
+            "self_attn": {"bits": 16, "act_bits": 16},
+            "lm_head": {"bits": 16, "act_bits": 16},
+            "fc1": {"bits": 16, "act_bits": 16},
+        }
 
-def _run_sglang_inference(model_path: Path):
-    llm = sgl.Engine(model_path=str(model_path), mem_fraction_static=0.7)
-    prompts = ["Hello, my name is"]
-    sampling_params = {"temperature": 0.6, "top_p": 0.95}
-    outputs = llm.generate(prompts, sampling_params)
-    return outputs[0]["text"]
+        autoround = AutoRound(
+            self.model_name,
+            scheme="W4A16",
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+            layer_config=layer_config,
+        )
 
+        autoround.quantize_and_save(
+            output_dir=self.save_dir,
+            inplace=True,
+            format="auto_round",
+        )
 
-def test_ar_format_sglang(model_name, save_dir, llm_dataloader):
-    autoround = AutoRound(
-        model_name,
-        scheme="W4A16",
-        iters=2,
-        seqlen=2,
-        dataset=llm_dataloader,
-    )
+        generated_text = self._run_sglang_inference(self.save_dir)
+        print(generated_text)
 
-    autoround.quantize_and_save(
-        output_dir=save_dir,
-        inplace=True,
-        format="auto_round",
-    )
+        assert "!!!" not in generated_text
 
-    generated_text = _run_sglang_inference(save_dir)
-    print(generated_text)
-
-    assert "!!!" not in generated_text
-
-    shutil.rmtree(save_dir, ignore_errors=True)
-
-
-def test_mixed_ar_format_sglang(model_name, save_dir, llm_dataloader):
-    layer_config = {
-        "self_attn": {"bits": 16, "act_bits": 16},
-        "lm_head": {"bits": 16, "act_bits": 16},
-        "fc1": {"bits": 16, "act_bits": 16},
-    }
-
-    autoround = AutoRound(
-        model_name,
-        scheme="W4A16",
-        iters=2,
-        seqlen=2,
-        dataset=llm_dataloader,
-        layer_config=layer_config,
-    )
-
-    autoround.quantize_and_save(
-        output_dir=save_dir,
-        inplace=True,
-        format="auto_round",
-    )
-
-    generated_text = _run_sglang_inference(save_dir)
-    print(generated_text)
-
-    assert "!!!" not in generated_text
-
-    shutil.rmtree(save_dir, ignore_errors=True)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
