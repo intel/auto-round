@@ -70,7 +70,7 @@ class TestAutoRound:
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
-        assert ar.act_data_type == "mx_fp_rceil"
+        assert ar.act_data_type == "mx_fp"
         ar.quantize()
 
     def test_fp8_static_rtn(self, tiny_opt_model_path):

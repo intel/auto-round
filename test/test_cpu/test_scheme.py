@@ -46,7 +46,7 @@ class TestAutoRound:
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
-        assert ar.act_data_type == "mx_fp_rceil"
+        assert ar.act_data_type == "mx_fp"
         ar.quantize()
 
     def test_vllm(self, tiny_qwen_vl_model_path):
