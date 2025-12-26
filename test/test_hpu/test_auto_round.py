@@ -1,8 +1,9 @@
 import pytest
 import torch
-from _test_helpers import is_pytest_mode_compile, is_pytest_mode_lazy
 
 from auto_round.utils import is_hpex_available
+
+from ..helpers import get_model_path, is_pytest_mode_compile, is_pytest_mode_lazy
 
 
 def run_opt_125m_on_hpu():
@@ -10,7 +11,7 @@ def run_opt_125m_on_hpu():
 
     from auto_round import AutoRound
 
-    model_name = "facebook/opt-125m"
+    model_name = get_model_path("facebook/opt-125m")
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
@@ -55,7 +56,7 @@ def test_w4a8(data_type):
 
     from auto_round import AutoRound
 
-    model_name = "facebook/opt-125m"
+    model_name = get_model_path("facebook/opt-125m")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype="auto",

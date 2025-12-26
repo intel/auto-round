@@ -6,12 +6,13 @@ import unittest
 sys.path.insert(0, "../..")
 
 import torch
-from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
+
+from ..helpers import get_model_path, model_infer
 
 
 class LLMDataLoader:
@@ -27,7 +28,7 @@ class TestAutoRoundAsym(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         # self.model_name = "/models/opt-125m"
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        self.model_name = get_model_path("facebook/opt-125m")
         self.save_folder = "./saved"
 
     @classmethod
