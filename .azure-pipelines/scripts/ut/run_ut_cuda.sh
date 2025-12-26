@@ -42,9 +42,9 @@ function print_test_results_table() {
     local test_type=$2
 
     echo ""
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     echo "Test Results Summary - ${test_type}" >> ${SUMMARY_LOG}
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     printf "%-30s %-10s %-50s\n" "Test Case" "Result" "Log File" >> ${SUMMARY_LOG}
     printf "%-30s %-10s %-50s\n" "----------" "------" "--------" >> ${SUMMARY_LOG}
 
@@ -81,9 +81,9 @@ function print_test_results_table() {
         fi
     done
 
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     printf "Total: %d, Passed: %d, Failed: %d\n" ${total_tests} ${passed_tests} ${failed_tests} >> ${SUMMARY_LOG}
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     echo "" >> ${SUMMARY_LOG}
 }
 
