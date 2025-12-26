@@ -20,9 +20,9 @@ function create_conda_env() {
     # create conda env
     source activate base
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
-    conda create -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
-    source activate ${CONDA_ENV_NAME}
-    conda install -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
+    conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
+    source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
+    conda install -c conda-forge --quiet git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -99,6 +99,7 @@ function run_unit_test() {
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
+    uv pip install -r test_cuda/requirements_sglang.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
