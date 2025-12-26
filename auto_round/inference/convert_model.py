@@ -20,7 +20,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.export.export_to_autoround import AutoRoundFormat
+from auto_round.formats import AutoRoundExportFormat
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
@@ -31,7 +31,7 @@ from auto_round.inference.backend import (
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.special_model_handler import _handle_moe_model
+from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -397,6 +397,16 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     # Special handling for AWQ layers
     from auto_round_extension.ark.qlinear import QuantLinearAWQ
 
+    if "auto_round_kernel" in layer_backend:
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            sym=config["sym"],
+            in_features=in_features,
+            out_features=out_features,
+            bias=bias,
+            weight_dtype=layer.weight.dtype,
+        )
     if "awq" in layer_backend and isinstance(QuantLinear, QuantLinearAWQ):
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
@@ -414,10 +424,10 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
         )
     elif (
-        AutoRoundFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundFormat.MXFP8.value in layer_backend
-        or AutoRoundFormat.MXFP4.value in layer_backend
-        or AutoRoundFormat.NVFP4.value in layer_backend
+        AutoRoundExportFormat.FP8_STATIC.value in layer_backend
+        or AutoRoundExportFormat.MXFP8.value in layer_backend
+        or AutoRoundExportFormat.MXFP4.value in layer_backend
+        or AutoRoundExportFormat.NVFP4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 
@@ -583,7 +593,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_gptq"
 
     # Preprocess model before replace layers
-    model = _handle_moe_model(model)
+    model = update_module(model)
 
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)

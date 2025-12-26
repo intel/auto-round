@@ -19,9 +19,8 @@ from transformers.modeling_utils import no_init_weights as skip_weights_initiali
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-from auto_round.utils import unsupported_meta_device
-
-__all__ = ["get_replacement_info"]
+from auto_round.modelling.replace_modules import ReplacementModuleBase
+from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
 
 def _update_parameter(
@@ -54,13 +53,13 @@ class GPTOssSingleExpert(nn.Module):
         return self.down_proj(act)
 
 
-class SequentialGPTOSSMoE(nn.Module):
+class SequentialGPTOSSMoE(ReplacementModuleBase):
     """
     Replaces GPT-OSS fused-expert MoE with per-expert `GPTOssSingleExpert` modules.
     Copies weights from fused tensors and reuses the original router and optional shared_expert.
     """
 
-    def __init__(self, config: GptOssConfig, original: GptOssMLP):
+    def __init__(self, original: GptOssMLP, config: GptOssConfig):
         super().__init__()
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
@@ -123,10 +122,17 @@ class SequentialGPTOSSMoE(nn.Module):
             final_hidden_states += expert_output
         return final_hidden_states.view(B, T, H), router_scores.view(B * T, -1)
 
+    @classmethod
+    def original_module_class(cls) -> str:
+        """Return the class name of the module this replaces."""
+        return "GptOssMLP"
 
-def get_replacement_info(config):
-    return (
-        SequentialGPTOSSMoE,
-        config.get_text_config(),
-        GptOssMLP.__name__,
-    )
+    @classmethod
+    def from_original(
+        cls,
+        original: GptOssMLP,
+        config: GptOssConfig,
+        **kwargs,
+    ) -> "SequentialGPTOSSMoE":
+        """Create an instance from the original module."""
+        return cls(original, config)

@@ -10,7 +10,7 @@ pr:
     include:
       - auto_round
       - auto_round_extension
-      - test/test*hpu*'
+      - test/test_hpu
       - setup.py
       - requirements-lib.txt
       - .azure-pipelines/scripts/ut
@@ -49,6 +49,11 @@ stages:
               utScriptFileName: "run_ut_hpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
+
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core sdk 7.0.x'
+            inputs:
+              version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
             inputs:

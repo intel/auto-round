@@ -1,134 +1,119 @@
 import shutil
-import sys
-import unittest
 
-import torch
+import transformers
 
-sys.path.insert(0, "../..")
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def setup_class(self):
         self.save_folder = "./saved"
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_gguf(self):
+    def test_gguf(self, tiny_qwen_model_path, dataloader):
         ar = AutoRound(
-            "/tf_dataset/auto_round/models/Qwen/Qwen3-0.6B",
+            tiny_qwen_model_path,
             scheme="W2A16",
             nsamples=1,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         ar.quantize_and_save(self.save_folder, format="gguf:q4_k_m")
-        self.assertEqual(ar.bits, 4)
+        assert ar.bits == 4
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_w4a16(self):
-        ar = AutoRound(self.model_name, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
-        self.assertEqual(ar.bits, 4)
+    def test_w4a16(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        assert ar.bits == 4
         ar.quantize()
 
-    def test_w2a16_rtn(self):
-        ar = AutoRound(self.model_name, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=self.llm_dataloader)
-        self.assertEqual(ar.bits, 2)
+    def test_w2a16_rtn(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
+        assert ar.bits == 2
+        ar.quantize()
+        
+    def test_mxfp4(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        assert ar.bits == 4
+        assert ar.act_bits == 4
+        assert ar.data_type == "mx_fp"
+        assert ar.act_data_type == "mx_fp"
         ar.quantize()
 
-    def test_mxfp4(self):
-        ar = AutoRound(self.model_name, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
-        self.assertEqual(ar.bits, 4)
-        self.assertEqual(ar.act_bits, 4)
-        self.assertEqual(ar.data_type, "mx_fp")
-        self.assertEqual(ar.act_data_type, "mx_fp")
-        ar.quantize()
-
-    def test_vllm(self):
+    def test_vllm(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
 
-        ar = AutoRoundMLLM(
-            "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct", scheme="W2A16", nsamples=1, iters=1, seqlen=2
-        )
-        self.assertEqual(ar.bits, 2)
-        self.assertEqual(ar.act_bits, 16)
+        ar = AutoRoundMLLM(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        assert ar.bits == 2
+        assert ar.act_bits == 16
 
-    def test_nvfp4(self):
-        ar = AutoRound(self.model_name, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
-        self.assertEqual(ar.bits, 4)
-        self.assertEqual(ar.act_bits, 4)
-        self.assertEqual(ar.data_type, "nv_fp")
-        self.assertEqual(ar.act_data_type, "nv_fp4_with_static_gs")
+    def test_nvfp4(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(tiny_opt_model_path, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        assert ar.bits == 4
+        assert ar.act_bits == 4
+        assert ar.data_type == "nv_fp"
+        assert ar.act_data_type == "nv_fp4_with_static_gs"
         ar.quantize()
 
-    def test_all_scheme(self):
+    def test_all_scheme(self, tiny_opt_model_path, tiny_qwen_model_path, dataloader):
         import copy
 
         preset_schemes = ["W8A16", "MXFP8", "FPW8A16", "FP8_STATIC", "GGUF:Q2_K_S", "GGUF:Q4_K_M"]
         for scheme in preset_schemes:
-            model_name = self.model_name
+            model_name = tiny_opt_model_path
             if "gguf" in scheme.lower():
-                model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-1.5B-Instruct"
+                model_name = tiny_qwen_model_path
             print(f"scheme={scheme}")
-            ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=self.llm_dataloader)
+            ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
             ar.quantize_and_save(self.save_folder)
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_scheme_in_layer_config(self):
+    def test_scheme_in_layer_config(self, dataloader):
+        model = get_tiny_model(opt_name_or_path, num_layers=5)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(opt_name_or_path, trust_remote_code=True)
         layer_config = {
             "model.decoder.layers.2.self_attn": {"bits": 2},
             "model.decoder.layers.3.self_attn.v_proj": "W8A16",
             "model.decoder.layers.4.self_attn.k_proj": QuantizationScheme.from_dict({"group_size": 64}),
         }
         ar = AutoRound(
-            "/tf_dataset/auto_round/models/facebook/opt-125m",
+            model,
+            tokenizer,
             scheme="W3A16",
             nsamples=1,
             iters=1,
             layer_config=layer_config,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
 
         ar.quantize()
         for n, m in ar.model.named_modules():
             if n == "model.decoder.layers.2.self_attn.q_proj":
-                self.assertEqual(m.bits, 2)
+                assert m.bits == 2
             if n == "model.decoder.layers.2.self_attn.k_proj":
-                self.assertEqual(m.bits, 2)
+                assert m.bits == 2
             if n == "model.decoder.layers.3.self_attn.v_proj":
-                self.assertEqual(m.bits, 8)
+                assert m.bits == 8
             if n == "model.decoder.layers.4.self_attn.k_proj":
-                self.assertEqual(m.group_size, 64)
+                assert m.group_size == 64
 
     def test_parse_available_devices(self):
         from auto_round.utils.device import parse_available_devices
 
         device_list = parse_available_devices("auto")
-        self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
+        assert len(device_list) == 1 and "cpu" in device_list
         device_list = parse_available_devices("a:cuda:0,b:cuda:1,c:cpu")
-        self.assertTrue(len(device_list) == 3)
-        self.assertEqual(device_list, ["cuda:0", "cuda:1", "cpu"])
+        assert len(device_list) == 3
+        assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
-        self.assertTrue(len(device_list) == 1 and "cpu" in device_list)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert len(device_list) == 1 and "cpu" in device_list

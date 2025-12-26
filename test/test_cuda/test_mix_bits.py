@@ -1,14 +1,9 @@
 import json
 import os
 import shutil
-import sys
-import unittest
-
-from parameterized import parameterized
-
-sys.path.insert(0, "../..")
 from pathlib import Path
 
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
@@ -19,32 +14,27 @@ from auto_round.testing_utils import (
     require_package_version_ut,
 )
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import get_model_path
 
 
-class TestAutoRound(unittest.TestCase):
-    @classmethod
-    def setUpClass(self):
-        self.model_name = "/models/opt-125m"
-        self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
+class TestAutoRound:
+    save_dir = "./saved"
 
-    @classmethod
-    def tearDownClass(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gptqmodel
-    def test_mixed_gptqmodel(self):
+    def test_mixed_gptqmodel(self, tiny_opt_model_path, dataloader):
         scheme = "W4A16"
         layer_config = {
             "k_proj": {"bits": 8},  # part name
@@ -54,12 +44,12 @@ class TestAutoRound(unittest.TestCase):
             "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name
         }
         autoround = AutoRound(
-            model=self.model_name,
+            model=tiny_opt_model_path,
             scheme=scheme,
             iters=2,
             seqlen=2,
             layer_config=layer_config,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
@@ -73,7 +63,7 @@ class TestAutoRound(unittest.TestCase):
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mixed_gptqmodel_convert_to_ar(self):
+    def test_mixed_gptqmodel_convert_to_ar(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "k_proj": {"bits": 8},  # part name
             "lm_head": {"bits": 4},  # set lm_head quant
@@ -81,12 +71,12 @@ class TestAutoRound(unittest.TestCase):
             "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name
         }
         autoround = AutoRound(
-            model=self.model_name,
+            model=tiny_opt_model_path,
             scheme="W4A16",
             iters=2,
             seqlen=2,
             layer_config=layer_config,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
@@ -101,7 +91,7 @@ class TestAutoRound(unittest.TestCase):
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mixed_autoround_format(self):
+    def test_mixed_autoround_format(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "k_proj": {"bits": 8},
             "q_proj": {"bits": 3},
@@ -109,11 +99,11 @@ class TestAutoRound(unittest.TestCase):
             "fc1": {"bits": 16},
         }
         autoround = AutoRound(
-            model=self.model_name,
+            model=tiny_opt_model_path,
             scheme="W4A16",
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = "self.save_dir"
@@ -129,18 +119,17 @@ class TestAutoRound(unittest.TestCase):
 
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_fallback_regex_for_awq_format(self):
-        model_name = "facebook/opt-125m"
+    def test_fallback_regex_for_awq_format(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "lm_head": {"bits": 16},
             "fc1": {"bits": 16},
         }
         autoround = AutoRound(
-            model=model_name,
+            model=tiny_opt_model_path,
             scheme="W4A16",
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = "self.save_dir"
@@ -155,18 +144,18 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mixed_ar_format_part_name_hf_loading(self):
+    def test_mixed_ar_format_part_name_hf_loading(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "k_proj": {"bits": 8},  # part name
             "lm_head": {"bits": 16},  # full name
             ".*fc1.*": {"bits": 16},  # standard regex
         }
         autoround = AutoRound(
-            model=self.model_name,
+            model=tiny_opt_model_path,
             scheme="W4A16",
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = "self.save_dir"
@@ -216,18 +205,19 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mixed_MXFP_autoround_format_loading(self):
+    def test_mixed_MXFP_autoround_format_loading(self, dataloader):
         layer_config = {
             "k_proj": {"bits": 8, "act_bits": 8},
             "lm_head": {"bits": 16, "act_bits": 16},
             "fc1": {"bits": 8, "act_bits": 8},
         }
+        model_path = get_model_path("facebook/opt-125m")
         autoround = AutoRound(
-            self.model_name,
+            model_path,
             scheme="MXFP4",
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -242,21 +232,21 @@ class TestAutoRound(unittest.TestCase):
 
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
-        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.32)
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.32
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mixed_autoround_format_vllm(self):
+    def test_mixed_autoround_format_vllm(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "self_attn": {"bits": 8},
             "lm_head": {"bits": 16},
         }
         autoround = AutoRound(
-            self.model,
+            tiny_opt_model_path,
             self.tokenizer,
             scheme="W4A16",
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         autoround.quantize()
@@ -285,18 +275,18 @@ class TestAutoRound(unittest.TestCase):
             print(f"{prompt}: {generated_text}")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mixed_llmcompressor_format_vllm(self):
+    def test_mixed_llmcompressor_format_vllm(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "self_attn": {"bits": 16, "act_bits": 16},
             "lm_head": {"bits": 16, "act_bits": 16},
             "fc1": {"bits": 16, "act_bits": 16},
         }
         autoround = AutoRound(
-            self.model_name,
+            tiny_opt_model_path,
             scheme="NVFP4",
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -323,7 +313,3 @@ class TestAutoRound(unittest.TestCase):
             print(f"{prompt}: {generated_text}")
             assert "!!!" not in generated_text
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

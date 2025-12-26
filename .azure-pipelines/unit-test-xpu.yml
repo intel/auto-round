@@ -1,0 +1,55 @@
+trigger: none
+
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round/utils
+      - auto_round_extension/ark
+      - test/test_ark
+      - setup.py
+      - .azure-pipelines/template/ut-template.yml
+      - .azure-pipelines/unit-test-xpu.yml
+      - .azure-pipelines/scripts/ut/run_ut_xpu.sh
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
+# test kernel cpu ut only before public xpu available
+pool: ICX-16C
+
+variables:
+  IMAGE_NAME: "auto-round"
+  IMAGE_TAG: "py312"
+  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  ARTIFACT_NAME: "UT_coverage_report"
+  REPO: $(Build.Repository.Uri)
+
+stages:
+  - stage: Unit_test
+    displayName: Unit Test
+    dependsOn: []
+    jobs:
+      - job:
+        displayName: Unit Test
+        steps:
+          - template: template/ut-template.yml
+            parameters:
+              dockerConfigName: "commonDockerConfig"
+              utScriptFileName: "run_ut_xpu"
+              uploadPath: $(UPLOAD_PATH)
+              utArtifact: "ut"
+
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core sdk 7.0.x'
+            inputs:
+              version: 7.0.x
+
+          - task: PublishCodeCoverageResults@2
+            inputs:
+              summaryFileLocation: $(UPLOAD_PATH)/coverage.xml

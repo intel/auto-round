@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.mllm.dataset import get_mllm_dataloader
-from auto_round.compressors.mllm.template import Template, get_template
+from auto_round.compressors.mllm.template import TEMPLATES, Template, get_template
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import (
@@ -200,23 +200,30 @@ class MLLMCompressor(BaseCompressor):
         self.image_processor = image_processor
         from transformers import PreTrainedModel
 
-        if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
+        # if model is not the object of transformers PreTrainedModel, there maybe no config attribute
+        if isinstance(model, PreTrainedModel) and model.config.model_type == "llava":
             template = "default"
         if hasattr(model, "name_or_path") and any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
             template = "mistral3_2"
         if iters > 0:
-            self.template = template if template is not None else model.config.model_type
-            if not isinstance(dataset, torch.utils.data.DataLoader):
-                self.template = get_template(
-                    self.template,
-                    model=model,
-                    tokenizer=tokenizer,
-                    processor=processor,
-                    image_processor=image_processor,
-                    use_rtn=iters == 0,
-                    quiet=not self.quant_nontext_module,
-                )
-                dataset = self.template.default_dataset if dataset is None else dataset
+            # TODO: Remove after fixing https://github.com/huggingface/transformers/issues/43005
+            model.config.model_type = model.config.to_dict()["model_type"]
+
+            if template is None and model.config.model_type not in TEMPLATES:
+                self.template = None
+            else:
+                self.template = template if template is not None else model.config.model_type
+                if not isinstance(dataset, torch.utils.data.DataLoader):
+                    self.template = get_template(
+                        self.template,
+                        model=model,
+                        tokenizer=tokenizer,
+                        processor=processor,
+                        image_processor=image_processor,
+                        use_rtn=iters == 0,
+                        quiet=not self.quant_nontext_module,
+                    )
+                    dataset = self.template.default_dataset if dataset is None else dataset
         else:
             self.template = None
 
@@ -233,7 +240,9 @@ class MLLMCompressor(BaseCompressor):
                     " switching to liuhaotian/llava_conv_58k"
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            elif not _only_text_test(model, tokenizer, self.device, self.template.model_type):
+            elif self.template is not None and not _only_text_test(
+                model, tokenizer, self.device, self.template.model_type
+            ):
                 logger.warning(
                     f"{model.config.model_type} does not support for {dataset},"
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
