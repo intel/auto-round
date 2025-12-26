@@ -1,7 +1,6 @@
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
 auto-gptq
 einops
-gptqmodel
 lm-eval>=0.4.9.1
 optimum
 pandas
