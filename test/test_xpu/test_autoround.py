@@ -1,39 +1,29 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(3):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import get_model_path
 
 
-class TestAutoRoundXPU(unittest.TestCase):
+class TestAutoRoundXPU:
     @classmethod
-    def setUpClass(self):
-
-        self.llm_dataloader = LLMDataLoader()
+    def setup_class(self):
+        pass
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
         pass
 
-    def test_gptq_format(self):
-        model_name = "facebook/opt-125m"
+    def test_gptq_format(self, dataloader):
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype="auto", trust_remote_code=True, device_map="auto"
         )
@@ -48,7 +38,7 @@ class TestAutoRoundXPU(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path)
@@ -65,8 +55,8 @@ class TestAutoRoundXPU(unittest.TestCase):
         print(res)
         assert "!!!" not in res
 
-    def test_awq_format(self):
-        model_name = "facebook/opt-125m"
+    def test_awq_format(self, dataloader):
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype="auto", trust_remote_code=True, device_map="xpu"
         )
@@ -80,7 +70,7 @@ class TestAutoRoundXPU(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
@@ -97,7 +87,3 @@ class TestAutoRoundXPU(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert "!!!" not in res
-
-
-if __name__ == "__main__":
-    unittest.main()

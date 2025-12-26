@@ -64,7 +64,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import _handle_moe_model
+from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -1348,7 +1348,6 @@ class BaseCompressor(object):
 
                 memory_monitor.log_summary()
                 pbar.update(1)
-
         pbar.close()
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
@@ -1400,7 +1399,7 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = _handle_moe_model(self.model, formats=formats)
+        self.model = update_module(self.model, formats=formats)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.

@@ -1,11 +1,7 @@
 import re
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
-
+import pytest
 import torch
 from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -13,6 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import multi_card, require_gptqmodel, require_greater_than_050
+
+from ..helpers import get_model_path, get_tiny_model
 
 
 def get_accuracy(data):
@@ -27,15 +25,21 @@ def get_accuracy(data):
 
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-class TestAutoRound(unittest.TestCase):
-    @classmethod
-    def setUpClass(self):
-        self.save_dir = "./saved"
-        self.tasks = "lambada_openai"
+class TestAutoRound:
+    save_dir = "./saved"
+    tasks = "lambada_openai"
 
-    @classmethod
-    def tearDownClass(self):
-        shutil.rmtree(self.save_dir, ignore_errors=True)
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
+        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @multi_card
@@ -57,10 +61,9 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @multi_card
-    def test_layer_norm(self):
-        model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def test_layer_norm(self, tiny_opt_model_path):
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float16)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
         device_map = {"norm": "cuda:1"}
         autoround = AutoRound(
             model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32, enable_norm_bias_tuning=True
@@ -68,10 +71,9 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     @multi_card
-    def test_rms_norm(self):
-        model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def test_rms_norm(self, tiny_qwen_model_path):
+        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_model_path, torch_dtype=torch.float16)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_model_path)
         device_map = {"norm": "cuda:1"}
         autoround = AutoRound(
             model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32, enable_norm_bias_tuning=True
@@ -79,10 +81,9 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     @multi_card
-    def test_act_quantization(self):
-        model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def test_act_quantization(self, tiny_qwen_model_path):
+        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_model_path, torch_dtype=torch.float16)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_model_path)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
         autoround = AutoRound(
             model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32, act_bits=4, act_dynamic=False
@@ -91,9 +92,9 @@ class TestAutoRound(unittest.TestCase):
 
     @multi_card
     def test_lm_head(self):
-        model_name = "/models/Qwen2.5-7B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model_path = get_model_path("qwen/Qwen2.5-7B-Instruct")
+        model = get_tiny_model(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1", "lm_head": 1}
         layer_config = {"lm_head": {"bits": 4}}
         autoround = AutoRound(
@@ -109,10 +110,9 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     @multi_card
-    def test_device_map(self):
-        model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    def test_device_map(self, tiny_qwen_model_path):
+        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_model_path, torch_dtype=torch.float16)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_model_path)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
         autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32)
         autoround.quantize()
@@ -210,12 +210,11 @@ class TestAutoRound(unittest.TestCase):
             torch.cuda.empty_cache()
 
     @multi_card
-    def test_device_map_dict(self):
+    def test_device_map_dict(self, tiny_opt_model_path):
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
         bits, group_size, sym = 4, 128, False
-        model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float16, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
         autoround = AutoRound(
             model,
             tokenizer,
@@ -229,9 +228,8 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
         # test model_name
-        model_name = "/models/opt-125m"
         autoround = AutoRound(
-            model_name,
+            tiny_opt_model_path,
             tokenizer,
             bits=bits,
             group_size=group_size,
@@ -244,7 +242,7 @@ class TestAutoRound(unittest.TestCase):
 
         # test rtn
         autoround = AutoRound(
-            model_name,
+            tiny_opt_model_path,
             tokenizer,
             bits=bits,
             group_size=group_size,
@@ -356,29 +354,25 @@ class TestAutoRound(unittest.TestCase):
 
     @multi_card
     def test_mllm_device_map(self):
-        model_name = "/models/Qwen2-VL-2B-Instruct/"
+        model_name = get_model_path("qwen/Qwen2-VL-2B-Instruct/")
         from auto_round import AutoRoundMLLM
 
         device_map = "0,1"
         ar = AutoRoundMLLM(model_name, device_map=device_map)
-        self.assertEqual(ar.device, "cuda:0")
-        self.assertEqual(ar.device_map, device_map)
+        assert ar.device == "cuda:0"
+        assert ar.device_map == device_map
 
         device_map = 1
         ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
-        self.assertEqual(ar.device, "cuda:1")
-        self.assertEqual(ar.device_map, device_map)
+        assert ar.device == "cuda:1"
+        assert ar.device_map == device_map
 
         device_map = "auto"
         ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
-        self.assertEqual(ar.device, "cuda")
-        self.assertEqual(ar.device_map, device_map)
+        assert ar.device == "cuda"
+        assert ar.device_map == device_map
 
         device_map = {"model.language_model.layers": 0, "model.visual.blocks": 1}
         ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
-        self.assertEqual(ar.model.model.language_model.layers[0].self_attn.q_proj.tuning_device, "cuda:0")
-        self.assertEqual(ar.model.model.visual.blocks[0].mlp.fc1.tuning_device, "cuda:1")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert ar.model.model.language_model.layers[0].self_attn.q_proj.tuning_device == "cuda:0"
+        assert ar.model.model.visual.blocks[0].mlp.fc1.tuning_device == "cuda:1"

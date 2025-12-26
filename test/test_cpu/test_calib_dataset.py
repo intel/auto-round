@@ -1,29 +1,19 @@
+import json
 import os
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
-import json
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import get_model_path, opt_name_or_path
 
 
-class TestLocalCalibDataset(unittest.TestCase):
+class TestLocalCalibDataset:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         json_data = [{"text": "awefdsfsddfd"}, {"text": "fdfdfsdfdfdfd"}, {"text": "dfdsfsdfdfdfdf"}]
         os.makedirs("./saved", exist_ok=True)
         self.json_file = "./saved/tmp.json"
@@ -38,7 +28,7 @@ class TestLocalCalibDataset(unittest.TestCase):
                 json.dump(item, jsonl_file, ensure_ascii=False)
                 jsonl_file.write("\n")
 
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+        model_name = opt_name_or_path
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
@@ -71,7 +61,7 @@ class TestLocalCalibDataset(unittest.TestCase):
         autoround.quantize()
 
     def test_apply_chat_template(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         dataset = "NeelNanda/pile-10k:apply_chat_template:system_prompt=''"
@@ -130,10 +120,6 @@ class TestLocalCalibDataset(unittest.TestCase):
     #     autoround.quantize()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

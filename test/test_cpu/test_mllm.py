@@ -1,13 +1,11 @@
-import sys
-import unittest
-
-sys.path.insert(0, "../..")
-
 import shutil
 
+import pytest
 from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
 from auto_round import AutoRoundMLLM
+
+from ..helpers import get_model_path, opt_name_or_path
 
 
 class FakeDataLoader:
@@ -27,23 +25,21 @@ class FakeDataLoader:
             yield self.data
 
 
-class TestAutoRoundMLLM(unittest.TestCase):
+class TestAutoRoundMLLM:
     @classmethod
-    def setUpClass(self):
-        self.model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2-VL-2B-Instruct"
+    def setup_class(self):
+        self.model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         self.dataset = FakeDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-        return super().tearDownClass()
-
-    def test_tune(self):
+    def test_tune(self, tiny_qwen_vl_model_path):
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
-            model=self.model_name,
+            model=tiny_qwen_vl_model_path,
             bits=bits,
             group_size=group_size,
             nsamples=1,
@@ -56,11 +52,11 @@ class TestAutoRoundMLLM(unittest.TestCase):
         autoround.save_quantized("./saved/", format="auto_gptq", inplace=False)
         autoround.save_quantized("./saved/", format="auto_round", inplace=False)
 
-    def test_quant_vision(self):  ## bug need to fix
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_quant_vision(self, tiny_qwen_vl_model_path):  ## bug need to fix
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_vl_model_path)
+        processor = AutoProcessor.from_pretrained(tiny_qwen_vl_model_path, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
+            tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
@@ -105,17 +101,17 @@ class TestAutoRoundMLLM(unittest.TestCase):
         dataset = MLLM_DATASET["liuhaotian/llava"](
             template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=32, nsamples=32
         )
-        self.assertEqual(len(dataset.questions), 32)
+        assert len(dataset.questions) == 32
         dataset = MLLM_DATASET["liuhaotian/llava"](
             template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=2048, nsamples=512
         )
-        self.assertEqual(len(dataset.questions), 512)
+        assert len(dataset.questions) == 512
 
-    def test_diff_dataset(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+    def test_diff_dataset(self, tiny_qwen_vl_model_path):
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_vl_model_path)
+        processor = AutoProcessor.from_pretrained(tiny_qwen_vl_model_path, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
+            tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
         bits, group_size = 4, 128
         dataset = ["dataset test", "list test"]
@@ -133,19 +129,17 @@ class TestAutoRoundMLLM(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_pure_text_model_check(self):
+    def test_pure_text_model_check(self, tiny_qwen_vl_model_path):
         from transformers import AutoModelForCausalLM
 
         from auto_round.utils import is_pure_text_model
 
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto"
+            tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
-        self.assertFalse(is_pure_text_model(model))
-        model = AutoModelForCausalLM.from_pretrained(
-            "/tf_dataset/auto_round/models/facebook/opt-125m", trust_remote_code=True
-        )
-        self.assertTrue(is_pure_text_model(model))
+        assert not is_pure_text_model(model)
+        model = AutoModelForCausalLM.from_pretrained(opt_name_or_path, trust_remote_code=True)
+        assert is_pure_text_model(model)
 
     def test_str_input(self):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
@@ -211,10 +205,10 @@ class TestAutoRoundMLLM(unittest.TestCase):
         )
         print(output_text[0])
 
-    def test_qwen2_5(self):
+    def test_qwen2_5(self, tiny_qwen_2_5_vl_model_path):
         from auto_round.utils import mllm_load_model
 
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-VL-3B-Instruct"
+        model_name = tiny_qwen_2_5_vl_model_path
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
         autoround = AutoRoundMLLM(
             model,
@@ -264,8 +258,3 @@ class TestAutoRoundMLLM(unittest.TestCase):
         output_text = processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
-        print(output_text)
-
-
-if __name__ == "__main__":
-    unittest.main()

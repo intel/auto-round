@@ -1,42 +1,29 @@
 import copy
 import shutil
-import sys
-import unittest
-
-from auto_round.eval.evaluation import simple_evaluate
-
-sys.path.insert(0, "../..")
 from math import isclose
 
+import pytest
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound  # pylint: disable=E0401
 
-
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
+from ..helpers import gptj_name_or_path
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
-        self.llm_dataloader = LLMDataLoader()
+    def setup_class(self):
         self.save_dir = "./saved"
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_default_acc(self):
-        model_name = "/tf_dataset/auto_round/models/hf-internal-testing/tiny-random-GPTJForCausalLM"
+    def test_default_acc(self, dataloader):
+        model_name = gptj_name_or_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -50,7 +37,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround.quantize()
         out0 = model(inp)
@@ -66,28 +53,19 @@ class TestAutoRound(unittest.TestCase):
             device="cpu",
             iters=2,
             seqlen=10,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         autoround_1.quantize()
         out1 = model_tmp(inp)
 
         assert out0[0].equal(out1[0])
-        self.assertTrue(isclose(float(out0[0][0][0][0]), -0.021002087742090225, rel_tol=5e-04))
+        assert isclose(float(out0[0][0][0][0]), -0.021002087742090225, rel_tol=5e-04)
 
-    def test_3bits_asym_autoround(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def test_3bits_asym_autoround(self, tiny_opt_model_path):
+        model_name = tiny_opt_model_path
 
         bits, sym = 3, False
         autoround = AutoRound(model_name, bits=bits, sym=sym, iters=0)
         autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        # res = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto", limit=10)
-
-        # accuracy = res["results"]["lambada_openai"]["acc,none"]
-        # print(f"accuracy = {accuracy}")
-        # assert accuracy > 0.15
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

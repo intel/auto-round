@@ -85,7 +85,7 @@ def test_oneshot_application(recipe, tmp_path):
     assert weight_args.num_bits == 4
 
     # Check a specific layer is quantized
-    targeted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
+    targeted_linear_layer = model_loaded.model.layers[1].self_attn.q_proj
     assert hasattr(targeted_linear_layer, "quantization_scheme")
 
     # Check lm-head is not quantized

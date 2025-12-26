@@ -206,6 +206,9 @@ class MLLMCompressor(BaseCompressor):
         if hasattr(model, "name_or_path") and any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
             template = "mistral3_2"
         if iters > 0:
+            # TODO: Remove after fixing https://github.com/huggingface/transformers/issues/43005
+            model.config.model_type = model.config.to_dict()["model_type"]
+
             if template is None and model.config.model_type not in TEMPLATES:
                 self.template = None
             else:
