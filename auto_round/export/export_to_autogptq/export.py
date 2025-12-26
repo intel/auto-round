@@ -18,7 +18,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Union
 
 import threadpoolctl as tctl
 
@@ -190,18 +190,24 @@ def pack_layer(name, model, backend, device=None):
     release_layer_safely(layer)
 
 
-def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2", **kwargs):
+def save_quantized_as_autogptq(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    backend: str = "auto_gptq:exllamav2",
+    serialization_dict: dict = None,
+    **kwargs,
+) -> torch.nn.Module:
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     # --- 1️⃣ Extract inputs & configs ---
-    model = kwargs["model"]
-    quantization_config = kwargs["serialization_dict"]
-    layer_config = kwargs["layer_config"]
-    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
-    tokenizer = kwargs.get("tokenizer")
+    quantization_config = serialization_dict
+    quant_block_list = serialization_dict.get("quant_block_list", get_block_names(model))
     processor = kwargs.get("processor")
     image_processor = kwargs.get("image_processor")
-    device = kwargs.get("device")
     safe_serialization = kwargs.get("safe_serialization", True)
 
     # --- Save metadata (tokenizer, processor, etc.) ---
