@@ -1,9 +1,7 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from diffusers import AutoPipelineForText2Image
@@ -20,13 +18,13 @@ from auto_round import AutoRound
 from auto_round.utils import get_block_names, is_pure_text_model
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRound:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         pass
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
     def check_block_names(self, block_names, prefixs=[], n_layers=[]):
@@ -195,11 +193,7 @@ class TestAutoRound(unittest.TestCase):
 
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
-        self.assertTrue(any(["context_embedder" not in n for n in block_names]))
+        assert any(["context_embedder" not in n for n in block_names])
 
         block_names = get_block_names(model, quant_vision=True)
         self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
-
-
-if __name__ == "__main__":
-    unittest.main()

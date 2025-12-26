@@ -75,6 +75,7 @@ def is_attention_module(module: torch.nn.Module):
         or hasattr(module, "v_proj")
         or hasattr(module, "qkv_proj")
         or hasattr(module, "kv_b_proj")  # for DeepSpeed
+        and module.__class__.__name__ != "Llama4VisionAttention"  # llama4 vision attention doesn't have cache
     )
 
 

@@ -14,8 +14,8 @@
 import gc
 import os
 import tempfile
-import unittest
 
+import pytest
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from transformers.testing_utils import (
     require_accelerate,
@@ -27,6 +27,8 @@ from transformers.testing_utils import (
 )
 from transformers.utils import is_torch_available
 
+from ..helpers import get_model_path
+
 if is_torch_available():
     import torch
 
@@ -34,7 +36,7 @@ if is_torch_available():
 # @slow
 @require_torch_gpu
 @require_accelerate
-class AutoRoundTest(unittest.TestCase):
+class AutoRoundTest:
     model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
     input_text = "There is a girl who likes adventure,"
     EXPECTED_OUTPUTS = set()
@@ -53,7 +55,7 @@ class AutoRoundTest(unittest.TestCase):
 
     # called only once for all test in this class
     @classmethod
-    def setUpClass(cls):
+    def setup_class(cls):
         """
         Setup quantized model
         """
@@ -74,12 +76,12 @@ class AutoRoundTest(unittest.TestCase):
         """
         input_ids = self.tokenizer(self.input_text, return_tensors="pt").to(torch_device)
         output = self.quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
-        self.assertIn(self.tokenizer.decode(output[0], skip_special_tokens=True), self.EXPECTED_OUTPUTS)
+        assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
-    def test_raise_if_non_quantized(self):
-        model_id = "facebook/opt-125m"
+    def test_raise_if_non_quantized(self, tiny_opt_model_path):
+        model_id = tiny_opt_model_path
         quantization_config = AutoRoundConfig(bits=4)
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             _ = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config)
 
     def test_quantized_model_bf16(self):
@@ -96,7 +98,7 @@ class AutoRoundTest(unittest.TestCase):
         )
 
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
-        self.assertIn(self.tokenizer.decode(output[0], skip_special_tokens=True), self.EXPECTED_OUTPUTS)
+        assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
     @require_intel_extension_for_pytorch
     def test_quantized_model_on_cpu(self):
@@ -108,7 +110,7 @@ class AutoRoundTest(unittest.TestCase):
         quantized_model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto")
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
 
-        self.assertIn(self.tokenizer.decode(output[0], skip_special_tokens=True), self.EXPECTED_OUTPUTS)
+        assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
     def test_save_pretrained(self):
         """
@@ -131,7 +133,7 @@ class AutoRoundTest(unittest.TestCase):
             input_ids = self.tokenizer(self.input_text, return_tensors="pt").to(torch_device)
 
             output = model.generate(**input_ids, max_new_tokens=40, do_sample=False)
-            self.assertIn(self.tokenizer.decode(output[0], skip_special_tokens=True), self.EXPECTED_OUTPUTS)
+            assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
     @require_torch_multi_gpu
     def test_quantized_model_multi_gpu(self):
@@ -144,7 +146,7 @@ class AutoRoundTest(unittest.TestCase):
         )
         input_ids = self.tokenizer(self.input_text, return_tensors="pt").to(quantized_model.device)
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
-        self.assertIn(self.tokenizer.decode(output[0], skip_special_tokens=True), self.EXPECTED_OUTPUTS)
+        assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
     def test_convert_from_gptq(self):
         """
@@ -185,7 +187,7 @@ class AutoRoundTest(unittest.TestCase):
         """
         Simple test that checks if auto-round work properly with mixed bits
         """
-        model_name = "facebook/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         layer_config = {
@@ -203,7 +205,3 @@ class AutoRoundTest(unittest.TestCase):
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
-
-
-if __name__ == "__main__":
-    unittest.main()

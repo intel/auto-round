@@ -1,10 +1,8 @@
 import copy
 import re
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 import transformers
 from lm_eval.utils import make_table  # pylint: disable=E0401
@@ -14,6 +12,8 @@ from transformers.utils.versions import require_version
 from auto_round import AutoRound, AutoRoundAdam
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
+
+from ..helpers import get_model_path
 
 
 def get_accuracy(data):
@@ -26,21 +26,27 @@ def get_accuracy(data):
         return 0.0
 
 
-class TestMainFunc(unittest.TestCase):
-    @classmethod
-    def setUpClass(self):
-        self.save_dir = "./saved"
-        self.tasks = "lambada_openai"
+class TestMainFunc:
+    save_dir = "./saved"
+    tasks = "lambada_openai"
 
-    @classmethod
-    def tearDownClass(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
+
+        # Yield to hand control to the test methods
+        yield
+
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gptqmodel
     @require_optimum
     def test_backend(self):
-        model_name = "/models/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
@@ -68,7 +74,7 @@ class TestMainFunc(unittest.TestCase):
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_backend_awq(self):
-        model_name = "/models/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
@@ -83,10 +89,10 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_gptqmodel
     def test_fp_layers(self):
-        model_name = "/models/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         from auto_round.compressors.utils import get_fp_layer_names
@@ -107,11 +113,11 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_fp_layers_awq(self):
-        model_name = "/models/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         from auto_round.compressors.utils import get_fp_layer_names
@@ -132,18 +138,17 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
-    def test_undivided_group_size_tuning(self):
-        model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_undivided_group_size_tuning(self, tiny_opt_model_path):
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float16, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
 
         autoround = AutoRound(model, tokenizer, bits=4, group_size=127, nsamples=2, iters=2)
         autoround.quantize()
 
     @require_gptqmodel
     def test_adam(self):
-        model_name = "/models/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRoundAdam(model, tokenizer, bits=4, group_size=128)
@@ -164,7 +169,7 @@ class TestMainFunc(unittest.TestCase):
         except ImportError as e:
             print("skip autoround asym test, as autoround is not installed from source")
             return
-        model_name = "/models/opt-125m"
+        model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128, sym=False)
@@ -179,12 +184,12 @@ class TestMainFunc(unittest.TestCase):
         assert accuracy > 0.35
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_attention_mask_lm_head(self):
+    def test_attention_mask_lm_head(self, tiny_qwen_moe_model_path):
         from transformers import AutoTokenizer
 
-        model_name = "/models/Qwen3-8B"
+        # model_name = "/models/Qwen3-8B"
         # model_name = "/models/Qwen3-0.6B"
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_moe_model_path)
         text = ["haha", "hello world"]
         res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
         res.data.pop("attention_mask")
@@ -196,14 +201,13 @@ class TestMainFunc(unittest.TestCase):
         data.append(res.data)
         from auto_round import AutoRound
 
-        ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8, quant_lm_head=True)
+        ar = AutoRound(tiny_qwen_moe_model_path, iters=1, dataset=data, seqlen=8, quant_lm_head=True)
         ar.quantize()
 
-    def test_low_cpu_mem_usage(self):
+    def test_low_cpu_mem_usage(self, tiny_opt_model_path):
         bits, group_size = 4, 32
-        model_name = "/models/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
         quantized_model_path = "./saved"
         autoround = AutoRound(
             model,
@@ -216,7 +220,3 @@ class TestMainFunc(unittest.TestCase):
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

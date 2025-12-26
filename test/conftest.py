@@ -1,9 +1,16 @@
 import os
+import sys
 from typing import Mapping
 
 import pytest
 
+from .fixtures import *
 
+# Easy debugging without installing auto-round.
+sys.path.insert(0, "..")
+
+
+### HPU related configuration, usage: `pytest --mode=compile/lazy``
 def pytest_addoption(parser):
     parser.addoption(
         "--mode",
