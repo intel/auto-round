@@ -86,6 +86,12 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
         return torch.zeros(max_workspace_size, dtype=torch.int, device=device, requires_grad=False)
 
+    def marlin_make_workspace_new(device: torch.device, max_blocks_per_sm: int = 1) -> torch.Tensor:
+        # In the new marlin kernel, we use the num of threadblocks as workspace
+        # size. The num of threadblocks is sms_count * max_blocks_per_sm.
+        sms = torch.cuda.get_device_properties(device).multi_processor_count
+        return torch.zeros(sms * max_blocks_per_sm, dtype=torch.int, device=device, requires_grad=False)
+
     def marlin_sort_g_idx(g_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         g_idx_sort_indices = torch.argsort(g_idx).to(torch.int)
         return g_idx[g_idx_sort_indices], g_idx_sort_indices
@@ -414,7 +420,10 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         def post_init(self):
             device = self.qweight.device
             # Allocate marlin workspace
-            self.workspace = marlin_make_workspace(self.out_features, device)
+            if NEW_VERSION:
+                self.workspace = marlin_make_workspace_new(device)
+            else:
+                self.workspace = marlin_make_workspace(self.out_features, device)
 
             # Handle sorting for activation reordering if needed.
 
