@@ -28,7 +28,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
     from packaging.version import Version
 
     NEW_VERSION = False
-    if Version(gptqmodel.__version__) >= Version("0.5.0"):
+    if Version(gptqmodel.__version__) >= Version("5.0.0"):
         NEW_VERSION = True
     from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
     from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
