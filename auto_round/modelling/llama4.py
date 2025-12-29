@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Note: adapted from # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
-
-__all__ = ["get_replacement_info"]
-
-
 import torch
 from transformers.modeling_utils import no_init_weights
-from transformers.models.llama4.modeling_llama4 import Llama4TextMLP
+from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
 
+from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import unsupported_meta_device
 
 
@@ -43,9 +40,10 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 self[i].down_proj.weight.data.copy_(down.t())
 
 
-class SequentialLlama4TextMoe(torch.nn.Module):
-    def __init__(self, config, original):
+class SequentialLlama4TextMoe(ReplacementModuleBase):
+    def __init__(self, original, config):
         super().__init__()
+        config = config.text_config
         self.top_k = config.num_experts_per_tok
         self.hidden_dim = config.hidden_size
         self.num_experts = config.num_local_experts
@@ -76,6 +74,17 @@ class SequentialLlama4TextMoe(torch.nn.Module):
 
         return out, router_logits
 
+    @classmethod
+    def original_module_class(cls) -> str:
+        """Return the class name of the module this replaces."""
+        return "Llama4TextMoe"
 
-def get_replacement_info(config):
-    return SequentialLlama4TextMoe, config.get_text_config(), "Llama4TextMoe"
+    @classmethod
+    def from_original(
+        cls,
+        original: torch.nn.Module,
+        config: Llama4Config,
+        **kwargs,
+    ) -> "SequentialLlama4TextMoe":
+        """Create an instance from the original module."""
+        return cls(original, config)

@@ -14,6 +14,8 @@ from auto_round.formats import AutoRoundExportFormat
 from auto_round.inference.backend import MX_TENSOR_DATA_TYPES
 from auto_round.testing_utils import has_module
 
+from ..helpers import get_model_path
+
 testing_scheme_name_lst = [
     AutoRoundExportFormat.MXFP8.value,
     AutoRoundExportFormat.MXFP4.value,
@@ -35,7 +37,7 @@ SCHEMES_MAPPING = {
 def test_e2e_quant_and_load(scheme_name, weight_data_type, act_data_type):
     # Use a temporary directory for saving the quantized model
     with tempfile.TemporaryDirectory() as temp_dir:
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen2.5-0.5B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         config = AutoConfig.from_pretrained(model_name)
         config.num_hidden_layers = 2  # Use a smaller model for testing
         # Fix configuration validation issues

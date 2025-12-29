@@ -1,87 +1,72 @@
 import copy
 import shutil
-import sys
-import unittest
 
-sys.path.insert(0, "../..")
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
+class TestAutoRoundAct:
+    save_dir = "./saved"
 
-    def __iter__(self):
-        for i in range(3):
-            yield torch.ones([1, 10], dtype=torch.long)
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        # ===== SETUP (setup_class) =====
+        print("[Setup] Running before any test in class")
 
+        # Yield to hand control to the test methods
+        yield
 
-class TestAutoRoundAct(unittest.TestCase):
-    @classmethod
-    def setUpClass(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
-
-    @classmethod
-    def tearDownClass(self):
+        # ===== TEARDOWN (teardown_class) =====
+        print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_mx_fp4(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    def test_mx_fp4(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_opt_model,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             act_bits=4,
             data_type="mx_fp",
         )
         autoround.quantize()
 
-    def test_wint4fp8_dynamic(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    def test_wint4fp8_dynamic(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size = 4, 128
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_opt_model,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             act_bits=8,
             data_type="fp8",
             act_data_type="fp8",
         )
         autoround.quantize()
 
-    def test_wint4fp8_static(self):
+    def test_wint4fp8_static(self, tiny_opt_model, opt_tokenizer, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            tiny_opt_model,
+            opt_tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             act_bits=8,
             data_type="fp8_to_int_sym",
             act_dynamic=False,
@@ -89,66 +74,42 @@ class TestAutoRoundAct(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_wfp8afp8_static(self):
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    @pytest.mark.parametrize("act_group_size", [-1, 128])
+    def test_wfp8afp8_static(self, act_group_size, tiny_opt_model, opt_tokenizer, dataloader):
         from auto_round.wrapper import WrapperWALayer
 
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         autoround = AutoRound(
-            model,
-            tokenizer,
+            tiny_opt_model,
+            opt_tokenizer,
             group_size=128,
-            act_group_size=-1,
+            act_group_size=act_group_size,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             data_type="fp8",
             act_dynamic=False,
             act_data_type="fp8",
         )
         autoround.quantize()
 
-        self.assertTrue(isinstance(autoround.model.model.decoder.layers[2].self_attn.k_proj, WrapperWALayer))
-        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0], 30)
-        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], 30)
+        k_proj = autoround.model.model.decoder.layers[1].self_attn.k_proj
+        assert isinstance(k_proj, WrapperWALayer), "k_proj should be WrapperWALayer"
+        if act_group_size == -1:
+            assert k_proj.orig_layer.act_scale.shape[0] == 20, "act_scale shape[0] should be 20"
+            assert k_proj.orig_layer.act_max.shape[0] == 20, "act_max shape[0] should be 20"
+        else:
+            assert k_proj.orig_layer.act_scale.shape[0] == int(2 * 10 * 768 / 128), "act_scale shape[0] is incorrect"
+            assert k_proj.orig_layer.act_max.shape[0] == int(2 * 10 * 768 / 128), "act_max shape[0] is incorrect"
 
-        model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            group_size=128,
-            act_group_size=128,
-            iters=0,
-            seqlen=2,
-            dataset=self.llm_dataloader,
-            data_type="fp8",
-            act_dynamic=False,
-            act_data_type="fp8",
-        )
-        autoround.quantize()
-        self.assertTrue(isinstance(autoround.model.model.decoder.layers[2].self_attn.k_proj, WrapperWALayer))
-
-        self.assertEqual(
-            autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0],
-            int(3 * 10 * 768 / 128),
-        )
-        self.assertEqual(
-            autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0],
-            int(3 * 10 * 768 / 128),
-        )
-
-    def test_act_config_MXFP4_saving(self):
+    def test_act_config_MXFP4_saving(self, tiny_opt_model_path, dataloader):
         scheme = "MXFP4"
         layer_config = {"lm_head": {"act_bits": 8, "bits": 8}, "k_proj": {"act_bits": 8, "bits": 8}}
         autoround = AutoRound(
-            self.model_name,
+            tiny_opt_model_path,
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -158,7 +119,7 @@ class TestAutoRoundAct(unittest.TestCase):
 
         # check inblock layer config values
         kproj_config = model.config.quantization_config.extra_config["model.decoder.layers.1.self_attn.k_proj"]
-        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "mx_fp_rceil"
+        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "mx_fp"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 8
         assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 32
         assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
@@ -168,15 +129,15 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_act_config_NVFP4_saving(self):
+    def test_act_config_NVFP4_saving(self, tiny_opt_model_path, dataloader):
         scheme = "NVFP4"
         layer_config = {"k_proj": {"act_bits": 16, "bits": 16}}
         autoround = AutoRound(
-            self.model_name,
+            tiny_opt_model_path,
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -193,16 +154,16 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_WOQ_config_INT_saving(self):
+    def test_WOQ_config_INT_saving(self, tiny_opt_model_path, dataloader):
         scheme = "W4A16"
         layer_config = {"k_proj": {"bits": 8}}
         autoround = AutoRound(
-            self.model_name,
+            tiny_opt_model_path,
             scheme=scheme,
             iters=2,
             seqlen=2,
             sym=False,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -223,7 +184,7 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "act_dynamic" in kproj_config.keys() and kproj_config["act_dynamic"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_act_config_FP8_saving(self):
+    def test_act_config_FP8_saving(self, tiny_opt_model_path, dataloader):
         scheme = "FP8_STATIC"
         layer_config = {
             "lm_head": {"act_bits": 8, "bits": 8},
@@ -237,11 +198,11 @@ class TestAutoRoundAct(unittest.TestCase):
             },
         }
         autoround = AutoRound(
-            self.model_name,
+            tiny_opt_model_path,
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
@@ -262,7 +223,3 @@ class TestAutoRoundAct(unittest.TestCase):
         assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 0
         assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

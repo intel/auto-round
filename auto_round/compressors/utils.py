@@ -292,13 +292,15 @@ def set_layer_config(
 
     # In AutoScheme with mixed gguf:q4_k_m, the super_group_size of gguf:q8_0 layer is None,
     # which should not be filled by default q4km again
-    if fill_default_value:
-        tmp_scheme_keys = scheme_keys
-    else:
-        tmp_scheme_keys = extra_scheme_keys
     for cfg in layer_config.values():
-        for key in tmp_scheme_keys:
-            cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
+        for key in scheme_keys:
+            if fill_default_value:
+                cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
+            else:
+                if key in extra_scheme_keys:
+                    cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
+                else:
+                    cfg.setdefault(key, None)
 
     # 5. collect supported modules
     embedding_types = (torch.nn.Embedding,)

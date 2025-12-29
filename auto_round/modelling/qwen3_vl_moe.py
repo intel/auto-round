@@ -18,6 +18,7 @@ from packaging import version
 from torch import nn
 from transformers.activations import ACT2FN
 
+from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import logger, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
@@ -41,7 +42,7 @@ def _update_parameter(
 
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/qwen3_vl_moe.py
-class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
+class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
     """
     Calibration version of Qwen3VLMoeTextSparseMoeBlock that sends all tokens to all
     experts.
@@ -117,6 +118,21 @@ class LinearQwen3VLMoeTextSparseMoeBlock(torch.nn.Module):
         else:
             return next_states
 
+    @classmethod
+    def original_module_class(cls) -> str:
+        """Return the class name of the module this replaces."""
+        return "Qwen3VLMoeTextSparseMoeBlock"
+
+    @classmethod
+    def from_original(
+        cls,
+        original: "Qwen3VLMoeTextSparseMoeBlock",
+        config: "Qwen3VLMoeConfig",
+        **kwargs,
+    ) -> "LinearQwen3VLMoeTextSparseMoeBlock":
+        """Create an instance from the original module."""
+        return cls(original, config)
+
 
 class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
@@ -140,7 +156,3 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
                 _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
-
-
-def get_replacement_info(config):
-    return (LinearQwen3VLMoeTextSparseMoeBlock, config, "Qwen3VLMoeTextSparseMoeBlock")

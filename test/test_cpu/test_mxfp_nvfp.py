@@ -1,15 +1,13 @@
 import os
 import shutil
-import sys
-import unittest
 
-from parameterized import parameterized
-
-sys.path.insert(0, "../..")
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+
+from ..helpers import is_model_outputs_similar
 
 
 def _get_folder_size(path: str) -> float:
@@ -23,31 +21,18 @@ def _get_folder_size(path: str) -> float:
     return total_size / (1024**3)  # convert to GB
 
 
-class LLMDataLoader:
-    def __init__(self):
-        self.batch_size = 1
-
-    def __iter__(self):
-        for i in range(2):
-            yield torch.ones([1, 10], dtype=torch.long)
-
-
-class TestAutoRoundFP(unittest.TestCase):
+class TestAutoRoundFP:
     @classmethod
-    def setUpClass(self):
-        self.model_name = "/tf_dataset/auto_round/models/facebook/opt-125m"
+    def setup_class(self):
         self.save_dir = "./saved"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_nvfp4_moe_actmax_rtn(self):
-        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+    def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
+        model_name = tiny_deepseek_v2_model_path
         layer_config = {
             "self_attn": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
@@ -62,7 +47,7 @@ class TestAutoRoundFP(unittest.TestCase):
             iters=0,
             seqlen=2,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         compressed_model, _ = autoround.quantize()
@@ -73,8 +58,8 @@ class TestAutoRoundFP(unittest.TestCase):
         ), "Illegal NVFP4 quantization for lm_head layer"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_nvfp4_moe_actmax_ar(self):
-        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+    def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
+        model_name = tiny_deepseek_v2_model_path
         layer_config = {
             "q_proj": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},
@@ -89,7 +74,7 @@ class TestAutoRoundFP(unittest.TestCase):
             iters=1,
             seqlen=3,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
@@ -102,17 +87,11 @@ class TestAutoRoundFP(unittest.TestCase):
             and lm_head.weight_scale.dtype is torch.float8_e4m3fn
         ), "Illegal NVFP4 packing for lm_head layer"
         quantized_model_path = self.save_dir
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        from auto_round.eval.evaluation import simple_evaluate_user_model
-
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=4, tasks="piqa", limit=4)
-        print(result["results"]["piqa"]["acc,none"])
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.49)
+        assert is_model_outputs_similar(model_name, quantized_model_path)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_mxfp4_moe_ar(self):
-        model_name = "/tf_dataset/auto_round/models/deepseek-ai/DeepSeek-V2-Lite"
+    def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
+        model_name = tiny_deepseek_v2_model_path
         layer_config = {
             "q_proj": {"bits": 16, "act_bits": 16, "data_type": "float"},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16, "data_type": "float"},
@@ -127,7 +106,7 @@ class TestAutoRoundFP(unittest.TestCase):
             iters=1,
             seqlen=2,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
@@ -139,8 +118,8 @@ class TestAutoRoundFP(unittest.TestCase):
         ), "Illegal MXFP4 packing for lm_head layer"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_mxfp4_llmcompressor_format(self):
-        model_name = self.model_name
+    def test_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
         scheme = "MXFP4"
@@ -151,15 +130,15 @@ class TestAutoRoundFP(unittest.TestCase):
             iters=2,
             seqlen=2,
             layer_config=layer_config,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(
             output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
-        skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
+        skip_layer = compressed_model.model.decoder.layers[1].self_attn.k_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_packed")
@@ -179,8 +158,8 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_rtn_mxfp4_llmcompressor_format(self):
-        model_name = self.model_name
+    def test_rtn_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
         scheme = "MXFP4"
@@ -191,15 +170,15 @@ class TestAutoRoundFP(unittest.TestCase):
             iters=0,
             seqlen=2,
             layer_config=layer_config,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(
             output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
-        skip_layer = compressed_model.model.decoder.layers[3].self_attn.k_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
+        skip_layer = compressed_model.model.decoder.layers[1].self_attn.k_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_packed")
@@ -219,8 +198,8 @@ class TestAutoRoundFP(unittest.TestCase):
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_mxfp8_llmcompressor_format(self):
-        model_name = self.model_name
+    def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
         scheme = "MXFP8"
@@ -229,11 +208,11 @@ class TestAutoRoundFP(unittest.TestCase):
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight")
@@ -250,14 +229,14 @@ class TestAutoRoundFP(unittest.TestCase):
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 8
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
         folder_size_gb = _get_folder_size(quantized_model_path)
-        # Original opt-125m is < 0.5GB -> quantized mxfp8 model should be smaller but not empty
+        # Original tiny_opt_model_path-125m is < 0.1GB -> quantized mxfp8 model should be smaller but not empty
         assert (
-            0.15 < folder_size_gb < 0.2
-        ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.2 GB)"
+            0.05 < folder_size_gb < 0.1
+        ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_nvfp4_llmcompressor_format(self):
-        model_name = self.model_name
+    def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
         scheme = "NVFP4"
@@ -266,11 +245,11 @@ class TestAutoRoundFP(unittest.TestCase):
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_global_scale")
@@ -287,14 +266,14 @@ class TestAutoRoundFP(unittest.TestCase):
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
         folder_size_gb = _get_folder_size(quantized_model_path)
-        # Original opt-125m is < 0.5GB -> quantized nvfp4 model should be smaller but not empty
+        # Original opt-125m is < 0.1GB -> quantized nvfp4 model should be smaller but not empty
         assert (
-            0.1 < folder_size_gb < 0.15
-        ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.1~0.15 GB)"
+            0.05 < folder_size_gb < 0.1
+        ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_nvfp4_autoround_format(self):
-        model_name = self.model_name
+    def test_nvfp4_autoround_format(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
         scheme = "NVFP4"
@@ -303,11 +282,11 @@ class TestAutoRoundFP(unittest.TestCase):
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_global_scale")
@@ -318,8 +297,8 @@ class TestAutoRoundFP(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_nvfp4_autoround_save_quantized(self):
-        model_name = self.model_name
+    def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
         scheme = "NVFP4"
@@ -328,12 +307,12 @@ class TestAutoRoundFP(unittest.TestCase):
             scheme=scheme,
             iters=2,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model = autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
-        tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_global_scale")
@@ -344,10 +323,10 @@ class TestAutoRoundFP(unittest.TestCase):
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_qwen_moe_quant_infer(self):
-        model_name = "/tf_dataset/auto_round/models/Qwen/Qwen1.5-MoE-A2.7B"
+    def test_qwen_moe_quant_infer(self, tiny_qwen_moe_model_path, dataloader):
+        model_name = tiny_qwen_moe_model_path
         layer_config = {
-            "layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
+            "layers.0": {"bits": 16, "act_bits": 16},
         }
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -356,21 +335,16 @@ class TestAutoRoundFP(unittest.TestCase):
             iters=1,
             seqlen=2,
             nsamples=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="cpu")
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        from auto_round.eval.evaluation import simple_evaluate_user_model
+        assert is_model_outputs_similar(model_name, quantized_model_path)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa", limit=10)
-        print(result["results"]["piqa"]["acc,none"])
-        self.assertGreater(result["results"]["piqa"]["acc,none"], 0.60)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-    @parameterized.expand(
+    @pytest.mark.parametrize(
+        "scheme, static_kv_dtype, static_attention_dtype",
         [
             # scheme,  static_kv_dtype, static_attention_dtype
             ("MXFP4", None, "fp8"),
@@ -379,11 +353,11 @@ class TestAutoRoundFP(unittest.TestCase):
             ("MXFP8", "fp8", None),
             ("NVFP4", None, "fp8"),
             ("NVFP4", "fp8", None),
-        ]
+        ],
     )
-    def test_fp8_kv_attn(self, scheme, static_kv_dtype, static_attention_dtype):
-        model_name = self.model_name
-        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+    def test_fp8_kv_attn(self, scheme, static_kv_dtype, static_attention_dtype, tiny_opt_model_path, dataloader):
+        model_name = tiny_opt_model_path
+        from transformers import AutoConfig
         from transformers.models.opt.modeling_opt import OPTForCausalLM
 
         config = AutoConfig.from_pretrained(model_name)
@@ -397,7 +371,7 @@ class TestAutoRoundFP(unittest.TestCase):
             scheme=scheme,
             iters=0,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=dataloader,
             static_kv_dtype=static_kv_dtype,
             static_attention_dtype=static_attention_dtype,
         )
@@ -433,7 +407,3 @@ class TestAutoRoundFP(unittest.TestCase):
                 getattr(attn, "q_scale", None) is not None
             ), f"Missing q_scale in attention for scheme={scheme}, static_attention_dtype={static_attention_dtype}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()

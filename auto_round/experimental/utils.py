@@ -71,7 +71,11 @@ def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype
 def is_attention_module(module: torch.nn.Module):
     # FIXME: Handle this better.
     return "attention" in module.__class__.__name__.lower() and (
-        hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
+        hasattr(module, "k_proj")
+        or hasattr(module, "v_proj")
+        or hasattr(module, "qkv_proj")
+        or hasattr(module, "kv_b_proj")  # for DeepSpeed
+        and module.__class__.__name__ != "Llama4VisionAttention"  # llama4 vision attention doesn't have cache
     )
 
 

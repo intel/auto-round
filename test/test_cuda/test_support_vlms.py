@@ -1,10 +1,8 @@
 import os
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 import requests
 from PIL import Image
 
@@ -12,15 +10,15 @@ from auto_round import AutoRoundConfig  # # must import for auto-round format
 from auto_round.testing_utils import require_gptqmodel, require_package_version_ut, require_vlm_env
 
 
-class TestSupportVLMS(unittest.TestCase):
+class TestSupportVLMS:
     @classmethod
-    def setUpClass(self):
+    def setup_class(self):
         self.save_dir = os.path.join(os.path.dirname(__file__), "ut_saved")
         self.python_path = sys.executable
         self.device = 0
 
     @classmethod
-    def tearDownClass(self):
+    def teardown_class(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gptqmodel
@@ -28,10 +26,10 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/Qwen2-VL-2B-Instruct/"
         # test tune
         res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round --mllm "
+            f"cd .. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
+        assert not (res > 0 or res == -1), "qwen2 tuning fail"
 
         # test infer
         quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128")
@@ -83,10 +81,10 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
         res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round --mllm "
+            f"cd .. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
+        assert not (res > 0 or res == -1), "Phi-3.5 tuning fail"
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
@@ -131,12 +129,12 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
         res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round --mllm "
+            f"cd .. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --quant_nontext_module "
             f"--nsample 64 --seqlen 32 "
             f"--format auto_awq --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
+        assert not (res > 0 or res == -1), "Phi-3.5 tuning fail"
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
@@ -179,20 +177,16 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/glm-4v-9b/"
         ## test tune
         res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round "
+            f"cd .. && {self.python_path} -m auto_round "
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="glm-4v-9b tuning fail")
+        assert not (res > 0 or res == -1), "glm-4v-9b tuning fail"
 
     def test_granite_vision(self):
         model_path = "/models/granite-vision-3.2-2b"
         ## test tune
         res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round "
+            f"cd .. && {self.python_path} -m auto_round "
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
-        self.assertFalse(res > 0 or res == -1, msg="granite-vision-3.2-2b tuning fail")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert not (res > 0 or res == -1), "granite-vision-3.2-2b tuning fail"

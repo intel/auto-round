@@ -50,6 +50,11 @@ stages:
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
 
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core sdk 7.0.x'
+            inputs:
+              version: 7.0.x
+
           - task: PublishCodeCoverageResults@2
             inputs:
               summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
