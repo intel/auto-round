@@ -27,6 +27,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
     from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
     from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
     from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
+    from gptqmodel.utils.marlin_scalar_type import scalar_types  # pylint: disable=E0401
 
     marlin_import_exception = None
     try:
@@ -118,6 +119,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         g_idx: torch.Tensor,
         g_idx_sort_indices: torch.Tensor,
         workspace: torch.Tensor,
+        wtype,
         num_bits: int,
         output_size_per_partition: int,
         input_size_per_partition: int,
@@ -129,22 +131,44 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         reshaped_x = input.reshape(-1, input.shape[-1])
         out_shape = input.shape[:-1] + (output_size_per_partition,)
 
-        output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
-            reshaped_x,
-            weight,
-            weight_scale,
-            weight_zp,
-            g_idx,
-            g_idx_sort_indices,
-            workspace,
-            num_bits,
-            reshaped_x.shape[0],
-            output_size_per_partition,
-            input_size_per_partition,
-            is_k_full,
-            False,
-            fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
-        )
+        try:
+            output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
+                reshaped_x,
+                weight,
+                weight_scale,
+                weight_zp,
+                g_idx,
+                g_idx_sort_indices,
+                workspace,
+                num_bits,
+                reshaped_x.shape[0],
+                output_size_per_partition,
+                input_size_per_partition,
+                is_k_full,
+                False,
+                fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
+            )
+        except TypeError:
+            output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
+                reshaped_x,
+                None,
+                weight,
+                None,
+                weight_scale,
+                None,
+                weight_zp,
+                g_idx,
+                g_idx_sort_indices,
+                workspace,
+                wtype.id,
+                reshaped_x.shape[0],
+                output_size_per_partition,
+                input_size_per_partition,
+                is_k_full,
+                False,
+                fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
+                False,
+            )
 
         if bias is not None:
             output.add_(bias)  # In-place add
@@ -170,6 +194,11 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
         # for transformers/optimum tests compat
         QUANT_TYPE = "marlin"
+
+        TYPE_MAP = {
+            (4, True): scalar_types.uint4b8,
+            (8, True): scalar_types.uint8b128,
+        }
 
         def __init__(
             self,
@@ -330,6 +359,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             if kwargs.get("name") is not None and kwargs.get("lm_head_name") is not None:
                 self.is_lm_head = kwargs["name"] == kwargs["lm_head_name"]
 
+            self.weight_type = self.TYPE_MAP[(self.bits, sym)]
             # auto-optimize on post init
             # self.optimize()
 
@@ -361,9 +391,19 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             # self.zp = marlin_make_empty_g_idx(device)
 
             # Repack weights from autogptq format to marlin format.
-            marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
-                self.qweight, g_idx_sort_indices, self.in_features, self.out_features, self.bits, self.pack_dtype_bits
-            )
+            try:
+                marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
+                    self.qweight,
+                    g_idx_sort_indices,
+                    self.in_features,
+                    self.out_features,
+                    self.bits,
+                    self.pack_dtype_bits,
+                )
+            except TypeError as e:
+                marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
+                    self.qweight, g_idx_sort_indices, self.in_features, self.out_features, self.bits
+                )
             replace_tensor(self, "qweight", marlin_qweight)
 
             # Permute scales from autogptq format to marlin format.
@@ -402,6 +442,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 g_idx=g_idx,
                 g_idx_sort_indices=g_idx_sort_indices,
                 workspace=self.workspace,
+                wtype=self.weight_type,
                 num_bits=self.bits,
                 output_size_per_partition=self.out_features,
                 input_size_per_partition=self.in_features,
