@@ -234,6 +234,7 @@ class TestAutoScheme:
         assert layer_config["lm_head"]["bits"] <= 8
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
+        # cause using tiny model
         assert 5.78 < avg_bits <= target_bits + 1e-3
 
     def test_auto_scheme_export(self, tiny_qwen_model_path):
