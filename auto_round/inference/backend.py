@@ -439,21 +439,21 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     requirements=["autoawq", "transformers"],
 )
 
-BackendInfos["auto_round_kernel"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT_NO_ZP,
-    bits=[2, 4, 8],
-    group_size=None,
-    priority=6,
-    checkers=[ark_feature_checker],
-    alias=["ark"],
-    compute_dtype=["float32", "float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.9.0", "auto_round_kernel"],
-    systems=["linux"],
-)
+# BackendInfos["auto_round_kernel"] = BackendInfo(
+#     device=["cpu"],
+#     sym=[True, False],
+#     packing_format=GPTQ_FORMAT_NO_ZP,
+#     bits=[2, 4, 8],
+#     group_size=None,
+#     priority=6,
+#     checkers=[ark_feature_checker],
+#     alias=["ark"],
+#     compute_dtype=["float32", "float16"],
+#     data_type=["int"],
+#     act_bits=WOQ_DEFAULT_ACT_BITS,
+#     requirements=["torch>=2.9.0", "auto_round_kernel"],
+#     systems=["linux"],
+# )
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
     device=["xpu"],
@@ -471,21 +471,21 @@ BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
     systems=["linux"],
 )
 
-BackendInfos["auto_round_kernel_zp"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[2, 4, 8],
-    group_size=None,
-    priority=6,
-    checkers=[ark_feature_checker],
-    alias=["ark"],
-    compute_dtype=["float32", "float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.9.0", "auto_round_kernel"],
-    systems=["linux"],
-)
+# BackendInfos["auto_round_kernel_zp"] = BackendInfo(
+#     device=["cpu"],
+#     sym=[True, False],
+#     packing_format=GPTQ_FORMAT,
+#     bits=[2, 4, 8],
+#     group_size=None,
+#     priority=6,
+#     checkers=[ark_feature_checker],
+#     alias=["ark"],
+#     compute_dtype=["float32", "float16"],
+#     data_type=["int"],
+#     act_bits=WOQ_DEFAULT_ACT_BITS,
+#     requirements=["torch>=2.9.0", "auto_round_kernel"],
+#     systems=["linux"],
+# )
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
     device=["xpu"],
@@ -503,21 +503,21 @@ BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
     systems=["linux"],
 )
 
-BackendInfos["auto_round_kernel_awq"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=AWQ_FORMAT,
-    bits=[2, 4, 8],
-    group_size=None,
-    priority=6,
-    checkers=[ark_feature_checker],
-    alias=["ark"],
-    compute_dtype=["float32", "float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.9.0", "auto_round_kernel"],
-    systems=["linux"],
-)
+# BackendInfos["auto_round_kernel_awq"] = BackendInfo(
+#     device=["cpu"],
+#     sym=[True, False],
+#     packing_format=AWQ_FORMAT,
+#     bits=[2, 4, 8],
+#     group_size=None,
+#     priority=6,
+#     checkers=[ark_feature_checker],
+#     alias=["ark"],
+#     compute_dtype=["float32", "float16"],
+#     data_type=["int"],
+#     act_bits=WOQ_DEFAULT_ACT_BITS,
+#     requirements=["torch>=2.9.0", "auto_round_kernel"],
+#     systems=["linux"],
+# )
 
 BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     device=["xpu"],
@@ -535,8 +535,23 @@ BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     systems=["linux"],
 )
 
+BackendInfos["ipex_gptq_cpu"] = BackendInfo(
+    device=["cpu"],
+    sym=[True, False],
+    packing_format=GPTQ_FORMAT,
+    bits=[4],
+    group_size=None,
+    priority=5,
+    checkers=[],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    alias=["ipex"],
+    requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
+)
+
 BackendInfos["ipex_gptq"] = BackendInfo(
-    device=["cpu", "xpu"],
+    device=["xpu"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT,
     bits=[4],
@@ -550,8 +565,24 @@ BackendInfos["ipex_gptq"] = BackendInfo(
     requirements=["intel-extension-for-pytorch>=2.5"],
 )
 
+BackendInfos["ipex_awq_cpu"] = BackendInfo(
+    device=["cpu"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    bits=[4],
+    group_size=None,
+    priority=5,
+    checkers=[],
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    alias=["ipex"],
+    requirements=["torch<2.9","intel-extension-for-pytorch>=2.5"],
+)
+
+
 BackendInfos["ipex_awq"] = BackendInfo(
-    device=["cpu", "xpu"],
+    device=["cpu"],
     sym=[True, False],
     packing_format=AWQ_FORMAT,
     bits=[4],
