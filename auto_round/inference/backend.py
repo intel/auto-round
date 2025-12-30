@@ -577,7 +577,7 @@ BackendInfos["ipex_awq_cpu"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
-    requirements=["torch<2.9","intel-extension-for-pytorch>=2.5"],
+    requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
 )
 
 
