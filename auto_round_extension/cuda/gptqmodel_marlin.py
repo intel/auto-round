@@ -24,9 +24,21 @@ import torch
 
 
 def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
+    import gptqmodel
+    from packaging.version import Version
+
+    NEW_VERSION = False
+    if Version(gptqmodel.__version__) >= Version("5.0.0"):
+        NEW_VERSION = True
     from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
     from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
     from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
+
+    if NEW_VERSION:
+        try:
+            from gptqmodel.utils.marlin_scalar_type import scalar_types  # pylint: disable=E0401
+        except ImportError as e:
+            NEW_VERSION = False
 
     marlin_import_exception = None
     try:
@@ -74,6 +86,12 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
         return torch.zeros(max_workspace_size, dtype=torch.int, device=device, requires_grad=False)
 
+    def marlin_make_workspace_new(device: torch.device, max_blocks_per_sm: int = 1) -> torch.Tensor:
+        # In the new marlin kernel, we use the num of threadblocks as workspace
+        # size. The num of threadblocks is sms_count * max_blocks_per_sm.
+        sms = torch.cuda.get_device_properties(device).multi_processor_count
+        return torch.zeros(sms * max_blocks_per_sm, dtype=torch.int, device=device, requires_grad=False)
+
     def marlin_sort_g_idx(g_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         g_idx_sort_indices = torch.argsort(g_idx).to(torch.int)
         return g_idx[g_idx_sort_indices], g_idx_sort_indices
@@ -118,6 +136,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         g_idx: torch.Tensor,
         g_idx_sort_indices: torch.Tensor,
         workspace: torch.Tensor,
+        wtype,
         num_bits: int,
         output_size_per_partition: int,
         input_size_per_partition: int,
@@ -129,22 +148,44 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         reshaped_x = input.reshape(-1, input.shape[-1])
         out_shape = input.shape[:-1] + (output_size_per_partition,)
 
-        output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
-            reshaped_x,
-            weight,
-            weight_scale,
-            weight_zp,
-            g_idx,
-            g_idx_sort_indices,
-            workspace,
-            num_bits,
-            reshaped_x.shape[0],
-            output_size_per_partition,
-            input_size_per_partition,
-            is_k_full,
-            False,
-            fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
-        )
+        if not NEW_VERSION:
+            output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
+                reshaped_x,
+                weight,
+                weight_scale,
+                weight_zp,
+                g_idx,
+                g_idx_sort_indices,
+                workspace,
+                num_bits,
+                reshaped_x.shape[0],
+                output_size_per_partition,
+                input_size_per_partition,
+                is_k_full,
+                False,
+                fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
+            )
+        else:
+            output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
+                reshaped_x,
+                None,
+                weight,
+                None,
+                weight_scale,
+                None,
+                weight_zp,
+                g_idx,
+                g_idx_sort_indices,
+                workspace,
+                wtype.id,
+                reshaped_x.shape[0],
+                output_size_per_partition,
+                input_size_per_partition,
+                is_k_full,
+                False,
+                fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
+                False,
+            )
 
         if bias is not None:
             output.add_(bias)  # In-place add
@@ -170,6 +211,12 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
         # for transformers/optimum tests compat
         QUANT_TYPE = "marlin"
+
+        if NEW_VERSION:
+            TYPE_MAP = {
+                (4, True): scalar_types.uint4b8,
+                (8, True): scalar_types.uint8b128,
+            }
 
         def __init__(
             self,
@@ -330,6 +377,12 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             if kwargs.get("name") is not None and kwargs.get("lm_head_name") is not None:
                 self.is_lm_head = kwargs["name"] == kwargs["lm_head_name"]
 
+            if NEW_VERSION:
+                self._gptq_marlin_repack = self._gptq_marlin_repack_new_version
+                self.weight_type = self.TYPE_MAP[(self.bits, sym)]
+            else:
+                self._gptq_marlin_repack = self._gptq_marlin_repack_old_version
+                self.weight_type = None
             # auto-optimize on post init
             # self.optimize()
 
@@ -347,10 +400,30 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         def verify_supports_params(cls):
             return
 
+        def _gptq_marlin_repack_old_version(self, g_idx_sort_indices):
+            marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
+                self.qweight,
+                g_idx_sort_indices,
+                self.in_features,
+                self.out_features,
+                self.bits,
+                self.pack_dtype_bits,
+            )
+            return marlin_qweight
+
+        def _gptq_marlin_repack_new_version(self, g_idx_sort_indices):
+            marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
+                self.qweight, g_idx_sort_indices, self.in_features, self.out_features, self.bits
+            )
+            return marlin_qweight
+
         def post_init(self):
             device = self.qweight.device
             # Allocate marlin workspace
-            self.workspace = marlin_make_workspace(self.out_features, device)
+            if NEW_VERSION:
+                self.workspace = marlin_make_workspace_new(device)
+            else:
+                self.workspace = marlin_make_workspace(self.out_features, device)
 
             # Handle sorting for activation reordering if needed.
 
@@ -361,9 +434,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             # self.zp = marlin_make_empty_g_idx(device)
 
             # Repack weights from autogptq format to marlin format.
-            marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
-                self.qweight, g_idx_sort_indices, self.in_features, self.out_features, self.bits, self.pack_dtype_bits
-            )
+            marlin_qweight = self._gptq_marlin_repack(g_idx_sort_indices)
             replace_tensor(self, "qweight", marlin_qweight)
 
             # Permute scales from autogptq format to marlin format.
@@ -402,6 +473,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 g_idx=g_idx,
                 g_idx_sort_indices=g_idx_sort_indices,
                 workspace=self.workspace,
+                wtype=self.weight_type,
                 num_bits=self.bits,
                 output_size_per_partition=self.out_features,
                 input_size_per_partition=self.in_features,
