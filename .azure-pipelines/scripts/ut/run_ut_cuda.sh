@@ -18,7 +18,7 @@ function create_conda_env() {
     [[ -d ${HOME}/miniconda3/bin ]] && export PATH=${HOME}/miniconda3/bin/:$PATH
 
     # create conda env
-    source activate base
+    source activate base > /dev/null 2>&1
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
     conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
     source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
