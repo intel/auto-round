@@ -582,7 +582,7 @@ BackendInfos["ipex_awq_cpu"] = BackendInfo(
 
 
 BackendInfos["ipex_awq"] = BackendInfo(
-    device=["cpu"],
+    device=["xpu"],
     sym=[True, False],
     packing_format=AWQ_FORMAT,
     bits=[4],
