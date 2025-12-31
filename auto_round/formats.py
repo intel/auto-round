@@ -115,7 +115,7 @@ def get_formats(
 
     formats = [fmt for fmt in formats if fmt is not None]
 
-    if len(formats) == 1 and formats[0].is_gguf and ar.scale_dtype != torch.float32:
+    if len(formats) == 1 and formats[0].is_gguf() and ar.scale_dtype != torch.float32:
         ar.scale_dtype = torch.float32
         logger.info("change `scale_dtype` to `torch.float32` for gguf format")
 
