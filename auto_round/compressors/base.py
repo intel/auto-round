@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional, Union
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_max_memory, get_balanced_memory
+from accelerate.utils import get_balanced_memory, get_max_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
