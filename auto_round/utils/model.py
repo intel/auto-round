@@ -734,6 +734,39 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         return ["w1", "w2", "w3"]
 
 
+def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
+    """Get the list of input projection names for MoE experts.
+
+    Input projections are the first linear layers that receive the expert's input directly.
+    For FP8 dispatch efficiency, these projections need unified input scales across all experts.
+
+    Args:
+        module: The MoE module (e.g., SparseMoeBlock)
+
+    Returns:
+        List of input projection names (e.g., ['gate_proj', 'up_proj'])
+    """
+
+    def module_match_name_list(module, name_list):
+        """Check if the module name matches any of the names in the list."""
+        return any(name.lower() in type(module).__name__.lower() for name in name_list)
+
+    if module_match_name_list(
+        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+    ):
+        # gate_proj and up_proj are input projections, down_proj is output
+        return ["gate_proj", "up_proj"]
+    elif module_match_name_list(module, ["MixtralMoeSparseMoeBlock"]):
+        # Mixtral uses linear_fc1 as input projection, linear_fc2 is output
+        return ["linear_fc1"]
+    elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
+        # w1_linear and v1_linear are input projections, w2_linear is output
+        return ["w1_linear", "v1_linear"]
+    else:
+        # Default: w1 and w3 are input projections, w2 is output
+        return ["w1", "w3"]
+
+
 def get_model_dtype(model_dtype, default="auto"):
     if model_dtype is None or model_dtype == "auto":
         model_dtype = default
@@ -1186,7 +1219,7 @@ def to_dtype(input, dtype=torch.float32):
 
 
 def set_amax_for_uncalibrated_experts(
-    experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"
+    experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max", unify_all: bool = False
 ):
     """Set amax of uncalibrated experts to a given value or the max of existing amax value from other experts.
 
@@ -1194,6 +1227,9 @@ def set_amax_for_uncalibrated_experts(
         experts: a list of experts
         set_amax_value: set amax value to the given value.
                         If None, set amax value to the max of existing amax value from other experts.
+        attr_name: attribute name to set (default: "act_max")
+        unify_all: if True, unify the amax value for ALL experts (not just uncalibrated ones).
+                   This is needed for FP8 dispatch where all experts must share the same input scale.
 
     Returns:
         uncalibrated_experts: a list of uncalibrated experts
@@ -1212,12 +1248,16 @@ def set_amax_for_uncalibrated_experts(
         set_amax_value = torch.max(all_values)
 
     for module in experts:
-        if get_nested_attr(module, attr_name) is None:
-            logger.warning_once(
-                "Missing amax value of expert layers."
-                "This typically occurs in MoE models when certain experts are not activated during calibration. "
-                "Consider increasing your calibration dataset size to ensure all experts are exercised."
-            )
+        current_amax = get_nested_attr(module, attr_name)
+
+        # Set amax if it's None (uncalibrated) OR if unify_all is True
+        if current_amax is None or unify_all:
+            if current_amax is None:
+                logger.warning_once(
+                    "Missing amax value of expert layers."
+                    "This typically occurs in MoE models when certain experts are not activated during calibration. "
+                    "Consider increasing your calibration dataset size to ensure all experts are exercised."
+                )
             # Use float32 dtype explicitly to ensure we create a floating point tensor
             if not isinstance(set_amax_value, torch.Tensor):
                 set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
@@ -1240,12 +1280,20 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         if not (is_moe(sub_module) and hasattr(sub_module, "experts")):
             continue
         expert_linear_names = get_expert_linear_names(sub_module)
+        # Get input projection names for FP8 dispatch unification
+        expert_input_proj_names = get_expert_input_proj_names(sub_module)
+
         for linear_name in expert_linear_names:
             if isinstance(sub_module.experts, collections.abc.Iterable):
                 # For other MoE models (like Mixtral) with iterable experts
                 try:
+                    # Determine if this is an input projection that needs scale unification
+                    unify_scale = linear_name in expert_input_proj_names
+
                     set_amax_for_uncalibrated_experts(
-                        [getattr(expert, linear_name, None) for expert in sub_module.experts], attr_name=attr_name
+                        [getattr(expert, linear_name, None) for expert in sub_module.experts],
+                        attr_name=attr_name,
+                        unify_all=unify_scale,  # Unify scales for input projections (gate/up)
                     )
                 except AttributeError as e:
                     # Provide more helpful debugging information
