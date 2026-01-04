@@ -73,6 +73,38 @@ class LazyImport(object):
         return function(*args, **kwargs)
 
 
+import transformers
+from packaging import version
+
+def rename_kwargs(**name_map):
+    from functools import wraps
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for old_name, new_name in name_map.items():
+                if old_name in kwargs:
+                    if new_name in kwargs:
+                        raise TypeError(f"Cannot specify both {old_name} and {new_name}")
+                    kwargs[new_name] = kwargs.pop(old_name)
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# TODO this is not very robust as only AutoModelForCausaLM is patched
+def monkey_patch_transformers():
+    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
+        transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(torch_dtype="dtype")(
+            transformers.AutoModelForCausalLM.from_pretrained
+        )
+    else:
+        transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(dtype="torch_dtype")(
+            transformers.AutoModelForCausalLM.from_pretrained
+        )
+
+def monkey_patch():
+    monkey_patch_transformers()
+
+
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
