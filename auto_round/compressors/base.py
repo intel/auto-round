@@ -1916,6 +1916,9 @@ class BaseCompressor(object):
                                     device = "cpu"
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
+                                # Use 90% of the reported max memory to leave headroom for activations,
+                                # temporary tensors, other processes, and allocator fragmentation, reducing
+                                # the chance of runtime OOM while still utilizing most available memory.
                                 new_max_memory[device] = max_memory[device] * 0.9
                             new_max_memory = get_balanced_memory(
                                 self.model,
