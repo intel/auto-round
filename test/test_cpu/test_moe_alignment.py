@@ -1,5 +1,5 @@
-import shutil
 import os
+import shutil
 
 import pytest
 import torch
@@ -30,7 +30,7 @@ def test_moe_scale_alignment_fp8_static(setup_deepseek_v2_lite):
     """Test that FP8_STATIC quantization unifies gate/up input scales across experts."""
     # Enable MoE scale unification explicitly
     os.environ["AR_ENABLE_UNIFY_MOE_INPUT_SCALE"] = "true"
-    
+
     model, tokenizer, output_dir, config = setup_deepseek_v2_lite
 
     # Quantize with FP8_STATIC scheme

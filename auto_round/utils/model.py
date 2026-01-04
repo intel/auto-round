@@ -763,9 +763,7 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
         # w1_linear and v1_linear are input projections, w2_linear is output
         return ["w1_linear", "v1_linear"]
     else:
-        logger.warning_once(
-            "Using default input projection names ['w1', 'w3'] for MoE expert alignment. "
-        )
+        logger.warning_once("Using default input projection names ['w1', 'w3'] for MoE expert alignment. ")
         # Default: w1 and w3 are input projections, w2 is output
         return ["w1", "w3"]
 
@@ -1291,9 +1289,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                 # For other MoE models (like Mixtral) with iterable experts
                 try:
                     # Determine if this is an input projection that needs scale unification
-                    unify_scale = (
-                        linear_name in expert_input_proj_names and envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
-                    )
+                    unify_scale = linear_name in expert_input_proj_names and envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
 
                     set_amax_for_uncalibrated_experts(
                         [getattr(expert, linear_name, None) for expert in sub_module.experts],
