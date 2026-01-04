@@ -90,7 +90,22 @@ def rename_kwargs(**name_map):
 
 # TODO this is not very robust as only AutoModelForCausalLM is patched
 
-
+    transformers_version = getattr(transformers, "__version__", None)
+    if transformers_version is None:
+        logger.warning(
+            "transformers.__version__ is not available; skipping transformers monkey patching."
+        )
+        return
+    try:
+        parsed_version = version.parse(transformers_version)
+    except Exception as exc:
+        logger.warning(
+            "Failed to parse transformers version '%s'; skipping transformers monkey patching. Error: %s",
+            transformers_version,
+            exc,
+        )
+        return
+    if parsed_version >= version.parse("4.56.0"):
 # TODO this is not very robust as only AutoModelForCausaLM is patched
 def monkey_patch_transformers():
     if version.parse(transformers.__version__) >= version.parse("4.56.0"):
