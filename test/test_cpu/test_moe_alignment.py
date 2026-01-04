@@ -1,6 +1,5 @@
-"""Test MoE expert scale alignment for FP8 dispatch using real models."""
-
 import shutil
+import os
 
 import pytest
 import torch
@@ -29,6 +28,9 @@ def setup_deepseek_v2_lite():
 
 def test_moe_scale_alignment_fp8_static(setup_deepseek_v2_lite):
     """Test that FP8_STATIC quantization unifies gate/up input scales across experts."""
+    # Enable MoE scale unification explicitly
+    os.environ["AR_ENABLE_UNIFY_MOE_INPUT_SCALE"] = "true"
+    
     model, tokenizer, output_dir, config = setup_deepseek_v2_lite
 
     # Quantize with FP8_STATIC scheme
@@ -63,45 +65,49 @@ def test_moe_scale_alignment_fp8_static(setup_deepseek_v2_lite):
             down_scales = []
 
             for expert in experts:
-                if hasattr(expert, "gate_proj") and hasattr(expert.gate_proj, "act_max"):
-                    gate_scales.append(expert.gate_proj.act_max)
-                if hasattr(expert, "up_proj") and hasattr(expert.up_proj, "act_max"):
-                    up_scales.append(expert.up_proj.act_max)
-                if hasattr(expert, "down_proj") and hasattr(expert.down_proj, "act_max"):
-                    down_scales.append(expert.down_proj.act_max)
+                if hasattr(expert, "gate_proj") and hasattr(expert.gate_proj, "input_scale"):
+                    gate_scales.append(expert.gate_proj.input_scale)
+                if hasattr(expert, "up_proj") and hasattr(expert.up_proj, "input_scale"):
+                    up_scales.append(expert.up_proj.input_scale)
+                if hasattr(expert, "down_proj") and hasattr(expert.down_proj, "input_scale"):
+                    down_scales.append(expert.down_proj.input_scale)
 
-            if gate_scales and up_scales:
-                # Verify gate_proj scales are unified
-                gate_ref = gate_scales[0]
-                for i, scale in enumerate(gate_scales):
-                    assert torch.allclose(
-                        scale, gate_ref
-                    ), f"Expert {i} gate_proj.act_max ({scale.item()}) != Expert 0 ({gate_ref.item()})"
+            # Verify gate_proj scales are unified
+            assert len(gate_scales) > 0, "No gate_proj scales found"
+            gate_ref = gate_scales[0]
+            for i, scale in enumerate(gate_scales):
+                assert torch.allclose(
+                    scale, gate_ref
+                ), f"Expert {i} gate_proj.input_scale ({scale.item()}) != Expert 0 ({gate_ref.item()})"
 
-                # Verify up_proj scales are unified
-                up_ref = up_scales[0]
-                for i, scale in enumerate(up_scales):
-                    assert torch.allclose(
-                        scale, up_ref
-                    ), f"Expert {i} up_proj.act_max ({scale.item()}) != Expert 0 ({up_ref.item()})"
+            # Verify up_proj scales are unified
+            assert len(up_scales) > 0, "No up_proj scales found"
+            up_ref = up_scales[0]
+            for i, scale in enumerate(up_scales):
+                assert torch.allclose(
+                    scale, up_ref
+                ), f"Expert {i} up_proj.input_scale ({scale.item()}) != Expert 0 ({up_ref.item()})"
 
-                print(f"✓ All {len(gate_scales)} experts have unified gate_proj.act_max = {gate_ref.item()}")
-                print(f"✓ All {len(up_scales)} experts have unified up_proj.act_max = {up_ref.item()}")
+            print(f"✓ All {len(gate_scales)} experts have unified gate_proj.input_scale = {gate_ref.item()}")
+            print(f"✓ All {len(up_scales)} experts have unified up_proj.input_scale = {up_ref.item()}")
 
-                # down_proj scales can differ (not input projections)
-                if len(down_scales) > 1:
-                    down_are_different = not all(torch.allclose(s, down_scales[0]) for s in down_scales)
-                    if down_are_different:
-                        print("✓ down_proj.act_max values correctly vary across experts (not unified)")
+            # down_proj scales can differ (not input projections)
+            if len(down_scales) > 1:
+                down_are_different = not all(torch.allclose(s, down_scales[0]) for s in down_scales)
+                if down_are_different:
+                    print("✓ down_proj.input_scale values correctly vary across experts (not unified)")
 
-                break  # Only check the first MoE block
+            break  # Only check the first MoE block
 
     # Clean up
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
 def test_set_amax_for_all_moe_layers_direct(setup_deepseek_v2_lite):
-    """Test set_amax_for_all_moe_layers directly on model with simulated different scales."""
+    """Directly test set_amax_for_all_moe_layers unification logic."""
+    # Enable MoE scale unification explicitly
+    os.environ["AR_ENABLE_UNIFY_MOE_INPUT_SCALE"] = "true"
+
     model, tokenizer, output_dir, config = setup_deepseek_v2_lite
 
     # Find the first MoE block and manually set different act_max values
@@ -150,7 +156,3 @@ def test_set_amax_for_all_moe_layers_direct(setup_deepseek_v2_lite):
     print(f"  gate_proj: {gate_before} → {gate_after}")
     print(f"  up_proj: {up_before} → {up_after}")
     print(f"  down_proj: {down_after} (not unified - can differ)")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
