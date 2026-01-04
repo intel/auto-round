@@ -86,10 +86,10 @@ def rename_kwargs(**name_map):
             return func(*args, **kwargs)
 
         return wrapper
+    return decorator
 
-
-# TODO this is not very robust as only AutoModelForCausalLM is patched
-
+# TODO this is not very robust as only AutoModelForCausaLM is patched
+def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
     if transformers_version is None:
         logger.warning(
@@ -106,9 +106,6 @@ def rename_kwargs(**name_map):
         )
         return
     if parsed_version >= version.parse("4.56.0"):
-# TODO this is not very robust as only AutoModelForCausaLM is patched
-def monkey_patch_transformers():
-    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
         transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(torch_dtype="dtype")(
             transformers.AutoModelForCausalLM.from_pretrained
         )
