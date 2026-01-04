@@ -90,7 +90,7 @@ def rename_kwargs(**name_map):
 
         return wrapper
 
-    return decorator
+# TODO this is not very robust as only AutoModelForCausalLM is patched
 
 
 # TODO this is not very robust as only AutoModelForCausaLM is patched
