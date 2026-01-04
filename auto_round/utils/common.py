@@ -73,8 +73,6 @@ class LazyImport(object):
         return function(*args, **kwargs)
 
 
-
-
 def rename_kwargs(**name_map):
     from functools import wraps
 
@@ -89,6 +87,7 @@ def rename_kwargs(**name_map):
             return func(*args, **kwargs)
 
         return wrapper
+
 
 # TODO this is not very robust as only AutoModelForCausalLM is patched
 
