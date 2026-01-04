@@ -17,6 +17,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
+from typing import Callable, Union
 
 import threadpoolctl as tctl
 import torch
@@ -145,24 +146,29 @@ def pack_layer(layer_name, model, data_type, device=None):
     release_layer_safely(layer)
 
 
-def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", **kwargs):
-    model = kwargs["model"]
+def save_quantized_as_autoround(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    serialization_dict: dict = None,
+    **kwargs,
+):
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_config = kwargs["layer_config"]
-    quantization_config = kwargs["serialization_dict"]
+    quantization_config = serialization_dict
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
-    if "e5m2" in kwargs.get("data_type", "fp8"):
+    if "e5m2" in serialization_dict.get("data_type", "fp8"):
         quantization_config["fmt"] = "e5m2"
     else:
         quantization_config["fmt"] = "e4m3"
     quantization_config["activation_scheme"] = "dynamic" if quantization_config["act_dynamic"] else "static"
 
-    tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
-    device = kwargs.get("device", None)
     image_processor = kwargs.get("image_processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
@@ -198,7 +204,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, kwargs.get("data_type", "fp8"), device)
+                    pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):

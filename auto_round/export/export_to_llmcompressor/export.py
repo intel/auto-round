@@ -14,6 +14,7 @@
 
 import copy
 import os
+from typing import Callable, Union
 
 import torch
 
@@ -46,40 +47,17 @@ def recover_qweight(qdq_weight, scale):
     return (qdq_weight / scale).to(torch.int8)
 
 
-def pack_layer(layer_name, model, backend, device=None):
-    """
-    Packs a model layer for quantization based on its type and configuration.
-
-    This function retrieves the specified layer from the model, checks its
-    compatibility for quantization, and replaces it with a quantized version
-    if applicable. The quantization process depends on the layer's bit-width,
-    group size, symmetry, and activation bits.
-
-    Args:
-        layer_name (str): The name of the layer to be packed.
-        model (torch.nn.Module): The model containing the layer.
-        backend (str): The backend framework to be used for quantization.
-
-    Returns:
-        None: The function modifies the model in place.
-    """
-    if is_nv_fp(backend) or is_mx_fp(backend):
-        from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
-
-        return pack_layer(layer_name, model, backend, device)
-
-    if is_static_wfp8afp8(backend):
-        from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
-
-        return pack_layer(layer_name, model, backend, device)
-
-    ## passed as no other llm_compressor format is supported yet
-    logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
-    return
-
-
 @torch.no_grad()
-def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwargs) -> torch.nn.Module:
+def save_quantized_as_llmcompressor(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    serialization_dict: dict = None,
+    **kwargs,
+) -> torch.nn.Module:
     """
     Save a quantized model in the LLM-Compressor format.
 
@@ -104,16 +82,7 @@ def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwa
         torch.nn.Module: The quantized model that was saved.
     """
 
-    backend = kwargs.get("backend", None)
-    if is_nv_fp(backend) or is_mx_fp(backend):
-        return save_quantized_as_fp(output_dir, inplace=inplace, **kwargs)
-
-    if is_static_wfp8afp8(backend):
-        return save_quantized_as_static_fp(output_dir, **kwargs)
-
-    model = kwargs.get("model", None)
     safe_serialization = kwargs.get("safe_serialization", True)
-    tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
@@ -127,7 +96,7 @@ def save_quantized_as_llmcompressor(output_dir: str, inplace: bool = True, **kwa
         processor.save_pretrained(output_dir)
 
     # generate q_weight
-    device = detect_device()
+    device = detect_device(device)
     for n, m in model.named_modules():
         if isinstance(m, WrapperWALayer):
             m = m.orig_layer
