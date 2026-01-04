@@ -17,12 +17,12 @@ import importlib
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 import transformers
 from packaging import version
-
+from functools import wraps
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
 
@@ -73,11 +73,7 @@ class LazyImport(object):
         return function(*args, **kwargs)
 
 
-import transformers
-from packaging import version
-
 def rename_kwargs(**name_map):
-    from functools import wraps
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -306,12 +302,12 @@ def to_standard_regex(pattern: str) -> str:
     return regex
 
 
-def matches_any_regex(layer_name: str, regex_config: Dict[str, dict]) -> bool:
+def matches_any_regex(layer_name: str, regex_config: dict[str, dict]) -> bool:
     """
     Check whether `layer_name` matches any regex pattern key in `regex_config`.
     Args:
         layer_name (str): The layer name to test.
-        regex_config (Dict[str, dict]): A mapping of regex patterns to configs.
+        regex_config (dict[str, dict]): A mapping of regex patterns to configs.
     Returns:
         bool: True if any pattern matches `layer_name`, otherwise False.
     """
