@@ -334,33 +334,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Number of bits for scale and zero-point quantization in double quantization. ",
         )
 
-        ## ===================== diffusion model ==================
-        self.add_argument(
-            "--guidance_scale",
-            default=7.5,
-            type=float,
-            help="Classifier-free guidance scale for diffusion models. "
-            "Higher values (7-20) make the model follow the prompt more closely. "
-            "Lower values give more creative/random results.",
-        )
-
-        self.add_argument(
-            "--num_inference_steps",
-            default=50,
-            type=int,
-            help="Number of denoising steps in the diffusion process. "
-            "More steps (50-100) usually give better quality but take longer. "
-            "Fewer steps (10-30) are faster but lower quality.",
-        )
-
-        self.add_argument(
-            "--generator_seed",
-            default=None,
-            type=int,
-            help="Random seed for image generation reproducibility. "
-            "Using the same seed produces identical results across runs.",
-        )
-
         ## ======================= eval =======================
         eval_args = self.add_argument_group("eval arguments")
         eval_args.add_argument(
@@ -461,6 +434,31 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="./tmp_image_save",
             type=str,
             help="Directory to save generated images during evaluation. " "Useful for visual inspection of results.",
+        )
+        diffusion_args.add_argument(
+            "--guidance_scale",
+            default=7.5,
+            type=float,
+            help="Classifier-free guidance scale for diffusion models. "
+            "Higher values (7-20) make the model follow the prompt more closely. "
+            "Lower values give more creative/random results.",
+        )
+
+        diffusion_args.add_argument(
+            "--num_inference_steps",
+            default=50,
+            type=int,
+            help="Number of denoising steps in the diffusion process. "
+            "More steps (50-100) usually give better quality but take longer. "
+            "Fewer steps (10-30) are faster but lower quality.",
+        )
+
+        diffusion_args.add_argument(
+            "--generator_seed",
+            default=None,
+            type=int,
+            help="Random seed for image generation reproducibility. "
+            "Using the same seed produces identical results across runs.",
         )
 
 
