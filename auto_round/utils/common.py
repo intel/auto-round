@@ -83,8 +83,12 @@ def rename_kwargs(**name_map):
                         raise TypeError(f"Cannot specify both {old_name} and {new_name}")
                     kwargs[new_name] = kwargs.pop(old_name)
             return func(*args, **kwargs)
+
         return wrapper
-    return decorator
+
+
+# TODO this is not very robust as only AutoModelForCausalLM is patched
+
 
 # TODO this is not very robust as only AutoModelForCausaLM is patched
 def monkey_patch_transformers():
@@ -96,6 +100,7 @@ def monkey_patch_transformers():
         transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(dtype="torch_dtype")(
             transformers.AutoModelForCausalLM.from_pretrained
         )
+
 
 def monkey_patch():
     monkey_patch_transformers()
