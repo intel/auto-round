@@ -18,6 +18,9 @@ from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam, Aut
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
 from auto_round.utils import LazyImport
+from auto_round.utils import monkey_patch
+
+monkey_patch()
 
 
 def __getattr__(name):
