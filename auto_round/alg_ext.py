@@ -818,7 +818,8 @@ def quant_tensor_gguf_asym_dq(
 
             if torch.min(quant_weights) == 0:
                 logger.warning_once(
-                    "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
+                    "please use more data via setting `nsamples` "
+                    "to improve accuracy as calibration activations contain 0"
                 )
 
                 zero_cnt = torch.sum(quant_weights == 0, dim=-1)
@@ -883,12 +884,6 @@ def quant_tensor_gguf_sym_dq(
     tensor,
     bits=3,
     v=0,
-    min_scale=1.0,
-    max_scale=1.0,
-    scale_dtype=torch.float16,
-    tensor_min=None,
-    tensor_max=None,
-    q_scale_thresh=1e-5,
     imatrix=None,
     prev_scale=None,
     prev_d_scale=None,
@@ -940,9 +935,8 @@ def quant_tensor_gguf_sym_dq(
                 from auto_round.export.export_to_gguf.packing import make_q3_quants
 
                 scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
-                ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
             elif bits == 6:
-                scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None, v=v)
+                scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         else:
             imatrix = imatrix.to(tensor.device)
 
@@ -951,7 +945,8 @@ def quant_tensor_gguf_sym_dq(
             quant_weights = weights.reshape(tensor.shape)
             if torch.min(quant_weights) == 0:
                 logger.warning_once(
-                    "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
+                    "please use more data via setting `nsamples` "
+                    "to improve accuracy as calibration activations contain 0"
                 )
                 zero_cnt = torch.sum(quant_weights == 0, dim=-1)
                 replace_index = zero_cnt > group_size // 2
