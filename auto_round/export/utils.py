@@ -202,6 +202,7 @@ def filter_quantization_config(quantization_config):
                 quantization_config.pop(key)
         if key in clean_list and key in quantization_config:
             quantization_config.pop(key)
+    return quantization_config
 
 
 def release_layer_safely(layer: nn.Module):

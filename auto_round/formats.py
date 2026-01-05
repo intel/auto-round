@@ -153,7 +153,7 @@ class OutputFormat(ABC):
     """ "Base class for different output formats.
 
     format: determines which method from export module to use for exporting.
-            For example, auto_round, gguf, llmcompressor etc.
+            For example, auto_round, gguf, llm_compressor etc.
     backend: determines the specific export process within the format.
             For example, auto_round:fp8_static, auto_round:auto_awq etc.
     """
@@ -188,12 +188,16 @@ class OutputFormat(ABC):
     @classmethod
     def get_support_matrix(cls: OutputFormat) -> str:
         output_str = ""
-        for k, v in cls._format_list.items():
+        for k, v in sorted(cls._format_list.items()):
             if k == "fake":
-                support_scheme = "All schemes"
+                support_schemes = "All schemes"
             else:
-                support_scheme = ", ".join(v.support_schemes).rstrip(",")
-            output_str += f"\x1b[31;1m{k}\x1b[0m support scheme:\n\t{support_scheme}\n"
+                if ":" in k and k.split(":")[1] in cls._format_list:
+                    support_schemes = cls._format_list[k.split(":")[1]].support_schemes
+                else:
+                    support_schemes = v.support_schemes
+                support_schemes = ", ".join(support_schemes).rstrip(",")
+            output_str += f"\x1b[31;1m{k}\x1b[0m support scheme:\n\t{support_schemes}\n"
         return output_str
 
     def get_backend_name(self) -> str:
@@ -309,7 +313,7 @@ class FakeFormat(OutputFormat):
         return model
 
 
-@OutputFormat.register("llm_compressor", "llmcompressor")
+@OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
     support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"]
     format_name = "llm_compressor"

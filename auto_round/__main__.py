@@ -467,7 +467,7 @@ def list_item():
     args = argparse.ArgumentParser()
     args.add_argument("item", type=str, help="item to list, e.g., format")
     args = args.parse_args()
-    if args.item == "format":
+    if args.item == "format" or args.item == "formats":
         from auto_round.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")

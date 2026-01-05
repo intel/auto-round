@@ -110,7 +110,7 @@ from auto_round.utils.device import (
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
-SERIALIZATION_KEYS = [
+SERIALIZATION_KEYS = (
     "bits",
     "act_bits",
     "data_type",
@@ -141,7 +141,7 @@ SERIALIZATION_KEYS = [
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-]
+)
 
 
 class BaseCompressor(object):
@@ -2952,8 +2952,6 @@ class BaseCompressor(object):
                     "Please ensure that your configuration is supported."
                 )
 
-            if isinstance(self.dataset, str):
-                SERIALIZATION_KEYS.append("dataset")
             serialization_dict = {}
             for key in SERIALIZATION_KEYS:
                 serialization_dict[key] = getattr(self, key)
