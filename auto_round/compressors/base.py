@@ -26,7 +26,7 @@ from typing import Any, Callable, Optional, Union
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_max_memory
+from accelerate.utils import get_balanced_memory, get_max_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -1785,7 +1785,7 @@ class BaseCompressor(object):
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = to_device(data)
+                data_new = to_device(data, self.model.device)
                 input_ids = data_new[0]
             else:
                 data_new = {}
@@ -1919,6 +1919,7 @@ class BaseCompressor(object):
                         if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
                             devices = parse_available_devices(self.device_map)
+
                             max_memory = get_max_memory()
                             new_max_memory = {}
                             if "cpu" not in devices:
@@ -1930,13 +1931,21 @@ class BaseCompressor(object):
                                     device = "cpu"
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
-                                new_max_memory[device] = max_memory[device]
+                                # Use 90% of the reported max memory to leave headroom for activations,
+                                # temporary tensors, other processes, and allocator fragmentation, reducing
+                                # the chance of runtime OOM while still utilizing most available memory.
+                                new_max_memory[device] = max_memory[device] * 0.9
+                            new_max_memory = get_balanced_memory(
+                                self.model,
+                                max_memory=new_max_memory,
+                                no_split_module_classes=no_split_modules,
+                            )
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )
                             if len(devices) > 1 and "cpu" in device_map.values():
                                 logger.warning(
-                                    "Not enough vram cause the ram to be used, which may severely impact speed."
+                                    "Some layers are offloaded to cpu, which may severely impact calibration speed."
                                     " Please consider using more cards."
                                 )
 
