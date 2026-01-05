@@ -29,9 +29,9 @@ from auto_round.data_type.int import search_scales
 from auto_round.data_type.mxfp import MXFP_FORMAT_CACHE, quant_element
 from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, ref_nvfp4_quant
 from auto_round.data_type.utils import floor_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, get_reciprocal, set_module
 from auto_round.wrapper import NORM_MAPPING, WrapperLinear, reshape_and_pad_tensor
-from auto_round.logger import logger
 
 __all__ = ["wrapper_autoround"]
 
@@ -61,16 +61,17 @@ def wrapper_func(cls, func_name, *args, **kwargs):
         return mask, ~mask
 
     def _get_loss_ext(
-            self: AutoRound,
-            output_q: torch.Tensor,
-            current_output: torch.Tensor,
-            indices: torch.Tensor,
-            mse_loss: Callable,
-            device: Union[str, torch.device] = "cpu",
+        self: AutoRound,
+        output_q: torch.Tensor,
+        current_output: torch.Tensor,
+        indices: torch.Tensor,
+        mse_loss: Callable,
+        device: Union[str, torch.device] = "cpu",
     ):
         _, mask = get_abs_top_percent_mask(torch.abs(output_q - current_output))
-        autocast_ctx = nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0],
-                                                               dtype=self.amp_dtype)
+        autocast_ctx = (
+            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+        )
         if self.attention_mask:
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -78,7 +79,12 @@ def wrapper_func(cls, func_name, *args, **kwargs):
 
             with autocast_ctx:
                 loss = torch.mean(
-                    (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * tmp_attention_mask* mask) ** 2
+                    (
+                        torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32))
+                        * tmp_attention_mask
+                        * mask
+                    )
+                    ** 2
                 )  # pylint: disable=not-callable
                 loss = mse_loss(  # pylint: disable=not-callable
                     (output_q * tmp_attention_mask).to(torch.float32),
@@ -87,22 +93,22 @@ def wrapper_func(cls, func_name, *args, **kwargs):
         else:
             with autocast_ctx:
                 loss = torch.mean(
-                    (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * mask) ** 2)
+                    (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * mask) ** 2
+                )
 
         return loss
-
 
     if func_name == "_register_act_max_hook":
         return _register_act_max_hook_ext(cls, *args, **kwargs)
     if (
-            cls.sym
-            and cls.enable_alg_ext
-            and cls.super_group_size is None
-            and (
+        cls.sym
+        and cls.enable_alg_ext
+        and cls.super_group_size is None
+        and (
             (cls.data_type.startswith("int") and cls.act_bits >= 8)
             or cls.data_type.startswith("mx")
             or cls.data_type.startswith("nv")
-    )
+        )
     ):
         if cls.bits > 2 and (not cls.data_type.startswith("mx") or not cls.data_type.startswith("nv")):
             logger.warning_once(
@@ -131,18 +137,18 @@ def wrapper_autoround(cls: AutoRound):
 
 
 def quant_tensor_sym(
-        tensor,
-        bits=4,
-        group_size=-1,
-        v=0,
-        min_scale=1.0,
-        max_scale=1.0,
-        scale_dtype=torch.float16,
-        tensor_min=None,
-        tensor_max=None,
-        q_scale_thresh=1e-5,
-        init_scale=None,
-        **kwargs,
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    scale_dtype=torch.float16,
+    tensor_min=None,
+    tensor_max=None,
+    q_scale_thresh=1e-5,
+    init_scale=None,
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
 
@@ -244,15 +250,15 @@ def nv_init(tensor, bits, qw=None):
 
 
 def quant_mx(
-        tensor,
-        bits=4,
-        group_size=-1,
-        v=0,
-        max_scale=1.0,
-        init_scale=1.0,
-        mantissa_rounding="even",
-        data_type="mx_fp",
-        **kwargs,
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    max_scale=1.0,
+    init_scale=1.0,
+    mantissa_rounding="even",
+    data_type="mx_fp",
+    **kwargs,
 ):
     """Quantize the given tensor using the specified parameters.
 
@@ -317,15 +323,15 @@ class WrapperLinearV2(WrapperLinear):
     """
 
     def __init__(
-            self,
-            orig_layer,
-            enable_minmax_tuning=True,
-            enable_norm_bias_tuning=False,
-            device="cpu",
-            enable_round_tuning=True,
-            enable_torch_compile=False,
-            disable_opt_rtn=True,  # TODO does not support it
-            **kwargs,
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        enable_round_tuning=True,
+        enable_torch_compile=False,
+        disable_opt_rtn=True,  # TODO does not support it
+        **kwargs,
     ):
         """Initializes the WrapperLinear module.
 
@@ -522,9 +528,9 @@ def _register_act_max_hook_ext(self, model):
             hook_handles.append(hook)
 
         if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
+            hasattr(m, "act_dynamic")
+            and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
+            and check_to_quantized(m)
         ):
             hook = m.register_forward_hook(get_act_max_hook)
             hook_handles.append(hook)
@@ -537,9 +543,9 @@ def _register_act_max_hook_ext(self, model):
             act_data_type = config.get("act_data_type", None)
             act_bits = config.get("act_bits", 16)
             if (
-                    config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
-                    and check_to_quantized(config)
+                config["bits"] <= 8
+                and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                and check_to_quantized(config)
             ):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
@@ -603,7 +609,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     """
     dtype = torch.float32
     data = data.to(dtype)
-    maxq = 2 ** bits - 1
+    maxq = 2**bits - 1
     minq = 0
     weights = 1.0 if weights is None else weights.to(dtype)
 
@@ -623,7 +629,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     quant_data = torch.clamp(torch.round(iscale * (data - rmin) + v), minq, maxq)
     diff = scale * quant_data + rmin - data
 
-    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=1, keepdim=True)
+    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff**2, dim=1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
@@ -637,7 +643,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=-1, keepdim=True)
         sum_xl = torch.sum(mul_weights_quant_data * data, dim=-1, keepdim=True)
 
-        D = sum_w * sum_l2 - sum_l ** 2
+        D = sum_w * sum_l2 - sum_l**2
         this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
         this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
         this_min[this_min > 0] = 0
@@ -647,7 +653,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         quant_data = torch.clamp(torch.round(reverse_this_scale * (data - this_min) + v), minq, maxq)
         diff = this_scale * quant_data + this_min - data
         # diff = this_scale * quant_data_new + this_min - data
-        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=-1, keepdim=True)
+        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff**2, dim=-1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]
@@ -658,8 +664,8 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 
 
 def make_qp_new_quants(data, orig_scale, orig_mins, quant_weights, bits=4, super_bits=6, data_v=0, scale_v=0, min_v=0):
-    nmax = 2 ** super_bits - 1
-    maxq = 2 ** bits - 1
+    nmax = 2**super_bits - 1
+    maxq = 2**bits - 1
     minq = 0
     orig_scale = orig_scale.to(torch.float32)
     quant_weights = quant_weights.to(torch.float32)
@@ -711,24 +717,24 @@ def make_qp_new_quants(data, orig_scale, orig_mins, quant_weights, bits=4, super
 
 
 def quant_tensor_gguf_asym_dq(
-        tensor,
-        bits=4,
-        v=0,
-        min_scale=1.0,
-        max_scale=1.0,
-        scale_dtype=torch.float16,
-        tensor_min=None,
-        tensor_max=None,
-        q_scale_thresh=1e-5,
-        imatrix=None,
-        prev_scale=None,
-        prev_wmin=None,
-        prev_d_scale=None,
-        prev_d_wmin=None,
-        iter=0,
-        scale_v=0,
-        wmin_v=0,
-        **kwargs,
+    tensor,
+    bits=4,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    scale_dtype=torch.float16,
+    tensor_min=None,
+    tensor_max=None,
+    q_scale_thresh=1e-5,
+    imatrix=None,
+    prev_scale=None,
+    prev_wmin=None,
+    prev_d_scale=None,
+    prev_d_wmin=None,
+    iter=0,
+    scale_v=0,
+    wmin_v=0,
+    **kwargs,
 ):
     """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
     Only fit for iters 0
@@ -753,7 +759,7 @@ def quant_tensor_gguf_asym_dq(
     """
 
     orig_dtype = tensor.dtype
-    maxq = 2 ** bits - 1
+    maxq = 2**bits - 1
     group_size = 16 if bits == 2 else 32
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
@@ -774,7 +780,7 @@ def quant_tensor_gguf_asym_dq(
             if bits == 2:
                 quant_weights = torch.abs(tensor)
             elif bits == 4 or bits == 5:
-                sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / 32  ##Note 32 is different from QK_K
+                sigma2 = torch.sum(tensor**2, dim=-1, keepdim=True) / 32  ##Note 32 is different from QK_K
                 av_x = torch.sqrt(sigma2)
                 quant_weights = torch.abs(tensor) + av_x
             params = search_kwargs[bits]
@@ -822,7 +828,7 @@ def quant_tensor_gguf_asym_dq(
                     if bits == 2:
                         tmp_quant_weights = torch.abs(tensor)
                     elif bits == 4 or bits == 5:
-                        sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
+                        sigma2 = torch.sum(tensor**2, dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
                         av_x = torch.sqrt(sigma2)
                         tmp_quant_weights = torch.abs(tensor) + av_x
                     quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
@@ -847,7 +853,7 @@ def quant_tensor_gguf_asym_dq(
             )
             scale = scale.to(scale_dtype)
             scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
-            nmax = 2 ** super_bits - 1
+            nmax = 2**super_bits - 1
             scale = scale.reshape(-1, super_group_size)
             wmin = wmin_0.reshape(-1, super_group_size)
             sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
@@ -874,20 +880,20 @@ def quant_tensor_gguf_asym_dq(
 
 
 def quant_tensor_gguf_sym_dq(
-        tensor,
-        bits=3,
-        v=0,
-        min_scale=1.0,
-        max_scale=1.0,
-        scale_dtype=torch.float16,
-        tensor_min=None,
-        tensor_max=None,
-        q_scale_thresh=1e-5,
-        imatrix=None,
-        prev_scale=None,
-        prev_d_scale=None,
-        iter=0,
-        **kwargs,
+    tensor,
+    bits=3,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    scale_dtype=torch.float16,
+    tensor_min=None,
+    tensor_max=None,
+    q_scale_thresh=1e-5,
+    imatrix=None,
+    prev_scale=None,
+    prev_d_scale=None,
+    iter=0,
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
 
@@ -998,15 +1004,15 @@ class DQWrapperLinear(WrapperLinear):
     """
 
     def __init__(
-            self,
-            orig_layer,
-            enable_minmax_tuning=True,
-            enable_norm_bias_tuning=False,
-            device="cpu",
-            enable_round_tuning=True,
-            enable_torch_compile=False,
-            disable_opt_rtn=True,
-            **kwargs,
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        enable_round_tuning=True,
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+        **kwargs,
     ):
         """Initializes the WrapperLinear module.
 

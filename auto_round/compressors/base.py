@@ -2360,8 +2360,11 @@ class BaseCompressor(object):
                     org_input = current_input
                 with torch.no_grad():
                     current_output = layer(org_input)
-                autocast_ctx = nullcontext() if not self.amp else autocast(device_type=str(device).split(":")[0],
-                                                                       dtype=self.amp_dtype)
+                autocast_ctx = (
+                    nullcontext()
+                    if not self.amp
+                    else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+                )
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -2486,7 +2489,9 @@ class BaseCompressor(object):
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
-        autocast_ctx = nullcontext() if self.amp  else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+        autocast_ctx = (
+            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+        )
         if self.attention_mask:
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
@@ -2500,7 +2505,8 @@ class BaseCompressor(object):
         else:
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32), current_output.to(torch.float32))
+                    output_q.to(torch.float32), current_output.to(torch.float32)
+                )
 
         return loss
 
