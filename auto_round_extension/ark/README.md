@@ -5,7 +5,7 @@
 [TODO]
 
 ## Installation
-### Recommended Method via Script
+### Recommended to Install via Script
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/intel/auto-round/main/auto_round_extension/ark/install_auto_round_kernel.py | python3
