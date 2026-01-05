@@ -17,7 +17,8 @@ import importlib
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from functools import lru_cache, wraps
+from typing import Any
 
 import torch
 import transformers
@@ -71,6 +72,52 @@ class LazyImport(object):
         self.module = importlib.import_module(module_name)
         function = getattr(self.module, function_name)
         return function(*args, **kwargs)
+
+
+def rename_kwargs(**name_map):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for old_name, new_name in name_map.items():
+                if old_name in kwargs:
+                    if new_name in kwargs:
+                        raise TypeError(f"Cannot specify both {old_name} and {new_name}")
+                    kwargs[new_name] = kwargs.pop(old_name)
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+# TODO this is not very robust as only AutoModelForCausaLM is patched
+def monkey_patch_transformers():
+    transformers_version = getattr(transformers, "__version__", None)
+    if transformers_version is None:
+        logger.warning("transformers.__version__ is not available; skipping transformers monkey patching.")
+        return
+    try:
+        parsed_version = version.parse(transformers_version)
+    except Exception as exc:
+        logger.warning(
+            "Failed to parse transformers version '%s'; skipping transformers monkey patching. Error: %s",
+            transformers_version,
+            exc,
+        )
+        return
+    if parsed_version >= version.parse("4.56.0"):
+        transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(torch_dtype="dtype")(
+            transformers.AutoModelForCausalLM.from_pretrained
+        )
+    else:
+        transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(dtype="torch_dtype")(
+            transformers.AutoModelForCausalLM.from_pretrained
+        )
+
+
+@lru_cache(None)
+def monkey_patch():
+    monkey_patch_transformers()
 
 
 auto_gptq = LazyImport("auto_gptq")
@@ -274,12 +321,12 @@ def to_standard_regex(pattern: str) -> str:
     return regex
 
 
-def matches_any_regex(layer_name: str, regex_config: Dict[str, dict]) -> bool:
+def matches_any_regex(layer_name: str, regex_config: dict[str, dict]) -> bool:
     """
     Check whether `layer_name` matches any regex pattern key in `regex_config`.
     Args:
         layer_name (str): The layer name to test.
-        regex_config (Dict[str, dict]): A mapping of regex patterns to configs.
+        regex_config (dict[str, dict]): A mapping of regex patterns to configs.
     Returns:
         bool: True if any pattern matches `layer_name`, otherwise False.
     """
