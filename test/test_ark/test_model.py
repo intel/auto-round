@@ -77,8 +77,6 @@ class TestAutoRoundARKBackend:
     #     self.main_op(format, bits, group_size, sym, dtype, device, False, 0.2)
 
 
-
-
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
