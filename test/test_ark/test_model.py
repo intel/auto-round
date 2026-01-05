@@ -76,9 +76,7 @@ class TestAutoRoundARKBackend:
     # def test_other_bits(self, format, bits, group_size, sym, dtype, device):
     #     self.main_op(format, bits, group_size, sym, dtype, device, False, 0.2)
 
-    # TODO all the above tests are skipped, add a dummy test to make sure the file is collected
-    def test_dummy(self):
-        return  True
+
 
 
 if __name__ == "__main__":
