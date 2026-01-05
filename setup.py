@@ -108,7 +108,7 @@ PKG_INSTALL_CFG = {
     ),
     "install_requires": fetch_requirements("requirements.txt"),
     # auto-round[cpu] is deprecated, will be removed from v1.0.0
-    "extras_require": {"cpu": fetch_requirements("requirements-cpu.txt"), "kernel": ["auto-round-kernel"]},
+    "extras_require": {"cpu": fetch_requirements("requirements-cpu.txt")},
 }
 
 ###############################################################################
@@ -185,9 +185,4 @@ if __name__ == "__main__":
         ],
         include_package_data=True,
         package_data={"": ["mllm/templates/*.json", "*.abi3.so", "*.pyd"]},
-        entry_points={
-            "console_scripts": [
-                "kernel-install=auto_round_extension.ark.install_kernel:main",
-            ]
-        },
     )
