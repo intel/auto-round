@@ -17,7 +17,7 @@ import importlib
 import os
 import re
 import sys
-from functools import wraps, lru_cache
+from functools import lru_cache, wraps
 from typing import Any
 
 import torch
@@ -113,6 +113,7 @@ def monkey_patch_transformers():
         transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(dtype="torch_dtype")(
             transformers.AutoModelForCausalLM.from_pretrained
         )
+
 
 @lru_cache(None)
 def monkey_patch():

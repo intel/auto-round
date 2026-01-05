@@ -78,7 +78,7 @@ class TestAutoRoundARKBackend:
 
     # TODO all the above tests are skipped, add a dummy test to make sure the file is collected
     def test_dummy(self):
-        return  True
+        return True
 
 
 if __name__ == "__main__":
