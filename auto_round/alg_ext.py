@@ -145,7 +145,7 @@ def quant_tensor_sym(
     init_scale=None,
     **kwargs,
 ):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
