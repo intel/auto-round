@@ -185,4 +185,9 @@ if __name__ == "__main__":
         ],
         include_package_data=True,
         package_data={"": ["mllm/templates/*.json", "*.abi3.so", "*.pyd"]},
+        entry_points={
+            'console_scripts': [
+                'kernel-install=auto_round_extension.ark.install_kernel:main',
+            ]
+        }
     )
