@@ -719,16 +719,12 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
                 new_type = "gguf:q5_k"
-            ##TODO check which models are be grouped into to LLM_TYPE_70B
-            # if (qs.model.type == LLM_TYPE_70B) {
-            # // In the 70B model we have 8 heads sharing the same attn_v weights.
-            # As a result, the attn_v.weight tensor is
-            # // 8x smaller compared to attn_q.weight.Hence, we can get a nice boost in quantization accuracy with
-            # // nearly negligible increase in model size by quantizing this tensor with more bits:
-            #     if
-            # (new_type == GGML_TYPE_Q3_K | | new_type == GGML_TYPE_Q4_K)
-            # new_type = GGML_TYPE_Q5_K;
-            # }
+            # LLM_TYPE_70B: Models with n_gqa == 8 (e.g., Llama 2/3/3.1/3.2/3.3 70B, Mistral Large, Qwen 72B)
+            # In these models, 8 heads share the same attn_v weights, making attn_v.weight tensor
+            # 8x smaller compared to attn_q.weight. We can boost quantization accuracy with
+            # negligible model size increase by quantizing this tensor with more bits:
+            if n_gqa == 8 and new_type in ("gguf:q3_k", "gguf:q4_k"):
+                new_type = "gguf:q5_k"
             if n_expert == 8:
                 new_type = "gguf:q8_k"
             i_attention_wv += 1
