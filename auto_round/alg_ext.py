@@ -83,12 +83,7 @@ def wrapper_func(cls, func_name, *args, **kwargs):
                         torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32))
                         * tmp_attention_mask
                         * mask
-                    )
-                    ** 2
-                )  # pylint: disable=not-callable
-                loss = mse_loss(  # pylint: disable=not-callable
-                    (output_q * tmp_attention_mask).to(torch.float32),
-                    (current_output * tmp_attention_mask).to(torch.float32),
+                    )** 2
                 )
         else:
             with autocast_ctx:
