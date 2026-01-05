@@ -86,15 +86,15 @@ def rename_kwargs(**name_map):
             return func(*args, **kwargs)
 
         return wrapper
+
     return decorator
+
 
 # TODO this is not very robust as only AutoModelForCausaLM is patched
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
     if transformers_version is None:
-        logger.warning(
-            "transformers.__version__ is not available; skipping transformers monkey patching."
-        )
+        logger.warning("transformers.__version__ is not available; skipping transformers monkey patching.")
         return
     try:
         parsed_version = version.parse(transformers_version)
