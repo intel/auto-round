@@ -156,7 +156,7 @@ def quant_tensor_sym(
         max_scale: Maximum scale coefficient for tensor
         tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
         tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
-        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is important
         q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
