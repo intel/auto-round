@@ -25,7 +25,7 @@ pip install torch~=2.8.0 auto-round-kernel
 ### Install via auto_round
 ```bash
 pip install auto-round
-kernel-install
+auto-round-kernel-install
 ```
 
 </details>
