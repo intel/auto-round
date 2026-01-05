@@ -69,16 +69,18 @@ class TestAutoRoundARKBackend:
     def test_awq_fp16(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
 
-    # @pytest.mark.parametrize("format", ["auto_round"])
-    # @pytest.mark.parametrize("bits, group_size, sym", [(2, 32, False)])
-    # @pytest.mark.parametrize("dtype", [torch.bfloat16])
-    # @pytest.mark.parametrize("device", ["cpu"])
-    # def test_other_bits(self, format, bits, group_size, sym, dtype, device):
-    #     self.main_op(format, bits, group_size, sym, dtype, device, False, 0.2)
+    @pytest.mark.parametrize("format", ["auto_round"])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 64, True)])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16])
+    @pytest.mark.parametrize("device", ["xpu"])
+    def test_other_bits(self, format, bits, group_size, sym, dtype, device):
+        if device == "cpu":
+            pytest.skip("NO CPU")
+        self.main_op(format, bits, group_size, sym, dtype, device, True, 0.2)
 
 
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
-    p.test_formats("auto_round:auto_awq", 4, 32, True, torch.bfloat16, "xpu")
+    p.test_formats("auto_round:auto_awq", 4, 64, True, torch.bfloat16, "xpu")
     p.teardown_class()
