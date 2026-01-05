@@ -13,7 +13,7 @@ python3 install_kernel.py
 ```
 
 <details>
-<summary>Other Installation Method</summary>
+<summary>Other Installation Methods</summary>
 
 ### Install via pip
 ```bash
@@ -31,10 +31,10 @@ kernel-install
 </details>
 
 ### Versioning Scheme
-The version number of auto-round-kernel follows the format:
+The version number of auto-round-kernel follows the format:  
 `{auto-round major version}.{auto-round minor version}.{oneAPI version}.{kernel version}`   
 
-**For example: 0.9.1.1**  
+**For example: v0.9.1.1**  
 - The first two digits (0.9) correspond to the major and minor version of the auto_round framework
 - The third digit (1) represents the major version of Intel oneAPI. This digit is also aligned with the supported PyTorch version: `1` indicate support for oneAPI 2025.1 and torch 2.8, `2` indicate support for oneAPI 2025.2 and torch 2.9
 - The final digit (1) is the patch version of auto-round-kernel, reflecting updates, bug fixes, or improvements to the kernel package itself
