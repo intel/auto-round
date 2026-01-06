@@ -969,12 +969,15 @@ class AutoRoundFormat(OutputFormat):
         if self.output_format in [
             f"auto_round:{AutoRoundExportFormat.NV_FP.value}",
             f"auto_round:{AutoRoundExportFormat.MX_FP.value}",
+            f"auto_round:{AutoRoundExportFormat.MX_FP_RCEIL.value}",
+            f"auto_round:{AutoRoundExportFormat.NV_FP4_WITH_STATIC_GS.value}",
         ]:
             from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
 
             pack_func = pack_layer
         elif self.output_format in [
             f"auto_round:{AutoRoundExportFormat.FP8.value}",
+            f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
             f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
         ]:
             from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
