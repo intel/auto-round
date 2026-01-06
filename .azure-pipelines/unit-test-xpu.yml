@@ -10,6 +10,7 @@ pr:
     include:
       - auto_round/utils
       - auto_round_extension/ark
+      - auto_round/inference
       - test/test_ark
       - setup.py
       - .azure-pipelines/template/ut-template.yml
