@@ -251,11 +251,9 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
                         attr_tensors_dict = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid))
                         attr_tensor = attr_tensors_dict[new_name]
                         if attr in kwargs:
-                            if attr != "imatrix":
-                                attr_tensor = attr_tensor.to(torch.float32)
-                            kwargs[attr] = attr_tensor
+                            kwargs[attr] = attr_tensor.to(torch.float32)
                         else:
-                            kwargs[attr.replace("w_", "")] = attr_tensor
+                            kwargs[attr.replace("w_", "")] = attr_tensor.to(torch.float32)
             data_torch = data_torch.to(torch.float32)
 
             data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
