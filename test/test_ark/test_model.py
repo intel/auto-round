@@ -70,7 +70,7 @@ class TestAutoRoundARKBackend:
         self.main_op(format, bits, group_size, sym, dtype, device)
 
     @pytest.mark.parametrize("format", ["auto_round"])
-    @pytest.mark.parametrize("bits, group_size, sym", [(4, 64, True)])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
     @pytest.mark.parametrize("device", ["xpu"])
     def test_other_bits(self, format, bits, group_size, sym, dtype, device):

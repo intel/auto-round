@@ -148,7 +148,7 @@ class QuantLinear(nn.Module):
 
         if self.qweight.device.type == "xpu":
             self.sdt = "fp16"
-            self.cdt = "fp16"
+            self.cdt = "int8"
             self.torch_dt = torch.float16
         else:
             self.sdt = "fp32"
