@@ -42,14 +42,14 @@ The version number of auto-round-kernel follows the format:
 - The third digit (1) represents the major version of Intel oneAPI and PyTorch version: `1` indicate support for oneAPI 2025.1 and torch 2.8, `2` indicate support for oneAPI 2025.2 and torch 2.9.
 - The final digit (1) is the patch version of auto-round-kernel, reflecting updates, bug fixes, or improvements to the kernel package itself.
 
-**Version mapping table:**
+**Version mapping table**
 
 | auto-round-kernel Version | auto-round Version | oneAPI Version | Supported PyTorch Version |
 |:-------------------------:|:------------------:|:--------------:|:-------------------------:|
 |          0.9.1.x          |       0.9.x        |     2025.1     |           2.8.x           |
 |          0.9.2.x          |       0.9.x        |     2025.2     |           2.9.x           |
 
-Notes: oneAPI version is aligned with PyTorch version during auto-round-kernel binary build, but it is not required in runtime. 
+**Notes:** oneAPI version is aligned with PyTorch version during auto-round-kernel binary build, but it is not required in runtime. 
 
 ### Validated Hardware Environment
 #### CPU based on [Intel 64 architecture or compatible processors](https://en.wikipedia.org/wiki/X86-64):
