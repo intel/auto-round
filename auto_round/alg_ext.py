@@ -35,67 +35,9 @@ from auto_round.wrapper import NORM_MAPPING, WrapperLinear, reshape_and_pad_tens
 
 __all__ = ["wrapper_autoround"]
 
-FUNC_LIST = {}
 
-
-def wrapper_func(cls, func_name, *args, **kwargs):
-    def get_abs_top_percent_mask(x: torch.Tensor, percent: float = 1.0):
-        """
-        Return a mask for the top `percent` absolute values in x and its inverse.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-            percent (float): Percentage of elements to select (0~100).
-
-        Returns:
-            mask (torch.BoolTensor): True for top `percent` abs elements.
-            inv_mask (torch.BoolTensor): Inverse of mask.
-        """
-        flat = x.view(-1)
-        k = max(1, int(flat.numel() * percent / 1000))  # 至少选1个
-        _, idx = torch.topk(torch.abs(flat), k)
-
-        mask = torch.zeros_like(flat, dtype=torch.bool)
-        mask[idx] = True
-        mask = mask.view_as(x)
-        return mask, ~mask
-
-    def _get_loss_ext(
-        self: AutoRound,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
-        indices: torch.Tensor,
-        mse_loss: Callable,
-        device: Union[str, torch.device] = "cpu",
-    ):
-        _, mask = get_abs_top_percent_mask(torch.abs(output_q - current_output))
-        autocast_ctx = (
-            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
-        )
-        if self.attention_mask:
-            tmp_attention_mask = [self.attention_mask[i] for i in indices]
-            tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-            tmp_attention_mask.unsqueeze_(-1)
-
-            with autocast_ctx:
-                loss = torch.mean(
-                    (
-                        torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32))
-                        * tmp_attention_mask
-                        * mask
-                    )
-                    ** 2
-                )
-        else:
-            with autocast_ctx:
-                loss = torch.mean(
-                    (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * mask) ** 2
-                )
-
-        return loss
-
-    if func_name == "_register_act_max_hook":
-        return _register_act_max_hook_ext(cls, *args, **kwargs)
+def wrapper_autoround(cls: AutoRound):
+    cls._register_act_max_hook = types.MethodType(_register_act_max_hook_ext, cls)
     if (
         cls.sym
         and cls.enable_alg_ext
@@ -111,25 +53,59 @@ def wrapper_func(cls, func_name, *args, **kwargs):
                 "algorithm extension has only undergone limited validation on "
                 "INT2,mxfp4 and nvfp4; use with caution."
             )
-        if func_name == "_get_loss":
-            return _get_loss_ext(cls, *args, **kwargs)
-
-        if func_name == "wrapper_block":
-            return wrapper_block_v2(*args, **kwargs)
+        cls._get_loss = types.MethodType(_get_loss_ext, cls)
+        setattr(cls, "wrapper_block", wrapper_block_v2)
     if cls.data_type.endswith("dq"):
-        if func_name == "wrapper_block":
-            return dq_wrapper_block(*args, **kwargs)
-    return FUNC_LIST[func_name](*args, **kwargs)
+        setattr(cls, "wrapper_block", dq_wrapper_block)
 
 
-def wrapper_autoround(cls: AutoRound):
-    for name in dir(cls):
-        if name.startswith("__"):
-            continue
-        attr = getattr(cls, name)
-        if callable(attr) and isinstance(attr, (types.MethodType, types.FunctionType)):
-            FUNC_LIST[name] = attr
-            setattr(cls, name, partial(wrapper_func, cls, name))
+def get_abs_top_percent_mask(x: torch.Tensor, percent: float = 1.0):
+    """
+    Return a mask for the top `percent` absolute values in x and its inverse.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+        percent (float): Percentage of elements to select (0~100).
+
+    Returns:
+        mask (torch.BoolTensor): True for top `percent` abs elements.
+        inv_mask (torch.BoolTensor): Inverse of mask.
+    """
+    flat = x.view(-1)
+    k = max(1, int(flat.numel() * percent / 1000))  # 至少选1个
+    _, idx = torch.topk(torch.abs(flat), k)
+
+    mask = torch.zeros_like(flat, dtype=torch.bool)
+    mask[idx] = True
+    mask = mask.view_as(x)
+    return mask, ~mask
+
+
+def _get_loss_ext(
+    self: AutoRound,
+    output_q: torch.Tensor,
+    current_output: torch.Tensor,
+    indices: torch.Tensor,
+    mse_loss: Callable,
+    device: Union[str, torch.device] = "cpu",
+):
+    _, mask = get_abs_top_percent_mask(torch.abs(output_q - current_output))
+    autocast_ctx = nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+    if self.attention_mask:
+        tmp_attention_mask = [self.attention_mask[i] for i in indices]
+        tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+        tmp_attention_mask.unsqueeze_(-1)
+
+        with autocast_ctx:
+            loss = torch.mean(
+                (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * tmp_attention_mask * mask)
+                ** 2
+            )
+    else:
+        with autocast_ctx:
+            loss = torch.mean((torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * mask) ** 2)
+
+    return loss
 
 
 def quant_tensor_sym(
