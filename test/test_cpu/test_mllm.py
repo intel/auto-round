@@ -99,11 +99,11 @@ class TestAutoRoundMLLM:
             model_type = None
 
         dataset = MLLM_DATASET["liuhaotian/llava"](
-            template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=32, nsamples=32
+            template=Myclass(), model=None, tokenizer=None, dataset_path="liuhaotian/llava", seqlen=32, nsamples=32
         )
         assert len(dataset.questions) == 32
         dataset = MLLM_DATASET["liuhaotian/llava"](
-            template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=2048, nsamples=512
+            template=Myclass(), model=None, tokenizer=None, dataset_path="liuhaotian/llava", seqlen=2048, nsamples=512
         )
         assert len(dataset.questions) == 512
 

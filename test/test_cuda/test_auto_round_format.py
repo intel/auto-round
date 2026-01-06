@@ -158,7 +158,7 @@ class TestAutoRound:
 
         from transformers import AutoRoundConfig
 
-        quantization_config = AutoRoundConfig(backend="ipex_gptq")
+        quantization_config = AutoRoundConfig(backend="ipex")
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config

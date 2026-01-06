@@ -19,6 +19,7 @@ import sys
 import time
 import traceback
 from collections import defaultdict
+from contextlib import nullcontext
 from dataclasses import asdict, fields
 from functools import partial
 from typing import Any, Callable, Optional, Union
@@ -26,7 +27,7 @@ from typing import Any, Callable, Optional, Union
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_max_memory
+from accelerate.utils import get_balanced_memory, get_max_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -109,6 +110,39 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+
+SERIALIZATION_KEYS = (
+    "bits",
+    "act_bits",
+    "data_type",
+    "act_data_type",
+    "group_size",
+    "act_group_size",
+    "sym",
+    "act_sym",
+    "act_dynamic",
+    "amp",
+    "batch_size",
+    "enable_minmax_tuning",
+    "enable_norm_bias_tuning",
+    "enable_quanted_input",
+    "gradient_accumulate_steps",
+    "iters",
+    "lr",
+    "low_gpu_mem_usage",
+    "minmax_lr",
+    "nsamples",
+    "quant_block_list",
+    "regex_config",
+    "scale_dtype",
+    "seqlen",
+    "supported_types",
+    "static_attention_dtype",
+    "static_kv_dtype",
+    "super_bits",
+    "super_group_size",
+    "to_quant_block_names",
+)
 
 
 class BaseCompressor(object):
@@ -1105,35 +1139,17 @@ class BaseCompressor(object):
     def _immediate_pack(self, name: str):
         if not self.immediate_packing:
             return
-        m = get_module(self.model, name)
-        if not check_to_quantized(m):
-            return
-        from auto_round.export import PACKING_LAYER_WITH_FORMAT
-
-        target_backend = self.formats[0].output_format
-        has_gguf = any(fmt.is_gguf() for fmt in self.formats)
-
-        if has_gguf:
-            from auto_round.export.export_to_gguf.export import pack_gguf_layer
-
-            output_dir = self._get_save_folder_name(self.formats[0])
-            model_type = ModelType.MMPROJ if self.mllm else ModelType.TEXT
-            pack_gguf_layer(
-                name,
-                self.model,
-                self.formats[0].get_backend_name(),
-                output_dir,
-                self.layer_config,
-                self.tokenizer,
-                processor=self.processor if hasattr(self, "processor") else None,
-                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                model_type=model_type,
-                device=self.device,
-            )
-        else:
-            PACKING_LAYER_WITH_FORMAT[target_backend](
-                name, self.model, self.formats[0].get_backend_name(), device=self.device
-            )
+        self.formats[0].immediate_pack(
+            name=name,
+            model=self.model,
+            device=self.device,
+            output_dir=self._get_save_folder_name(self.formats[0]),
+            mllm=self.mllm,
+            layer_config=self.layer_config,
+            tokenizer=self.tokenizer,
+            processor=self.processor if hasattr(self, "processor") else None,
+            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+        )
 
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1770,7 +1786,7 @@ class BaseCompressor(object):
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = to_device(data)
+                data_new = to_device(data, self.model.device)
                 input_ids = data_new[0]
             else:
                 data_new = {}
@@ -1904,6 +1920,7 @@ class BaseCompressor(object):
                         if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
                             no_split_modules = getattr(self.model, "_no_split_modules", [])
                             devices = parse_available_devices(self.device_map)
+
                             max_memory = get_max_memory()
                             new_max_memory = {}
                             if "cpu" not in devices:
@@ -1915,13 +1932,21 @@ class BaseCompressor(object):
                                     device = "cpu"
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
-                                new_max_memory[device] = max_memory[device]
+                                # Use 90% of the reported max memory to leave headroom for activations,
+                                # temporary tensors, other processes, and allocator fragmentation, reducing
+                                # the chance of runtime OOM while still utilizing most available memory.
+                                new_max_memory[device] = max_memory[device] * 0.9
+                            new_max_memory = get_balanced_memory(
+                                self.model,
+                                max_memory=new_max_memory,
+                                no_split_module_classes=no_split_modules,
+                            )
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )
                             if len(devices) > 1 and "cpu" in device_map.values():
                                 logger.warning(
-                                    "Not enough vram cause the ram to be used, which may severely impact speed."
+                                    "Some layers are offloaded to cpu, which may severely impact calibration speed."
                                     " Please consider using more cards."
                                 )
 
@@ -2350,36 +2375,31 @@ class BaseCompressor(object):
                     org_input = current_input
                 with torch.no_grad():
                     current_output = layer(org_input)
+                autocast_ctx = (
+                    nullcontext()
+                    if not self.amp
+                    else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+                )
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                     tmp_attention_mask.unsqueeze_(-1)
-                    if self.amp:
-                        with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                            output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                            loss = mse_loss(  # pylint: disable=not-callable
-                                (output_q * tmp_attention_mask).to(torch.float32),
-                                (current_output * tmp_attention_mask).to(torch.float32),
-                            )
-                    else:
+
+                    with autocast_ctx:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
                             (output_q * tmp_attention_mask).to(torch.float32),
                             (current_output * tmp_attention_mask).to(torch.float32),
                         )
+
                 else:
-                    if self.amp:
-                        with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                            output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                            loss = mse_loss(  # pylint: disable=not-callable
-                                output_q.to(torch.float32),
-                                current_output.to(torch.float32),  # mul 1.0 will copy the output
-                            )
-                    else:
+                    with autocast_ctx:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
-                            output_q.to(torch.float32), current_output.to(torch.float32)
+                            output_q.to(torch.float32),
+                            current_output.to(torch.float32),  # mul 1.0 will copy the output
                         )
+
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
@@ -2484,33 +2504,25 @@ class BaseCompressor(object):
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
+        autocast_ctx = (
+            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+        )
         if self.attention_mask:
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
-            if self.amp:
-                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
-                    loss = mse_loss(  # pylint: disable=not-callable
-                        (output_q * tmp_attention_mask).to(torch.float32),
-                        (current_output * tmp_attention_mask).to(torch.float32),
-                    )
-            else:
+
+            with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32) * tmp_attention_mask,
-                    current_output.to(torch.float32) * tmp_attention_mask,
+                    (output_q * tmp_attention_mask).to(torch.float32),
+                    (current_output * tmp_attention_mask).to(torch.float32),
+                )
+        else:
+            with autocast_ctx:
+                loss = mse_loss(  # pylint: disable=not-callable
+                    output_q.to(torch.float32), current_output.to(torch.float32)
                 )
 
-        else:
-            if self.amp:
-                with autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype):
-                    loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32), current_output.to(torch.float32)
-                    )
-            else:
-                loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32),
-                    current_output.to(torch.float32),
-                )
         return loss
 
     def _quantize_block(
@@ -2922,98 +2934,28 @@ class BaseCompressor(object):
         folders = []
         for format in formats:
             save_folder = self._get_save_folder_name(format)
-            if format.is_fake():  # TODO fix act quantization later
-                self.model = self.model.to("cpu")
-                self.model.save_pretrained(output_dir)
-                if self.tokenizer is not None and hasattr(self.tokenizer, "save_pretrained"):
-                    self.tokenizer.save_pretrained(output_dir)
-                processor = kwargs.get("processor", None)
-                if processor is not None:
-                    processor.save_pretrained(output_dir)
-                try:
-                    copy_python_files_from_model_cache(self.model, output_dir)
-                except Exception as e:
-                    logger.warning("Skipping source model Python file copy due to error: %s", e)
-                compressed_model = self.model
-                continue
             if self.act_bits <= 8 and format.is_fake():
                 logger.warning(
                     "Support for exporting activation quantization is limited. "
                     "Please ensure that your configuration is supported."
                 )
-            from auto_round.export import EXPORT_FORMAT
 
-            backend = format.get_backend_name()
-            output_format = format.output_format
-            if output_format not in EXPORT_FORMAT:
-                raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {output_format}")
-            save_quantized_as_format = EXPORT_FORMAT.get(output_format)
-            serialization_keys = [
-                "bits",
-                "group_size",
-                "sym",
-                "data_type",
-                "enable_quanted_input",
-                "enable_minmax_tuning",
-                "seqlen",
-                "batch_size",
-                "scale_dtype",
-                "lr",
-                "minmax_lr",
-                "gradient_accumulate_steps",
-                "iters",
-                "amp",
-                "nsamples",
-                "low_gpu_mem_usage",
-                "to_quant_block_names",
-                "enable_norm_bias_tuning",
-                "act_bits",
-                "act_group_size",
-                "act_sym",
-                "act_dynamic",
-                "act_data_type",
-                "super_bits",
-                "super_group_size",
-                "regex_config",
-                "static_kv_dtype",
-                "static_attention_dtype",
-            ]
-            if isinstance(self.dataset, str):
-                serialization_keys.append("dataset")
             serialization_dict = {}
-            for key in serialization_keys:
+            for key in SERIALIZATION_KEYS:
                 serialization_dict[key] = getattr(self, key)
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-            compressed_model = save_quantized_as_format(  # TODO refine the code
+            compressed_model = format.save_quantized(
                 save_folder,
                 model=self.model,
                 layer_config=self.layer_config,
                 inplace=inplace,
-                bits=self.bits,
-                act_bits=self.act_bits,
-                group_size=self.group_size,
-                sym=self.sym,
-                iters=self.iters,
-                lr=self.lr,
-                minmax_lr=self.minmax_lr,
-                enable_minmax_tuning=self.enable_minmax_tuning,
-                enable_quanted_input=self.enable_quanted_input,
-                scale_dtype=self.scale_dtype,
                 tokenizer=self.tokenizer,
-                supported_types=self.supported_types,
-                data_type=self.data_type,
-                act_data_type=self.act_data_type,
-                serialization_dict=serialization_dict,
-                backend=backend,
-                to_quant_block_names=self.to_quant_block_names,
-                quant_block_list=self.quant_block_list,
                 device=self.device,
-                static_kv_dtype=self.static_kv_dtype,
-                static_attention_dtype=self.static_attention_dtype,
+                serialization_dict=serialization_dict,
                 **kwargs,
             )
             folders.append(save_folder)

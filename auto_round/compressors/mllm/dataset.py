@@ -68,7 +68,7 @@ class LlavaDataset(Dataset):
         self,
         template,
         model,
-        tokenzier,
+        tokenizer,
         dataset_path,
         extra_data_dir=None,
         seqlen=512,
@@ -80,7 +80,7 @@ class LlavaDataset(Dataset):
         self.model = model
         self.model_type = template.model_type
         self.template = template
-        self.tokenizer = tokenzier
+        self.tokenizer = tokenizer
         if os.path.exists(dataset_path):
             logger.info(f"use dataset {dataset_path}, loading from disk...")
             self.questions = json.load(open(dataset_path, "r"))

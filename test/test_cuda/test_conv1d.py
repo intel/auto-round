@@ -53,4 +53,5 @@ class TestQuantizationConv1d:
         autoround.save_quantized("./saved")
 
         model = AutoModelForCausalLM.from_pretrained("./saved", device_map="cuda", trust_remote_code=True)
-        model_infer(model, self.tokenizer)
+        tokenizer = AutoTokenizer.from_pretrained("./saved", trust_remote_code=True)
+        model_infer(model, tokenizer)

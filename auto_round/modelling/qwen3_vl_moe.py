@@ -67,8 +67,8 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
         self.gate = original.gate
         self.calibrate_all_experts = calibrate_all_experts
         self.experts = SequentialQwen3VLMoeTextExperts(text_config, original.experts)
-        if not transformers_version <= version.parse(
-            "4.57.3"
+        if not transformers_version < version.parse(
+            "5.0"
         ):  # remove conversion_mapping for qwen3_vl_moe when transformers>=5.0
             from transformers.conversion_mapping import register_checkpoint_conversion_mapping
 

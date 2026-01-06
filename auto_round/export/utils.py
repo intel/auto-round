@@ -193,6 +193,17 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
 
+    clean_list = ("supported_types", "quant_block_list")
+    for key in list(quantization_config.keys()):
+        if callable(key):
+            quantization_config.pop(key)
+        elif isinstance(quantization_config[key], (list, tuple)):
+            if any([callable(item) for item in quantization_config[key]]):
+                quantization_config.pop(key)
+        if key in clean_list and key in quantization_config:
+            quantization_config.pop(key)
+    return quantization_config
+
 
 def release_layer_safely(layer: nn.Module):
     """
