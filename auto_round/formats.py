@@ -470,7 +470,7 @@ class AutoGPTQFormat(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         backend = self.get_backend_name()
-        if backend == "auto_round:auto_gptq":
+        if backend == "auto_round:auto_gptq" or backend == "auto_round:gptqmodel":
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
 
             export_func = save_quantized_as_autoround
