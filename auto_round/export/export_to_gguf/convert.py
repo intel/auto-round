@@ -248,19 +248,15 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
                         attr_tensor = getattr(module, attr)
                         if not isinstance(attr_tensor, torch.Tensor):
                             continue
-                        ori_shape = attr_tensor.shape
                         attr_tensors_dict = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid))
                         attr_tensor = attr_tensors_dict[new_name]
-                        # attr_tensor = attr_tensor.reshape(-1, ori_shape[-1])
-                        # attr_tensor = attr_tensor.reshape(ori_shape)
-                        # setattr(module, attr, attr_tensor)
                         if attr in kwargs:
-                            kwargs[attr] = attr_tensor.to(torch.float32)
+                            if attr != "imatrix":
+                                attr_tensor = attr_tensor.to(torch.float32)
+                            kwargs[attr] = attr_tensor
                         else:
                             kwargs[attr.replace("w_", "")] = attr_tensor
             data_torch = data_torch.to(torch.float32)
-            if data_qtype.name.lower().endswith("_k"):
-                kwargs["imatrix"] = module.imatrix.to(torch.float32) if hasattr(module, "imatrix") else None
 
             data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
         else:
