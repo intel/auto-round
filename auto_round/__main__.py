@@ -138,6 +138,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
         basic.add_argument(
             "--format",
+            "--formats",
             default="auto_round",
             type=str,
             help="Output format for the quantized model."
@@ -466,7 +467,7 @@ def list_item():
     args = argparse.ArgumentParser()
     args.add_argument("item", type=str, help="item to list, e.g., format")
     args = args.parse_args()
-    if args.item == "format":
+    if args.item == "format" or args.item == "formats":
         from auto_round.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")
