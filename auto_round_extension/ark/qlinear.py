@@ -185,6 +185,7 @@ class QuantLinear(nn.Module):
         x = x.to(self.torch_dt)
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.view(-1, x.shape[-1])
+        self.bias = self.bias.to(self.torch_dt)
         outputs = ark.woqgemm(
             x,  # convert xd to 2d,
             self.qweight,
