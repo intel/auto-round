@@ -43,7 +43,6 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperWALayer
-
 from .config import check_compressed_tensors_supported
 
 __all__ = [
@@ -119,26 +118,6 @@ def pack_layer(name, model, device=None):
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
     release_layer_safely(layer)
 
-
-
-
-def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
-    """Configure FP8 dtype flavor for Intel Gaudi2 hardware compatibility.
-
-    Intel Gaudi2 requires the fp8_e4m3_fnuz format for FP8 operations.
-    This function modifies the quantization config in-place when running on Gaudi2.
-
-    Args:
-        quantization_config: Quantization configuration dictionary to modify.
-    """
-    if not isinstance(quantization_config, dict):
-        raise TypeError(f"Expected dict for quantization_config, got {type(quantization_config)}")
-
-    if is_gaudi2():
-        quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
-        logger.warning_once(
-            f"Running on Intel Gaudi2 hardware. Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
-        )
 
 
 def save_quantized_as_fp(
@@ -239,7 +218,6 @@ def save_quantized_as_fp(
     setattr(quantization_config, "ignore", ignore)
     quantization_config = quantization_config.to_dict()
     quantization_config["provider"] = "auto-round"
-    _configure_gaudi2_fp8_dtype(quantization_config)
     if is_mx_fp(data_type):  # Manually replace some parameters, as compressed-tensor is not support MXFP scheme yet
         quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] = bits
         quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] = (

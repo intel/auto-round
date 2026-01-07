@@ -23,7 +23,7 @@ import threadpoolctl as tctl
 import torch
 import transformers
 from tqdm import tqdm
-
+from auto_round.utils import is_gaudi2
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
 from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
@@ -145,6 +145,18 @@ def _use_fp8_kv(static_kv_dtype: str | None) -> bool:
     return False
 
 
+def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
+    """Configure FP8 dtype flavor for Intel Gaudi2 hardware compatibility."""
+    _GAUDI2_FP8_DTYPE_FLAVOR = str(torch.float8_e4m3fnuz)
+
+    breakpoint()
+    if is_gaudi2():
+        quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
+        logger.warning_once(
+            f"Running on Intel Gaudi2 hardware. Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
+        )
+
+
 def save_quantized_as_static_fp(
     output_dir: str,
     model: torch.nn.Module = None,
@@ -258,6 +270,7 @@ def save_quantized_as_static_fp(
     )
     quantization_config = quantization_config.to_dict()
     quantization_config["provider"] = "auto-round"
+    _configure_gaudi2_fp8_dtype(quantization_config)
     quantization_config["format"] = "float-quantized"
     if group_size > 0:
         quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = group_size
