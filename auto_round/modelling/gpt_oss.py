@@ -22,14 +22,15 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
 
-
 def _update_parameter(
     module: torch.nn.Module,
     name: str,
     data: torch.Tensor,
 ) -> None:
-    param = getattr(module, name)
-    param.data.copy_(data)
+    """Replace a parameter, works even if original is on meta device."""
+    old_param = getattr(module, name)
+    new_param = nn.Parameter(data, requires_grad=old_param.requires_grad)
+    setattr(module, name, new_param)
 
 
 class GPTOssSingleExpert(nn.Module):
@@ -52,7 +53,6 @@ class GPTOssSingleExpert(nn.Module):
         act = (up + 1) * glu
         return self.down_proj(act)
 
-
 class SequentialGPTOSSMoE(ReplacementModuleBase):
     """
     Replaces GPT-OSS fused-expert MoE with per-expert `GPTOssSingleExpert` modules.
@@ -71,6 +71,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         self.top_k = top_k
         self.router = original.router
         self.shared_expert = getattr(original, "shared_expert", None)
+        self._source_original = original
 
         # Number of experts
         E = original.experts.gate_up_proj.shape[0]
@@ -79,10 +80,12 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         # Build per-expert MLPs
         self.experts = nn.ModuleList()
         target_device = next(original.experts.parameters()).device
-        with skip_weights_initialize(), torch.device(target_device):
+        with skip_weights_initialize(), torch.device("meta"):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
+    def _materialize_weights(self) -> None:
+        original = self._source_original
         if not unsupported_meta_device(original):
             for i, mlp in enumerate(self.experts):
                 _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
@@ -94,6 +97,9 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
             original.experts.to_empty(device="meta")  # release original experts parameters
             clear_memory()
+
+        torch.nn.Module.to_empty(original.experts, device="meta")
+        self._source_original = None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape
