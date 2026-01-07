@@ -23,7 +23,7 @@ import threadpoolctl as tctl
 import torch
 import transformers
 from tqdm import tqdm
-from auto_round.utils import is_gaudi2
+
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
 from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
@@ -35,6 +35,7 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_module,
     get_packing_device,
+    is_gaudi2,
     logger,
     set_module,
     unsupported_meta_device,

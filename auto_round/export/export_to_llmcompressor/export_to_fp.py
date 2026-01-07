@@ -43,6 +43,7 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperWALayer
+
 from .config import check_compressed_tensors_supported
 
 __all__ = [
@@ -117,7 +118,6 @@ def pack_layer(name, model, device=None):
     set_module(model, name, qlayer)
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
     release_layer_safely(layer)
-
 
 
 def save_quantized_as_fp(
