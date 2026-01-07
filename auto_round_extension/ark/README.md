@@ -12,7 +12,7 @@ The kernels are optimized for the following GPUs:
 ## Key Features
 AutoRound Kernel provides weight-only linear computational capabilities for LLM inference. Specifically, the weight-only-quantization configs we support are given in the table below:
 ### CPU 
-| Weight dtype           |   Compute dtype    |    Scale dtype    |    Algo<sup>[1]</sup>    |
+| Weight dtype           |   Compute dtype    |    Scale dtype    |    Algorithm<sup>[1]</sup>    |
 | ---------------------- | :----------------: | :---------------: | :--------: |
 | INT8                   | INT8<sup>[2]</sup> / BF16 / FP32 |    BF16 / FP32    | sym / asym |
 | INT4                   | INT8 / BF16 / FP32 |    BF16 / FP32    | sym / asym |
@@ -26,7 +26,7 @@ AutoRound Kernel provides weight-only linear computational capabilities for LLM 
 | FP4 (E2M1)             |    BF16 / FP32     |    BF16 / FP32    |    NA     |
 
 ### XPU 
-| Weight dtype           |   Compute dtype    |    Scale dtype    |    Algo    |
+| Weight dtype           |   Compute dtype    |    Scale dtype    |    Algorithm    |
 | ---------------------- | :----------------: | :---------------: | :--------: |
 | INT8                   | INT8 / FP16 |    FP16    | sym |
 | INT4                   | INT8 / FP16 |    FP16    | sym |
