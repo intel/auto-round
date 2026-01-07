@@ -65,6 +65,7 @@ from auto_round.schemes import (
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import update_module
+from auto_round.modelling.replace_modules import materialize_block_
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -1147,7 +1148,7 @@ class BaseCompressor(object):
         """
         if self.amp and self.model.dtype != self.amp_dtype:
             self.model.to(self.amp_dtype)
-
+        materialize_block_(self.model)
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         if is_nv_fp(self.data_type):
             from auto_round.data_type.nvfp import calculate_gparam
@@ -2534,6 +2535,11 @@ class BaseCompressor(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        memory_monitor.update()
+        memory_monitor.log_summary("Before quantizing block")
+        materialize_block_(block)
+        memory_monitor.update()
+        memory_monitor.log_summary("After materializing block")
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
                 if is_fp8_linear(m):
@@ -2690,7 +2696,7 @@ class BaseCompressor(object):
             global_indices = index_sampler.next_batch()
             if self.attention_mask:
                 num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
-
+            logger.trace(f"Quant block iter {i}/{self.iters}, best loss so far: {best_loss}")
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 current_output = self._get_current_output(output, indices)
