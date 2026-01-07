@@ -82,9 +82,7 @@ class AutoRound:
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        # for adam
         enable_adam: bool = False,
-        # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
         enable_alg_ext: bool = None,
         disable_opt_rtn: bool = None,
