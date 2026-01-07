@@ -94,7 +94,7 @@ class AutoRound:
         Args:
             model (torch.nn.Module | str): Model object or model name to load.
             tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
-            platform: The paltform to download pretrained model, options: ["hf", "model_scope"]
+            platform: The platform to download pretrained model, options: ["hf", "model_scope"]
             scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
             layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
             dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
@@ -108,7 +108,7 @@ class AutoRound:
             enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
             seed (int, optional): Random seed. Defaults to 42.
             enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
-            extra_config(ExtraConfig, optional): Extra configuration for lots of configrations. Defaults to None.
+            extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2) for better accuracy. Defaults to False.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation with lower accuracy. Defaults to False.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
