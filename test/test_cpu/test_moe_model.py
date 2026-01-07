@@ -65,7 +65,7 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
         nsamples=2,
         iters=iters,
         seqlen=32,
-        fp_layers="self_attn,router,lm_head,mlp.gate",
+        ignore="self_attn,router,lm_head,mlp.gate",
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     return quantized_model
@@ -154,7 +154,7 @@ def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
         nsamples=2,
         seqlen=32,
         iters=1,
-        fp_layers="self_attn,lm_head,mlp.gate",
+        ignore="self_attn,lm_head,mlp.gate",
     )
     quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."

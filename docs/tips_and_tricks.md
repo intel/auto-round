@@ -135,7 +135,7 @@ cause the outputs to become excessively large. Even when a fake QDQ model is fin
 with the INT4 kernel.
 
 **Suggestion: It is recommended not to quantize layers with large output values**. In AutoRound (>=0.4), you can
-use `--fp_layers "xxx,xxx"` to exclude these layers.
+use `--ignore "xxx,xxx"` to exclude these layers.
 
 **Reasoning**:  While adjusting the quantization configuration (symmetric/asymmetric) or using `clamp_to_range` may
 provide some benefit, configuration tuning can be tedious, and `clamp_to_range` is not always effective. Therefore, it

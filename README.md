@@ -22,7 +22,7 @@
 
 AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
 It achieves high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging **sign-gradient descent** and providing broad hardware compatibility. 
-See our [paper](https://arxiv.org/pdf/2309.05516) for more details. For usage instructions, please refer to the [User Guide](./docs/step_by_step.md).
+See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2](http://arxiv.org/abs/2512.04746) for more details. For usage instructions, please refer to the [User Guide](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -339,8 +339,15 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 
 ## Publications & Events
+[SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (202512 paper)
 
-[Publication List](./docs/publication_list.md).
+[Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (202309 paper)
+
+[TEQ: Trainable Equivalent Transformation for Quantization of LLMs](https://arxiv.org/abs/2310.10944) (202310 paper)
+
+[Effective Post-Training Quantization for Large Language Models](https://medium.com/intel-analytics-software/effective-post-training-quantization-for-large-language-models-with-enhanced-smoothquant-approach-93e9d104fb98) (202304 blog)
+
+Check out [Full Publication List](./docs/publication_list.md).
 
 ## Acknowledgement
 Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ, GPTQModel, Triton, Marlin, and ExLLaMAV2 for providing low-precision CUDA kernels, which are leveraged in AutoRound.

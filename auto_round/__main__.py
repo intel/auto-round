@@ -303,6 +303,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Quantize the lm_head. " "Usually kept in higher precision for better output quality.",
         )
         scheme.add_argument(
+            "--ignore",
+            "--ignore_layers",
             "--fp_layers",
             default="",
             type=str,
@@ -599,7 +601,7 @@ def tune(args):
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
-        fp_layers=args.fp_layers,
+        ignore=args.ignore,
         static_kv_dtype=args.static_kv_dtype,
         static_attention_dtype=args.static_attention_dtype,
     )

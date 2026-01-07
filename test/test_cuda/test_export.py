@@ -58,7 +58,7 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_optimum
-    def test_autogptq_format_fp_layers(self, tiny_opt_model_path, dataloader):
+    def test_autogptq_format_ignore(self, tiny_opt_model_path, dataloader):
         layer_config = {}
         model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path)
         tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
@@ -95,7 +95,7 @@ class TestAutoRound:
         #     "there there there there there there")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autogptq_format_qsave_fp_layers(self, dataloader):
+    def test_autogptq_format_qsave_ignore(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_path)
 

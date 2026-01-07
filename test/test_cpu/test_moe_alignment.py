@@ -41,7 +41,7 @@ def test_moe_scale_alignment_fp8_static(setup_deepseek_v2_lite):
         nsamples=4,
         iters=0,  # RTN for faster testing
         seqlen=32,
-        fp_layers="self_attn,lm_head",
+        ignore="self_attn,lm_head",
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
 

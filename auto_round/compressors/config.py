@@ -58,7 +58,7 @@ class ExtraConfig:
         super_group_size: int = None,
         static_kv_dtype: Union[str, torch.dtype] = None,
         quant_lm_head: bool = False,
-        fp_layers: str = None,
+        ignore: str = None,
         # mllm
         processor: Callable = None,
         image_processor: Callable = None,
@@ -139,7 +139,7 @@ class ExtraConfig:
             super_group_size=super_group_size,
             static_kv_dtype=static_kv_dtype,
             quant_lm_head=quant_lm_head,
-            fp_layers=fp_layers,
+            ignore=ignore,
         )
         self.mllm_config = MLLMExtraConfig(
             processor=processor,
@@ -277,7 +277,7 @@ class SchemeExtraConfig(BaseExtraConfig):
     static_kv_dtype: Union[str, torch.dtype] = None
     static_attention_dtype: Union[str, torch.dtype] = None
     quant_lm_head: bool = False
-    fp_layers: str = None
+    ignore: str = None
 
 
 @dataclass
