@@ -109,8 +109,10 @@ class AutoRound:
             seed (int, optional): Random seed. Defaults to 42.
             enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
             extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
-            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2) for better accuracy. Defaults to False.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation with lower accuracy. Defaults to False.
+            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)
+                                             for better accuracy. Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
+                                              with lower accuracy. Defaults to False.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
 
             bits (int, optional): Weight quantization bits. Defaults to 4.

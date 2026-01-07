@@ -39,7 +39,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2025/10] AutoRound has been integrated into **SGLang**: [*Usage*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round), [*LMSYS Blog*](https://lmsys.org/blog/2025-11-13-AutoRound/), [*X post*](https://x.com/lmsysorg/status/1991977019220148650?s=20), [*Intel blog*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196), [*Linkedin*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472).
 
-* [2025/10] A **mix precision** algorithm is available to generate schemes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
+* [2025/10] A **mixed precision** algorithm is available to generate schemes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
 * [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
