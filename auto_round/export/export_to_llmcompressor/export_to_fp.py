@@ -37,12 +37,13 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_block_names,
     get_module,
+    is_gaudi2,
     set_amax_for_all_moe_layers,
     set_module,
     unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperWALayer
-from auto_round.utils import is_gaudi2
+
 from .config import check_compressed_tensors_supported
 
 __all__ = [
@@ -125,16 +126,16 @@ _GAUDI2_FP8_DTYPE_FLAVOR = str(torch.float8_e4m3fnuz)
 
 def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
     """Configure FP8 dtype flavor for Intel Gaudi2 hardware compatibility.
-    
+
     Intel Gaudi2 requires the fp8_e4m3_fnuz format for FP8 operations.
     This function modifies the quantization config in-place when running on Gaudi2.
-    
+
     Args:
         quantization_config: Quantization configuration dictionary to modify.
     """
     if not isinstance(quantization_config, dict):
         raise TypeError(f"Expected dict for quantization_config, got {type(quantization_config)}")
-    
+
     if is_gaudi2():
         quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
         logger.warning_once(
