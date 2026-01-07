@@ -18,7 +18,7 @@ from typing import Dict, Type
 import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
-
+from auto_round.utils import memory_monitor
 from auto_round.utils import LazyImport, logger
 
 BUILTIN_MODULES = {
@@ -41,6 +41,23 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             imported.add(class_name)
             logger.debug(f"Loaded replacement module for {class_name}")
 
+def materialize_block_(block: torch.nn.Module) -> None:
+    def _materialize_module(module: torch.nn.Module) -> None:
+        if isinstance(module, ReplacementModuleBase):
+            module.materialize_weights()
+    block.apply(_materialize_module)
+    # check if any module on meta device remains
+    found_meta = False
+    for name, param in block.named_parameters():
+        if param.device.type == "meta":
+            logger.warning(f"Parameter {name} is still on meta device after materialization.")
+            found_meta = True
+    for name, buffer in block.named_buffers():
+        if buffer.device.type == "meta":
+            logger.warning(f"Buffer {name} is still on meta device after materialization.")
+            found_meta = True
+    if not found_meta:
+        logger.debug("All parameters and buffers have been materialized from meta device.")
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
     """
@@ -79,6 +96,11 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
             cls._replacement_registry[cls.original_module_class()] = cls
             logger.trace(f"Registered {cls.__name__} for replacing {cls.original_module_class()}")
+
+    def __init__(self):
+        super().__init__()
+        self._materialized = False
+        self._source_original = None
 
     @classmethod
     def get_replacement_class(cls, module_class_name: str) -> Type["ReplacementModuleBase"]:
@@ -122,6 +144,20 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     ) -> "ReplacementModuleBase":
         """Create replacement module from original module."""
         pass
+    
+    def materialize_weights(self):
+        """Materialize weights if needed. Default is no-op."""
+        if not self._materialized:
+            self._materialize_weights()
+            self.post_process_materialization()
+    
+    def _materialize_weights(self) -> None:
+        pass
+    
+    def post_process_materialization(self) -> None:
+        """Mark the replacement module as materialized."""
+        self._materialized = True
+        self._source_original = None
 
 
 # Note: adapted from llm-compressor
@@ -146,7 +182,7 @@ def apply_replacements(
         The model with modules replaced.
     """
     _import_required_replacements(model)
-    replaced = {}
+    replaced = []
 
     # Step 1: Collect all modules that need replacement
     logger.debug("Scanning for modules to replace")
@@ -157,19 +193,23 @@ def apply_replacements(
             continue
         class_name = module.__class__.__name__
         if ReplacementModuleBase.is_to_be_replaced(module, class_name):
-            modules_to_replace.append((name, module, class_name))
+            modules_to_replace.append((name, class_name))
 
     # Step 2: Replace modules
     if modules_to_replace:
         logger.info(f"Found {len(modules_to_replace)} modules to replace")
-        for name, module, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
+        for name, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
+            module = model.get_submodule(name)
+            memory_monitor.update()
+            memory_monitor.log_summary(f"Before replacing module {name}")
             replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
             replacement = replacement_cls.from_original(
                 module,
                 model.config,
             )
             model.set_submodule(name, replacement)
-            replaced[name] = (module, replacement)
+            replaced.append((name, replacement_cls))
+            memory_monitor.log_summary(f"After replacing module {name}")
     else:
         logger.debug("No modules found for replacement")
 
