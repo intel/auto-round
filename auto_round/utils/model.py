@@ -810,7 +810,10 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
         tmp_model_type = hparams.model_type
     if "mistral" == tmp_model_type:
         is_mistral_format = True
-        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+        try:
+            hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+        except Exception:
+            is_mistral_format = False
     if not is_mistral_format:
         model_class = get_model_architecture(hparams, model_type)
     elif model_type == ModelType.MMPROJ:
