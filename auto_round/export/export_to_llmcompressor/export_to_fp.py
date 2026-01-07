@@ -120,8 +120,6 @@ def pack_layer(name, model, device=None):
     release_layer_safely(layer)
 
 
-# FP8 dtype flavor for Intel Gaudi2 hardware
-_GAUDI2_FP8_DTYPE_FLAVOR = str(torch.float8_e4m3fnuz)
 
 
 def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
