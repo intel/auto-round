@@ -2,9 +2,3 @@
 accelerate
 datasets
 numpy
-# packaging # for python version <= 3.9
-py-cpuinfo
-threadpoolctl
-torch
-tqdm
-transformers>=4.38

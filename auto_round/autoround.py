@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 
@@ -87,7 +87,7 @@ class AutoRound:
         # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
         enable_alg_ext: bool = None,
-        disable_opt_rtn: bool = None,
+        disable_opt_rtn: Optional[bool] = None,
         low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:
@@ -123,7 +123,7 @@ class AutoRound:
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
             enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
             device_map (str | dict, optional): Device placement map. Defaults to None.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             model_dtype (str): model dtype used to load pre-trained model.
             **kwargs: Backward compatible options:
@@ -283,7 +283,7 @@ class AutoRoundLLM(LLMCompressor):
         act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
         enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
         device_map (str | dict, optional): Device placement map. Defaults to None.
-        disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
+        disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
         enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
         **kwargs: Backward compatible options:
             - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,

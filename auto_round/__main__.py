@@ -255,7 +255,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         tuning.add_argument(
             "--disable_opt_rtn",
-            action="store_true",
+            "--disable-opt-rtn",
+            action=argparse.BooleanOptionalAction,
+            default=None,
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
