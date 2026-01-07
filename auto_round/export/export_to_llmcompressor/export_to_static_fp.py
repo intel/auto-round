@@ -149,7 +149,6 @@ def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
     """Configure FP8 dtype flavor for Intel Gaudi2 hardware compatibility."""
     _GAUDI2_FP8_DTYPE_FLAVOR = str(torch.float8_e4m3fnuz)
 
-    breakpoint()
     if is_gaudi2():
         quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
         logger.warning_once(
