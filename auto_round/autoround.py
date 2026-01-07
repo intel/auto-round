@@ -92,68 +92,69 @@ class AutoRound:
         """Initialize AutoRound with quantization and tuning configuration.
 
         Args:
-                   model (torch.nn.Module | str): Model object or model name to load.
-                   tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
-                   platform: The platform to download pretrained model, options: ["hf", "model_scope"]
-                   scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
-                   layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
-                   dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
-                   iters (int, optional): Optimization iterations. Defaults to 200.
-                   seqlen (int, optional): Calibration sequence length. Defaults to 2048.
-                   nsamples (int, optional): Number of calibration samples. Defaults to 128.
-                   batch_size (int, optional): Calibration batch size. Defaults to 8.
-                   gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
-                   low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
-                   device_map (str | dict, optional): Device map for each module. Defaults to 0.
-                   enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
-                   seed (int, optional): Random seed. Defaults to 42.
-                   enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
-                   extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
-                   enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)
-                                                    for better accuracy. Defaults to False.
-                   disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
-                                                     with lower accuracy. Defaults to False.
-                   low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
+            model (torch.nn.Module | str): Model object or model name to load.
+            tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
+            platform: The platform to download pretrained model, options: ["hf", "model_scope"]
+            scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
+            layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
+            dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
+            iters (int, optional): Optimization iterations. Defaults to 200.
+            seqlen (int, optional): Calibration sequence length. Defaults to 2048.
+            nsamples (int, optional): Number of calibration samples. Defaults to 128.
+            batch_size (int, optional): Calibration batch size. Defaults to 8.
+            gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
+            low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            device_map (str | dict, optional): Device map for each module. Defaults to 0.
+            enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
+            seed (int, optional): Random seed. Defaults to 42.
+            enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
+            extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
+            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)
+                                             for better accuracy. Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
+                                              with lower accuracy. Defaults to False.
+            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
 
-                   bits (int, optional): Weight quantization bits. Defaults to 4.
-                   group_size (int, optional): Weight quantization group size. Defaults to 128.
-                   sym (bool, optional): Symmetric weight quantization. Defaults to True.
-                   data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
-                   act_bits (int, optional): Activation quantization bits. Defaults to 16.
-                   act_group_size (int, optional): Activation group size. Defaults to None.
-                   act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
-                   act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
-                   act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
-                   model_dtype (str): model dtype used to load pre-trained model.
-                   amp (bool, optional): Use AMP for tuning. Defaults to True.
-                   enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
-                   lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
-                   minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
+            bits (int, optional): Weight quantization bits. Defaults to 4.
+            group_size (int, optional): Weight quantization group size. Defaults to 128.
+            sym (bool, optional): Symmetric weight quantization. Defaults to True.
+            data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
+            act_bits (int, optional): Activation quantization bits. Defaults to 16.
+            act_group_size (int, optional): Activation group size. Defaults to None.
+            act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
+            act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
+            act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
+            model_dtype (str): model dtype used to load pre-trained model.
+            amp (bool, optional): Use AMP for tuning. Defaults to True.
+            enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
+            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
+            minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
 
-                   **kwargs: Backward compatible options:
-                       - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
-                         super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                         nblocks, to_quant_block_names,
-                         enable_norm_bias_tuning, enable_quanted_input,
-                         disable_deterministic_algorithms, vlm, static_kv_dtype
-               Raises:
-                   ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
-                   RuntimeError: If model parameters are on meta device.
-               Example:
-                   Layer-wise configuration structure:
+            **kwargs: Backward compatible options:
+                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
+                  super_group_size, super_bits, scale_dtype ("fp16" etc.),
+                  nblocks, to_quant_block_names,
+                  enable_norm_bias_tuning, enable_quanted_input,
+                  disable_deterministic_algorithms, vlm, static_kv_dtype
+        Raises:
+            ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
+            RuntimeError: If model parameters are on meta device.
+        Example:
+            Layer-wise configuration structure:
 
-                   >>> layer_config = {
-                   ...     "layer1": {
-                   ...         "bits": 3,
-                   ...         "group_size": 128,
-                   ...         "sym": True,
-                   ...     },
-                   ...     "layer2": {
-                   ...         "W8A16"
-                   ...      }
-                   ...     # ...
-                   ... }
+            >>> layer_config = {
+            ...     "layer1": {
+            ...         "bits": 3,
+            ...         "group_size": 128,
+            ...         "sym": True,
+            ...     },
+            ...     "layer2": {
+            ...         "W8A16"
+            ...      }
+            ...     # ...
+            ... }
         """
+
         model_cls = []
 
         if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
