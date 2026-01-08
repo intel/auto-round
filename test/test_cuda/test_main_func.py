@@ -91,7 +91,7 @@ class TestMainFunc:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_gptqmodel
-    def test_fp_layers(self):
+    def test_ignore_layers(self):
         model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -116,7 +116,7 @@ class TestMainFunc:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_fp_layers_awq(self):
+    def test_ignore_layers_awq(self):
         model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
