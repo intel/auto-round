@@ -189,7 +189,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
-        disable_opt_rtn: Optional[bool] = None,
+        disable_opt_rtn: [bool | None] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
         **kwargs,
@@ -397,9 +397,11 @@ class BaseCompressor(object):
             and self.data_type == "int"
             and disable_opt_rtn is None
         ):
-            logger.warning("for INT8 RTN quantization, set `--disable_opt_rtn` as default.")
+            logger.warning("For INT8 RTN quantization, set `--disable_opt_rtn` as default.")
             disable_opt_rtn = True
         if disable_opt_rtn is None:
+            if self.iters == 0:
+                logger.info("For the most RTN cases, set `--disable_opt_rtn` to False as default.")
             disable_otp_rtn = False
 
         self.minmax_lr = minmax_lr or self.lr
@@ -3130,3 +3132,4 @@ class BaseCompressor(object):
 
 class LLMCompressor(BaseCompressor):
     pass
+

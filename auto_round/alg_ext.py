@@ -1145,3 +1145,4 @@ def dq_wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, devic
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
 
     return quantized_layers, unquantized_layers
+
