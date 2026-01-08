@@ -1190,12 +1190,13 @@ def mv_module_from_gpu(module):
     else:
         return module.to("cpu")
 
+
 def is_moe_model(model: torch.nn.Module) -> bool:
     if hasattr(model, "config"):
         for key in model.config.to_dict().keys():
             if "moe" in key or "expert" in key:
                 return True
-    for n,m in model.named_modules():
+    for n, m in model.named_modules():
         if "expert" in n:
             return True
     return False
