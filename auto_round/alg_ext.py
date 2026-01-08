@@ -302,7 +302,7 @@ class WrapperLinearV2(WrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         enable_torch_compile=False,
-        disable_opt_rtn=True,  # TODO does not support it
+        disable_opt_rtn=None,  # TODO does not support it
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -978,7 +978,7 @@ class DQWrapperLinear(WrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         enable_torch_compile=False,
-        disable_opt_rtn=True,
+        disable_opt_rtn=None,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.

@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Union
 
 import torch
 
@@ -32,7 +32,7 @@ class ExtraConfig:
         self,
         # tuning
         amp: bool = True,
-        disable_opt_rtn: Optional[bool] = True,
+        disable_opt_rtn: [bool | None] = None,
         enable_alg_ext: bool = False,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
@@ -247,7 +247,7 @@ class BaseExtraConfig:
 @dataclass
 class TuningExtraConfig(BaseExtraConfig):
     amp: bool = True
-    disable_opt_rtn: Optional[bool] = True
+    disable_opt_rtn: [bool | None] = True
     enable_alg_ext: bool = False
     enable_minmax_tuning: bool = True
     enable_norm_bias_tuning: bool = False

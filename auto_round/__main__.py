@@ -253,13 +253,21 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action="store_true",
             help="Enable PyTorch deterministic algorithms for reproducible results. ",
         )
-        tuning.add_argument(
+        group = tuning.add_mutually_exclusive_group()
+        group.add_argument(
             "--disable_opt_rtn",
-            "--disable-opt-rtn",
-            action=argparse.BooleanOptionalAction,
+            action="store_const",
+            const=True,
+            dest="disable_opt_rtn",
             default=None,
-            help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
-            "RTN is fast but less accurate; keeping optimization enabled is recommended.",
+            help="Enable RTN-disable mode (less accurate, faster).",
+        )
+        group.add_argument(
+            "--enable_opt_rtn",
+            action="store_const",
+            const=False,
+            dest="disable_opt_rtn",
+            help="Using optimized RTN.",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")

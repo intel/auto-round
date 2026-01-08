@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Union
 
 import torch
 
@@ -85,7 +85,7 @@ class AutoRound:
         enable_adam: bool = False,
         extra_config: ExtraConfig = None,
         enable_alg_ext: bool = None,
-        disable_opt_rtn: Optional[bool] = None,
+        disable_opt_rtn: Union[bool | None] = None,
         low_cpu_mem_usage: bool = False,
         **kwargs,
     ) -> BaseCompressor:
