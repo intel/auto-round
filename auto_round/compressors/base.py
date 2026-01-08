@@ -388,9 +388,13 @@ class BaseCompressor(object):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
-        if self.bits == 8 and self.iters == 0 and self.data_type == "int" and disable_opt_rtn is None:
+
+        # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
+        if self.bits >= 8 and self.act_bits >= 16 and self.iters == 0 and self.data_type == "int" and disable_opt_rtn is None:
             logger.warning("for INT8 RTN quantization, set `--disable_opt_rtn` as default.")
             disable_opt_rtn = True
+        if disable_opt_rtn is None:
+            disable_otp_rtn = False
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
