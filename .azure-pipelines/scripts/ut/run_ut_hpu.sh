@@ -23,10 +23,10 @@ find ./test_hpu -name "test*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_r
 find ./test_hpu -name "test*.py" | sed "s,\.\/,python -m pytest --mode compile --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run_compile.sh
 
 cat run_lazy.sh
-bash run_lazy.sh 2>&1 | tee ${ut_log_name}
+bash run_lazy.sh 2>&1 | tee -a ${ut_log_name}
 
 cat run_compile.sh
-bash run_compile.sh 2>&1 | tee ${ut_log_name}
+bash run_compile.sh 2>&1 | tee -a ${ut_log_name}
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
