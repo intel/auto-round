@@ -189,7 +189,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
-        disable_opt_rtn: Optional[bool] = None,
+        disable_opt_rtn: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
         **kwargs,
@@ -226,7 +226,7 @@ class BaseCompressor(object):
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
             enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
             device_map (str | dict, optional): Device placement map. Defaults to None.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
@@ -388,19 +388,6 @@ class BaseCompressor(object):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
-
-        # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
-        if (
-            self.bits >= 8
-            and self.act_bits >= 16
-            and self.iters == 0
-            and self.data_type == "int"
-            and disable_opt_rtn is None
-        ):
-            logger.warning("for INT8 RTN quantization, set `--disable_opt_rtn` as default.")
-            disable_opt_rtn = True
-        if disable_opt_rtn is None:
-            disable_otp_rtn = False
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext

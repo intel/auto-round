@@ -393,7 +393,7 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 | Qwen3-32B | W2A16/W4A16/W8A16 | OOM with 240G                   | ---                           | OOM with 240G                    | ---                              |
 | Qwen3-32B | MXFP4/MXFP8       | 160G                            | 200s * len of options         | 200G                             | 240s * len of options            |
 | Qwen3-32B | GGUF*             | 210G                            | 80s * len of options          | 200G                             | 60s * len of options             |
-</details>
+</details> 
 
 
 #### Limitations
