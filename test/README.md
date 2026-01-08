@@ -64,23 +64,23 @@ get_model_path(model_name)  # Automatically finds local or remote model path
 
 **Predefined Model Paths:**
 ```python
-opt_name_or_path           # facebook/opt-125m
-qwen_name_or_path          # Qwen/Qwen3-0.6B
-lamini_name_or_path        # MBZUAI/LaMini-GPT-124M
-qwen_vl_name_or_path       # Qwen/Qwen2-VL-2B-Instruct
+opt_name_or_path  # facebook/opt-125m
+qwen_name_or_path  # Qwen/Qwen3-0.6B
+lamini_name_or_path  # MBZUAI/LaMini-GPT-124M
+qwen_vl_name_or_path  # Qwen/Qwen2-VL-2B-Instruct
 # ... and more
 ```
 
 **Model Manipulation:**
 ```python
 get_tiny_model(model_path, num_layers=2)  # Create tiny model by slicing layers
-save_tiny_model(model_path, save_path)     # Save tiny model to disk
+save_tiny_model(model_path, save_path)  # Save tiny model to disk
 ```
 
 **Model Inference:**
 ```python
 model_infer(model, tokenizer, input_text)  # Run inference and return output
-is_model_outputs_similar(out1, out2)       # Compare two model outputs
+is_model_outputs_similar(out1, out2)  # Compare two model outputs
 ```
 
 **Data Utilities:**
@@ -97,16 +97,11 @@ import pytest
 from auto_round import AutoRound
 from ...helpers import opt_name_or_path
 
+
 class TestNewQuantMethod:
     def test_quantization(self, tiny_opt_model_path, dataloader):
         """Test new quantization method."""
-        autoround = AutoRound(
-            model=tiny_opt_model_path,
-            bits=4,
-            group_size=128,
-            iters=2,
-            dataset=dataloader
-        )
+        autoround = AutoRound(model=tiny_opt_model_path, bits=4, group_size=128, iters=2, dataset=dataloader)
         autoround.quantize()
         assert autoround is not None
 ```
@@ -115,15 +110,17 @@ class TestNewQuantMethod:
 ```python
 from ...helpers import model_infer, opt_name_or_path, get_model_path
 
+
 def test_model_inference(tiny_opt_model_path):
     # Use predefined model path
     model_name = opt_name_or_path
-    
+
     # Or resolve custom model path
     custom_model = get_model_path("custom/model-name")
-    
+
     # Run inference using helper
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
     model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path)
     tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
     output = model_infer(model, tokenizer, "Hello world")
