@@ -390,7 +390,13 @@ class BaseCompressor(object):
             )
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
-        if self.bits >= 8 and self.act_bits >= 16 and self.iters == 0 and self.data_type == "int" and disable_opt_rtn is None:
+        if (
+            self.bits >= 8
+            and self.act_bits >= 16
+            and self.iters == 0
+            and self.data_type == "int"
+            and disable_opt_rtn is None
+        ):
             logger.warning("for INT8 RTN quantization, set `--disable_opt_rtn` as default.")
             disable_opt_rtn = True
         if disable_opt_rtn is None:
