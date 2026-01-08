@@ -10,6 +10,7 @@ from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
 
 # Automatic choose local path or model name.
 def get_model_path(model_name: str) -> str:
+    model_name = model_name.rstrip("/")
     ut_path = f"/tf_dataset/auto_round/models/{model_name}"
     local_path = f"/models/{model_name.split('/')[-1]}"
 

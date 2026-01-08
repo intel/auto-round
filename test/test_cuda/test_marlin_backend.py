@@ -7,11 +7,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound, AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
 
-from ..helpers import model_infer
+from ..helpers import get_model_path, model_infer
 
 
 class TestAutoRoundMarlinBackend:
     save_dir = "./saved"
+    model_name = get_model_path("facebook/opt-125m")
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):

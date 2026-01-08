@@ -42,7 +42,7 @@ class TestAutoRound:
         ar.quantize()
 
     def test_mxfp4(self, tiny_opt_model_path):
-        ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1)
+        ar = AutoRound(tiny_opt_model_path, scheme="MXFP8_RCEIL", nsamples=1, iters=1)
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
