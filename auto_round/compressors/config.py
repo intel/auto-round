@@ -294,4 +294,3 @@ class DiffusionExtraConfig(BaseExtraConfig):
     guidance_scale: float = 7.5
     num_inference_steps: int = 50
     generator_seed: int = None
-

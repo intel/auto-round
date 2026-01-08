@@ -661,4 +661,3 @@ class AutoRoundDiffusion(DiffusionCompressor):
             seed=seed,
             **kwargs,
         )
-
