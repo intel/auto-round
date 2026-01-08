@@ -35,6 +35,7 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_module,
     get_packing_device,
+    is_gaudi2,
     logger,
     set_module,
     unsupported_meta_device,
@@ -143,6 +144,20 @@ def _use_fp8_kv(static_kv_dtype: str | None) -> bool:
         logger.warning_once("Exporting model with static KV cache in FP8 dtype.")
         return True
     return False
+
+
+def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
+    """Configure FP8 dtype flavor for Intel Gaudi2 hardware compatibility."""
+    _GAUDI2_FP8_DTYPE_FLAVOR = "float8_e4m3fnuz"
+
+    if is_gaudi2():
+        quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
+        logger.warning_once(
+            (
+                "Running on Intel Gaudi2 hardware."
+                f" Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
+            )
+        )
 
 
 def save_quantized_as_static_fp(
@@ -258,6 +273,7 @@ def save_quantized_as_static_fp(
     )
     quantization_config = quantization_config.to_dict()
     quantization_config["provider"] = "auto-round"
+    _configure_gaudi2_fp8_dtype(quantization_config)
     quantization_config["format"] = "float-quantized"
     if group_size > 0:
         quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = group_size

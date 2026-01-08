@@ -312,7 +312,7 @@ class BaseCompressor(object):
         self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
-        self.fp_layers = kwargs.pop("fp_layers", "")
+        self.ignore_layers = kwargs.pop("ignore_layers", "")
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
@@ -507,7 +507,7 @@ class BaseCompressor(object):
             self.supported_types,
             self.inner_supported_types,
             self.quant_block_list,
-            self.fp_layers,
+            self.ignore_layers,
             self.quant_lm_head,
             enable_gguf_official_mixed=False,
             is_mllm=self.mllm,
@@ -1401,7 +1401,7 @@ class BaseCompressor(object):
             self.supported_types,
             self.inner_supported_types,
             self.quant_block_list,
-            self.fp_layers,
+            self.ignore_layers,
             self.quant_lm_head,
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.mllm,

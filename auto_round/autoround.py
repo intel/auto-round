@@ -82,9 +82,7 @@ class AutoRound:
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
-        # for adam
         enable_adam: bool = False,
-        # for MLLM and Diffusion
         extra_config: ExtraConfig = None,
         enable_alg_ext: bool = None,
         disable_opt_rtn: Optional[bool] = None,
@@ -96,36 +94,42 @@ class AutoRound:
         Args:
             model (torch.nn.Module | str): Model object or model name to load.
             tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
+            platform: The platform to download pretrained model, options: ["hf", "model_scope"]
             scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
-            bits (int, optional): Weight quantization bits. Defaults to 4.
-            group_size (int, optional): Weight quantization group size. Defaults to 128.
-            sym (bool, optional): Symmetric weight quantization. Defaults to True.
             layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
-            batch_size (int, optional): Calibration batch size. Defaults to 8.
-            amp (bool, optional): Use AMP for tuning. Defaults to True.
-            device (str | torch.device | int, optional): Compute device. Defaults to 0.
             dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
-            enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
-            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
-            minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
-            low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
-            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.
-            seed (int, optional): Random seed. Defaults to 42.
+            batch_size (int, optional): Calibration batch size. Defaults to 8.
             gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
+            low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            device_map (str | dict, optional): Device map for each module. Defaults to 0.
+            enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
+            seed (int, optional): Random seed. Defaults to 42.
+            enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
+            extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
+            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)
+                                             for better accuracy. Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
+                                              with lower accuracy. Defaults to None.
+            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
+
+            bits (int, optional): Weight quantization bits. Defaults to 4.
+            group_size (int, optional): Weight quantization group size. Defaults to 128.
+            sym (bool, optional): Symmetric weight quantization. Defaults to True.
             data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
             act_bits (int, optional): Activation quantization bits. Defaults to 16.
             act_group_size (int, optional): Activation group size. Defaults to None.
             act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
             act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
-            enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
-            device_map (str | dict, optional): Device placement map. Defaults to None.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
-            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             model_dtype (str): model dtype used to load pre-trained model.
+            amp (bool, optional): Use AMP for tuning. Defaults to True.
+            enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
+            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
+            minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
+
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
@@ -140,18 +144,17 @@ class AutoRound:
 
             >>> layer_config = {
             ...     "layer1": {
-            ...         "data_type": "int",
-            ...         "bits": 4,
+            ...         "bits": 3,
             ...         "group_size": 128,
             ...         "sym": True,
-            ...         "act_data_type": None,
-            ...         "act_bits": 16,
-            ...         "act_group_size": None,
-            ...         "act_sym": None,
             ...     },
+            ...     "layer2": {
+            ...         "W8A16"
+            ...      }
             ...     # ...
             ... }
         """
+
         model_cls = []
 
         if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
@@ -179,6 +182,11 @@ class AutoRound:
             kwargs["enable_alg_ext"] = enable_alg_ext
         if disable_opt_rtn is not None:
             kwargs["disable_opt_rtn"] = disable_opt_rtn
+        if "fp_layers" in kwargs:
+            logger.warning_once(
+                "'fp_layers' is deprecated, please use 'ignore_layers' to set layers not to be quantized."
+            )
+            kwargs["ignore"] = kwargs.pop("fp_layers")
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,
