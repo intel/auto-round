@@ -147,7 +147,7 @@ class TestAutoRoundFP:
         ), "Illegal MXFP4 packing name or data_type or shape"
         assert not hasattr(skip_layer, "weight_scale") and not hasattr(  ## check skipped layers
             skip_layer, "weight_packed"
-        ), "Illegal MXFP4 quantization for fp_layers"
+        ), "Illegal MXFP4 quantization for ignore_layers"
         quantization_config = AutoConfig.from_pretrained(
             quantized_model_path, trust_remote_code=True
         ).quantization_config
@@ -187,7 +187,7 @@ class TestAutoRoundFP:
         ), "Illegal MXFP4 packing name or data_type or shape"
         assert not hasattr(skip_layer, "weight_scale") and not hasattr(  ## check skipped layers
             skip_layer, "weight_packed"
-        ), "Illegal MXFP4 quantization for fp_layers"
+        ), "Illegal MXFP4 quantization for ignore_layers"
         quantization_config = AutoConfig.from_pretrained(
             quantized_model_path, trust_remote_code=True
         ).quantization_config

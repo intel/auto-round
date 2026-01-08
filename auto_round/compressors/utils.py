@@ -211,7 +211,7 @@ def set_layer_config(
     supported_types: tuple,
     inner_supported_types: tuple,
     quant_block_list=None,
-    fp_layers: str = "",
+    ignore_layers: str = "",
     quant_lm_head: bool = False,
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
@@ -261,8 +261,8 @@ def set_layer_config(
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
 
-    # 1. fp_layers -> force 16
-    for name in get_fp_layer_names(model, fp_layers):
+    # 1. ignore_layers -> force 16
+    for name in get_fp_layer_names(model, ignore_layers):
         layer_config[name] = {
             "bits": 16,
             "act_bits": 16,
@@ -852,7 +852,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     return layer_config, gguf_format_config
 
 
-def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
+def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
     """Identifies and returns layers in the model to exclude from quantization.
 
     This function processes a comma-separated list of fully precision (FP) layers,
@@ -861,7 +861,7 @@ def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
 
     Args:
         model (torch.nn.Module): The model whose layers will be inspected.
-        fp_layers (str): A comma-separated string of layer names to be excluded
+        ignore_layers (str): A comma-separated string of layer names to be excluded
             from quantization. Whitespace is ignored in this string.
 
     Returns:
@@ -870,16 +870,16 @@ def get_fp_layer_names(model: torch.nn.Module, fp_layers: str):
     """
     from auto_round.utils import SUPPORTED_LAYER_TYPES
 
-    if not fp_layers:
+    if not ignore_layers:
         return []
-    fp_layers = fp_layers.replace(" ", "").split(",")
+    ignore_layers = ignore_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
-    for fp_layer in fp_layers:
+    for fp_layer in ignore_layers:
         if fp_layer == "":
             continue
         if fp_layer in all_layer_names:

@@ -99,7 +99,11 @@ def create_model_class(
             raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
-        hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), "mistral" in model.config.model_type)
+        if "mistral" in model.config.model_type and "params.json" in os.listdir(tmp_work_dir):
+            is_mistral_format = True
+        else:
+            is_mistral_format = False
+        hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), is_mistral_format)
         hparams.pop("quantization_config", None)
         model_instance = model_class(
             dir_model=Path(tmp_work_dir),

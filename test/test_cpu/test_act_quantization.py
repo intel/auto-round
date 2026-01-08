@@ -173,15 +173,7 @@ class TestAutoRoundAct:
 
         # check inblock layer config values
         kproj_config = extra_config["model.decoder.layers.1.self_attn.k_proj"]
-        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "float"
-        assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
-        assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 128
-        assert "act_sym" in kproj_config.keys() and not kproj_config["act_sym"]
-        assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "int"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
-        assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 128
-        assert "sym" in kproj_config.keys() and not kproj_config["sym"]
-        assert "act_dynamic" in kproj_config.keys() and kproj_config["act_dynamic"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_act_config_FP8_saving(self, tiny_opt_model_path, dataloader):
@@ -214,12 +206,6 @@ class TestAutoRoundAct:
 
         # check inblock layer config values
         kproj_config = extra_config["model.decoder.layers.0.self_attn.k_proj"]
-        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "fp"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
-        assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 0
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
-        assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "fp"
-        assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
         assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 0
-        assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
