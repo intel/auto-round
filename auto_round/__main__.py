@@ -260,14 +260,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
             const=True,
             dest="disable_opt_rtn",
             default=None,
-            help="Enable RTN-disable mode (less accurate, faster).",
+            help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
+            "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
         group.add_argument(
             "--enable_opt_rtn",
             action="store_const",
             const=False,
             dest="disable_opt_rtn",
-            help="Using optimized RTN.",
+            help="Enable optimization for RTN mode when iters=0.",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
