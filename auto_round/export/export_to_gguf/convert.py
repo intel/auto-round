@@ -528,7 +528,8 @@ def prepare_tensors(cls):
                 block_size, type_size = GGML_QUANT_SIZES[data_qtype.name.lower()]
                 if data_torch.shape[-1] % block_size != 0:
                     logger.warning(
-                        f"{new_name}: Can't quantize tensor with shape {data_torch.shape} to {data_qtype.name}, fallback to F16"
+                        f"{new_name}: Can't quantize tensor with shape {data_torch.shape} to {data_qtype.name},"
+                        " fallback to F16"
                     )
                     data_qtype = gguf.GGMLQuantizationType.F16
 
