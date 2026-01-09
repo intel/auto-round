@@ -189,7 +189,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
-        disable_opt_rtn: bool = False,
+        disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
         **kwargs,
@@ -226,7 +226,7 @@ class BaseCompressor(object):
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
             enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
             device_map (str | dict, optional): Device placement map. Defaults to None.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
@@ -312,7 +312,7 @@ class BaseCompressor(object):
         self.platform = platform
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
-        self.fp_layers = kwargs.pop("fp_layers", "")
+        self.ignore_layers = kwargs.pop("ignore_layers", "")
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
@@ -388,6 +388,21 @@ class BaseCompressor(object):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
+
+        # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
+        if (
+            self.bits >= 8
+            and self.act_bits >= 16
+            and self.iters == 0
+            and self.data_type == "int"
+            and disable_opt_rtn is None
+        ):
+            logger.warning("For INT8 RTN quantization, set `--disable_opt_rtn` as default.")
+            disable_opt_rtn = True
+        if disable_opt_rtn is None:
+            if self.iters == 0:
+                logger.info("For the most RTN cases, set `--disable_opt_rtn` to False as default.")
+            disable_otp_rtn = False
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
@@ -504,7 +519,7 @@ class BaseCompressor(object):
             self.supported_types,
             self.inner_supported_types,
             self.quant_block_list,
-            self.fp_layers,
+            self.ignore_layers,
             self.quant_lm_head,
             enable_gguf_official_mixed=False,
             is_mllm=self.mllm,
@@ -1398,7 +1413,7 @@ class BaseCompressor(object):
             self.supported_types,
             self.inner_supported_types,
             self.quant_block_list,
-            self.fp_layers,
+            self.ignore_layers,
             self.quant_lm_head,
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.mllm,
