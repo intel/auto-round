@@ -21,9 +21,10 @@ from auto_round.export.export_to_awq.utils import dequantize_gemm, reverse_awq_o
 from auto_round.utils import convert_dtype_torch2str, logger
 
 try:
-    import auto_round_kernel as ark
+    import auto_round_kernel
 
     ARK_INSTALLED = True
+    ark = auto_round_kernel.ARK()
 except:
     ARK_INSTALLED = False
 
@@ -68,7 +69,6 @@ class QuantLinear(nn.Module):
         self.pack_num = 32 // self.bits
         self.weight_dtype = weight_dtype
         self.asym = not sym
-        ark.set_threads(torch.get_num_threads())
         if not self.infeatures % self.group_size == 0:
             raise NotImplementedError("in_features must be divisible by group_size")
         if "awq" in self.QUANT_TYPE:
@@ -148,21 +148,21 @@ class QuantLinear(nn.Module):
 
         if self.qweight.device.type == "xpu":
             self.sdt = "fp16"
-            self.cdt = "fp16"
-            scales = self.scales.to(torch.float16).contiguous()
+            self.cdt = "int8"
+            self.torch_dt = torch.float16
         else:
             self.sdt = "fp32"
             self.cdt = "auto"
-            if self.asym and self.bits == 8:
-                self.cdt = "fp32"
-            scales = self.scales.float().contiguous()
+            self.torch_dt = torch.float32
+
         self.wdt = BITS_DTYPE_MAPPING[self.bits]
+        scales = self.scales.to(self.torch_dt).contiguous()
 
         self.qweight = ark.repack_quantized_weight(
             intweight.contiguous(),
             scales,
             zeros.contiguous(),
-            torch.empty(0),
+            self.group_size,
             # compute_dtype
             self.cdt,
             # weight_dtype
@@ -170,48 +170,34 @@ class QuantLinear(nn.Module):
             # scale_dtype
             self.sdt,
             self.asym,
-            self.group_size,
         )
 
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
         if self.bias is not None:
-            if self.bias.device.type == "cpu":
-                self.bias = self.bias.to(torch.float32)
-            else:
-                self.bias = self.bias.to(torch.float16)
+            self.bias = self.bias.to(self.torch_dt)
         else:
             self.bias = torch.empty(0)
 
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
-        if x.device.type == "cpu":
-            odt = torch.float32
-            self.bias = self.bias.to(torch.float32)
-            if raw_input_dtype != torch.float32:
-                x = x.to(torch.float32)
-        else:
-            odt = x.dtype
-
+        x = x.to(self.torch_dt)
         out_shape = x.shape[:-1] + (self.outfeatures,)
-        x = x.view(-1, x.shape[-1])  # convert xd to 2d
-        out_2d_shape = x.shape[:-1] + (self.outfeatures,)
-        outputs = torch.empty(out_2d_shape, device=x.device, dtype=odt)
-
-        ark.woq_linear(
-            x,
+        x = x.view(-1, x.shape[-1])
+        self.bias = self.bias.to(self.torch_dt)
+        outputs = ark.woqgemm(
+            x,  # convert xd to 2d,
             self.qweight,
             self.bias,
-            outputs,
+            self.outfeatures,
+            self.infeatures,
+            self.group_size,
             self.cdt,  # compute_dtype
             self.wdt,  # weight_dtype
             self.sdt,  # scale_dtype
             self.asym,
-            self.group_size,
         )
-        if x.device.type == "xpu":
-            outputs = outputs + self.bias
         return outputs.to(raw_input_dtype).view(out_shape)
 
 
