@@ -138,7 +138,7 @@ class TestAutoRound:
 
     @require_gguf
     def test_special_model(self):
-        from ..helpers import save_tiny_model
+        from ...helpers import save_tiny_model
 
         model_name = get_model_path("ibm-granite/granite-4.0-h-tiny")
         tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=2)
@@ -159,7 +159,7 @@ class TestAutoRound:
 
     @require_gguf
     def test_vlm_gguf(self):
-        from ..helpers import save_tiny_model
+        from ...helpers import save_tiny_model
 
         model_name = "/models/gemma-3-4b-it"
         tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=2, is_mllm=True)
