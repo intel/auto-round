@@ -1278,6 +1278,7 @@ class BaseCompressor(object):
                 self._quantize_layer_via_rtn(name)
                 if cnt % clear_mem_freq == 0:
                     clear_memory(device_list=self.device_list)
+                    memory_monitor.log_summary()
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8
