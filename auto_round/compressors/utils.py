@@ -945,7 +945,7 @@ def reset_params(inputs):
         inputs["use_cache"] = False
 
 
-def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
+def immediate_save(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
     """
     Shard-saves the parameters of a model block (or group of blocks) immediately into disk,
     accumulating tensors into size-limited shards, optionally finalizing all remaining
@@ -961,10 +961,10 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
     import json
     from collections import OrderedDict
 
-    from auto_round.utils import clear_memory, get_module
+    from auto_round.utils import get_module
 
     # User configurable (can be preset on rounder)
-    max_shard_size = getattr(rounder, "max_shard_size", "5GB")
+    max_shard_size = getattr(rounder, "max_shard_size", "1GB")
     safe_serialization = getattr(rounder, "safe_serialization", True)
     if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
         rounder.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
@@ -1029,6 +1029,7 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
             torch.save(rounder._current_shard_tensors, tmp_path)
         params = list(rounder._current_shard_tensors.keys())
         rounder._shard_meta.append({"tmp_file": tmp_name, "params": params})
+
         for param in params:
             free_module_name = param.rsplit(".", 1)[0]
             free_module = get_module(rounder.model, free_module_name)
