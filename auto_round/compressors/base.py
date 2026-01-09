@@ -1118,6 +1118,7 @@ class BaseCompressor(object):
                         and self.is_moe_model
                         and "expert" in m.tmp_name
                         and "shared_expert" not in m.tmp_name
+                        and self.super_bits is None # GGUF still uses the optimized RTN for MoE layers
                 ):
                     disable_opt_rtn = True
                     logger.warning_once(
