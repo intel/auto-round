@@ -616,6 +616,7 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
         ]
     )
 
+
 def is_fp8_model(model: torch.nn.Module) -> bool:
     if not hasattr(model, "is_fp8"):
         return False
