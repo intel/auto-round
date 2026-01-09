@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Any, Callable, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
 
@@ -32,7 +32,7 @@ class ExtraConfig:
         self,
         # tuning
         amp: bool = True,
-        disable_opt_rtn: bool = True,
+        disable_opt_rtn: bool | None = None,
         enable_alg_ext: bool = False,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
@@ -74,7 +74,7 @@ class ExtraConfig:
 
         Args:
             amp (bool): Whether to use automatic mixed precision (default is True).
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to True.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
             enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning.
@@ -247,7 +247,7 @@ class BaseExtraConfig:
 @dataclass
 class TuningExtraConfig(BaseExtraConfig):
     amp: bool = True
-    disable_opt_rtn: bool = True
+    disable_opt_rtn: bool | None = None
     enable_alg_ext: bool = False
     enable_minmax_tuning: bool = True
     enable_norm_bias_tuning: bool = False

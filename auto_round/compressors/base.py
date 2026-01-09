@@ -93,6 +93,7 @@ from auto_round.utils import (
     is_fp8_linear,
     is_fp8_model,
     is_hpex_available,
+    is_moe_model,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -189,7 +190,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
-        disable_opt_rtn: bool = False,
+        disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
         **kwargs,
@@ -226,7 +227,7 @@ class BaseCompressor(object):
             act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
             enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
             device_map (str | dict, optional): Device placement map. Defaults to None.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to False.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             **kwargs: Backward compatible options:
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
@@ -388,6 +389,30 @@ class BaseCompressor(object):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
+
+        # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
+        # To avoid None issue, we keep a copy though it's a little ugly
+        self.orig_disable_opt_rtn = disable_opt_rtn
+        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
+            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
+            disable_opt_rtn = True
+        if (
+            self.bits >= 8
+            and self.act_bits >= 16
+            and self.iters == 0
+            and self.data_type == "int"
+            and disable_opt_rtn is None
+        ):
+            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
+            disable_opt_rtn = True
+        if disable_opt_rtn is None and self.iters == 0:
+            logger.info(
+                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+            )
+            disable_opt_rtn = False
+
+        # Important Note! This is not very robust, do NOT rely on it to do high risky thing
+        self.is_moe_model = is_moe_model(self.model)
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
@@ -1090,6 +1115,20 @@ class BaseCompressor(object):
             m.zp = None
         else:
             try:
+                disable_opt_rtn = self.disable_opt_rtn
+                if (
+                    not disable_opt_rtn
+                    and self.orig_disable_opt_rtn is None
+                    and self.is_moe_model
+                    and "expert" in m.tmp_name
+                    and "shared_expert" not in m.tmp_name
+                    and self.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
+                ):
+                    disable_opt_rtn = True
+                    logger.warning_once(
+                        "MoE layer detected: optimized RTN is disabled for efficiency. "
+                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
+                    )
                 m = m.to(tuning_device)
                 m = WrapperLinear(
                     m,
@@ -1098,7 +1137,7 @@ class BaseCompressor(object):
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
-                    disable_opt_rtn=self.disable_opt_rtn,
+                    disable_opt_rtn=disable_opt_rtn,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
