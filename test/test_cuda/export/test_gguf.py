@@ -56,7 +56,7 @@ class TestAutoRound:
 
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
-            f"PYTHONPATH='../..:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
+            f"PYTHONPATH='../../..:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
