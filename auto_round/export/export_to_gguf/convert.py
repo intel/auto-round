@@ -410,7 +410,9 @@ def prepare_tensors(cls):
                     break
             if skip:
                 continue
-            data = data_torch.squeeze()
+            # sync with new version of gguf
+            # data = data_torch.squeeze()
+            data = data_torch
             n_dims = len(data.shape)
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
 
@@ -520,17 +522,29 @@ def prepare_tensors(cls):
                 elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q8_0
 
+            from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
+
+            if data_qtype.name.lower() in GGML_QUANT_SIZES:
+                block_size, type_size = GGML_QUANT_SIZES[data_qtype.name.lower()]
+                if data_torch.shape[-1] % block_size != 0:
+                    logger.warning(
+                        f"{new_name}: Can't quantize tensor with shape {data_torch.shape} to {data_qtype.name}, fallback to F16"
+                    )
+                    data_qtype = gguf.GGMLQuantizationType.F16
+
             if isinstance(data_qtype, bool) or data_qtype in [
                 gguf.GGMLQuantizationType.F16,
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
             ]:
-                data = data_torch.squeeze().cpu().numpy()
+                # sync with new version of gguf
+                # data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
                 if len(data.shape) == 0:
                     data = data_torch.numpy()
                 try:
+                    data = data_torch.cpu().numpy()
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
                     logger.warning("%s, %s", e, "falling back to F16")
