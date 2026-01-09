@@ -93,6 +93,7 @@ from auto_round.utils import (
     is_fp8_linear,
     is_fp8_model,
     is_hpex_available,
+    is_moe_model,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -100,7 +101,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device, is_moe_model,
+    unsupported_meta_device,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -1113,12 +1114,12 @@ class BaseCompressor(object):
             try:
                 disable_opt_rtn = self.disable_opt_rtn
                 if (
-                        not disable_opt_rtn
-                        and self.orig_disable_opt_rtn is None
-                        and self.is_moe_model
-                        and "expert" in m.tmp_name
-                        and "shared_expert" not in m.tmp_name
-                        and self.super_bits is None # GGUF still uses the optimized RTN for MoE layers
+                    not disable_opt_rtn
+                    and self.orig_disable_opt_rtn is None
+                    and self.is_moe_model
+                    and "expert" in m.tmp_name
+                    and "shared_expert" not in m.tmp_name
+                    and self.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
                 ):
                     disable_opt_rtn = True
                     logger.warning_once(
