@@ -404,8 +404,7 @@ class BaseCompressor(object):
             disable_opt_rtn = True
         if disable_opt_rtn is None and self.iters == 0:
             logger.info(
-                "`enable_opt_rtn` is turned on "
-                "Set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+                "`enable_opt_rtn` is turned on " "Set `--disable_opt_rtn` for higher speed at the cost of accuracy."
             )
             disable_opt_rtn = False
 
