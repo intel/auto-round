@@ -393,7 +393,7 @@ class BaseCompressor(object):
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
         self.orig_disable_opt_rtn = disable_opt_rtn
-        if self.iters !=0 and self.orig_disable_opt_rtn is not None:
+        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
             logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
             disable_opt_rtn = True
         if (
