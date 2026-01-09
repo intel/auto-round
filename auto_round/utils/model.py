@@ -598,9 +598,9 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return False
 
 
-def is_moe_module(module: torch.nn.Module) -> bool:
+def is_moe_layer(module: torch.nn.Module) -> bool:
     """Returns whether the module is an MOE layer."""
-    return any(
+    return "moe" in type(module).__name__.lower() or any(
         key in type(module).__name__.lower()
         for key in [
             "MixtralSparseMoeBlock".lower(),
@@ -615,7 +615,6 @@ def is_moe_module(module: torch.nn.Module) -> bool:
             "Qwen3MoeSparseMoeBlock".lower(),
         ]
     )
-
 
 def is_fp8_model(model: torch.nn.Module) -> bool:
     if not hasattr(model, "is_fp8"):
@@ -1292,7 +1291,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         model = get_module(model, moe_name)
     # Handle input quantizers of experts that are not calibrated
     for name, sub_module in model.named_modules():
-        if not (is_moe_module(sub_module) and hasattr(sub_module, "experts")):
+        if not (is_moe_layer(sub_module) and hasattr(sub_module, "experts")):
             continue
         expert_linear_names = get_expert_linear_names(sub_module)
         # Get input projection names for FP8 dispatch unification
