@@ -402,7 +402,7 @@ class BaseCompressor(object):
         if disable_opt_rtn is None:
             if self.iters == 0:
                 logger.info("For the most RTN cases, set `--disable_opt_rtn` to False as default.")
-            disable_otp_rtn = False
+            disable_opt_rtn = False
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
