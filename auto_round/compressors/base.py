@@ -189,7 +189,7 @@ class BaseCompressor(object):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         enable_alg_ext: bool = False,
-        disable_opt_rtn: Optional[bool] = None,
+        disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = False,
         **kwargs,
@@ -400,9 +400,11 @@ class BaseCompressor(object):
             and self.data_type == "int"
             and disable_opt_rtn is None
         ):
-            logger.warning("for INT8 RTN quantization, set `--disable_opt_rtn` as default.")
+            logger.warning("For W8A16 RTN quantization,  `disable_opt_rtn` is turned on for efficiency ")
             disable_opt_rtn = True
         if disable_opt_rtn is None:
+            if self.iters == 0:
+                logger.info("`enable_opt_rtn` is turned on for RTN quantization")
             disable_opt_rtn = False
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
