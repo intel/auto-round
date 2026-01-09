@@ -966,7 +966,9 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
     # User configurable (can be preset on rounder)
     max_shard_size = getattr(rounder, "max_shard_size", "5GB")
     safe_serialization = getattr(rounder, "safe_serialization", True)
-    layer_names = rounder._get_quantized_layer_names_outside_blocks()
+    if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
+        rounder.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
+    layer_names = rounder.quantized_layer_names_outside_blocks
     if len(layer_names) > 0 and name != layer_names[-1]:
         last_group = False
 
@@ -1046,7 +1048,6 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
                 del rounder._current_shard_tensors[param]
         rounder._current_shard_tensors = OrderedDict()
         rounder._current_shard_size = 0
-        clear_memory()
 
     for pname, tensor in flat_tensors.items():
         t_elems = tensor.numel()
@@ -1177,7 +1178,6 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
             for _attr in attrs_to_cleanup:
                 if hasattr(rounder, _attr):
                     delattr(rounder, _attr)
-            clear_memory()
         except Exception as _cleanup_err:
             logger.warning(f"shard cleanup warning: {_cleanup_err}")
 
