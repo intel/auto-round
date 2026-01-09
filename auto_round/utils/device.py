@@ -832,10 +832,10 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
         - Mixtral (2/8 experts): returns 0.25
         - Qwen2MoE (4/60 experts): returns ~0.067
     """
-    from auto_round.utils.model import is_moe
+    from auto_round.utils.model import is_moe_module
 
     for name, module in block.named_modules():
-        if not is_moe(module):
+        if not is_moe_module(module):
             continue
 
         config = getattr(block, "config", None)
@@ -898,7 +898,7 @@ def estimate_tuning_block_mem(
             - additional_memory (float): Additional memory overhead (in GB) for operations like attention.
     """
     # Calculate all block parameters memory and build layer-wise memory dict
-    from auto_round.utils.model import get_layer_features, is_moe
+    from auto_round.utils.model import get_layer_features, is_moe_module
 
     layer_memory_dict = {}
 
