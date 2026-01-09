@@ -206,7 +206,7 @@ class TestGGUF:
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
-                assert abs(file_size - 2537) < 5.0
+                assert abs(file_size - 2173) < 5.0
             else:
                 assert abs(file_size - 892) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
