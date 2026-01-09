@@ -10,6 +10,9 @@ from auto_round import AutoRound
 
 from ...helpers import get_model_path, get_tiny_model
 
+AUTO_ROUND_PATH = __file__.split("/")
+AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
 
 class TestGGUF:
 
@@ -26,7 +29,7 @@ class TestGGUF:
     def test_basic_usage(self, tiny_gemma_model_path, tiny_qwen_model_path):
         python_path = sys.executable
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model {tiny_gemma_model_path} "
+            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model {tiny_gemma_model_path} "
             f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
         )
         if res > 0 or res == -1:
@@ -34,7 +37,7 @@ class TestGGUF:
         shutil.rmtree("./saved", ignore_errors=True)
 
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model {tiny_qwen_model_path}"
+            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model {tiny_qwen_model_path}"
             f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
@@ -162,7 +165,7 @@ class TestGGUF:
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
         for gguf_format in ["gguf:q4_k_m"]:
             res = os.system(
-                f"cd .. && {python_path} -m auto_round --model {model_name} "
+                f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model {model_name} "
                 f" --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format {gguf_format}"
             )
             if res > 0 or res == -1:
@@ -170,7 +173,7 @@ class TestGGUF:
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
             res = os.system(
-                f"cd .. && {python_path} -m auto_round --model {model_name}"
+                f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
                 f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --format fake,{gguf_format}"
             )
             if res > 0 or res == -1:
@@ -179,7 +182,7 @@ class TestGGUF:
 
         # test mixed q2_k_s
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model {model_name}"
+            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
             f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED"
         )
         if res > 0 or res == -1:

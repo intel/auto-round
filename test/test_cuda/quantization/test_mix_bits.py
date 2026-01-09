@@ -242,7 +242,6 @@ class TestAutoRound:
         }
         autoround = AutoRound(
             tiny_opt_model_path,
-            self.tokenizer,
             scheme="W4A16",
             iters=2,
             seqlen=2,

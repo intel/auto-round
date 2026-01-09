@@ -354,7 +354,7 @@ class TestAutoRound:
 
     @multi_card
     def test_mllm_device_map(self):
-        model_name = get_model_path("qwen/Qwen2-VL-2B-Instruct/")
+        model_name = get_model_path("qwen/Qwen2-VL-2B-Instruct")
         from auto_round import AutoRoundMLLM
 
         device_map = "0,1"

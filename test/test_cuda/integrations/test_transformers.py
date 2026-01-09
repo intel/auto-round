@@ -36,7 +36,7 @@ if is_torch_available():
 # @slow
 @require_torch_gpu
 @require_accelerate
-class AutoRoundTest:
+class TestAutoRound:
     model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
     input_text = "There is a girl who likes adventure,"
     EXPECTED_OUTPUTS = set()
@@ -205,3 +205,8 @@ class AutoRoundTest:
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+
+
+#     FAILED export/test_gguf.py::TestAutoRound::test_gguf_format - AssertionError: qwen2 tuning fail
+# FAILED export/test_gguf.py::TestAutoRound::test_all_format - SystemExit: 1
+# FAILED export/test_gguf.py::TestAutoRound::test_vlm_gguf - AttributeError: 'Qwen2VLForConditionalGeneration' object has no attribute 'last_layer_name_to_block_name'

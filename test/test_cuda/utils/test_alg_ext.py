@@ -10,6 +10,9 @@ from auto_round.eval.evaluation import simple_evaluate_user_model
 
 from ...helpers import get_model_path
 
+AUTO_ROUND_PATH = __file__.split("/")
+AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
 
 class TestAlgExt:
     save_folder = "./saved"
@@ -49,13 +52,13 @@ class TestAlgExt:
         python_path = sys.executable
 
         res = os.system(
-            f"cd .. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --avg_bits 2 --options=W2A16,W4A16 --ignore_scale_zp_bits --nsamples 1 --seqlen 32"
+            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --avg_bits 2 --options=W2A16,W4A16 --ignore_scale_zp_bits --nsamples 1 --seqlen 32"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"cd .. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --avg_bits 5.5 --options=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile --nsamples 1 --seqlen 32"
+            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --avg_bits 5.5 --options=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile --nsamples 1 --seqlen 32"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
