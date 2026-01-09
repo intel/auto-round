@@ -100,7 +100,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device,
+    unsupported_meta_device, is_moe_model,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -390,6 +390,9 @@ class BaseCompressor(object):
             )
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
+
+        # To avoid None issue, we keep a copy though it's a little ugly
+        self.orig_disable_opt_rtn = disable_opt_rtn
         if (
             self.bits >= 8
             and self.act_bits >= 16
@@ -401,6 +404,9 @@ class BaseCompressor(object):
             disable_opt_rtn = True
         if disable_opt_rtn is None:
             disable_opt_rtn = False
+
+        # Important Note! This is not very robust, do NOT rely on it to do high risky thing
+        self.is_moe_model = is_moe_model(self.model)
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
@@ -1103,6 +1109,19 @@ class BaseCompressor(object):
             m.zp = None
         else:
             try:
+                disable_opt_rtn = self.disable_opt_rtn
+                if (
+                        not disable_opt_rtn
+                        and self.orig_disable_opt_rtn is None
+                        and self.is_moe_model
+                        and "expert" in m.tmp_name
+                        and "shared_expert" not in m.tmp_name
+                ):
+                    disable_opt_rtn = True
+                    logger.warning_once(
+                        "MoE layer detected: optimized RTN is disabled for efficiency. "
+                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
+                    )
                 m = m.to(tuning_device)
                 m = WrapperLinear(
                     m,
@@ -1111,7 +1130,7 @@ class BaseCompressor(object):
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
-                    disable_opt_rtn=self.disable_opt_rtn,
+                    disable_opt_rtn=disable_opt_rtn,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
