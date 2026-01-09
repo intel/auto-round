@@ -400,7 +400,7 @@ class BaseCompressor(object):
             logger.warning("for INT8 RTN quantization, set `--disable_opt_rtn` as default.")
             disable_opt_rtn = True
         if disable_opt_rtn is None:
-            disable_otp_rtn = False
+            disable_opt_rtn = False
 
         self.minmax_lr = minmax_lr or self.lr
         self.enable_alg_ext = enable_alg_ext
