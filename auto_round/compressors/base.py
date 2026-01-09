@@ -403,7 +403,7 @@ class BaseCompressor(object):
             and self.data_type == "int"
             and disable_opt_rtn is None
         ):
-            logger.warning(" `disable_opt_rtn` is turned on for W8A16 quantization  to improve efficiency.")
+            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
             disable_opt_rtn = True
         if disable_opt_rtn is None and self.iters == 0:
             logger.info(
