@@ -41,7 +41,7 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    immediate_saving,
+    immediate_save,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
@@ -423,8 +423,8 @@ class BaseCompressor(object):
         self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
-        self.immediate_packing = False
-        self.immediate_saving = False
+        self.is_immediate_packing = False
+        self.is_immediate_saving = False
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1109,7 +1109,7 @@ class BaseCompressor(object):
             set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
-        if self.immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
+        if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
             m = m.to(tuning_device)
             m.scale = None
             m.zp = None
@@ -1159,7 +1159,7 @@ class BaseCompressor(object):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.immediate_packing:  # For gguf, packing conducts on block level
+        if self.is_immediate_packing:  # For gguf, packing conducts on block level
             self._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
@@ -1169,17 +1169,17 @@ class BaseCompressor(object):
             if to_cpu:
                 m = m.to("cpu")
             set_module(self.model, name, m)
-        if self.immediate_saving:
+        if self.is_immediate_saving:
             if hasattr(self, "all_to_quantized_module_names"):
                 all_to_quantized_module_names = self.all_to_quantized_module_names
             else:
                 all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.model, name)
-            immediate_saving(self, m, name, last_module)
+            immediate_save(self, m, name, last_module)
 
     def _immediate_pack(self, name: str):
-        if not self.immediate_packing:
+        if not self.is_immediate_packing:
             return
         self.formats[0].immediate_pack(
             name=name,
@@ -1284,12 +1284,19 @@ class BaseCompressor(object):
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()
                     cnt = 1
+                    # from pympler import muppy, summary
+                    #
+                    # sum1 = summary.summarize(muppy.get_objects())
+                    # summary.print_(sum1)
                 cnt += 1
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
         self.quantized = True
         return self.model, self.layer_config
+
+    def quantize_layer_via_rtn_immediate_save(self):
+        pass
 
     def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
@@ -1399,7 +1406,9 @@ class BaseCompressor(object):
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.tmp_name)
-                if not self.immediate_saving:
+
+                immediate_save(self, block, last_group=False)
+                if not self.is_immediate_saving:
                     mv_module_from_gpu(block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
@@ -1478,13 +1487,13 @@ class BaseCompressor(object):
             # Determine if immediate packing is required
             formats = self.formats
             if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
-                self.immediate_packing = True
+                self.is_immediate_packing = True
                 if not formats[0].is_gguf() and self.low_cpu_mem_usage:
-                    self.immediate_saving = True
+                    self.is_immediate_saving = True
 
-        if self.immediate_saving and "int" not in self.data_type:
+        if self.is_immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
-            self.immediate_saving = False
+            self.is_immediate_saving = False
         if self.iters == 0:
             return self._quantize_rtn()
 
@@ -1556,7 +1565,7 @@ class BaseCompressor(object):
                 device=self.device,
                 pbar=pbar,
             )
-            if self.immediate_packing and len(self.formats) != 1:
+            if self.is_immediate_packing and len(self.formats) != 1:
                 raise ValueError(
                     f"Expected exactly one packing format when 'immediate_packing' is True, "
                     f"but got {len(self.formats)} formats."
@@ -1659,7 +1668,7 @@ class BaseCompressor(object):
 
         if hasattr(self, "formats"):
             has_gguf = any(format_.is_gguf() for format_ in self.formats)
-        if has_gguf and self.immediate_packing:
+        if has_gguf and self.is_immediate_packing:
             enable_quanted_input = False
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
@@ -1672,7 +1681,7 @@ class BaseCompressor(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
                 )  # self.model.hf_device_map has not been changed
-        if not self.immediate_saving:
+        if not self.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.device_list)
         quant_layer = self._quantize_layer
@@ -1682,12 +1691,12 @@ class BaseCompressor(object):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
-            if self.immediate_packing:
+            if self.is_immediate_packing:
                 self._immediate_pack(layer_name)
 
-            if self.immediate_saving:
+            if self.is_immediate_saving:
                 m = get_module(self.model, layer_name)
-                immediate_saving(self, m, name=layer_name, last_group=True)
+                immediate_save(self, m, name=layer_name, last_group=True)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
             memory_monitor.log_summary()
@@ -2922,19 +2931,19 @@ class BaseCompressor(object):
             )
             if hasattr(model, "config"):
                 del m.config
-            if self.immediate_packing:
+            if self.is_immediate_packing:
                 for _, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
                     self._immediate_pack(tmp_m.tmp_name)
 
-            if self.immediate_saving:
+            if self.is_immediate_saving:
                 last_group = (i + nblocks) >= len(block_names)
-                immediate_saving(self, m, last_group=last_group)
+                immediate_save(self, m, last_group=last_group)
         if pbar is not None:
             pbar.update(1)
 
-        if not self.immediate_saving:
+        if not self.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
