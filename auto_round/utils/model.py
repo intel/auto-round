@@ -906,11 +906,83 @@ def pad_block_fp8_weight_naive(
     return weight, orig_M, orig_N
 
 
-def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
+def _create_e4m3fnuz_lut() -> torch.Tensor:
+    """Create a lookup table for float8_e4m3fnuz to bfloat16 conversion."""
+    lut = torch.zeros(256, dtype=torch.bfloat16)
+
+    for i in range(256):
+        sign = (i >> 7) & 0x1
+        exponent = (i >> 3) & 0xF
+        mantissa = i & 0x7
+
+        if exponent == 15:
+            lut[i] = float("nan")
+            continue
+
+        if exponent == 0 and mantissa == 0:
+            lut[i] = 0.0
+            continue
+
+        if exponent == 0:
+            value = (mantissa / 8.0) * (2.0 ** (1 - 7))
+        else:
+            value = (1.0 + mantissa / 8.0) * (2.0 ** (exponent - 7))
+
+        if sign:
+            value = -value
+
+        lut[i] = value
+
+    return lut
+
+
+_E4M3FNUZ_LUT = None
+
+
+def _dequant_fp8_e4m3fnuz_to_bf16(weight: torch.Tensor) -> torch.Tensor:
+    """Dequantize float8_e4m3fnuz weights to bfloat16."""
+    global _E4M3FNUZ_LUT
+
+    if _E4M3FNUZ_LUT is None:
+        _E4M3FNUZ_LUT = _create_e4m3fnuz_lut()
+
+    lut = _E4M3FNUZ_LUT.to(weight.device)
+    weight_uint8 = weight.view(torch.uint8)
+    orig_shape = weight_uint8.shape
+
+    weight_flat = weight_uint8.flatten().long()
+    dequant_flat = lut[weight_flat]
+    dequant = dequant_flat.reshape(orig_shape)
+
+    return dequant
+
+
+def dequant_block_fp8_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+) -> torch.Tensor:
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
     assert len(block_size) == 2
+
+    # Detect if weights are in e4m3fnuz format (Gaudi2-specific)
+    is_e4m3fnuz = False
+    if data_type is not None and "e4m3fnuz" in data_type.lower():
+        is_e4m3fnuz = True
+    elif hasattr(weight, "dtype") and hasattr(torch, "float8_e4m3fnuz"):
+        is_e4m3fnuz = weight.dtype == torch.float8_e4m3fnuz
+
+    # If e4m3fnuz and on CPU, use manual dequantization via LUT
+    if is_e4m3fnuz and weight.device.type == "cpu":
+        from auto_round.utils import logger
+
+        logger.warning_once(
+            "Detected float8_e4m3fnuz (Gaudi2) weights on CPU. " "Using lookup table for dequantization."
+        )
+        # Store original shape and use LUT
+        orig_shape = weight.shape
+        weight = _dequant_fp8_e4m3fnuz_to_bf16(weight)
+        weight = weight.view(orig_shape)
 
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
@@ -1015,7 +1087,8 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
         dq_weight = layer.compressor.decompress_module(layer)
     else:
         weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+        data_type = getattr(layer, "data_type", None)
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 
