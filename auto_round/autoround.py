@@ -24,11 +24,12 @@ from auto_round.compressors import (
     ExtraConfig,
     LLMCompressor,
     MLLMCompressor,
+    VllmCompressor
 )
 from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_diffusion_model, is_mllm_model
+from auto_round.utils import is_diffusion_model, is_mllm_model, is_vllm_model
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -160,6 +161,7 @@ class AutoRound:
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
 
+        use_vllm_loading = kwargs.pop("use_vllm_loading", False)
         model_cls = []
 
         has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None
@@ -184,6 +186,9 @@ class AutoRound:
             model_cls.append(DiffusionCompressor)
             if extra_config:
                 extra_config.mllm_config = None
+        elif use_vllm_loading or is_vllm_model(model):
+            logger.info("using vllm to load model.")
+            model_cls.append(VllmCompressor)
         else:
             if extra_config:
                 extra_config.mllm_config = None
