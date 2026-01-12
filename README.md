@@ -229,6 +229,8 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 | **llm_compressor** | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC` |
 | **gguf** | GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q4_K_M, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q8_0 |
 | **fake** | all schemes |
+</details>
+
 
 ### Adaptive Schemes (Experimental Feature)
 AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
