@@ -451,7 +451,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto_round_kernel"],
 )
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
@@ -481,7 +481,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto_round_kernel"],
 )
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
@@ -511,7 +511,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.9.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto_round_kernel"],
 )
 
 BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
