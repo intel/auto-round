@@ -825,11 +825,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                             f"the setting in layer_config {layer_name} "
                             f"could not match any supported gguf format, please have a check."
                         )
-                    else:
-                        logger.warning_once(
-                            f"the setting in layer_config {layer_name} "
-                            f"could not match any supported gguf format, reset to {new_type}"
-                        )
+
                 new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:

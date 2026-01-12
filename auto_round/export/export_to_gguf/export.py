@@ -148,6 +148,7 @@ def pack_gguf_layer(
                 backend,
                 low_cpu_mem_usage=True,
                 model_type=convert_hf_to_gguf.ModelType.TEXT,
+                device=device,
             )
         ]
         if model_type == convert_hf_to_gguf.ModelType.MMPROJ:
