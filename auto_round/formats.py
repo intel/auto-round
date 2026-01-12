@@ -666,13 +666,14 @@ class GGUFFormat(OutputFormat):
         else:
             scheme = ar.scheme
             gguf_format = f"gguf:{format.lower()}"
-            if isinstance(scheme, str) and scheme.lower() != gguf_format:
-                logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
             if format.lower().endswith("_mixed"):
-                gguf_format = gguf_format.lower().replace("_mixed", "_s")
                 from auto_round.schemes import _handle_special_schemes
 
-                ar.config = _handle_special_schemes(scheme, ar.layer_config, ar.model)
+                ar.layer_config = _handle_special_schemes(scheme, ar.layer_config, ar.model)
+                gguf_format = gguf_format.lower().replace("_mixed", "_s")
+            if isinstance(scheme, str) and scheme.lower() != gguf_format:
+                logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
+                ar.scheme = gguf_format
             self.output_format = gguf_format
             self.backend = None
         self.mllm = ar.mllm
