@@ -24,10 +24,11 @@ from auto_round.compressors import (
     ExtraConfig,
     LLMCompressor,
     MLLMCompressor,
+    VllmCompressor
 )
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_diffusion_model, is_mllm_model
+from auto_round.utils import is_diffusion_model, is_mllm_model, is_vllm_model
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -154,7 +155,7 @@ class AutoRound:
             ...     # ...
             ... }
         """
-
+        use_vllm_loading = kwargs.pop("use_vllm_loading", False)
         model_cls = []
 
         if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
@@ -167,6 +168,9 @@ class AutoRound:
             model_cls.append(DiffusionCompressor)
             if extra_config:
                 extra_config.mllm_config = None
+        elif use_vllm_loading or is_vllm_model(model):
+            logger.info("using vllm to load model.")
+            model_cls.append(VllmCompressor)
         else:
             if extra_config:
                 extra_config.mllm_config = None

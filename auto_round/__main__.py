@@ -159,6 +159,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument(
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
+        basic.add_argument("--use_vllm_loading", action="store_true", help="Use vllm to load model.")
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
@@ -661,6 +662,7 @@ def tune(args):
         layer_config=layer_config,
         model_dtype=args.model_dtype,
         momentum=args.momentum,
+        use_vllm_loading=args.use_vllm_loading,
     )
 
     model_name = args.model.rstrip("/")
