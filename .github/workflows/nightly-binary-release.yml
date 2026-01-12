@@ -1,5 +1,8 @@
 name: Nightly Binary Build and Publish
 
+permissions:
+  contents: read
+
 on:
   schedule:
     - cron: '0 18 * * *' # UTC 18:00, Beijing 02:00
@@ -40,7 +43,6 @@ jobs:
           else
             VERSION="${{ github.event.inputs.version }}"
           fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
           # Update version in setup.py (assumes version is set as version='...')
           sed -i "s/version=get_build_version(),/version='$VERSION'/" setup.py
           # Update project name in setup.py (assumes name='...')
