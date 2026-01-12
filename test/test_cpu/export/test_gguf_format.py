@@ -187,7 +187,7 @@ class TestGGUF:
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
     def test_vlm_gguf(self):
-        from ..helpers import save_tiny_model
+        from ...helpers import save_tiny_model
 
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         tiny_model_path = save_tiny_model(model_name, "./tmp/tiny_qwen_vl_model_path", num_layers=2, is_mllm=True)
