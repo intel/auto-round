@@ -295,16 +295,13 @@ for key, val in GGUF_CONFIG.items():
     value.pop("lm_head", None)
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
 
-SPECIAL_SCHEMES = {"GGUF:Q2_K_MIXED": PRESET_SCHEMES["GGUF:Q2_K_S"]}
-PRESET_SCHEMES.update(SPECIAL_SCHEMES)
-
 
 def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.nn.Module) -> dict:
     """handle special schemes, like GGUF:Q2_K_MIXED.
     Provide some special auto_round recipes.
 
     """
-    if scheme_name == "GGUF:Q2_K_MIXED":
+    if scheme_name.lower() == "gguf:q2_k_mixed":
         for n, m in model.named_modules():
             if n in layer_config:
                 continue

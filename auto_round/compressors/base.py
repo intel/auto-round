@@ -58,7 +58,6 @@ from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.schemes import (
-    SPECIAL_SCHEMES,
     QuantizationScheme,
     _handle_special_schemes,
     get_gguf_scheme,
@@ -610,8 +609,7 @@ class BaseCompressor(object):
                 scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
-                if scheme in SPECIAL_SCHEMES:
-                    self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
+                self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:

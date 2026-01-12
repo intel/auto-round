@@ -159,13 +159,14 @@ class TestAutoRound:
         file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
         assert abs(file_size - 307) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     @require_gguf
     def test_vlm_gguf(self):
         from ...helpers import save_tiny_model
 
         model_name = "/models/gemma-3-4b-it"
-        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=2, is_mllm=True)
+        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True)
         from auto_round import AutoRound
 
         autoround = AutoRound(
@@ -178,8 +179,13 @@ class TestAutoRound:
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
         assert "mmproj-model.gguf" in os.listdir("./saved")
-        file_size = os.path.getsize("./saved/tiny_model_path-860M-Q4_K_M.gguf") / 1024**2
-        assert abs(file_size - 639) < 5.0
-        file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        assert abs(file_size - 75) < 5.0
+        for file in os.listdir("./saved"):
+            print(f"{file}: {os.path.getsize(os.path.join('./saved', file)) / 1024**2} MB")
+            file_size = os.path.getsize(os.path.join("./saved", file)) / 1024**2
+            if "mmproj-model.gguf" in file:
+                assert abs(file_size - 75) < 5.0
+            else:
+                assert abs(file_size - 690) < 5.0
+
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+        shutil.rmtree(tiny_model_path, ignore_errors=True)
