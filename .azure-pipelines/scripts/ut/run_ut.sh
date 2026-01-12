@@ -19,6 +19,7 @@ cd /auto-round && uv pip install .
 echo "##[endgroup]"
 uv pip list
 
+rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
