@@ -550,7 +550,7 @@ def vllm_load_model(
         model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     elif isinstance(pretrained_model_name_or_path, LLM):
         llm = pretrained_model_name_or_path
-        model = self.llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     else:
         raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
 

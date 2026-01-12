@@ -17,6 +17,7 @@ from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.base import LLMCompressor
 from auto_round.compressors.mllm.compressor import MLLMCompressor
 from auto_round.compressors.diffusion.compressor import DiffusionCompressor
+from auto_round.compressors.vllm.compressor import VllmCompressor
 from auto_round.compressors.config import (
     DiffusionExtraConfig,
     ExtraConfig,
