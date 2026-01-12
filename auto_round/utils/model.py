@@ -162,6 +162,16 @@ def check_diffusers_installed():  # pragma: no cover
         exit(-1)
 
 
+def check_vllm_installed():  # pragma: no cover
+    try:
+        from vllm import LLM, SamplingParams  # noqa: F401
+
+        return True
+    except ImportError:
+        logger.error("Please install vllm via 'pip install vllm'" " to run vllm model")
+        exit(-1)
+
+
 def check_start_with_block_name(name: str, block_name_to_quantize: list):
     """
     Checks if the given layer name starts with any of the block names to be quantized.
@@ -528,6 +538,37 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def vllm_load_model(
+    pretrained_model_name_or_path: str,
+    **kwargs,
+):
+    check_vllm_installed()
+    from vllm import LLM
+
+    if isinstance(pretrained_model_name_or_path, str):
+        llm = LLM(pretrained_model_name_or_path, enforce_eager=True, cpu_offload_gb=1024, gpu_memory_utilization=0.5)
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    elif isinstance(pretrained_model_name_or_path, LLM):
+        llm = pretrained_model_name_or_path
+        model = self.llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    else:
+        raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
+
+    if not hasattr(model.__class__, 'dtype'):
+        @property
+        def dtype(self):
+            return self.lm_head.weight.dtype
+        setattr(model.__class__, 'dtype', dtype)
+
+    if not hasattr(model.__class__, 'device'):
+        @property
+        def device(self):
+            return self.lm_head.weight.device
+        setattr(model.__class__, 'device', device)
+
+    return llm, model
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -549,7 +590,8 @@ def is_pure_text_model(model):
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
-    model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    model_path = model_or_path if isinstance(model_or_path, str) else getattr(model_or_path, "name_or_path", None)
+
     # For dummy model, model_path could be "".
     if model_path and not os.path.isdir(model_path):
         model_path = download_or_get_path(model_path, platform=platform)
@@ -593,10 +635,23 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
             check_diffusers_installed()
             index_file = os.path.join(model_or_path, "model_index.json")
         return index_file is not None
-    elif not isinstance(model_or_path, torch.nn.Module):
+    elif not isinstance(model_or_path, torch.nn.Module) and "diffusers" in str(type(model_or_path)):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+    else:
+        return False
+
+
+def is_vllm_model(model_or_path: Union[str, object]) -> bool:
+    if not isinstance(model_or_path, torch.nn.Module) and "vllm" in str(type(model_or_path)):
+        check_vllm_installed()
+        # llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+
+        attr = get_nested_attr(model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model")
+        if attr is None:
+            logger.info("Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model")
+        return attr is not None
     else:
         return False
 
@@ -839,6 +894,7 @@ def get_layer_names_in_block(
         list: A list of strings, where each string is the name of a layer
               within a block of the model.
     """
+    from auto_round.utils.common import is_supported_type
     if class_names is None:
         class_names = []
     for n, m in model.named_modules():

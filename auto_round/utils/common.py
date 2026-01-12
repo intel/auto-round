@@ -161,7 +161,7 @@ if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
 
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 SUPPORTED_FORMATS = SupportedFormats()
-SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D, "ColumnParallelLinear", "MergedColumnParallelLinear", "RowParallelLinear", "ReplicatedLinear")
 # Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
 # transformers.integrations.finegrained_fp8.FP8Linear
@@ -187,6 +187,10 @@ MM_KEYS = [
     "pre_mm_projector_norm",
     "vision",
 ]
+
+
+def is_supported_type(module):
+    return type(module) in SUPPORTED_LAYER_TYPES or module.__class__.__name__ in SUPPORTED_LAYER_TYPES
 
 
 def is_debug_mode():
