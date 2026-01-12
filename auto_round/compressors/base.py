@@ -1170,7 +1170,10 @@ class BaseCompressor(object):
                 m = m.to("cpu")
             set_module(self.model, name, m)
         if self.immediate_saving:
-            all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+            if hasattr(self, "all_to_quantized_module_names"):
+                all_to_quantized_module_names = self.all_to_quantized_module_names
+            else:
+                all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.model, name)
             immediate_saving(self, m, name, last_module)
@@ -1204,6 +1207,7 @@ class BaseCompressor(object):
             self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+        self.all_to_quantized_module_names = all_to_quantized_module_names
         if is_nv_fp(self.data_type):
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -1278,6 +1282,7 @@ class BaseCompressor(object):
                 self._quantize_layer_via_rtn(name)
                 if cnt % clear_mem_freq == 0:
                     clear_memory(device_list=self.device_list)
+                    memory_monitor.log_summary()
                     cnt = 1
                 cnt += 1
         # Convert remaining fp8

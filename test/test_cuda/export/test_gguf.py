@@ -12,6 +12,9 @@ from auto_round.testing_utils import require_gguf
 
 from ...helpers import get_model_path, get_tiny_model, save_tiny_model
 
+AUTO_ROUND_PATH = __file__.split("/")
+AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
 
 class TestAutoRound:
     save_dir = "./saved"
@@ -56,7 +59,7 @@ class TestAutoRound:
 
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
-            f"cd .. && {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
+            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
@@ -64,8 +67,8 @@ class TestAutoRound:
 
         from llama_cpp import Llama
 
-        gguf_file = os.listdir(f"{save_dir}/tmp_tiny_qwen_model_path-gguf")[0]
-        llm = Llama(f"{save_dir}/tmp_tiny_qwen_model_path-gguf/{gguf_file}", n_gpu_layers=-1)
+        gguf_file = os.listdir(f"{save_dir}/tiny_qwen_model_path-gguf")[0]
+        llm = Llama(f"{save_dir}/tiny_qwen_model_path-gguf/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
         shutil.rmtree(save_dir, ignore_errors=True)

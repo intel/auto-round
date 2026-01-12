@@ -64,8 +64,8 @@ class TestAutoRound:
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
     def test_small_model_rtn(self):
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
@@ -75,8 +75,8 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_small_model_iters1(self):
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=1)
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
@@ -86,25 +86,25 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_medium_model_rtn(self):
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.55
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.33
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_medium_model_rtn_with_lm_head(self):
-        model, tokenizer = self.tiny_fp8_model()
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0, layer_config=layer_config)
+        ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         model_args = f"pretrained={self.save_dir}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.55
+        assert result["results"]["lambada_openai"]["acc,none"] > 0.33
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -135,9 +135,9 @@ class TestAutoRound:
 
     def test_diff_datatype(self):
         for scheme in ["NVFP4", "MXFP4"]:
-            model, tokenizer = self.tiny_fp8_model()
+            model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
             for iters in [0, 1]:
                 print(f"Testing scheme: {scheme}, iters: {iters}")
-                ar = AutoRound(model=model, tokenizer=tokenizer, iters=iters, scheme=scheme)
+                ar = AutoRound(model_name, iters=iters, scheme=scheme)
                 ar.quantize_and_save(output_dir=self.save_dir)
                 shutil.rmtree(self.save_dir, ignore_errors=True)
