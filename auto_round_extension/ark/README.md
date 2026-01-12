@@ -39,9 +39,9 @@ AutoRound Kernel provides weight-only linear computational capabilities for LLM 
 ## Installation
 ### Install via pip
 ```bash
-# install the latest auto-round-kernel version and this cmd will update your local pytorch version if needed
+# Install the latest auto-round kernel which may upgrade your PyTorch version automatically
 pip install auto-round-kernel 
-# or install together with a specific pytorch version to install the corresponding auto-round-kernel version, e.g., for torch 2.8.x
+# Install auto-round kernel with respective to specific PyTorch version (e.g., v2.8.x)
 pip install auto-round-kernel torch~=2.8.0 
 ```
 
@@ -81,7 +81,7 @@ The version number of auto-round-kernel follows the format:
 |          0.9.1.x          |       0.9.x        |     2025.1     |           2.8.x           |
 |          0.9.2.x          |       0.9.x        |     2025.2     |           2.9.x           |
 
-**Notes:** oneAPI version is aligned with PyTorch version during auto-round-kernel binary build, but Pytorch version is not required in runtime. 
+**Notes:** oneAPI version is aligned with PyTorch version during auto-round-kernel binary build, but oneAPI toolkit is not required in runtime. 
 
 ### Validated Hardware Environment
 #### CPU based on [Intel 64 architecture or compatible processors](https://en.wikipedia.org/wiki/X86-64):
