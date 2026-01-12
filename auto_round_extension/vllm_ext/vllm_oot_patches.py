@@ -14,9 +14,18 @@
 
 import vllm
 from vllm.logger import init_logger
+import vllm.envs as envs
 
 logger = init_logger(__name__)
 
+
+def update_flashinfer_workspace_buffer_size(new_size: int):
+    import vllm.v1.attention.backends.flashinfer as flashinfer_backend
+    flashinfer_backend.WORKSPACE_BUFFER_SIZE = new_size
+    logger.info(f"Updated FlashInfer WORKSPACE_BUFFER_SIZE to {new_size}")
+
+if envs.VLLM_AR_FLASHINFER_WORKSPACE_BUFFER_SIZE > 0:
+    update_flashinfer_workspace_buffer_size(envs.VLLM_AR_FLASHINFER_WORKSPACE_BUFFER_SIZE)
 
 def oot_maybe_remap_kv_scale_name(name: str, params_dict: dict) -> str | None:
     """Remap the name of FP8 k/v_scale parameters.
