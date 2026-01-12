@@ -1110,26 +1110,40 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     """ """
     from auto_round.schemes import QuantizationScheme
 
-    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias is not None:
-        new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-    scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("global_name", "scale_dtype")
-    for key in keys:
-        setattr(new_layer, key, getattr(layer, key, None))
+    if hasattr(layer, "in_features") and hasattr(layer, "out_features"):
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+        if layer.bias is not None:
+            new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+        scheme_keys = (f.name for f in fields(QuantizationScheme))
+        keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
+        for key in keys:
+            setattr(new_layer, key, getattr(layer, key, None))
 
-    from auto_round.utils.device import is_gaudi2
+        from auto_round.utils.device import is_gaudi2
 
-    if is_gaudi2():
-        device = "cpu"
-    layer = layer.to(device)
-    if layer.__class__.__name__ == "CompressedLinear":
-        dq_weight = layer.compressor.decompress_module(layer)
-    else:
-        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-        data_type = getattr(layer, "data_type", None)
-        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
-    new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+        if is_gaudi2():
+            device = "cpu"
+        layer = layer.to(device)
+        if layer.__class__.__name__ == "CompressedLinear":
+            dq_weight = layer.compressor.decompress_module(layer)
+        else:
+            weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+            dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+        new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+    elif hasattr(layer, "weight_scale_inv"):
+        weight_block_size = getattr(layer, "weight_block_size", None)
+        scale_inv = layer.weight_scale_inv
+        if weight_block_size is not None:
+            dq_weight = dequant_block_fp8_weight(layer.weight, scale_inv, weight_block_size)
+            delattr(layer, "weight_block_size")
+        else:
+            dq_weight = layer.weight.to(torch.bfloat16) * layer.weight_scale_inv.to(torch.bfloat16)
+        from torch.nn.parameter import Parameter
+        weight = Parameter(dq_weight, requires_grad=False)
+        delattr(layer, "weight")
+        setattr(layer, "weight", weight)
+        new_layer = layer
+
     return new_layer
 
 
