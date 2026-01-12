@@ -230,7 +230,10 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
     suffix = ".weight"
     device = data_torch.device if device is None else device
 
-    layer_name = name[: -len(suffix)]
+    if name.endswith(suffix):
+        layer_name = name[: -len(suffix)]
+    else:
+        layer_name = name
     module = get_module(cls.model, layer_name)
     kwargs = {
         "scale": None,
@@ -240,7 +243,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
         "wmin": None,
         "imatrix": None,
     }
-    # support for MOE model with cls expoers not linear
+    # support for MOE model with cls eexperts not linear
     # if hasattr(module, "scale") or ("exps" in new_name and len(data_torch.shape) == 3):
     for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
         if hasattr(module, attr) and getattr(module, attr) is not None:
@@ -542,7 +545,7 @@ def prepare_tensors(cls):
                 # data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
-                if len(data.shape) == 0:
+                if len(data_torch.shape) == 0:
                     data = data_torch.numpy()
                 try:
                     data = data_torch.cpu().numpy()

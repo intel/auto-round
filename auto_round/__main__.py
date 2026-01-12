@@ -33,14 +33,6 @@ RECIPES = {
 }
 
 
-class MixedHelpFormatter(argparse.HelpFormatter):
-    def _format_action_invocation(self, action):
-        if not action.option_strings:
-            return super()._format_action_invocation(action)
-        opts = action.option_strings
-        return "/".join(opts)
-
-
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -496,7 +488,6 @@ def list_item():
 
 def start(recipe="default"):
     recipe = RECIPES[recipe]
-    # parser = BasicArgumentParser(formatter_class=MixedHelpFormatter)
     parser = BasicArgumentParser()
     args = parser.parse_args()
     for k, v in recipe.items():
