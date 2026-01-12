@@ -547,7 +547,7 @@ def vllm_load_model(
         model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     elif isinstance(pretrained_model_name_or_path, LLM):
         llm = pretrained_model_name_or_path
-        model = self.llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     else:
         raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
 
@@ -895,7 +895,7 @@ def get_layer_names_in_block(
     if class_names is None:
         class_names = []
     for n, m in model.named_modules():
-        if is_supported_type(m) or (class_names is not None and m.__class__.__name__ in class_names)::
+        if is_supported_type(m) or (class_names is not None and m.__class__.__name__ in class_names):
             m.bk_tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):

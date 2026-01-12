@@ -14,13 +14,13 @@
 
 from collections import defaultdict
 from copy import deepcopy
-from typing import Union
+from typing import Union, Any
 
 import torch
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.diffusion.dataset import get_vllm_dataloader
+from auto_round.compressors.vllm.dataset import get_vllm_dataloader
 from auto_round.compressors.utils import block_forward
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -146,7 +146,7 @@ class VllmCompressor(BaseCompressor):
 
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
 
-        all_blocks = get_block_names(model)
+        all_blocks = get_block_names(self.model)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
@@ -165,7 +165,7 @@ class VllmCompressor(BaseCompressor):
 
         kwargs["vllm"] = True
         super(VllmCompressor, self).__init__(
-            model=model,
+            model=self.model,
             tokenizer=None,
             platform=platform,
             scheme=scheme,
@@ -251,6 +251,7 @@ class VllmCompressor(BaseCompressor):
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
         self.quantized = True
+        import pdb;pdb.set_trace()
         return self.model, self.layer_config
 
     def calib(self, nsamples, bs):
