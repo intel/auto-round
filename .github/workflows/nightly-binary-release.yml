@@ -44,9 +44,9 @@ jobs:
             VERSION="${{ github.event.inputs.version }}"
           fi
           # Update version in setup.py (assumes version is set as version='...')
-          sed -i "s/version=get_build_version(),/version='$VERSION'/" setup.py
+          sed -i "s/version=get_build_version()/version='$VERSION'/" setup.py
           # Update project name in setup.py (assumes name='...')
-          sed -i "s/name=package_name,/name='auto-round-nightly'/" setup.py
+          sed -i "s/name=package_name/name='auto-round-nightly'/" setup.py
 
       - name: Build binary
         run: |
