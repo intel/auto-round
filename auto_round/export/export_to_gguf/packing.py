@@ -22,6 +22,7 @@ GGML_QUANT_TYPE = {}
 
 
 def register_qtype(name):
+
     def register(cls):
         GGML_QUANT_TYPE[name] = cls
         return cls
@@ -109,7 +110,6 @@ def ggml_quant(
     else:
         new_data = np.concatenate(results, axis=0)
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)  # Check shape correctness
-    new_data = new_data.reshape(*shape[:-1], -1)
     return new_data
 
 

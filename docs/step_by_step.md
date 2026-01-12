@@ -149,12 +149,14 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
 #### Format and scheme support matrix
+> Italics indicates the absence of a kernel or the presence of only an inefficient/reference kernel.
+
 |export format | supported scheme |
 |--------------|------------------|
-|**auto_round**    | W4A16, W2A16, W3A16, W8A16, MXFP4, MXFP8, NVFP4, FPW8A16, W2A16G64, W2A16G32, FP8_STATIC, BF16|
+|**auto_round**    | W4A16, W2A16, W3A16, W8A16, *MXFP4*, *MXFP8*, NVFP4, FPW8A16, W2A16G64, W2A16G32, *FP8_STATIC*, BF16|
 |**auto_awq / auto_round:auto_awq**      | W4A16|
 |**auto_gptq / auto_round:auto_gptq / auto_round:gptqmodel**|W4A16, W2A16, W3A16, W8A16, BF16, W2A16G64, W2A16G32|
-|**llm_compressor / auto_round:llm_compressor** | MXFP4, MXFP8, NVFP4, FPW8A16, FP8_STATIC |
+|**llm_compressor / auto_round:llm_compressor** | *MXFP4*, *MXFP8*, NVFP4, FPW8A16, *FP8_STATIC* |
 |**gguf** | GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q4_K_M, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q8_0 |
 |**fake** | all scheme|
 ### Hardware Compatibility

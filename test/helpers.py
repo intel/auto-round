@@ -70,6 +70,18 @@ def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
 
     if hasattr(model.config, "num_hidden_layers"):
         model.config.num_hidden_layers = num_layers
+    if hasattr(model.config, "text_config"):
+        n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
+        for key in n_block_keys:
+            if hasattr(model.config.text_config, key):
+                setattr(model.config.text_config, key, num_layers)
+        if hasattr(model.config.text_config, "layer_types"):
+            model.config.text_config.layer_types = model.config.text_config.layer_types[:num_layers]
+    if hasattr(model.config, "vision_config"):
+        n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
+        for key in n_block_keys:
+            if hasattr(model.config.vision_config, key):
+                setattr(model.config.vision_config, key, num_layers)
     if hasattr(model.config, "layer_types"):
         model.config.layer_types = model.config.layer_types[:num_layers]
 
