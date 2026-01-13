@@ -1173,7 +1173,7 @@ class BaseCompressor(object):
             set_module(self.model, name, m)
         if self.immediate_saving:
             m = get_module(self.model, name)
-            self.shard_writer.add_module(m,name)
+            self.shard_writer.add_module(m, name)
 
     def _immediate_pack(self, name: str):
         if not self.immediate_packing:
@@ -1282,7 +1282,6 @@ class BaseCompressor(object):
                             self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                             all_to_quantized_module_names.remove(m.tmp_name)
 
-
                     # if not self.immediate_saving:
                     mv_module_from_gpu(block)
 
@@ -1293,7 +1292,7 @@ class BaseCompressor(object):
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
-        if  self.immediate_saving:
+        if self.immediate_saving:
             self.shard_writer.finalize()
         self.quantized = True
         return self.model, self.layer_config
@@ -1495,6 +1494,7 @@ class BaseCompressor(object):
 
         if self.immediate_saving:
             from auto_round.compressors.model_writer import ShardWriter
+
             self.shard_writer = ShardWriter(rounder=self)
         if self.iters == 0:
             return self._quantize_rtn()

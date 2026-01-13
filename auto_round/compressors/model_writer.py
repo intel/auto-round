@@ -1,12 +1,27 @@
-import os
-from auto_round.logger import logger
-from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_name
-import torch
-from auto_round.utils import get_module
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
+import os
+
+import torch
+
+from auto_round.logger import logger
+from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_name, get_module
 
 
-#TODO decouple max_shard_size with dump shard size
+# TODO decouple max_shard_size with dump shard size
 class ShardWriter:
     """
     HF-style shard writer with immediate flushing, module-level freeing,
@@ -16,23 +31,20 @@ class ShardWriter:
     def __init__(self, rounder):
         self.model = rounder.model
 
-        self.max_shard_bytes = self._parse_size(
-            getattr(rounder, "max_shard_size", "5GB")
-        )
+        self.max_shard_bytes = self._parse_size(getattr(rounder, "max_shard_size", "5GB"))
 
         self.use_safetensors = False
         if getattr(rounder, "safe_serialization", True):
             try:
                 from safetensors.torch import save_file  # noqa
+
                 self.use_safetensors = True
             except ImportError:
                 logger.warning("fallback to torch.save as safetensors not installed")
 
         self.shard_suffix = "safetensors" if self.use_safetensors else "bin"
 
-        self.root = os.path.join(
-            rounder._get_save_folder_name(rounder.formats[0]), ""
-        )
+        self.root = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
         os.makedirs(self.root, exist_ok=True)
 
         # -------- shard state --------
@@ -82,6 +94,7 @@ class ShardWriter:
 
         if self.use_safetensors:
             from safetensors.torch import save_file
+
             save_file(self.current_shard, fpath)
         else:
             torch.save(self.current_shard, fpath)
@@ -92,14 +105,9 @@ class ShardWriter:
         for p in params:
             self.saved_params.add(p)
             module_name = p.rsplit(".", 1)[0]
-            self.module_saved_count[module_name] = (
-                self.module_saved_count.get(module_name, 0) + 1
-            )
+            self.module_saved_count[module_name] = self.module_saved_count.get(module_name, 0) + 1
 
-            if (
-                self.module_saved_count[module_name]
-                == self.module_param_count.get(module_name, 0)
-            ):
+            if self.module_saved_count[module_name] == self.module_param_count.get(module_name, 0):
                 try:
                     get_module(self.model, module_name).to("meta")
                 except Exception:
@@ -158,7 +166,6 @@ class ShardWriter:
         - write index
         - copy python files
         """
-
 
         if self._closed:
             return
@@ -231,11 +238,7 @@ class ShardWriter:
                 self.global_weight_map[p] = new
 
         if total > 1:
-            index_name = (
-                "model.safetensors.index.json"
-                if self.use_safetensors
-                else "model.bin.index.json"
-            )
+            index_name = "model.safetensors.index.json" if self.use_safetensors else "model.bin.index.json"
             with open(os.path.join(self.root, index_name), "w", encoding="utf-8") as f:
                 json.dump(
                     {
