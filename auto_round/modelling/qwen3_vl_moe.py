@@ -19,7 +19,7 @@ from torch import nn
 from transformers.activations import ACT2FN
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import logger, unsupported_meta_device
+from auto_round.utils import logger, unsupported_meta_device, clear_memory
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -74,6 +74,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
 
             register_checkpoint_conversion_mapping(config.model_type, [], overwrite=True)
 
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.reshape(-1, hidden_dim)
@@ -113,7 +114,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
                 next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
 
-        if transformers_version <= version.parse("4.57.3"):
+        if transformers_version < version.parse("5.0"):
             return next_states, router_logits
         else:
             return next_states
@@ -142,8 +143,9 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
         from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
             Qwen3VLMoeTextMLP,
         )
-
-        super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        target_device = next(original.parameters()).device
+        with torch.device(target_device):
+            super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
 
         if not unsupported_meta_device(original):
             for i in range(self.num_experts):
@@ -156,3 +158,6 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
                 _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
+            del gate_up, down, gate_proj, up_proj
+            original.to_empty(device="meta") # release original experts parameters
+            clear_memory()

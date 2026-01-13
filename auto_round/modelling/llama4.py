@@ -17,7 +17,7 @@ from transformers.modeling_utils import no_init_weights
 from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import unsupported_meta_device
+from auto_round.utils import unsupported_meta_device, clear_memory
 
 
 class SequentialLlama4TextExperts(torch.nn.ModuleList):
@@ -38,6 +38,9 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 self[i].gate_proj.weight.data.copy_(gate_proj.t())
                 self[i].up_proj.weight.data.copy_(up_proj.t())
                 self[i].down_proj.weight.data.copy_(down.t())
+            del gate_up, down, gate_proj, up_proj
+            original.to_empty(device="meta") # release original experts parameters
+            clear_memory()
 
 
 class SequentialLlama4TextMoe(ReplacementModuleBase):
