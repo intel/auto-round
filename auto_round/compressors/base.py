@@ -1897,6 +1897,28 @@ class BaseCompressor(object):
                     self.model(**data_new, **kwargs)
             except NotImplementedError:
                 pass
+            except TypeError as error:
+                # Handle models with input validation wrappers that reject unexpected keyword arguments
+                error_msg = str(error)
+                if "unexpected keyword argument" in error_msg and isinstance(data_new, dict):
+                    logger.warning_once(
+                        f"Model forward method raised TypeError with keyword arguments. "
+                        f"Attempting fallback with positional arguments. Error: {error_msg}"
+                    )
+                    # Fallback: try calling with input_ids as positional argument
+                    if "input_ids" in data_new:
+                        try:
+                            self.model(data_new["input_ids"], **kwargs)
+                        except Exception as fallback_error:
+                            logger.error(
+                                f"Fallback attempt failed. Original error: {error_msg}, "
+                                f"Fallback error: {fallback_error}"
+                            )
+                            raise error
+                    else:
+                        raise error
+                else:
+                    raise error
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
