@@ -41,12 +41,10 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    immediate_saving,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
     is_nv_fp,
-    is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
@@ -466,6 +464,7 @@ class BaseCompressor(object):
         self.attention_mask = []
 
         self.wrapper_block = wrapper_block
+        self.shard_writer = None
         if self.enable_alg_ext:
             try:
                 logger.warning_once("using algorithm extension for quantization.")
@@ -1056,6 +1055,8 @@ class BaseCompressor(object):
             model = model.to("cpu")
             clear_memory(device_list=self.device_list)
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            if self.immediate_saving:
+                self.shard_writer.finalize()
         except torch.OutOfMemoryError:
             cuda_error_msg = traceback.format_exc()
             try:
@@ -1076,6 +1077,8 @@ class BaseCompressor(object):
                 self.device = "cpu"
                 self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
                 self.device = orig_device
+                if self.immediate_saving:
+                    self.shard_writer.finalize()
             except Exception as e:
                 raise
         finally:
@@ -1169,13 +1172,8 @@ class BaseCompressor(object):
                 m = m.to("cpu")
             set_module(self.model, name, m)
         if self.immediate_saving:
-            if hasattr(self, "all_to_quantized_module_names"):
-                all_to_quantized_module_names = self.all_to_quantized_module_names
-            else:
-                all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-            last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.model, name)
-            immediate_saving(self, m, name, last_module)
+            self.shard_writer.add_module(m,name)
 
     def _immediate_pack(self, name: str):
         if not self.immediate_packing:
@@ -1270,23 +1268,33 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            if clear_mem_freq == 0:
-                clear_mem_freq = 1
-            pbar = tqdm(all_to_quantized_module_names)
-            cnt = 1
-            for name in pbar:
-                pbar.set_description(f"Quantizing {name}")
-                self._quantize_layer_via_rtn(name)
-                if cnt % clear_mem_freq == 0:
+            all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+            all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+            pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+
+            for block_names in all_blocks:
+                for block_name in block_names:
+                    pbar.set_description(f"Quantizing {block_name}")
+                    block = get_module(self.model, block_name)
+                    for _, m in block.named_modules():
+                        if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
+                            # print(m.tmp_name,flush=True)
+                            self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
+                            all_to_quantized_module_names.remove(m.tmp_name)
+
+
+                    # if not self.immediate_saving:
+                    mv_module_from_gpu(block)
+
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()
-                    cnt = 1
-                cnt += 1
+                    pbar.update(1)
+
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
+        if  self.immediate_saving:
+            self.shard_writer.finalize()
         self.quantized = True
         return self.model, self.layer_config
 
@@ -1484,6 +1492,10 @@ class BaseCompressor(object):
         if self.immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
             self.immediate_saving = False
+
+        if self.immediate_saving:
+            from auto_round.compressors.model_writer import ShardWriter
+            self.shard_writer = ShardWriter(rounder=self)
         if self.iters == 0:
             return self._quantize_rtn()
 
@@ -1569,6 +1581,11 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
                     set_module(self.model, n, new_layer)
+                    if self.immediate_saving:
+                        self.shard_writer.add_module(new_layer, n)
+
+        if self.immediate_saving:
+            self.shard_writer.finalize()
 
         end_time = time.time()
         cost_time = end_time - self.start_time
@@ -1686,7 +1703,7 @@ class BaseCompressor(object):
 
             if self.immediate_saving:
                 m = get_module(self.model, layer_name)
-                immediate_saving(self, m, name=layer_name, last_group=True)
+                self.shard_writer.add_module(m, layer_name)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
             memory_monitor.log_summary()
@@ -2928,8 +2945,8 @@ class BaseCompressor(object):
                     self._immediate_pack(tmp_m.tmp_name)
 
             if self.immediate_saving:
-                last_group = (i + nblocks) >= len(block_names)
-                immediate_saving(self, m, last_group=last_group)
+                self.shard_writer.add_module(m)
+
         if pbar is not None:
             pbar.update(1)
 
