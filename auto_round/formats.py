@@ -313,6 +313,7 @@ class FakeFormat(OutputFormat):
         return model
 
 
+@OutputFormat.register("compressed_tensors")
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
     support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"]
@@ -326,7 +327,7 @@ class LLMCompressorFormat(OutputFormat):
             )
             exit(-1)
         # if format.startswith("llm_compressor"):
-        if re.search("^(auto_round:)?llm_compressor", format):
+        if re.search("^(auto_round:)?llm_compressor", format) or re.search("^(auto_round:)?compressed_tensors", format):
             self.output_format = format
             self.backend = None
             if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
