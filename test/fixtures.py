@@ -29,7 +29,7 @@ def tiny_opt_model_path():
     tiny_model_path = "./tmp/tiny_opt_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -38,7 +38,7 @@ def tiny_lamini_model_path():
     tiny_model_path = "./tmp/tiny_lamini_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -47,7 +47,7 @@ def tiny_gptj_model_path():
     tiny_model_path = "./tmp/tiny_gptj_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -56,7 +56,7 @@ def tiny_phi2_model_path():
     tiny_model_path = "./tmp/tiny_phi2_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -65,7 +65,7 @@ def tiny_deepseek_v2_model_path():
     tiny_model_path = "./tmp/tiny_deepseek_v2_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -74,7 +74,7 @@ def tiny_gemma_model_path():
     tiny_model_path = "./tmp/tiny_gemma_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -83,7 +83,7 @@ def tiny_qwen_model_path():
     tiny_model_path = "./tmp/tiny_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -92,7 +92,7 @@ def tiny_untied_qwen_model_path():
     tiny_model_path = "./tmp/tiny_untied_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, force_untie=True)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -101,7 +101,7 @@ def tiny_qwen_moe_model_path():
     tiny_model_path = "./tmp/tiny_qwen_moe_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -110,7 +110,7 @@ def tiny_qwen_vl_model_path():
     tiny_model_path = "./tmp/tiny_qwen_vl_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
@@ -119,7 +119,7 @@ def tiny_qwen_2_5_vl_model_path():
     tiny_model_path = "./tmp/tiny_qwen_2_5_vl_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path)
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True, scope="session")
