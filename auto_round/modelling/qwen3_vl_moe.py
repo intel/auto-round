@@ -19,7 +19,7 @@ from torch import nn
 from transformers.activations import ACT2FN
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import logger, unsupported_meta_device, clear_memory
+from auto_round.utils import clear_memory, logger, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -73,7 +73,6 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
             from transformers.conversion_mapping import register_checkpoint_conversion_mapping
 
             register_checkpoint_conversion_mapping(config.model_type, [], overwrite=True)
-
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -143,6 +142,7 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
         from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
             Qwen3VLMoeTextMLP,
         )
+
         target_device = next(original.parameters()).device
         with torch.device(target_device):
             super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
@@ -159,5 +159,5 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
             del gate_up, down, gate_proj, up_proj
-            original.to_empty(device="meta") # release original experts parameters
+            original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
