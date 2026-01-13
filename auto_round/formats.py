@@ -76,8 +76,8 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
         )
     gguf_format_name = get_gguf_scheme(ar.scheme)
     if gguf_format_name:
-        # if gguf_format_name.lower().endswith("mixed"):
-        #     gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
+        if gguf_format_name.lower().endswith("mixed"):
+            gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
         if any([f.lower() not in ["fake", gguf_format_name.lower()] for f in formats]):
             tmp_format_name = gguf_format_name.lower() if "fake" not in formats else f"{gguf_format_name.lower()},fake"
             logger.warning(
