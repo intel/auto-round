@@ -404,7 +404,7 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, name)
         orig_device = data_torch.device
-        # data_torch = data_torch.to("cpu")
+        data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
