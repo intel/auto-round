@@ -80,7 +80,7 @@ def download_convert_file(redownload=False):
             f" from https://github.com/ggml-org/llama.cpp manually and move it to {gguf_export_dir}."
         )
         sys.exit(-1)
-    with open(os.path.join(gguf_export_dir, FILE_NAME), "w") as f:
+    with open(os.path.join(gguf_export_dir, FILE_NAME), "w", encoding="utf-8") as f:
         f.write(response.text)
 
 
@@ -214,65 +214,60 @@ def _quant_data_with_args(
     return data
 
 
-def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid, device=None):
+def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, device=None):
+    """
+
+    Args:
+        data_torch: original data tensor
+        data_qtype: quantization type
+        name: original tensor name, for getting auto_round config, model.language_model.layers.0.input_linear.weight
+        modify_name: modified tensor name, for gguf mapping, model.layers.0.input_linear.weight
+        new_name: name after modify_tensors, gguf using this to save tensor, like blk.0.ffn_gate.weight
+        bid: block id
+        device: device to perform quantization. Defaults to None.
+
+    """
     suffix = ".weight"
     device = data_torch.device if device is None else device
-    if suffix in name:
+
+    if name.endswith(suffix):
         layer_name = name[: -len(suffix)]
-        module = get_module(cls.model, layer_name)
-        if hasattr(module, "scale"):
+    else:
+        layer_name = name
+    module = get_module(cls.model, layer_name)
+    kwargs = {
+        "scale": None,
+        "zp": None,
+        "d_scale": None,
+        "d_wmin": None,
+        "wmin": None,
+        "imatrix": None,
+    }
+    # support for MOE model with cls eexperts not linear
+    # if hasattr(module, "scale") or ("exps" in new_name and len(data_torch.shape) == 3):
+    for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
+        if hasattr(module, attr) and getattr(module, attr) is not None:
+            attr_tensor = getattr(module, attr)
+            if not isinstance(attr_tensor, torch.Tensor):
+                continue
             if hasattr(cls, "permute"):
                 bs = module.weight.shape[0]
-                for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
-                    if hasattr(module, attr) and getattr(module, attr) is not None:
-                        attr_tensor = getattr(module, attr)
-                        if not isinstance(attr_tensor, torch.Tensor):
-                            continue
-                        ori_shape = attr_tensor.shape
-                        attr_tensor = cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
-                        attr_tensor = attr_tensor.reshape(ori_shape)
-                        setattr(module, attr, attr_tensor)
-            scale = module.scale if hasattr(module, "scale") else None
-            zp = module.zp if hasattr(module, "zp") else None
-            data_torch = data_torch.to(torch.float32)
-            scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
-            zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
-            if data_qtype.name.lower().endswith("_k"):
-                d_scale = module.w_d_scale.to(torch.float32) if hasattr(module, "w_d_scale") else None
-                d_wmin = module.w_d_wmin.to(torch.float32) if hasattr(module, "w_d_wmin") else None
-                wmin = module.w_wmin.to(torch.float32) if hasattr(module, "w_wmin") else None
-                imatrix = module.imatrix.to(torch.float32) if hasattr(module, "imatrix") else None
-
-                data = ggml_quant(
-                    data_torch,
-                    data_qtype.name.lower(),
-                    scale,
-                    zp,
-                    wmin=wmin,
-                    d_scale=d_scale,
-                    d_wmin=d_wmin,
-                    imatrix=imatrix,
-                    device=device,
-                )
+                attr_tensors_dict = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid))
+                attr_tensor = attr_tensors_dict[new_name]
+            if attr in kwargs:
+                kwargs[attr] = attr_tensor.to(torch.float32)
             else:
-                data = ggml_quant(data_torch, data_qtype.name.lower(), scale, zp, device=device)
-        else:
-            # if data_torch.dtype ==torch.float32:
-            #     data_qtype = gguf.GGMLQuantizationType.F32
-            # else:
-            #     data_qtype = gguf.GGMLQuantizationType.F16
-            data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
-            data = data_torch.to(torch.float32).squeeze().cpu().numpy()
-    else:
-        # for Llama-4
-        # if data_torch.dtype == torch.float32:
-        #     data_qtype = gguf.GGMLQuantizationType.F32
-        # else:
-        #     data_qtype = gguf.GGMLQuantizationType.F16
-        # data = data_torch.squeeze().cpu().numpy()
-        # data_qtype = gguf.GGMLQuantizationType.F32
-        # data = data_torch.to(torch.float32).squeeze().cpu().numpy()
-        data = ggml_quant(data_torch, data_qtype.name.lower(), device=device)
+                kwargs[attr.replace("w_", "")] = attr_tensor.to(torch.float32)
+    data_torch = data_torch.to(torch.float32)
+
+    data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
+    # else:
+    #     # if data_torch.dtype ==torch.float32:
+    #     #     data_qtype = gguf.GGMLQuantizationType.F32
+    #     # else:
+    #     #     data_qtype = gguf.GGMLQuantizationType.F16
+    #     data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
+    #     data = data_torch.to(torch.float32).squeeze().cpu().numpy()
     return data, data_qtype
 
 
@@ -418,7 +413,9 @@ def prepare_tensors(cls):
                     break
             if skip:
                 continue
-            data = data_torch.squeeze()
+            # sync with new version of gguf
+            # data = data_torch.squeeze()
+            data = data_torch
             n_dims = len(data.shape)
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
 
@@ -528,17 +525,30 @@ def prepare_tensors(cls):
                 elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q8_0
 
+            from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
+
+            if data_qtype.name.lower() in GGML_QUANT_SIZES:
+                block_size, type_size = GGML_QUANT_SIZES[data_qtype.name.lower()]
+                if data_torch.shape[-1] % block_size != 0:
+                    logger.warning(
+                        f"{new_name}: Can't quantize tensor with shape {data_torch.shape} to {data_qtype.name},"
+                        " fallback to F16"
+                    )
+                    data_qtype = gguf.GGMLQuantizationType.F16
+
             if isinstance(data_qtype, bool) or data_qtype in [
                 gguf.GGMLQuantizationType.F16,
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
             ]:
-                data = data_torch.squeeze().cpu().numpy()
+                # sync with new version of gguf
+                # data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
-                if len(data.shape) == 0:
+                if len(data_torch.shape) == 0:
                     data = data_torch.numpy()
                 try:
+                    data = data_torch.cpu().numpy()
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
                     logger.warning("%s, %s", e, "falling back to F16")
@@ -583,12 +593,16 @@ def prepare_tensors(cls):
                             if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                 arr_name[i] = str(idx)
                         arr_name = ".".join(arr_name)
-                        arr, data_qtype = _quant_data(cls, arr, data_qtype, arr_name, modify_name, bid, device=device)
+                        arr, data_qtype = _quant_data(
+                            cls, arr, data_qtype, arr_name, modify_name, new_name, bid, device=device
+                        )
                         new_data.append(arr)
                     data = np.array(new_data)
                     del new_data
                 else:
-                    data, data_qtype = _quant_data(cls, data_torch, data_qtype, name, modify_name, bid, device=device)
+                    data, data_qtype = _quant_data(
+                        cls, data_torch, data_qtype, name, modify_name, new_name, bid, device=device
+                    )
 
             shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
 

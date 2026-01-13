@@ -130,6 +130,7 @@ AutoRound supports several Schemes:
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
 
 ### Supported export Formats
+You can use command `auto_round list format` to show all supported formats with support scheme.
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
 inference. **[2,3,4,8] bits are supported**. Please set `--format auto_round`
@@ -146,6 +147,19 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers. 
 adopted within the community, **only 4-bits quantization is supported**. Please set `--format auto_awq`
 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
+
+#### Format and scheme support matrix
+> Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
+
+
+| Format | Supported Schemes                                                                                                                                                       |
+|:---|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **auto_round** | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `BF16`                                |
+| **auto_awq** | W4A16, BF16                                                                                                                                                             |
+| **auto_gptq** | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
+| **llm_compressor** | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`                                                                                                                        |
+| **gguf** | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
+| **fake** | `all schemes (only for research)`                                                                                                                                       |
 
 ### Hardware Compatibility
 
@@ -382,7 +396,7 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 | Qwen3-32B | W2A16/W4A16/W8A16 | OOM with 240G                   | ---                           | OOM with 240G                    | ---                              |
 | Qwen3-32B | MXFP4/MXFP8       | 160G                            | 200s * len of options         | 200G                             | 240s * len of options            |
 | Qwen3-32B | GGUF*             | 210G                            | 80s * len of options          | 200G                             | 60s * len of options             |
-</details> 
+</details>
 
 
 #### Limitations

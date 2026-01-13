@@ -99,7 +99,11 @@ def create_model_class(
             raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
-        hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), "mistral" in model.config.model_type)
+        if "mistral" in model.config.model_type and "params.json" in os.listdir(tmp_work_dir):
+            is_mistral_format = True
+        else:
+            is_mistral_format = False
+        hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), is_mistral_format)
         hparams.pop("quantization_config", None)
         model_instance = model_class(
             dir_model=Path(tmp_work_dir),
@@ -148,6 +152,7 @@ def pack_gguf_layer(
                 backend,
                 low_cpu_mem_usage=True,
                 model_type=convert_hf_to_gguf.ModelType.TEXT,
+                device=device,
             )
         ]
         if model_type == convert_hf_to_gguf.ModelType.MMPROJ:
@@ -209,19 +214,20 @@ def pack_gguf_layer(
 
 
 @torch.inference_mode()
-def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, device="cpu", **kwargs):
+def save_quantized_as_gguf(
+    output_dir, model=None, backend="gguf:q4_0", layer_config=None, mllm=False, device="cpu", **kwargs
+):
     """Export the model to gguf format."""
     st = time.time()
     global gguf_model_instance_global
 
-    model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
         gguf_model_instance_global = [
             create_model_class(
                 output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device
             )
         ]
-        if vlm:
+        if mllm:
             gguf_model_instance_global.append(
                 create_model_class(
                     output_dir,

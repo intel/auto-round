@@ -138,6 +138,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
         basic.add_argument(
             "--format",
+            "--formats",
             default="auto_round",
             type=str,
             help="Output format for the quantized model."
@@ -252,11 +253,22 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action="store_true",
             help="Enable PyTorch deterministic algorithms for reproducible results. ",
         )
-        tuning.add_argument(
+        group = tuning.add_mutually_exclusive_group()
+        group.add_argument(
             "--disable_opt_rtn",
-            action="store_true",
+            action="store_const",
+            const=True,
+            dest="disable_opt_rtn",
+            default=None,
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
+        )
+        group.add_argument(
+            "--enable_opt_rtn",
+            action="store_const",
+            const=False,
+            dest="disable_opt_rtn",
+            help="Enable optimization for RTN mode when iters=0.",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
@@ -302,6 +314,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Quantize the lm_head. " "Usually kept in higher precision for better output quality.",
         )
         scheme.add_argument(
+            "--ignore_layers",
             "--fp_layers",
             default="",
             type=str,
@@ -466,7 +479,7 @@ def list_item():
     args = argparse.ArgumentParser()
     args.add_argument("item", type=str, help="item to list, e.g., format")
     args = args.parse_args()
-    if args.item == "format":
+    if args.item == "format" or args.item == "formats":
         from auto_round.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")
@@ -598,7 +611,7 @@ def tune(args):
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
-        fp_layers=args.fp_layers,
+        ignore_layers=args.ignore_layers,
         static_kv_dtype=args.static_kv_dtype,
         static_attention_dtype=args.static_attention_dtype,
     )
