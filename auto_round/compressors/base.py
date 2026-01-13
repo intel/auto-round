@@ -1900,22 +1900,24 @@ class BaseCompressor(object):
             except TypeError as error:
                 # Handle models with input validation wrappers that reject unexpected keyword arguments
                 error_msg = str(error)
-                if "unexpected keyword argument" in error_msg and isinstance(data_new, dict):
+                if "unexpected keyword argument" in error_msg and isinstance(data_new, dict) and "input_ids" in data_new:
                     logger.warning_once(
                         f"Model forward method raised TypeError with keyword arguments. "
-                        f"Attempting fallback with positional arguments. Error: {error_msg}"
+                        f"Attempting fallback with positional input_ids argument. Error: {error_msg}"
                     )
-                    # Fallback: try calling with input_ids as positional argument
-                    if "input_ids" in data_new:
-                        try:
-                            self.model(data_new["input_ids"], **kwargs)
-                        except Exception as fallback_error:
-                            logger.error(
-                                f"Fallback attempt failed. Original error: {error_msg}, "
-                                f"Fallback error: {fallback_error}"
-                            )
-                            raise error
-                    else:
+                    # Fallback: try calling with input_ids as positional argument and keep attention_mask in kwargs
+                    # This handles models where check_model_inputs wrapper validates against specific signature
+                    try:
+                        # Merge attention_mask from data_new into kwargs if not already there
+                        fallback_kwargs = kwargs.copy()
+                        if "attention_mask" in data_new and "attention_mask" not in fallback_kwargs:
+                            fallback_kwargs["attention_mask"] = data_new["attention_mask"]
+                        self.model(data_new["input_ids"], **fallback_kwargs)
+                    except Exception as fallback_error:
+                        logger.error(
+                            f"Fallback attempt with positional input_ids failed. "
+                            f"Original error: {error_msg}, Fallback error: {fallback_error}"
+                        )
                         raise error
                 else:
                     raise error
