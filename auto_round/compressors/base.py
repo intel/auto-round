@@ -76,7 +76,7 @@ from auto_round.utils import (
     compile_func,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
-    convert_fp8_model_to_16b_model,
+    convert_fp8_module_to_16bit,
     copy_python_files_from_model_cache,
     detect_device,
     find_matching_blocks,
@@ -1103,7 +1103,7 @@ class BaseCompressor(object):
             RuntimeError: If quantization fails for reasons unrelated to memory.
         """
         m = get_module(self.model, name)
-        if dtype is not None:
+        if dtype is not None and m.dtype!=dtype:
             m = m.to(dtype)
 
         if is_fp8_linear(m):
@@ -1141,7 +1141,7 @@ class BaseCompressor(object):
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
                 )
-                m = m.unwrapper({})
+                m = m.unwrapper()
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
                 m = m.orig_layer if hasattr(m, "orig_layer") else m
@@ -1164,9 +1164,9 @@ class BaseCompressor(object):
         if self.immediate_packing:  # For gguf, packing conducts on block level
             self._immediate_pack(name)
             if to_cpu:
-                m = m.to("cpu")
+                del m
                 packed_m = get_module(self.model, name)
-                set_module(self.model, name, packed_m.to("cpu"))
+                packed_m.to("cpu")
         else:
             if to_cpu:
                 m = m.to("cpu")
@@ -1278,13 +1278,12 @@ class BaseCompressor(object):
                     block = get_module(self.model, block_name)
                     for _, m in block.named_modules():
                         if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                            # print(m.tmp_name,flush=True)
-                            self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
+                            self._quantize_layer_via_rtn(m.tmp_name)
                             all_to_quantized_module_names.remove(m.tmp_name)
 
-
-                    # if not self.immediate_saving:
                     mv_module_from_gpu(block)
+                    if self.immediate_saving:
+                        self.shard_writer.add_module(block, block_name)
 
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()
@@ -1292,7 +1291,7 @@ class BaseCompressor(object):
 
         # Convert remaining fp8
         if is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
+            convert_fp8_module_to_16bit(self.model, self.amp_dtype, self.device)
         if  self.immediate_saving:
             self.shard_writer.finalize()
         self.quantized = True
@@ -1361,7 +1360,7 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 if is_fp8_model(self.model):
-                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
+                    convert_fp8_module_to_16bit(block, dtype=self.amp_dtype, device=self.device)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -1406,8 +1405,9 @@ class BaseCompressor(object):
                     if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.tmp_name)
-                if not self.immediate_saving:
-                    mv_module_from_gpu(block)
+
+                mv_module_from_gpu(block)
+
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:

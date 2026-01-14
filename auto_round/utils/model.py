@@ -1020,7 +1020,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     return new_layer
 
 
-def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16, device: str = "cpu"):
+def convert_fp8_module_to_16bit(model, dtype=torch.bfloat16, device: str = "cpu"):
     """
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.

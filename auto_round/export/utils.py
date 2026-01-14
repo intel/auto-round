@@ -14,6 +14,7 @@
 import json
 import os
 
+import torch
 import torch.nn as nn
 
 from auto_round.utils import copy_python_files_from_model_cache, logger, unsupported_meta_device
@@ -210,10 +211,11 @@ def release_layer_safely(layer: nn.Module):
     Safely releases the weight and bias tensors of a layer to free memory.
     Handles the case where attributes might not exist or are already None.
     """
-    for attr in ["weight", "bias"]:
+    for attr in ["weight", "bias","scale","zp"]:
         if hasattr(layer, attr):
             tensor = getattr(layer, attr)
             if tensor is not None:
                 # Detach and delete to avoid memory leaks
-                tensor.detach_()
+                if isinstance(tensor, torch.Tensor):
+                    tensor.detach_()
                 setattr(layer, attr, None)

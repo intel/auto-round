@@ -253,7 +253,7 @@ class OutputFormat(ABC):
     def save_quantized(self, *args, **kwargs):
         pass
 
-    def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device, **kwargs):
+    def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device | str, **kwargs):
         m = get_module(model, name)
         if not check_to_quantized(m):
             return

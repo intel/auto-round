@@ -303,7 +303,7 @@ class WrapperLinear(torch.nn.Module):
         )
         return bias, scale, zp
 
-    def unwrapper(self, best_params):
+    def unwrapper(self, best_params=None):
         """Restores the original layer by applying the best tuning parameters.
 
         Args:

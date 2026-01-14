@@ -53,10 +53,6 @@ class ShardWriter:
 
         self._closed = False
         self.lm_head_name = get_lm_head_name(self.model)
-        # if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
-        #     self.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
-        # else:
-        #     self.quantized_layer_names_outside_blocks = rounder.quantized_layer_names_outside_blocks
 
     # ==================================================
     @staticmethod
@@ -74,7 +70,6 @@ class ShardWriter:
     def _flush(self):
         if not self.current_shard:
             return
-        logger.info("~~~~~~~~~~~~~~~~~~~~~~~flush~~~~~~~~~~~~~")
 
         self.shard_counter += 1
         fname = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
@@ -116,7 +111,7 @@ class ShardWriter:
             raise RuntimeError("ShardWriter already finalized/closed")
 
         prefix = name if name is not None else module.tmp_name
-        state = module.state_dict()
+        state = module.state_dict() # 这个需要同一个module的一起，这样好释放内存
 
         if prefix not in self.module_param_count:
             self.module_param_count[prefix] = len(state)
@@ -145,8 +140,6 @@ class ShardWriter:
 
             self.current_shard[pname] = v
             self.current_size += size
-        # if prefix == self.last_layer_name_to_block_name[-1]:
-        #    self.finalize(name=prefix)
 
     # ==================================================
     def finalize(self):
@@ -162,16 +155,6 @@ class ShardWriter:
 
         if self._closed:
             return
-
-        # # -------- original last_group semantics --------
-        # if not hasattr(self.rounder, "quantized_layer_names_outside_blocks"):
-        #     self.rounder.quantized_layer_names_outside_blocks = (
-        #         self.rounder._get_quantized_layer_names_outside_blocks()
-        #     )
-        #
-        # layer_names = self.rounder.quantized_layer_names_outside_blocks
-        # if len(layer_names) > 0 and name != layer_names[-1]:
-        #     return
 
         try:
             full_sd = self.model.state_dict()
@@ -261,15 +244,15 @@ class ShardWriter:
             logger.warning("Skipping python file copy: %s", e)
 
         self._closed = True
-        self.close()
+        self._close()
 
     # ==================================================
-    def close(self):
+    def _close(self):
         """
         Explicit cleanup (safe to call multiple times)
         """
-        if self._closed:
-            pass
+        if not self._closed:
+            return
         self.current_shard.clear()
         self.saved_params.clear()
         self.module_param_count.clear()
