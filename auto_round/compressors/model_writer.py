@@ -18,7 +18,7 @@ import os
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_name, get_module
+from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_name, get_module, set_module
 
 
 # TODO decouple max_shard_size with dump shard size
@@ -214,6 +214,8 @@ class ShardWriter:
 
         for layer_name, v in layer_state.items():
             if self.lm_head_name is not None and layer_name==self.lm_head_name and tie_word_embeddings:
+                lm_head_module = get_module(self.model,self.lm_head_name)
+                lm_head_module.to("meta") # Must to meta, otherwise, the save_pretrained will save it and override some checkpoints
                 continue
             size = sum([t.numel() * t.element_size() for t in v.values()])
             self.total_param_size_bytes += size
