@@ -256,6 +256,7 @@ class BaseCompressor(object):
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
         if isinstance(model, str):
@@ -264,6 +265,7 @@ class BaseCompressor(object):
                 platform=platform,
                 device="cpu",  # always load cpu first
                 model_dtype=model_dtype,
+                trust_remote_code=self.trust_remote_code,
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
