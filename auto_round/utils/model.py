@@ -685,7 +685,10 @@ def is_fp8_model(model: torch.nn.Module) -> bool:
 def is_fp8_linear(module: torch.nn.Module) -> bool:
     if hasattr(module, "is_fp8_linear"):
         return module.is_fp8_linear
-    if not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear"):
+    if (
+        not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear")
+        and not ("vllm" in str(type(module)) and "Linear" in str(type(module)))
+    ):
         return False
     if module.weight is None:
         return False

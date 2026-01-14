@@ -66,6 +66,7 @@ from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
+    is_supported_type,
     SUPPORTED_DTYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
@@ -2415,7 +2416,7 @@ class BaseCompressor(object):
 
         hook_handles = []
         # for single layers out of blocks, like lm_head
-        if isinstance(model, SUPPORTED_LAYER_TYPES):
+        if is_supported_type(model):
             m = model
             if (
                 hasattr(m, "act_dynamic")

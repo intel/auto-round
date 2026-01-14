@@ -12,5 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.vllm.dataset import get_vllm_dataloader
 from auto_round.compressors.vllm.compressor import VllmCompressor
