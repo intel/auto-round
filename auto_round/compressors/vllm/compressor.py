@@ -20,7 +20,6 @@ import torch
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.vllm.dataset import get_vllm_dataloader
 from auto_round.compressors.utils import block_forward
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -166,7 +165,7 @@ class VllmCompressor(BaseCompressor):
         kwargs["vllm"] = True
         super(VllmCompressor, self).__init__(
             model=self.model,
-            tokenizer=None,
+            tokenizer=self.llm.llm_engine.input_processor.tokenizer,
             platform=platform,
             scheme=scheme,
             layer_config=layer_config,
@@ -266,14 +265,21 @@ class VllmCompressor(BaseCompressor):
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
+        from auto_round.calib_dataset import get_dataloader
+
+        need_attention_mask = True
         if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")
-            self.dataloader, self.batch_size = get_vllm_dataloader(
-                dataset=dataset,
-                bs=self.batch_size,
-                seqlen=self.seqlen,
-                seed=self.seed,
-                nsamples=self.nsamples,
+            need_attention_mask = False  # all supported datasets does not use pad
+            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+
+            # slow here
+            self.dataloader = get_dataloader(
+                self.tokenizer,
+                self.seqlen,
+                dataset,
+                self.seed,
+                bs,
+                self.nsamples,
             )
         else:
             self.dataloader = self.dataset
@@ -285,8 +291,7 @@ class VllmCompressor(BaseCompressor):
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for prompts in self.dataloader:
-                if isinstance(prompts, tuple):
-                    prompts = list(prompts)
+                prompts = self.tokenizer.batch_decode(prompts["input_ids"])
                 try:
                     self.llm.generate(prompts, sampling_params)
                 except NotImplementedError:
