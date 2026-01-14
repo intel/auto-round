@@ -22,7 +22,7 @@ from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_nam
 
 
 # TODO decouple max_shard_size with dump shard size
-@torch.inference_mode()
+
 class ShardWriter:
     """
     HF-style shard writer with immediate flushing, module-level freeing,
@@ -79,7 +79,8 @@ class ShardWriter:
             return int(s[:-2]) * 1024
         return int(s)
 
-    # ==================================================
+
+    @torch.inference_mode()
     def _flush(self):
         if not self.current_shard:
             return
@@ -116,7 +117,7 @@ class ShardWriter:
         self.current_shard.clear()
         self.current_size = 0
 
-    # ==================================================
+    @torch.inference_mode()
     def add_module(self, module, name=None):
         if self._closed:
             raise RuntimeError("ShardWriter already finalized/closed")

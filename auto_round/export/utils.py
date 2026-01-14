@@ -213,9 +213,4 @@ def release_layer_safely(layer: nn.Module):
     """
     for attr in ["weight", "bias", "scale", "zp"]:
         if hasattr(layer, attr):
-            tensor = getattr(layer, attr)
-            if tensor is not None:
-                # Detach and delete to avoid memory leaks
-                if isinstance(tensor, torch.Tensor):
-                    tensor.detach_()
-                setattr(layer, attr, None)
+            setattr(layer, attr, None)
