@@ -1164,7 +1164,7 @@ class BaseCompressor(object):
         if self.immediate_packing:  # For gguf, packing conducts on block level
             self._immediate_pack(name)
             if to_cpu:
-                del m
+                m.to("cpu")
                 packed_m = get_module(self.model, name)
                 packed_m.to("cpu")
         else:
@@ -1281,7 +1281,7 @@ class BaseCompressor(object):
                             self._quantize_layer_via_rtn(m.tmp_name)
                             all_to_quantized_module_names.remove(m.tmp_name)
 
-                    mv_module_from_gpu(block)
+                    # mv_module_from_gpu(block)  # 中间有一些layer flush 了，导致里面有部分是meta
                     if self.immediate_saving:
                         self.shard_writer.add_module(block, block_name)
 

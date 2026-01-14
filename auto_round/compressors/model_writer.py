@@ -22,6 +22,7 @@ from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_nam
 
 
 # TODO decouple max_shard_size with dump shard size
+@torch.inference_mode()
 class ShardWriter:
     """
     HF-style shard writer with immediate flushing, module-level freeing,
@@ -31,7 +32,7 @@ class ShardWriter:
     def __init__(self, rounder):
         self.model = rounder.model
 
-        self.max_shard_bytes = self._parse_size(getattr(rounder, "max_shard_size", "5GB"))
+        self.max_shard_bytes = self._parse_size(getattr(rounder, "max_shard_size", "1GB"))
 
         self.use_safetensors = False
         if getattr(rounder, "safe_serialization", True):
@@ -54,10 +55,10 @@ class ShardWriter:
         self.shard_counter = 0
         self.global_weight_map = {}
 
-        # -------- performance bookkeeping --------
-        self.saved_params = set()
-        self.module_param_count = {}
-        self.module_saved_count = {}
+        # # -------- performance bookkeeping --------
+        # self.saved_params = set()
+        # self.module_param_count = {}
+        # self.module_saved_count = {}
 
         # -------- stats --------
         self.total_param_elems = 0
@@ -86,59 +87,59 @@ class ShardWriter:
         self.shard_counter += 1
         fname = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
         fpath = os.path.join(self.root, fname)
-
+        current_shard_dict = {k: v for sub in self.current_shard.values() for k, v in sub.items()}
+        self.shard_meta.append({"tmp_file": fpath, "params": current_shard_dict.keys()})
         if self.use_safetensors:
             from safetensors.torch import save_file
 
-            save_file(self.current_shard, fpath)
+            save_file(current_shard_dict, fpath)
         else:
-            torch.save(self.current_shard, fpath)
+            torch.save(current_shard_dict, fpath)
 
-        params = list(self.current_shard.keys())
-        self.shard_meta.append({"tmp_file": fname, "params": params})
+        layer_names = list(self.current_shard.keys())
 
-        for p in params:
-            self.saved_params.add(p)
-            module_name = p.rsplit(".", 1)[0]
-            self.module_saved_count[module_name] = self.module_saved_count.get(module_name, 0) + 1
+        def clear_module_state(module: torch.nn.Module):
+            # parameters
+            for name, p in list(module._parameters.items()):
+                module._parameters[name] = None
 
-            if self.module_saved_count[module_name] == self.module_param_count.get(module_name, 0):
-                try:
-                    get_module(self.model, module_name).to("meta")
-                except Exception:
-                    pass
+            # buffers（如 running_mean）
+            for name in list(module._buffers.keys()):
+                module._buffers[name] = None
+
+        for layer_name in layer_names:
+            module=get_module(self.model, layer_name)
+            clear_module_state(module)
+
+            module.to("meta")
 
         self.current_shard.clear()
         self.current_size = 0
 
     # ==================================================
     def add_module(self, module, name=None):
-        import torch
-
         if self._closed:
             raise RuntimeError("ShardWriter already finalized/closed")
 
         prefix = name if name is not None else module.tmp_name
-        state = module.state_dict()  # 这个需要同一个module的一起，这样好释放内存
-
-        if prefix not in self.module_param_count:
-            self.module_param_count[prefix] = len(state)
-            self.module_saved_count.setdefault(prefix, 0)
-
-        for k, v in state.items():
+        state = module.state_dict()
+        layer_state = {}
+        for k,v in state.items():
+            if k in self.current_shard.keys():
+                continue
             if not isinstance(v, torch.Tensor):
                 continue
-
             pname = f"{prefix}.{k}"
-            elems = v.numel()
-            size = elems * v.element_size()
-
-            self.total_param_elems += elems
+            layer_name =  '.'.join(pname.split(".")[:-1])
+            if layer_name not in layer_state:
+                layer_state[layer_name] = {}
+            layer_state[layer_name][prefix+"."+k]=v
+        for k, v in layer_state.items():
+            size = sum([t.numel() * t.element_size() for t in v.values()])
             self.total_param_size_bytes += size
-
             if size > self.max_shard_bytes:
                 self._flush()
-                self.current_shard[pname] = v
+                self.current_shard[k] = v
                 self.current_size = size
                 self._flush()
                 continue
@@ -146,8 +147,32 @@ class ShardWriter:
             if self.current_size + size > self.max_shard_bytes and self.current_size > 0:
                 self._flush()
 
-            self.current_shard[pname] = v
+            self.current_shard[k] = v
             self.current_size += size
+        #
+        # for k, v in state.items():
+        #     if not isinstance(v, torch.Tensor):
+        #         continue
+        #
+        #     pname = f"{prefix}.{k}"
+        #     elems = v.numel()
+        #     size = elems * v.element_size()
+        #
+        #     self.total_param_elems += elems
+        #     self.total_param_size_bytes += size
+        #
+        #     if size > self.max_shard_bytes:
+        #         self._flush()
+        #         self.current_shard[pname] = v
+        #         self.current_size = size
+        #         self._flush()
+        #         continue
+        #
+        #     if self.current_size + size > self.max_shard_bytes and self.current_size > 0:
+        #         self._flush()
+        #
+        #     self.current_shard[pname] = v
+        #     self.current_size += size
 
     # ==================================================
     def finalize(self):
@@ -174,24 +199,29 @@ class ShardWriter:
             "tie_word_embeddings",
             True,
         )
-
-        for pname, tensor in full_sd.items():
-            if pname in self.saved_params:
+        layer_state = {}
+        for k, v in full_sd.items():
+            pname = k
+            layer_name = '.'.join(pname.split(".")[:-1])
+            if layer_name in self.current_shard.keys():
                 continue
-            if self.lm_head_name is not None and self.lm_head_name in pname and tie_word_embeddings:
-                continue
-            if not isinstance(tensor, torch.Tensor):
+            if not isinstance(v, torch.Tensor):
                 continue
 
-            elems = tensor.numel()
-            size = elems * tensor.element_size()
+            if layer_name not in layer_state:
+                layer_state[layer_name] = {}
+            layer_state[layer_name][k]=v
 
-            self.total_param_elems += elems
+        for layer_name, v in layer_state.items():
+            if self.lm_head_name is not None and layer_name==self.lm_head_name and tie_word_embeddings:
+                continue
+            size = sum([t.numel() * t.element_size() for t in v.values()])
             self.total_param_size_bytes += size
+
 
             if size > self.max_shard_bytes:
                 self._flush()
-                self.current_shard[pname] = tensor.detach().cpu()
+                self.current_shard[layer_name] = v
                 self.current_size = size
                 self._flush()
                 continue
@@ -199,8 +229,33 @@ class ShardWriter:
             if self.current_size + size > self.max_shard_bytes and self.current_size > 0:
                 self._flush()
 
-            self.current_shard[pname] = tensor.detach().cpu()
+            self.current_shard[layer_name] = v
             self.current_size += size
+
+        # for pname, tensor in full_sd.items():
+        #     if self.lm_head_name is not None and self.lm_head_name in pname and tie_word_embeddings:
+        #         continue
+        #     if not isinstance(tensor, torch.Tensor):
+        #         continue
+        #
+        #     elems = tensor.numel()
+        #     size = elems * tensor.element_size()
+        #
+        #     self.total_param_elems += elems
+        #     self.total_param_size_bytes += size
+        #
+        #     if size > self.max_shard_bytes:
+        #         self._flush()
+        #         self.current_shard[pname] = tensor.detach().cpu()
+        #         self.current_size = size
+        #         self._flush()
+        #         continue
+        #
+        #     if self.current_size + size > self.max_shard_bytes and self.current_size > 0:
+        #         self._flush()
+        #
+        #     self.current_shard[pname] = tensor.detach().cpu()
+        #     self.current_size += size
 
         self._flush()
 
@@ -257,8 +312,5 @@ class ShardWriter:
         if not self._closed:
             return
         self.current_shard.clear()
-        self.saved_params.clear()
-        self.module_param_count.clear()
-        self.module_saved_count.clear()
         self.shard_meta.clear()
         self.global_weight_map.clear()
