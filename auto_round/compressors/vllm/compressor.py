@@ -253,6 +253,98 @@ class VllmCompressor(BaseCompressor):
         import pdb;pdb.set_trace()
         return self.model, self.layer_config
 
+    def _quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
+        """Performs RTN quantization using input activation statistics (imatrix).
+
+        This method accumulates per-channel second-moment activation statistics (imatrix)
+        via forward hooks and uses them to perform RTN quantization. If CUDA memory runs out,
+        it falls back to CPU-based blockwise quantization.
+
+        Args:
+            all_to_quantized_module_names (list[str]):
+                A list of module names (e.g., 'model.layers.0.self_attn.q_proj') to be quantized.
+
+        Returns:
+            None
+        """
+        logger.info("start to compute imatrix")
+
+        # Load dataset
+        from auto_round.calib_dataset import get_dataloader
+
+        if isinstance(self.dataset, str):
+            if self.tokenizer is None:
+                raise ValueError("A tokenizer must be set for the model when using a dataset string.")
+            dataset_name = self.dataset.replace(" ", "")
+            self.dataloader = get_dataloader(
+                self.tokenizer, self.seqlen, dataset_name, self.seed, self.batch_size, self.nsamples
+            )
+        else:
+            self.dataloader = self.dataset
+
+        model = self.model
+
+        def register_act_hook(model):
+            """Registers hooks to accumulate activation squared norms into `imatrix`."""
+
+            def get_imatrix_hook(module, input, output):
+                input = input[0] if isinstance(input, (tuple, list)) else input
+                flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
+                squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+
+                if not hasattr(module, "imatrix"):
+                    module.imatrix = squared
+                    module.imatrix_cnt = input.shape[0]
+                else:
+                    module.imatrix += squared.to(module.imatrix.device)
+                    module.imatrix_cnt += input.shape[0]
+
+            hook_handles = []
+            for name, module in model.named_modules():
+                if type(module) in self.supported_types and check_to_quantized(module):
+                    hook = module.register_forward_hook(get_imatrix_hook)
+                    hook_handles.append(hook)
+            return hook_handles
+
+        hooks = register_act_hook(model)
+        self.calib(self.nsamples, self.batch_size)
+        for hook in hooks:
+            hook.remove()
+
+        # self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
+        all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+
+        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        if not all_blocks:
+            raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
+        for block_names in all_blocks:
+            for block_name in block_names:
+                pbar.set_description(f"Quantizing {block_name}")
+                block = get_module(self.model, block_name)
+                if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
+                    # enable moe experts act_max automatic generation for Linear
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+                for _, m in block.named_modules():
+                    # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
+                    # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
+                    if hasattr(m, "imatrix"):
+                        m.imatrix /= m.imatrix_cnt
+                    if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
+                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
+                        all_to_quantized_module_names.remove(m.tmp_name)
+                memory_monitor.log_summary()
+                pbar.update(1)
+        pbar.close()
+
+        # Process remaining layers not in blocks
+        for name in all_to_quantized_module_names:
+            dtype = None
+            if self.super_group_size is not None:
+                dtype = torch.float32
+            self._quantize_layer_via_rtn(name, dtype=dtype)
+            # clear_memory(device_list=self.device_list)
+
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
