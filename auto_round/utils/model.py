@@ -694,7 +694,7 @@ def get_block_names(model, quant_vision=False):
         return _get_llm_block_names(model)
 
 
-def get_lm_head_name(model:torch.nn.Module) -> Union[str, None]:
+def get_lm_head_name(model: torch.nn.Module) -> Union[str, None]:
     block_names = get_block_names(model, True)
     last_name = None
     for n, m in model.named_modules():
