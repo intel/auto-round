@@ -58,7 +58,6 @@ from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.schemes import (
-    SPECIAL_SCHEMES,
     QuantizationScheme,
     _handle_special_schemes,
     get_gguf_scheme,
@@ -385,10 +384,6 @@ class BaseCompressor(object):
                     self.lr = 1.0 / self.iters
             else:
                 self.lr = lr
-        if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
-            logger.warning(
-                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
-            )
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
@@ -610,8 +605,7 @@ class BaseCompressor(object):
                 scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
-                if scheme in SPECIAL_SCHEMES:
-                    self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
+                self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
@@ -823,6 +817,11 @@ class BaseCompressor(object):
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
+
+        if self.bits <= 2 and (self.iters < 1000 or not self.enable_alg_ext) and self.super_group_size is None:
+            logger.warning(
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
+            )
 
     def quantize_and_save(
         self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs

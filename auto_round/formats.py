@@ -98,7 +98,7 @@ def get_formats(
         seen = set()
         return [x for x in lst if not (x in seen or seen.add(x))]
 
-    formats = format.replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
+    formats = format.lower().replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
     formats = remove_duplicates(formats)  # need the keep origin order
 
     formats = _check_compatibility(formats, ar)
@@ -650,6 +650,7 @@ class GGUFFormat(OutputFormat):
         "GGUF:Q5_K_M",
         "GGUF:Q6_K",
         "GGUF:Q8_0",
+        "GGUF:Q2_K_MIXED",
     ]
     format_name = "gguf"
 
@@ -658,13 +659,22 @@ class GGUFFormat(OutputFormat):
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
-            ar.scheme = format.upper()
 
             self.output_format = "gguf"
             self.backend_cls = GGUFFormat
             self.backend = GGUFFormat(format.split(":")[-1], ar)
         else:
-            self.output_format = f"gguf:{format}"
+            scheme = ar.scheme
+            gguf_format = f"gguf:{format.lower()}"
+            if format.lower().endswith("_mixed"):
+                from auto_round.schemes import _handle_special_schemes
+
+                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
+                gguf_format = gguf_format.lower().replace("_mixed", "_s")
+            if isinstance(scheme, str) and scheme.lower() != gguf_format:
+                logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
+                ar.scheme = gguf_format
+            self.output_format = gguf_format
             self.backend = None
         self.mllm = ar.mllm
 

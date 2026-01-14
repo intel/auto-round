@@ -8,7 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import get_model_path, get_tiny_model, save_tiny_model
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -190,18 +190,17 @@ class TestGGUF:
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
     def test_vlm_gguf(self):
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
-        from auto_round import AutoRoundMLLM
-        from auto_round.utils import mllm_load_model
+        from ...helpers import save_tiny_model
 
-        model, processor, tokenizer, image_processor = mllm_load_model(model_name)
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+        tiny_model_path = save_tiny_model(model_name, "./tmp/tiny_qwen_vl_model_path", num_layers=3, is_mllm=True)
+        from auto_round import AutoRoundMLLM
+
         autoround = AutoRoundMLLM(
-            model,
-            tokenizer=tokenizer,
-            processor=processor,
-            image_processor=image_processor,
+            tiny_model_path,
             iters=0,
             nsamples=8,
+            disable_opt_rtn=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
@@ -209,10 +208,11 @@ class TestGGUF:
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
-                assert abs(file_size - 2537) < 5.0
+                assert abs(file_size - 56) < 5.0
             else:
-                assert abs(file_size - 892) < 5.0
+                assert abs(file_size - 264) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     def test_qtype_setting(self):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
@@ -284,3 +284,34 @@ class TestGGUF:
             and ar.layer_config["model.embed_tokens"]["bits"] == 6
             and ar.layer_config["model.embed_tokens"]["super_bits"] == 8
         )
+
+    def test_q2k_mixed(self):
+        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
+        saved_tiny_model_path = save_tiny_model(
+            model_name,
+            "./tmp/tiny_qwen_model_path",
+            num_layers=3,
+            is_mllm=False,
+        )
+        autoround = AutoRound(
+            saved_tiny_model_path,
+            iters=0,
+            nsamples=1,
+            seqlen=16,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
+        assert abs(file_size - 1362) < 5.0
+        from gguf.gguf_reader import GGUFReader
+
+        gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
+        assert gguf_model.get_tensor(2).name == "blk.0.attn_k.weight"
+        assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
+        assert gguf_model.get_tensor(10).name == "blk.0.ffn_up_exps.weight"
+        assert gguf_model.get_tensor(10).tensor_type.name == "Q2_K"
+
+        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
