@@ -32,7 +32,7 @@ class ShardWriter:
     def __init__(self, rounder):
         self.model = rounder.model
 
-        self.max_shard_bytes = self._parse_size(getattr(rounder, "max_shard_size", "1GB"))
+        self.max_shard_bytes = self._parse_size(getattr(rounder, "max_shard_size", "5GB"))
 
         self.use_safetensors = False
         if getattr(rounder, "safe_serialization", True):
@@ -88,7 +88,7 @@ class ShardWriter:
         fname = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
         fpath = os.path.join(self.root, fname)
         current_shard_dict = {k: v for sub in self.current_shard.values() for k, v in sub.items()}
-        self.shard_meta.append({"tmp_file": fpath, "params": current_shard_dict.keys()})
+        self.shard_meta.append({"tmp_file": fname, "params": current_shard_dict.keys()})
         if self.use_safetensors:
             from safetensors.torch import save_file
 

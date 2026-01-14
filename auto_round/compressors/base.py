@@ -1281,13 +1281,16 @@ class BaseCompressor(object):
                             self._quantize_layer_via_rtn(m.tmp_name)
                             all_to_quantized_module_names.remove(m.tmp_name)
 
-                    # mv_module_from_gpu(block)  # 中间有一些layer flush 了，导致里面有部分是meta
+                    mv_module_from_gpu(block)
                     if self.immediate_saving:
                         self.shard_writer.add_module(block, block_name)
 
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()
                     pbar.update(1)
+
+            for name in all_to_quantized_module_names:
+                self._quantize_layer_via_rtn(name)
 
         # Convert remaining fp8
         if is_fp8_model(self.model):

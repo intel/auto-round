@@ -138,8 +138,8 @@ def _check_divisible_by_32(ar):
         default_dict = asdict(ar.scheme)
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
         for n, m in ar.model.named_modules():
-            if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
-                if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+            if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types and check_to_quantized(m):
+                if hasattr(m,"weight") and m.weight is not None and (m.weight.shape[0] % 32 or m.weight.shape[1] % 32):
                     if ar.layer_config is None:
                         ar.layer_config = {}
                     if ar.layer_config.get(n) is not None and ar.layer_config[n]["bits"] >= 16:

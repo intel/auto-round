@@ -1133,6 +1133,8 @@ def unsupported_meta_device(model):
         if param.device != target_device:
             if param.device.type == "meta" or target_device.type == "meta":
                 return True
+    if target_device is None:
+        return True
     if target_device.type == "meta":
         if hasattr(model, "path"):
             return False
