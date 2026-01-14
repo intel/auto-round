@@ -1,3 +1,4 @@
+import os
 import shutil
 
 import pytest
@@ -5,7 +6,7 @@ import pytest
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
-from ...helpers import get_model_path
+from ...helpers import get_model_path, save_tiny_model
 
 
 class TestAutoRound:
@@ -102,3 +103,34 @@ class TestAutoRound:
                 assert m.bits == 8
             if n == "model.decoder.layers.4.self_attn.k_proj":
                 assert m.group_size == 64
+
+    def test_q2k_mixed(self):
+        model_path = "/data0/MiroThinker-v1.5-30B"
+        saved_tiny_model_path = save_tiny_model(
+            model_path,
+            "./tmp/tiny_qwen_model_path",
+            num_layers=3,
+            is_mllm=False,
+        )
+        autoround = AutoRound(
+            saved_tiny_model_path,
+            iters=0,
+            nsamples=1,
+            seqlen=16,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
+        assert abs(file_size - 1236) < 5.0
+        from gguf.gguf_reader import GGUFReader
+
+        gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
+        assert gguf_model.get_tensor(2).name == "blk.0.attn_v.weight"
+        assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
+        assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
+        assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
+
+        shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
