@@ -212,10 +212,5 @@ def release_layer_safely(layer: nn.Module):
     Handles the case where attributes might not exist or are already None.
     """
     for attr in ["weight", "bias", "scale", "zp"]:
-        if hasattr(layer, attr):
-            tensor = getattr(layer, attr)
-            if tensor is not None and isinstance(tensor,torch.Tensor):
-                # Detach and delete to avoid memory leaks
-                tensor.detach_()
-            setattr(layer, attr, None)
+        setattr(layer, attr, None)
     layer.to("meta")
