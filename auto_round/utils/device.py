@@ -463,8 +463,6 @@ def _clear_memory_for_cpu_and_cuda(
         torch.xpu.empty_cache()
 
 
-
-
 class ClearMemory:
     def __init__(self, device_list: list | tuple | None = None):
         self.device_list = device_list
@@ -486,7 +484,9 @@ class ClearMemory:
             memory_monitor.update(final_device_list)
             _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
 
+
 clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
+
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
     """Check all available devices and clear memory if any device is using close to the threshold.
