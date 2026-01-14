@@ -20,8 +20,8 @@ import torch
 from auto_round.logger import logger
 from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_name, get_module, set_module
 
-
 # TODO decouple max_shard_size with dump shard size
+
 
 class ShardWriter:
     """
@@ -78,7 +78,6 @@ class ShardWriter:
         if s.endswith("KB"):
             return int(s[:-2]) * 1024
         return int(s)
-
 
     @torch.inference_mode()
     def _flush(self):
