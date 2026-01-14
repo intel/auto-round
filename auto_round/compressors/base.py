@@ -1272,8 +1272,8 @@ class BaseCompressor(object):
             for n, m in self.model.named_modules():
                 if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                     self._quantize_layer_via_rtn(m.tmp_name)
-                    m.to("meta")
-                elif len(list(m.children()))==0: # Seems must release the block
+                elif len(list(m.children()))==0 and len(list(m.state_dict()))>0:# Seems must release orig the block
+                    set_module(self.model,n,copy.deepcopy(m))
                     m.to("meta")
 
                 # if hasattr(m, "weight"):
