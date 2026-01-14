@@ -301,6 +301,8 @@ def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.n
     Provide some special auto_round recipes.
 
     """
+    if layer_config is None:
+        layer_config = {}
     if scheme_name.lower() == "gguf:q2_k_mixed":
         for n, m in model.named_modules():
             if n in layer_config:
