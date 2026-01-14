@@ -1268,29 +1268,52 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            all_to_quantized_module_names = list(set(all_to_quantized_module_names))
-            all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
-            pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+            i=0
+            for n, m in self.model.named_modules():
+                if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
+                    self._quantize_layer_via_rtn(m.tmp_name)
+                    m.to("meta")
+                elif len(list(m.children()))==0: # Seems must release the block
+                    m.to("meta")
 
-            for block_names in all_blocks:
-                for block_name in block_names:
-                    pbar.set_description(f"Quantizing {block_name}")
-                    block = get_module(self.model, block_name)
-                    for _, m in block.named_modules():
-                        if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                            self._quantize_layer_via_rtn(m.tmp_name)
-                            all_to_quantized_module_names.remove(m.tmp_name)
+                # if hasattr(m, "weight"):
+                #     m.weight += 1
+                #     # m.weight.data.copy_(torch.empty_like(m.weight))
+                # if hasattr(m, "bias") and m.bias is not None:
+                #     m.bias += 1
+                #     # m.bias.data.copy_(torch.empty_like(m.bias))
 
-                    mv_module_from_gpu(block)
-                    if self.immediate_saving:
-                        self.shard_writer.add_module(block, block_name)
 
+                i += 1
+                if i % 100 == 0:
+                    import gc
+                    gc.collect()
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()
-                    pbar.update(1)
 
-            for name in all_to_quantized_module_names:
-                self._quantize_layer_via_rtn(name)
+            # all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+            # all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+            # pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+            #
+            # for block_names in all_blocks:
+            #     for block_name in block_names:
+            #         pbar.set_description(f"Quantizing {block_name}")
+            #         block = get_module(self.model, block_name)
+            #         for _, m in block.named_modules():
+            #             if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
+            #                 self._quantize_layer_via_rtn(m.tmp_name)
+            #                 all_to_quantized_module_names.remove(m.tmp_name)
+            #
+            #         mv_module_from_gpu(block)
+            #         if self.immediate_saving:
+            #             self.shard_writer.add_module(block, block_name)
+            #
+            #         clear_memory(device_list=self.device_list)
+            #         memory_monitor.log_summary()
+            #         pbar.update(1)
+            #
+            # for name in all_to_quantized_module_names:
+            #     self._quantize_layer_via_rtn(name)
 
         # Convert remaining fp8
         if is_fp8_model(self.model):
