@@ -784,7 +784,9 @@ class ARQuantizer(AlgsBaseQuantizer):
 
             for tmp_step in range(self.compressor.gradient_accumulate_steps):
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
-                current_output = self._get_current_output(output, indices, self.compressor.batch_dim)
+                current_output = self._get_current_output(
+                    output, indices, self.compressor.batch_dim, diffusion=self.compressor.diffusion
+                )
                 current_output = to_device(current_output, loss_device)
                 # TODO: refactor this
                 output_q = self.compressor._get_current_q_output(
@@ -882,7 +884,15 @@ class ARQuantizer(AlgsBaseQuantizer):
             return None, output
 
     @staticmethod
-    def _get_current_output(output: list[torch.Tensor], indices: list[int], batch_dim: int) -> torch.Tensor:
+    def _get_current_output(
+        output: list[torch.Tensor], indices: list[int], batch_dim: int, diffusion: bool = False
+    ) -> torch.Tensor:
+        if diffusion:
+            assert "hidden_states" in output
+            current_output = [output["hidden_states"][x] for x in indices]
+            current_output = torch.cat(current_output, dim=batch_dim)
+            return current_output
+
         current_output = [output[x] for x in indices]
         current_output = torch.cat(current_output, dim=batch_dim)
         return current_output
