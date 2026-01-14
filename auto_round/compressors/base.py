@@ -384,10 +384,6 @@ class BaseCompressor(object):
                     self.lr = 1.0 / self.iters
             else:
                 self.lr = lr
-        if self.bits <= 2 and (self.iters < 1000 or not enable_alg_ext):
-            logger.warning(
-                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
-            )
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
@@ -821,6 +817,11 @@ class BaseCompressor(object):
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
+
+        if self.bits <= 2 and (self.iters < 1000 or not self.enable_alg_ext) and self.super_group_size is None:
+            logger.warning(
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
+            )
 
     def quantize_and_save(
         self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs
