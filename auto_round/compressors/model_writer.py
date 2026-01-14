@@ -108,7 +108,7 @@ class ShardWriter:
                 module._buffers[name] = None
 
         for layer_name in layer_names:
-            module=get_module(self.model, layer_name)
+            module = get_module(self.model, layer_name)
             clear_module_state(module)
 
             module.to("meta")
@@ -124,16 +124,16 @@ class ShardWriter:
         prefix = name if name is not None else module.tmp_name
         state = module.state_dict()
         layer_state = {}
-        for k,v in state.items():
+        for k, v in state.items():
             if k in self.current_shard.keys():
                 continue
             if not isinstance(v, torch.Tensor):
                 continue
             pname = f"{prefix}.{k}"
-            layer_name =  '.'.join(pname.split(".")[:-1])
+            layer_name = ".".join(pname.split(".")[:-1])
             if layer_name not in layer_state:
                 layer_state[layer_name] = {}
-            layer_state[layer_name][prefix+"."+k]=v
+            layer_state[layer_name][prefix + "." + k] = v
         for k, v in layer_state.items():
             size = sum([t.numel() * t.element_size() for t in v.values()])
             self.total_param_size_bytes += size
@@ -202,7 +202,7 @@ class ShardWriter:
         layer_state = {}
         for k, v in full_sd.items():
             pname = k
-            layer_name = '.'.join(pname.split(".")[:-1])
+            layer_name = ".".join(pname.split(".")[:-1])
             if layer_name in self.current_shard.keys():
                 continue
             if not isinstance(v, torch.Tensor):
@@ -210,16 +210,17 @@ class ShardWriter:
 
             if layer_name not in layer_state:
                 layer_state[layer_name] = {}
-            layer_state[layer_name][k]=v
+            layer_state[layer_name][k] = v
 
         for layer_name, v in layer_state.items():
-            if self.lm_head_name is not None and layer_name==self.lm_head_name and tie_word_embeddings:
-                lm_head_module = get_module(self.model,self.lm_head_name)
-                lm_head_module.to("meta") # Must to meta, otherwise, the save_pretrained will save it and override some checkpoints
+            if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
+                lm_head_module = get_module(self.model, self.lm_head_name)
+                lm_head_module.to(
+                    "meta"
+                )  # Must to meta, otherwise, the save_pretrained will save it and override some checkpoints
                 continue
             size = sum([t.numel() * t.element_size() for t in v.values()])
             self.total_param_size_bytes += size
-
 
             if size > self.max_shard_bytes:
                 self._flush()
