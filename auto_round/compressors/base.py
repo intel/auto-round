@@ -1103,7 +1103,7 @@ class BaseCompressor(object):
             RuntimeError: If quantization fails for reasons unrelated to memory.
         """
         m = get_module(self.model, name)
-        if dtype is not None and m.dtype!=dtype:
+        if dtype is not None and m.dtype != dtype:
             m = m.to(dtype)
 
         if is_fp8_linear(m):
@@ -1173,7 +1173,7 @@ class BaseCompressor(object):
             set_module(self.model, name, m)
         if self.immediate_saving:
             m = get_module(self.model, name)
-            self.shard_writer.add_module(m,name)
+            self.shard_writer.add_module(m, name)
 
     def _immediate_pack(self, name: str):
         if not self.immediate_packing:
@@ -1292,7 +1292,7 @@ class BaseCompressor(object):
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_module_to_16bit(self.model, self.amp_dtype, self.device)
-        if  self.immediate_saving:
+        if self.immediate_saving:
             self.shard_writer.finalize()
         self.quantized = True
         return self.model, self.layer_config
@@ -1495,6 +1495,7 @@ class BaseCompressor(object):
 
         if self.immediate_saving:
             from auto_round.compressors.model_writer import ShardWriter
+
             self.shard_writer = ShardWriter(rounder=self)
         if self.iters == 0:
             return self._quantize_rtn()

@@ -119,7 +119,7 @@ class ShardWriter:
             raise RuntimeError("ShardWriter already finalized/closed")
 
         prefix = name if name is not None else module.tmp_name
-        state = module.state_dict() # 这个需要同一个module的一起，这样好释放内存
+        state = module.state_dict()  # 这个需要同一个module的一起，这样好释放内存
 
         if prefix not in self.module_param_count:
             self.module_param_count[prefix] = len(state)

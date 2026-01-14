@@ -941,7 +941,6 @@ def reset_params(inputs):
         inputs["use_cache"] = False
 
 
-
 class IndexSampler:
     """A cyclic sampler that returns shuffled index batches.
 

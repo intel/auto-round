@@ -211,7 +211,7 @@ def release_layer_safely(layer: nn.Module):
     Safely releases the weight and bias tensors of a layer to free memory.
     Handles the case where attributes might not exist or are already None.
     """
-    for attr in ["weight", "bias","scale","zp"]:
+    for attr in ["weight", "bias", "scale", "zp"]:
         if hasattr(layer, attr):
             tensor = getattr(layer, attr)
             if tensor is not None:
