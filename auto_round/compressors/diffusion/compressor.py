@@ -172,18 +172,6 @@ class DiffusionCompressor(BaseCompressor):
             q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
         return inputs, q_inputs
 
-    def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[dict, dict]:
-        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
-        input_ids = {k: inputs.pop(k, None) for k in input_id_str}
-        input_others = inputs
-        return input_ids, input_others
-
-    def _get_current_output(self, output: dict, indices: list[int]) -> torch.Tensor:
-        assert "hidden_states" in output
-        current_output = [output["hidden_states"][x] for x in indices]
-        current_output = torch.cat(current_output, dim=self.batch_dim)
-        return current_output
-
     def _get_current_q_output(
         self,
         block: torch.nn.Module,
