@@ -1268,12 +1268,12 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            i=0
+            i = 0
             for n, m in self.model.named_modules():
                 if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
                     self._quantize_layer_via_rtn(m.tmp_name)
                     m.to("meta")
-                elif len(list(m.children()))==0: # Seems must release the block
+                elif len(list(m.children())) == 0:  # Seems must release the block
                     m.to("meta")
 
                 # if hasattr(m, "weight"):
@@ -1283,10 +1283,10 @@ class BaseCompressor(object):
                 #     m.bias += 1
                 #     # m.bias.data.copy_(torch.empty_like(m.bias))
 
-
                 i += 1
                 if i % 100 == 0:
                     import gc
+
                     gc.collect()
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()

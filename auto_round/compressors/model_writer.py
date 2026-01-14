@@ -22,6 +22,7 @@ from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_nam
 
 # TODO decouple max_shard_size with dump shard size
 
+
 class ShardWriter:
     """
     HF-style shard writer with immediate flushing, module-level freeing,
