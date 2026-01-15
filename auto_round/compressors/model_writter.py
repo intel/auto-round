@@ -14,11 +14,12 @@
 
 import json
 import os
-import torch
 from collections import OrderedDict
-from auto_round.utils import get_module, get_lm_head_name
+
+import torch
+
 from auto_round.logger import logger
-from auto_round.utils import get_module
+from auto_round.utils import get_lm_head_name, get_module
 
 
 class ShardSaver:
@@ -154,9 +155,7 @@ class ShardSaver:
             layer_name = ".".join(pname.split(".")[:-1])
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
-                lm_head_module.to(
-                    "meta"
-                )  # Must to
+                lm_head_module.to("meta")  # Must to
             self._add_tensor(pname, tensor.detach())
 
         self._flush_shard()
