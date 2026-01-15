@@ -2612,8 +2612,14 @@ class BaseCompressor(object):
         """
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
-                # Construct full layer name
-                full_name = f"{block_name}.{n}" if block_name and n else (block_name or n)
+                # Construct full layer name, handling empty string and None cases
+                if block_name and n:
+                    full_name = f"{block_name}.{n}"
+                elif block_name:
+                    full_name = block_name
+                else:
+                    full_name = n
+                
                 layer_cfg = self.layer_config.get(full_name, {})
                 should_skip_fp8_conversion = layer_cfg.get("skip_quantization", False)
                 if is_fp8_linear(m) and not should_skip_fp8_conversion:
@@ -2936,7 +2942,9 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
-                current_block_name = None  # Can't determine for multi-block
+                # For multi-block, we can't determine a single block name for layer identification
+                # FP8 skip_quantization will fall back to relative layer names within the block
+                current_block_name = None
 
             m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = self._quantize_block(
