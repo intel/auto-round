@@ -151,7 +151,6 @@ class TestAutoRound:
         # Test that get_fp_layer_names can find FP8Linear layers
         # Using "mlp" as the ignore pattern which should match mlp layers in the model
         layer_names = get_fp_layer_names(model, "mlp")
-        print(f"Found {len(layer_names)} layers matching 'mlp' pattern")
         
         # Verify that some layers were found
         assert len(layer_names) > 0, "Should find layers matching 'mlp' pattern in FP8 model"

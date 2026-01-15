@@ -35,20 +35,24 @@ class TestGetFpLayerNames:
         assert 'mlp.0' in result and 'mlp.1' in result
         
     def test_fp8linear_layers(self):
-        """Test with FP8Linear layers (mocked by changing class name)."""
+        """Test with FP8Linear layers (mocked by creating a proper class)."""
+        # Create a proper mock FP8Linear class
+        class FP8Linear(torch.nn.Linear):
+            """Mock FP8Linear class for testing."""
+            def __init__(self, in_features, out_features):
+                super().__init__(in_features, out_features)
+        
         class MockModel(torch.nn.Module):
             def __init__(self):
                 super().__init__()
                 self.layer1 = torch.nn.Linear(10, 10)
-                # Mock FP8Linear by changing class name
-                self.layer2 = torch.nn.Linear(10, 10)
-                self.layer2.__class__.__name__ = 'FP8Linear'
+                # Use proper FP8Linear mock
+                self.layer2 = FP8Linear(10, 10)
                 
                 self.mlp = torch.nn.Sequential()
                 linear1 = torch.nn.Linear(10, 10)
                 self.mlp.add_module('0', linear1)
-                linear2 = torch.nn.Linear(10, 10)
-                linear2.__class__.__name__ = 'FP8Linear'
+                linear2 = FP8Linear(10, 10)
                 self.mlp.add_module('1', linear2)
         
         model = MockModel()
