@@ -3,7 +3,7 @@ import json
 import torch
 
 from collections import OrderedDict
-from auto_round.utils import get_module
+from auto_round.utils import get_module, get_lm_head_name
 from auto_round.logger import logger
 
 
@@ -13,8 +13,8 @@ class ShardSaver:
     """
 
     def __init__(self, rounder):
-        self.rounder = rounder
         self.model = rounder.model
+        self.lm_head_name = get_lm_head_name(self.model)
 
         # Configuration
         self.max_shard_size = self._parse_size(getattr(rounder, "max_shard_size", "5GB"))
@@ -132,8 +132,14 @@ class ShardSaver:
         all_saved_names = {p for meta in self.shard_meta for p in meta["params"]}
 
         for pname, tensor in full_sd.items():
-            if ("lm_head" in pname and tie_word_embeddings) or pname in all_saved_names:
+            if pname in all_saved_names:
                 continue
+            layer_name = ".".join(pname.split(".")[:-1])
+            if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
+                lm_head_module = get_module(self.model, self.lm_head_name)
+                lm_head_module.to(
+                    "meta"
+                )  # Must to
             self._add_tensor(pname, tensor.detach())
 
         self._flush_shard()
@@ -174,7 +180,7 @@ class ShardSaver:
 
 
 # Entry point function to maintain compatibility with your current flow
-def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
+def shard_saver(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
     if not hasattr(rounder, "_shard_saver"):
         rounder._shard_saver = ShardSaver(rounder)
 
