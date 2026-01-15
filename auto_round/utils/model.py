@@ -29,7 +29,7 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 
-def clean_module_parameter(submodule: torch.nn.Module, param_name: str=None) -> None:
+def clean_module_parameter(submodule: torch.nn.Module, param_name: str = None) -> None:
     """This function is recommended to be used instead of module.weight = None.
     For models like `tie_word_embeddings`, setting the embedding weight to None
     causes `lm_head` to reallocate memory for its weight instead of treating it as a "bound shared weight,"

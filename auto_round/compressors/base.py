@@ -73,6 +73,7 @@ from auto_round.utils import (
     check_and_mark_fp8_model,
     check_seqlen_compatible,
     check_to_quantized,
+    clean_module_parameter,
     clear_memory,
     compile_func,
     convert_dtype_str2torch,
@@ -99,7 +100,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device, clean_module_parameter,
+    unsupported_meta_device,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -1107,7 +1108,7 @@ class BaseCompressor(object):
         if dtype is not None and m.dtype != dtype:
             try:
                 m_dtype = next(m.parameters()).dtype
-                if  m_dtype != dtype:
+                if m_dtype != dtype:
                     m = m.to(dtype)
             except StopIteration:
                 pass
@@ -1276,7 +1277,7 @@ class BaseCompressor(object):
         else:
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            cnt=0
+            cnt = 0
             pbar = tqdm(all_to_quantized_module_names)
             for n, m in self.model.named_modules():
                 if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
@@ -1288,8 +1289,8 @@ class BaseCompressor(object):
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                 # A workaround to trigger garbage collection in time
-                elif len(list(m.children()))==0 and len(list(m.state_dict()))>0:
-                    set_module(self.model,n,copy.deepcopy(m))
+                elif len(list(m.children())) == 0 and len(list(m.state_dict())) > 0:
+                    set_module(self.model, n, copy.deepcopy(m))
                     m.to("meta")
 
         # Convert remaining fp8
