@@ -865,17 +865,16 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         subcomponents of those layers.
     """
     from auto_round.utils import SUPPORTED_LAYER_TYPES
-    
+
     not_to_quantized_layers = []
 
-    for n,m in model.name_modules():
+    for n, m in model.name_modules():
         if is_fp8_linear(m):
             not_to_quantized_layers.append(n)
             logger.trace(f"Auto-detected FP8 layer to ignore : {n}")
-    
 
     if ignore_layers:
-        ignore_list = ignore_layers.replace(" ","").split(",")
+        ignore_list = ignore_layers.replace(" ", "").split(",")
         for fp_layer in ignore_list:
             if not fp_layer:
                 continue
@@ -890,7 +889,6 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
 
         logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
         return not_to_quantized_layers
-
 
     ignore_layers = ignore_layers.replace(" ", "").split(",")
     all_layer_names = []
