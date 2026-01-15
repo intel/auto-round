@@ -1,10 +1,25 @@
-import os
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
+import os
+from collections import OrderedDict
+
 import torch
 
-from collections import OrderedDict
-from auto_round.utils import get_module
 from auto_round.logger import logger
+from auto_round.utils import get_module
 
 
 class ShardSaver:
@@ -38,18 +53,20 @@ class ShardSaver:
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _parse_size(self, size_str: str) -> int:
-        if isinstance(size_str, int): return size_str
+        if isinstance(size_str, int):
+            return size_str
         s = size_str.strip().upper()
-        units = {"GB": 1024 ** 3, "MB": 1024 ** 2, "KB": 1024, "B": 1}
+        units = {"GB": 1024**3, "MB": 1024**2, "KB": 1024, "B": 1}
         for unit, mult in units.items():
             if s.endswith(unit):
-                return int(float(s[:-len(unit)]) * mult)
+                return int(float(s[: -len(unit)]) * mult)
         return int(s)
 
     def _check_safetensors(self) -> bool:
         if self.safe_serialization:
             try:
                 import safetensors.torch
+
                 return True
             except ImportError:
                 logger.warning("safetensors not installed; falling back to torch.save.")
@@ -96,6 +113,7 @@ class ShardSaver:
 
         if self.use_safetensors:
             from safetensors.torch import save_file
+
             save_file(self.current_shard_tensors, tmp_path)
         else:
             torch.save(self.current_shard_tensors, tmp_path)
@@ -145,8 +163,11 @@ class ShardSaver:
 
         for idx, meta in enumerate(self.shard_meta, start=1):
             old_path = os.path.join(self.output_dir, meta["tmp_file"])
-            new_name = (f"model.{self.shard_suffix}" if self.shard_counter == 1
-                        else f"model-{idx:05d}-of-{self.shard_counter:05d}.{self.shard_suffix}")
+            new_name = (
+                f"model.{self.shard_suffix}"
+                if self.shard_counter == 1
+                else f"model-{idx:05d}-of-{self.shard_counter:05d}.{self.shard_suffix}"
+            )
 
             os.rename(old_path, os.path.join(self.output_dir, new_name))
             for p in meta["params"]:
