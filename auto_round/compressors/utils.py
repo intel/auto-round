@@ -261,15 +261,28 @@ def set_layer_config(
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
 
-    # 1. ignore_layers -> force 16
-    for name in get_fp_layer_names(model, ignore_layers):
-        layer_config[name] = {
-            "bits": 16,
-            "act_bits": 16,
-            "data_type": "float",
-            "act_data_type": "float",
-            "fixed_by_user": True,
-        }
+    # Check if this is an FP8 model
+    model_is_fp8 = is_fp8_model(model)
+
+    # 1. ignore_layers -> force 16 (or skip for FP8 models)
+    for name in get_fp_layer_names(model, ignore_layers, is_fp8_model=model_is_fp8):
+        # For FP8 models, we want to keep the layers in FP8 format, not convert to float
+        # So we mark them but don't change their configuration
+        if model_is_fp8:
+            # Mark the layer to skip quantization but keep original FP8 format
+            layer_config[name] = {
+                "skip_quantization": True,
+                "fixed_by_user": True,
+            }
+        else:
+            # For non-FP8 models, convert to float16 as before
+            layer_config[name] = {
+                "bits": 16,
+                "act_bits": 16,
+                "data_type": "float",
+                "act_data_type": "float",
+                "fixed_by_user": True,
+            }
 
     # 2. normalize
     layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
@@ -848,7 +861,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     return layer_config, gguf_format_config
 
 
-def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
+def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str, is_fp8_model: bool = False):
     """Identifies and returns layers in the model to exclude from quantization.
 
     This function processes a comma-separated list of fully precision (FP) layers,
@@ -859,6 +872,8 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         model (torch.nn.Module): The model whose layers will be inspected.
         ignore_layers (str): A comma-separated string of layer names to be excluded
             from quantization. Whitespace is ignored in this string.
+        is_fp8_model (bool): Whether the input model is an FP8 model. If True,
+            ignored layers will remain in FP8 format rather than being converted to float.
 
     Returns:
         list: A list of layer names that match the specified FP layers or are
@@ -886,7 +901,11 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
-    logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
+    
+    if is_fp8_model and not_to_quantized_layers:
+        logger.info(f"FP8 model detected: {len(not_to_quantized_layers)} layers will remain in FP8 format: {not_to_quantized_layers[:5]}{'...' if len(not_to_quantized_layers) > 5 else ''}")
+    else:
+        logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
     return not_to_quantized_layers
 
 

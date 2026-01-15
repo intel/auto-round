@@ -953,6 +953,10 @@ def check_to_quantized(config):
             False otherwise.
     """
 
+    # Check if this layer should skip quantization (for FP8 models with ignore_layers)
+    if isinstance(config, dict) and config.get("skip_quantization", False):
+        return False
+
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)
         act_bits = config.get("act_bits", None)
@@ -1020,16 +1024,23 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     return new_layer
 
 
-def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16, device: str = "cpu"):
+def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16, device: str = "cpu", skip_layers=None):
     """
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
+    
+    Args:
+        model: The model to convert
+        dtype: Target dtype for converted layers
+        device: Device to use for conversion
+        skip_layers: Set of layer names to skip conversion (keep in FP8)
     """
     from auto_round.utils.device import clear_memory
 
+    skip_layers = skip_layers or set()
     cnt = 0
     for n, m in model.named_modules():
-        if m.__class__.__name__ == "FP8Linear":
+        if m.__class__.__name__ == "FP8Linear" and n not in skip_layers:
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype, device=device)
             set_module(model, n, new_module)
             cnt += 1

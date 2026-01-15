@@ -1103,7 +1103,11 @@ class BaseCompressor(object):
         if dtype is not None:
             m = m.to(dtype)
 
-        if is_fp8_linear(m):
+        # Check if this is an FP8 layer that should remain in FP8 (for ignore_layers)
+        layer_cfg = self.layer_config.get(name, {})
+        should_skip_fp8_conversion = layer_cfg.get("skip_quantization", False) and is_fp8_linear(m)
+        
+        if is_fp8_linear(m) and not should_skip_fp8_conversion:
             m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
             set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
@@ -1215,7 +1219,11 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
-                if is_fp8_linear(m):
+                # Check if this is an FP8 layer that should remain in FP8 (for ignore_layers)
+                layer_cfg = self.layer_config.get(name, {})
+                should_skip_fp8_conversion = layer_cfg.get("skip_quantization", False) and is_fp8_linear(m)
+                
+                if is_fp8_linear(m) and not should_skip_fp8_conversion:
                     m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
                     set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
@@ -1284,9 +1292,10 @@ class BaseCompressor(object):
                     memory_monitor.log_summary()
                     cnt = 1
                 cnt += 1
-        # Convert remaining fp8
+        # Convert remaining fp8, but skip layers marked with skip_quantization (for FP8 models with ignore_layers)
         if is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
+            skip_layers = {name for name, cfg in self.layer_config.items() if cfg.get("skip_quantization", False)}
+            convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device, skip_layers=skip_layers)
         self.quantized = True
         return self.model, self.layer_config
 
@@ -1353,7 +1362,13 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 if is_fp8_model(self.model):
-                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
+                    # Get skip_layers for this block
+                    block_skip_layers = {
+                        name.replace(block_name + ".", "") 
+                        for name, cfg in self.layer_config.items() 
+                        if name.startswith(block_name + ".") and cfg.get("skip_quantization", False)
+                    }
+                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device, skip_layers=block_skip_layers)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -1566,7 +1581,9 @@ class BaseCompressor(object):
 
         if is_fp8_model(self.model):
             for n, m in self.model.named_modules():
-                if is_fp8_linear(m):
+                layer_cfg = self.layer_config.get(n, {})
+                should_skip_fp8_conversion = layer_cfg.get("skip_quantization", False)
+                if is_fp8_linear(m) and not should_skip_fp8_conversion:
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
                     set_module(self.model, n, new_layer)
 
@@ -1630,7 +1647,9 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                if is_fp8_linear(layer):
+                layer_cfg = self.layer_config.get(layer_name, {})
+                should_skip_fp8_conversion = layer_cfg.get("skip_quantization", False)
+                if is_fp8_linear(layer) and not should_skip_fp8_conversion:
                     new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype, self.device).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
@@ -2576,6 +2595,7 @@ class BaseCompressor(object):
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload=True,
+        block_name: str = None,
     ):
         """Quantize the weights of a given block of the model.
 
@@ -2585,13 +2605,18 @@ class BaseCompressor(object):
         input_others: A dictionary containing additional input data.
         q_input: The quantized input tensor.
         device: The device for quantization.
+        block_name: Optional name of the block for identifying skip_quantization layers.
 
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
-                if is_fp8_linear(m):
+                # Construct full layer name
+                full_name = f"{block_name}.{n}" if block_name and n else (block_name or n)
+                layer_cfg = self.layer_config.get(full_name, {})
+                should_skip_fp8_conversion = layer_cfg.get("skip_quantization", False)
+                if is_fp8_linear(m) and not should_skip_fp8_conversion:
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
                     set_module(block, n, new_layer)
 
@@ -2905,11 +2930,13 @@ class BaseCompressor(object):
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
+                current_block_name = n
             else:
                 names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
+                current_block_name = None  # Can't determine for multi-block
 
             m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = self._quantize_block(
@@ -2918,6 +2945,7 @@ class BaseCompressor(object):
                 input_others,
                 q_input=q_input,
                 device=device,
+                block_name=current_block_name,
             )
             if hasattr(model, "config"):
                 del m.config
