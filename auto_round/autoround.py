@@ -186,7 +186,7 @@ class AutoRound:
             logger.warning_once(
                 "'fp_layers' is deprecated, please use 'ignore_layers' to set layers not to be quantized."
             )
-            kwargs["ignore"] = kwargs.pop("fp_layers")
+            kwargs["ignore_layers"] = kwargs.pop("fp_layers")
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,
