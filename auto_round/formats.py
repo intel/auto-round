@@ -676,7 +676,7 @@ class GGUFFormat(OutputFormat):
                 ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
                 gguf_format = gguf_format.lower().replace("_mixed", "_s")
             if isinstance(scheme, str) and scheme.lower() != gguf_format:
-                logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
+                # logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
                 ar.scheme = gguf_format
             self.output_format = gguf_format
             self.backend = None

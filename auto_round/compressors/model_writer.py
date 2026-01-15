@@ -121,7 +121,7 @@ class ShardWriter:
         if self._closed:
             raise RuntimeError("ShardWriter already finalized/closed")
 
-        prefix = name if name is not None else module.tmp_name
+        prefix = name if name is not None else module.global_name
         state = module.state_dict()
         layer_state = {}
         for k, v in state.items():

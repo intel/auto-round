@@ -29,7 +29,7 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 
-def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
+def clean_module_parameter(submodule: torch.nn.Module, param_name: str=None) -> None:
     """This function is recommended to be used instead of module.weight = None.
     For models like `tie_word_embeddings`, setting the embedding weight to None
     causes `lm_head` to reallocate memory for its weight instead of treating it as a "bound shared weight,"
@@ -42,18 +42,27 @@ def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
     """
     if submodule is None:
         return
-    is_buffer = param_name in submodule._buffers
-    with torch.no_grad():
-        if is_buffer:
-            buf = submodule._buffers[param_name]
-            if buf is not None:
-                buf.data = torch.empty(0, dtype=buf.dtype, device=buf.device)
-                buf.requires_grad = False
-        else:
-            param = submodule._parameters[param_name]
-            if param is not None:
-                param.data = torch.empty(0, dtype=param.dtype, device=param.device)
-                param.requires_grad = False
+
+    if param_name is None:
+        param_names = []
+        param_names.extend(submodule._buffers.keys())
+        param_names.extend(submodule._parameters.keys())
+    else:
+        param_names = [param_name]
+
+    for param_name in param_names:
+        is_buffer = param_name in submodule._buffers
+        with torch.no_grad():
+            if is_buffer:
+                buf = submodule._buffers[param_name]
+                if buf is not None:
+                    buf.data = torch.empty(0, dtype=buf.dtype, device=buf.device)
+                    buf.requires_grad = False
+            else:
+                param = submodule._parameters[param_name]
+                if param is not None:
+                    param.data = torch.empty(0, dtype=param.dtype, device=param.device)
+                    param.requires_grad = False
 
 
 def convert_dtype_str2torch(str_dtype):
@@ -840,7 +849,7 @@ def get_layer_names_in_block(
         class_names = []
     for n, m in model.named_modules():
         if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
-            m.bk_tmp_name = n
+            m.bk_global_name = n
     layers_in_block = []
     if bool(quant_block_list):
         all_blocks = quant_block_list
@@ -850,9 +859,9 @@ def get_layer_names_in_block(
         for block_name in block_names:
             block = get_module(model, block_name)
             for n, m in block.named_modules():
-                if hasattr(m, "bk_tmp_name"):
-                    layers_in_block.append(m.bk_tmp_name)
-                    delattr(m, "bk_tmp_name")
+                if hasattr(m, "bk_global_name"):
+                    layers_in_block.append(m.bk_global_name)
+                    delattr(m, "bk_global_name")
     return layers_in_block
 
 
@@ -1006,7 +1015,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
     scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
+    keys = tuple(scheme_keys) + ("global_name", "scale_dtype")
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 

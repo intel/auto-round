@@ -28,6 +28,7 @@ import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from pandas.tests.series.methods.test_nlargest import main_dtypes
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed
@@ -98,7 +99,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device,
+    unsupported_meta_device, clean_module_parameter,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -1104,7 +1105,12 @@ class BaseCompressor(object):
         """
         m = get_module(self.model, name)
         if dtype is not None and m.dtype != dtype:
-            m = m.to(dtype)
+            try:
+                m_dtype = next(m.parameters()).dtype
+                if  m_dtype != dtype:
+                    m = m.to(dtype)
+            except StopIteration:
+                pass
 
         if is_fp8_linear(m):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
@@ -1122,8 +1128,8 @@ class BaseCompressor(object):
                     not disable_opt_rtn
                     and self.orig_disable_opt_rtn is None
                     and self.is_moe_model
-                    and "expert" in m.tmp_name
-                    and "shared_expert" not in m.tmp_name
+                    and "expert" in m.global_name
+                    and "shared_expert" not in m.global_name
                     and self.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
                 ):
                     disable_opt_rtn = True
@@ -1268,52 +1274,23 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            i=0
+            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+            cnt=0
+            pbar = tqdm(all_to_quantized_module_names)
             for n, m in self.model.named_modules():
-                if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                    self._quantize_layer_via_rtn(m.tmp_name)
-                elif len(list(m.children()))==0 and len(list(m.state_dict()))>0:# Seems must release orig the block
+                if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                    pbar.set_description(f"Quantizing {m.global_name}")
+                    self._quantize_layer_via_rtn(m.global_name)
+                    cnt += 1
+                    pbar.update()
+                    if cnt % clear_mem_freq == 0:
+                        clear_memory(device_list=self.device_list)
+                        memory_monitor.log_summary()
+                # A workaround to trigger garbage collection in time
+                elif len(list(m.children()))==0 and len(list(m.state_dict()))>0:
                     set_module(self.model,n,copy.deepcopy(m))
                     m.to("meta")
-
-                # if hasattr(m, "weight"):
-                #     m.weight += 1
-                #     # m.weight.data.copy_(torch.empty_like(m.weight))
-                # if hasattr(m, "bias") and m.bias is not None:
-                #     m.bias += 1
-                #     # m.bias.data.copy_(torch.empty_like(m.bias))
-
-
-                i += 1
-                if i % 100 == 0:
-                    import gc
-                    gc.collect()
-                    clear_memory(device_list=self.device_list)
-                    memory_monitor.log_summary()
-
-            # all_to_quantized_module_names = list(set(all_to_quantized_module_names))
-            # all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
-            # pbar = tqdm(range(sum(len(block) for block in all_blocks)))
-            #
-            # for block_names in all_blocks:
-            #     for block_name in block_names:
-            #         pbar.set_description(f"Quantizing {block_name}")
-            #         block = get_module(self.model, block_name)
-            #         for _, m in block.named_modules():
-            #             if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-            #                 self._quantize_layer_via_rtn(m.tmp_name)
-            #                 all_to_quantized_module_names.remove(m.tmp_name)
-            #
-            #         mv_module_from_gpu(block)
-            #         if self.immediate_saving:
-            #             self.shard_writer.add_module(block, block_name)
-            #
-            #         clear_memory(device_list=self.device_list)
-            #         memory_monitor.log_summary()
-            #         pbar.update(1)
-            #
-            # for name in all_to_quantized_module_names:
-            #     self._quantize_layer_via_rtn(name)
 
         # Convert remaining fp8
         if is_fp8_model(self.model):
@@ -1428,9 +1405,9 @@ class BaseCompressor(object):
                     # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
-                    if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
-                        all_to_quantized_module_names.remove(m.tmp_name)
+                    if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                        self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                        all_to_quantized_module_names.remove(m.global_name)
 
                 mv_module_from_gpu(block)
 
@@ -1497,7 +1474,7 @@ class BaseCompressor(object):
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
         for n, m in self.model.named_modules():
-            m.tmp_name = n
+            m.global_name = n
 
         if not self.is_auto_scheme:
             enable_gguf_official_mixed = True
@@ -1802,7 +1779,7 @@ class BaseCompressor(object):
                 The capture hook look like:
 
                     def input_capture_hook(module, *args, **kwargs):
-                        _all_module_input[module._tmp_name].append((args, kwargs))
+                        _all_module_input[module._global_name].append((args, kwargs))
         """
         first_block_name = self.quant_block_list[0][0]
 
@@ -2969,7 +2946,7 @@ class BaseCompressor(object):
                 for _, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
-                    self._immediate_pack(tmp_m.tmp_name)
+                    self._immediate_pack(tmp_m.global_name)
 
             if self.immediate_saving:
                 self.shard_writer.add_module(m)

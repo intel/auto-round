@@ -1381,7 +1381,6 @@ class MemoryMonitor:
         self._initialized = True
         self.peak_ram = 0.0  # GB
         self.peak_vram = {}  # {device_id: peak_mb}
-        self.cur_ram = 0.0
 
         self.enabled = True
 
@@ -1428,7 +1427,6 @@ class MemoryMonitor:
             return
         process = psutil.Process()
         current_ram = process.memory_info().rss / 1024**3  # GB
-        self.cur_ram = current_ram
         self.peak_ram = max(self.peak_ram, current_ram)
 
     def reset(self):
@@ -1438,7 +1436,7 @@ class MemoryMonitor:
 
     def get_summary(self):
         """Get summary of peak memory usage."""
-        summary = f"'peak_ram': {round(self.peak_ram, 2)}GB" + f"'cur_ram': {round(self.cur_ram, 2)}GB"
+        summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
         if len(self.peak_vram) > 0:
             sorted_items = sorted(self.peak_vram.items())
             if len(self.peak_vram) == 1:
