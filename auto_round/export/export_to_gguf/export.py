@@ -193,7 +193,7 @@ def pack_gguf_layer(
                 block = get_module(model, block_name)
                 for n, m in block.named_modules():
                     if check_to_quantized(m):
-                        names_in_blocks.append(m.tmp_name)
+                        names_in_blocks.append(m.global_name)
 
     if name in model.last_layer_name_to_block_name:
         # Packing block

@@ -298,7 +298,7 @@ def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterab
         return []
     # Retrieve all high-level block names (for example, transformer blocks)
     for n, m in model.named_modules():
-        m.tmp_name = n  # attach global name
+        m.global_name = n  # attach global name
 
     block_names = get_block_names(model, quant_vision=True)
     block_names = [item for sublist in block_names for item in sublist]
@@ -327,7 +327,7 @@ def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterab
         block_layer_names = []
         for name in block_layer_local_names:
             module = get_module(block_module, name)
-            block_layer_names.append(module.tmp_name)
+            block_layer_names.append(module.global_name)
 
         for group in fuzzy_match_groups:
             matched_layers = set()
