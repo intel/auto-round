@@ -31,9 +31,8 @@ class ShardSaver:
         self.model = rounder.model
         self.lm_head_name = get_lm_head_name(self.model)
         total_params = sum(p.numel() for p in self.model.parameters())
-        model_size = int(total_params*rounder.bits//1e9//8)//10
+        model_size = int(total_params * rounder.bits // 1e9 // 8) // 10
         model_size = max(1, min(int(model_size), 5))
-
 
         # Configuration
         self.max_shard_size = self._parse_size(getattr(rounder, "max_shard_size", f"{model_size}GB"))
