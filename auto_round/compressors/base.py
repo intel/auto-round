@@ -1583,7 +1583,7 @@ class BaseCompressor(object):
                     quantized_layers.append(n)
                 else:
                     unquantized_layers.append(n)
-            elif hasattr(m, "scales") or hasattr(m, "scale"):  ##packing_immediately
+            elif hasattr(m, "scales") or hasattr(m, "scale"):  # packing_immediately
                 quantized_layers.append(n)
         summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
@@ -2922,9 +2922,12 @@ class BaseCompressor(object):
             if hasattr(model, "config"):
                 del m.config
             if self.is_immediate_packing:
-                for _, tmp_m in m.named_modules():
+                for n, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
+                    # elif len(list(tmp_m.children()))==0 and len(m.state_dict())>0:
+                    #     set_module(m,n,copy.deepcopy(tmp_m))
+                    #     tmp_m.to("cuda")
                     self._immediate_pack(tmp_m.global_name)
 
             if self.is_immediate_saving:
