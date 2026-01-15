@@ -1020,9 +1020,7 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
         if rounder._use_safetensors:
             from safetensors.torch import save_file
 
-            # save_file(rounder._current_shard_tensors, tmp_path)
-            detached = {k: v.detach().clone() for k, v in rounder._current_shard_tensors.items()}
-            save_file(detached, tmp_path)
+            save_file(rounder._current_shard_tensors, tmp_path)
         else:
             torch.save(rounder._current_shard_tensors, tmp_path)
         params = list(rounder._current_shard_tensors.keys())
