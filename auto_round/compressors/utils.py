@@ -864,14 +864,14 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         list: A list of layer names that match the specified FP layers or are
         subcomponents of those layers.
     """
-    from auto_round.utils import SUPPORTED_LAYER_TYPES
+    from auto_round.utils import INNER_SUPPORTED_LAYER_TYPES, SUPPORTED_LAYER_TYPES
 
     if not ignore_layers:
         return []
     ignore_layers = ignore_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if type(m) in SUPPORTED_LAYER_TYPES:
+        if type(m) in SUPPORTED_LAYER_TYPES or m.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES:
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
