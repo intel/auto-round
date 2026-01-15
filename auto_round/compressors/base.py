@@ -34,7 +34,7 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from  auto_round.compressors.model_writter import immediate_saving
+from auto_round.compressors.model_writter import immediate_saving
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
