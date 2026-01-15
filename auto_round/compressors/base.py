@@ -1291,6 +1291,8 @@ class BaseCompressor(object):
                 # A workaround to trigger garbage collection in time
                 elif len(list(m.children())) == 0 and len(list(m.state_dict())) > 0:
                     set_module(self.model, n, copy.deepcopy(m))
+                    if self.immediate_saving:
+                        self.shard_writer.add_module(name=n)
                     m.to("meta")
 
         # Convert remaining fp8
