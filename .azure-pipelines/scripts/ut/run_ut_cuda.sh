@@ -27,7 +27,7 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
-    uv pip install torch==2.9.1 torchvision
+    uv pip install torch==2.9.1 torchvision transformers==5.0.0rc3
     uv pip install -r requirements.txt
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
