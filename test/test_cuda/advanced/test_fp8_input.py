@@ -141,3 +141,56 @@ class TestAutoRound:
                 ar = AutoRound(model_name, iters=iters, scheme=scheme)
                 ar.quantize_and_save(output_dir=self.save_dir)
                 shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_fp8_model_with_ignore_layers(self):
+        """Test that FP8 layers specified in ignore_layers remain in FP8 format."""
+        from auto_round.compressors.config import SchemeExtraConfig
+        from auto_round.utils import is_fp8_linear
+        
+        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        model, tokenizer = llm_load_model(model_name)
+        
+        # Verify model is FP8
+        assert hasattr(model, "is_fp8") and model.is_fp8, "Model should be marked as FP8"
+        
+        # Check that some layers are FP8 before quantization
+        fp8_layers_before = []
+        for n, m in model.named_modules():
+            if is_fp8_linear(m):
+                fp8_layers_before.append(n)
+        print(f"FP8 layers before quantization: {len(fp8_layers_before)}")
+        assert len(fp8_layers_before) > 0, "Model should have FP8 layers"
+        
+        # Quantize with ignore_layers containing "attn" - these should remain in FP8
+        scheme_config = SchemeExtraConfig(ignore_layers="attn")
+        from auto_round.compressors.config import ExtraConfig
+        extra_config = ExtraConfig()
+        extra_config.scheme_config = scheme_config
+        
+        ar = AutoRound(
+            model=model, 
+            tokenizer=tokenizer, 
+            iters=0, 
+            extra_config=extra_config
+        )
+        quantized_model, layer_config = ar.quantize()
+        
+        # Check that layers with "attn" in the name have skip_quantization flag
+        attn_layers_with_skip = []
+        for layer_name, cfg in layer_config.items():
+            if "attn" in layer_name and cfg.get("skip_quantization", False):
+                attn_layers_with_skip.append(layer_name)
+        
+        print(f"Attention layers marked with skip_quantization: {len(attn_layers_with_skip)}")
+        assert len(attn_layers_with_skip) > 0, "Attention layers should be marked with skip_quantization"
+        
+        # Check that FP8 layers with "attn" still exist as FP8Linear after quantization
+        fp8_attn_layers_after = []
+        for n, m in quantized_model.named_modules():
+            if "attn" in n and is_fp8_linear(m):
+                fp8_attn_layers_after.append(n)
+        
+        print(f"FP8 attention layers after quantization: {len(fp8_attn_layers_after)}")
+        assert len(fp8_attn_layers_after) > 0, "Attention layers should remain in FP8 format"
+        
+        print(f"✓ Test passed: {len(fp8_attn_layers_after)} FP8 attention layers preserved")
