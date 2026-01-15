@@ -840,7 +840,7 @@ def get_layer_names_in_block(
         class_names = []
     for n, m in model.named_modules():
         if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
-            m.bk_tmp_name = n
+            m.bk_global_name = n
     layers_in_block = []
     if bool(quant_block_list):
         all_blocks = quant_block_list
@@ -850,9 +850,9 @@ def get_layer_names_in_block(
         for block_name in block_names:
             block = get_module(model, block_name)
             for n, m in block.named_modules():
-                if hasattr(m, "bk_tmp_name"):
-                    layers_in_block.append(m.bk_tmp_name)
-                    delattr(m, "bk_tmp_name")
+                if hasattr(m, "bk_global_name"):
+                    layers_in_block.append(m.bk_global_name)
+                    delattr(m, "bk_global_name")
     return layers_in_block
 
 
@@ -1006,7 +1006,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
     scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
+    keys = tuple(scheme_keys) + ("global_name", "scale_dtype")
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 

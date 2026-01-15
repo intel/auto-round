@@ -34,6 +34,7 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from  auto_round.compressors.model_writter import immediate_saving
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -41,7 +42,6 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    immediate_saving,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
@@ -1119,8 +1119,8 @@ class BaseCompressor(object):
                     not disable_opt_rtn
                     and self.orig_disable_opt_rtn is None
                     and self.is_moe_model
-                    and "expert" in m.tmp_name
-                    and "shared_expert" not in m.tmp_name
+                    and "expert" in m.global_name
+                    and "shared_expert" not in m.global_name
                     and self.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
                 ):
                     disable_opt_rtn = True
@@ -1395,9 +1395,9 @@ class BaseCompressor(object):
                     # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
-                    if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.low_gpu_mem_usage)
-                        all_to_quantized_module_names.remove(m.tmp_name)
+                    if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                        self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                        all_to_quantized_module_names.remove(m.global_name)
                 if not self.immediate_saving:
                     mv_module_from_gpu(block)
                 if block_name == block_names[-1]:
@@ -1463,7 +1463,7 @@ class BaseCompressor(object):
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
         for n, m in self.model.named_modules():
-            m.tmp_name = n
+            m.global_name = n
 
         if not self.is_auto_scheme:
             enable_gguf_official_mixed = True
@@ -1758,7 +1758,7 @@ class BaseCompressor(object):
                 The capture hook look like:
 
                     def input_capture_hook(module, *args, **kwargs):
-                        _all_module_input[module._tmp_name].append((args, kwargs))
+                        _all_module_input[module._global_name].append((args, kwargs))
         """
         first_block_name = self.quant_block_list[0][0]
 
@@ -2925,7 +2925,7 @@ class BaseCompressor(object):
                 for _, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
-                    self._immediate_pack(tmp_m.tmp_name)
+                    self._immediate_pack(tmp_m.global_name)
 
             if self.immediate_saving:
                 last_group = (i + nblocks) >= len(block_names)
