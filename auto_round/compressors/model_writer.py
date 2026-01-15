@@ -18,9 +18,14 @@ import os
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import copy_python_files_from_model_cache, get_lm_head_name, get_module, set_module, \
-    get_block_names, flatten_list
-
+from auto_round.utils import (
+    copy_python_files_from_model_cache,
+    flatten_list,
+    get_block_names,
+    get_lm_head_name,
+    get_module,
+    set_module,
+)
 
 # TODO decouple max_shard_size with dump shard size
 
@@ -34,18 +39,17 @@ class ShardWriter:
     def __init__(self, rounder):
         self.model = rounder.model
         self.block_names = flatten_list(get_block_names(self.model, True))
-        self.params_layers_in_blocks={}
-        self.name_to_block_names={}
+        self.params_layers_in_blocks = {}
+        self.name_to_block_names = {}
         for n in self.block_names:
             self.params_layers_in_blocks[n] = 0
             cnt = 0
             module = get_module(self.model, n)
             for sub_name, sub_module in module.named_modules():
-                if len(list(sub_module.children()))==0 and len(sub_module.state_dict())>0:
-                    self.name_to_block_names[sub_module.global_name]=n
-                    cnt+=1
+                if len(list(sub_module.children())) == 0 and len(sub_module.state_dict()) > 0:
+                    self.name_to_block_names[sub_module.global_name] = n
+                    cnt += 1
             self.params_layers_in_blocks[n] = cnt
-
 
         self.max_shard_bytes = self._parse_size(getattr(rounder, "max_shard_size", "5GB"))
 
@@ -127,9 +131,9 @@ class ShardWriter:
             clear_module_state(module)
             if layer_name in self.name_to_block_names:
                 block_name = self.name_to_block_names[layer_name]
-                self.params_layers_in_blocks[block_name]-=1
-                if self.params_layers_in_blocks[block_name]==0:
-                    block_module = get_module(self.model,block_name)
+                self.params_layers_in_blocks[block_name] -= 1
+                if self.params_layers_in_blocks[block_name] == 0:
+                    block_module = get_module(self.model, block_name)
                     block_module.to("meta")
             module.to("meta")
 
