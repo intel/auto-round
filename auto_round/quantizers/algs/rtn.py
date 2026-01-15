@@ -112,7 +112,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
             quantize_embedding_layer(
                 model=self.compressor.model,
                 layer_config=self.compressor.layer_config,
-                scale_dtype=self.compressor.data_type,
+                scale_dtype=self.compressor.scale_dtype,
                 disable_opt_rtn=self.compressor.disable_opt_rtn,
                 device=self.compressor.device,
                 device_list=self.compressor.device_list,
@@ -453,7 +453,7 @@ class OptRTNQuantizer(RTNQuantizer):
             quantize_embedding_layer(
                 model=self.compressor.model,
                 layer_config=self.compressor.layer_config,
-                scale_dtype=self.compressor.data_type,
+                scale_dtype=self.compressor.scale_dtype,
                 disable_opt_rtn=self.compressor.disable_opt_rtn,
                 device=self.compressor.device,
                 device_list=self.compressor.device_list,

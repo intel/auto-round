@@ -27,7 +27,7 @@ class AutoRoundQuantizer:
         return quantizer_cls(compressor)
 
 
-class Quanterizers:
+class Quantizers:
     def __init__(self, quantizers: list[AutoRoundQuantizer]):
         self.quantizers = quantizers
 
@@ -48,7 +48,7 @@ def create_quantizers(compressor: "BaseCompressor"):
         alg_cls = OptRTNQuantizer if compressor.disable_opt_rtn is False else RTNQuantizer
 
     dynamic_quantizers = {"algs": alg_cls}
-    return Quanterizers(
+    return Quantizers(
         quantizers=[
             AutoRoundQuantizer(compressor, dynamic_quantizers=dynamic_quantizers),
         ]

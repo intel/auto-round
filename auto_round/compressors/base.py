@@ -1590,7 +1590,7 @@ class BaseCompressor(object):
         self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.inputs[self.quant_block_list[0][0]]
         decoding_layer_first_input_name = "hidden_states"
-        from auto_round.quantizers.algs.auto_round import AutoRoundQuantizer
+        from auto_round.quantizers.algs.auto_round import ARQuantizer
         from auto_round.quantizers.utils import preprocess_block_inputs
 
         input_ids, input_others = preprocess_block_inputs(
@@ -1602,7 +1602,8 @@ class BaseCompressor(object):
             cache_device=self.cache_device,
             diffusion=self.diffusion,
         )
-        return AutoRoundQuantizer(self).quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
+        ar_quantizer = ARQuantizer(self)
+        return ar_quantizer.quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
 
     def _get_loss(
         self,

@@ -108,7 +108,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         is_quantized_embedding = quantize_embedding_layer(
             model=self.compressor.model,
             layer_config=self.compressor.layer_config,
-            scale_dtype=self.compressor.data_type,
+            scale_dtype=self.compressor.scale_dtype,
             disable_opt_rtn=self.compressor.disable_opt_rtn,
             device=self.compressor.device,
             device_list=self.compressor.device_list,
@@ -462,11 +462,11 @@ class ARQuantizer(AlgsBaseQuantizer):
         lr = torch.tensor(self.compressor.lr)
         minmax_lr = torch.tensor(self.compressor.minmax_lr)
         if self.compressor.enable_minmax_tuning:
-            optimizer = self.optimizer(
+            optimizer = self.compressor.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
             )
         else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+            optimizer = self.compressor.optimizer(round_params, lr=lr, weight_decay=0)
 
         if self.compressor.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
