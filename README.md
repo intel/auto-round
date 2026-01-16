@@ -217,6 +217,21 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 </details>
 
+### Supported Schemes
+<details>
+> Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
+
+| Format             | Supported Schemes                                                                                                                                                         |
+|:-------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **auto_round**     | W4A16(Recommended), W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `BF16`                     |
+| **auto_awq**       | W4A16(Recommended), BF16                                                                                                                                                  |
+| **auto_gptq**      | W4A16(Recommended), W2A16, W3A16, W8A16, W2A16G64, W2A16G32,BF16                                                                                                          |
+| **llm_compressor** | NVFP4(Recommended), `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`                                                                                                             |
+| **gguf**           | GGUF:Q4_K_M(Recommended), GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
+| **fake**           | `all schemes (only for research)`                                                                                                                                         |
+</details>
+
+
 ### Adaptive Schemes (Experimental Feature)
 AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
