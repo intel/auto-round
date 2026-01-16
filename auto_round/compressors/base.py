@@ -1405,7 +1405,7 @@ class BaseCompressor(object):
 
 
                 if not self.is_immediate_saving: # TODO try to delete this one
-                    mv_module_from_gpu(block)
+                    mv_module_from_gpu(block) # some modules may be flushed, so you could not move to gpu
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
