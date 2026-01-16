@@ -860,8 +860,6 @@ class BaseCompressor(object):
             inplace = False
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
-        if self.iters!=0:
-            self.inplace = False # lm-head needs calibration
 
         # Perform model quantization
         if self.static_attention_dtype is not None:
@@ -1474,7 +1472,7 @@ class BaseCompressor(object):
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
-        if self.has_qlayer_outside_block: # Ugly code
+        if self.has_qlayer_outside_block and (self.iters!=0 or  (self.iters==0 and not self.disable_opt_rtn)): # Ugly code
             self.inplace = False
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
@@ -1483,6 +1481,12 @@ class BaseCompressor(object):
             formats = self.formats
             if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block :
                 self.is_immediate_packing = True
+            if self.low_cpu_mem_usage and not self.is_immediate_packing:
+                logger.warning(
+                    "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
+                    "Setting `low_cpu_mem_usage` to False."
+                )
+                self.low_cpu_mem_usage = False
 
             if self.low_cpu_mem_usage and self.is_immediate_packing:
                 if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters==0:
