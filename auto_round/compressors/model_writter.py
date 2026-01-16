@@ -203,7 +203,7 @@ class ShardSaver:
 
 # Entry point function to maintain compatibility with your current flow
 @torch.no_grad()
-def shard_saver(rounder: object, m: torch.nn.Module=None, name: str = None, is_finalize: bool = False):
+def shard_saver(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
     if not hasattr(rounder, "_shard_saver"):
         rounder._shard_saver = ShardSaver(rounder)
 

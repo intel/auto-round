@@ -1403,9 +1403,8 @@ class BaseCompressor(object):
                     # elif len(list(m.children()))==0 and len(m.state_dict())>0:
                     #     shard_saver(self,m,m.global_name,False)
 
-
-                if not self.is_immediate_saving: # TODO try to delete this one
-                    mv_module_from_gpu(block) # some modules may be flushed, so you could not move to gpu
+                if not self.is_immediate_saving:  # TODO try to delete this one
+                    mv_module_from_gpu(block)  # some modules may be flushed, so you could not move to gpu
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
