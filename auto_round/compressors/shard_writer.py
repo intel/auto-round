@@ -31,6 +31,13 @@ class ShardWriter:
         self.model = rounder.model
         self.lm_head_name = get_lm_head_name(self.model)
         total_params = sum(p.numel() for p in self.model.parameters())
+        # Heuristic estimate of model size in GB used to choose a default max_shard_size:
+        # - total_params * rounder.bits       -> total number of bits in all parameters
+        # - // 8                              -> convert bits to bytes
+        # - // 1e9                            -> approx convert bytes to GB (1e9 bytes ~= 1 GB)
+        # - final // 10                       -> apply a safety margin so default shards are
+        #                                         smaller than the full model; this intentionally
+        #                                         underestimates size before clamping below.
         model_size = int(total_params * rounder.bits // 1e9 // 8) // 10
         model_size = max(1, min(int(model_size), 5))
 
