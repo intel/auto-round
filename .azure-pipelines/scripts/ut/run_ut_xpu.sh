@@ -4,8 +4,7 @@ set -xe
 # install requirements
 echo "##[group]set up UT env..."
 uv pip install pytest-cov pytest-html
-uv pip install -r /auto-round/test/test_ark/requirements.txt \
-    --extra-index-url https://download.pytorch.org/whl/xpu
+uv pip install -r /auto-round/test/test_ark/requirements.txt
 
 cd /auto-round && uv pip install .
 echo "##[endgroup]"
