@@ -860,7 +860,7 @@ class BaseCompressor(object):
             inplace = False
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
-        if self.has_qlayer_outside_block and self.iters!=0:
+        if self.iters!=0:
             self.inplace = False # lm-head needs calibration
 
         # Perform model quantization
@@ -1473,6 +1473,8 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = False
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
+        if self.has_qlayer_outside_block: # Ugly code
+            self.inplace = False
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
