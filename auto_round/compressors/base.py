@@ -860,8 +860,8 @@ class BaseCompressor(object):
             inplace = False
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
-        if self.iters!=0:
-            self.inplace = False # lm-head needs calibration
+        if self.iters != 0:
+            self.inplace = False  # lm-head needs calibration
 
         # Perform model quantization
         if self.static_attention_dtype is not None:
@@ -1474,18 +1474,18 @@ class BaseCompressor(object):
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
-        if self.has_qlayer_outside_block: # Ugly code
+        if self.has_qlayer_outside_block:  # Ugly code
             self.inplace = False
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
             # Determine if immediate packing is required
             formats = self.formats
-            if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block :
+            if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
                 self.is_immediate_packing = True
 
             if self.low_cpu_mem_usage and self.is_immediate_packing:
-                if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters==0:
+                if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
                     logger.warning(
                         "`low_cpu_mem_usage` is not fully supported "
                         "when there are quantized layers outside blocks and optimized RTN is disabled. "
@@ -1493,7 +1493,7 @@ class BaseCompressor(object):
                     )
                     self.low_cpu_mem_usage = False
                     self.is_immediate_saving = False
-                elif self.has_qlayer_outside_block and self.iters>0:
+                elif self.has_qlayer_outside_block and self.iters > 0:
                     logger.warning(
                         "`low_cpu_mem_usage` is not fully supported "
                         "when there are quantized layers outside blocks and optimized RTN is disabled. "
@@ -1501,14 +1501,13 @@ class BaseCompressor(object):
                     )
                     self.low_cpu_mem_usage = False
                     self.is_immediate_saving = False
-                if formats[0].is_gguf() :
+                if formats[0].is_gguf():
                     logger.warning(
                         "`low_cpu_mem_usage` is not fully supported for gguf format"
                         "Setting `low_cpu_mem_usage `to False."
                     )
                     self.low_cpu_mem_usage = False
                     self.is_immediate_saving = True
-
 
         if self.is_immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
