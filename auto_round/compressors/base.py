@@ -1396,10 +1396,10 @@ class BaseCompressor(object):
                         self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.global_name)
 
-                    elif len(list(m.children()))==0 and len(m.state_dict())>0: # no effect
+                    elif len(list(m.children())) == 0 and len(m.state_dict()) > 0:  # no effect
                         set_module(block, name, copy.deepcopy(m))
                         m.to("meta")
-                        shard_saver(self,name=m.global_name,is_finalize=False)
+                        shard_saver(self, name=m.global_name, is_finalize=False)
 
                 if not self.is_immediate_saving:
                     # some modules may have been flushed and set to meta, so we could not  move to gpu
