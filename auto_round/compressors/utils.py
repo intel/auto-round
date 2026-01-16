@@ -875,7 +875,8 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
     ignore_layers = ignore_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if type(m) in SUPPORTED_LAYER_TYPES:
+        # if type(m) in SUPPORTED_LAYER_TYPES:
+        if type(m) in SUPPORTED_LAYER_TYPES or "Linear" in str(type(m)):
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
