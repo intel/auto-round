@@ -1279,7 +1279,7 @@ class BaseCompressor(object):
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                 # A workaround to trigger garbage collection in time
-                elif len(list(m.children())) == 0 and len(list(m.state_dict())) > 0:
+                elif not any(m.children()) and len(m.state_dict()) > 0:
                     set_module(self.model, n, copy.deepcopy(m))
                     if self.is_immediate_saving:
                         shard_writer(self, name=n)
