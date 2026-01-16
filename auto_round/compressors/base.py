@@ -1169,13 +1169,9 @@ class BaseCompressor(object):
                 m = m.to("cpu")
             set_module(self.model, name, m)
         if self.is_immediate_saving:
-            if hasattr(self, "all_to_quantized_module_names"):
-                all_to_quantized_module_names = self.all_to_quantized_module_names
-            else:
-                all_to_quantized_module_names = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-            last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.model, name)
-            shard_saver(self, m, name, last_module)
+            m.to("cpu")
+            shard_saver(self, m, name, False)
 
     def _immediate_pack(self, name: str):
         if not self.is_immediate_packing:
@@ -1270,21 +1266,21 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            pass
-            # block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-            # clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            # if clear_mem_freq == 0:
-            #     clear_mem_freq = 1
-            # pbar = tqdm(all_to_quantized_module_names)
-            # cnt = 1
-            # for name in pbar:
-            #     pbar.set_description(f"Quantizing {name}")
-            #     self._quantize_layer_via_rtn(name)
-            #     if cnt % clear_mem_freq == 0:
-            #         clear_memory(device_list=self.device_list)
-            #         memory_monitor.log_summary()
-            #         cnt = 1
-            #     cnt += 1
+
+            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
+            pbar = tqdm(all_to_quantized_module_names)
+            cnt = 1
+            for name in pbar:
+                pbar.set_description(f"Quantizing {name}")
+                self._quantize_layer_via_rtn(name)
+                if cnt % clear_mem_freq == 0:
+                    clear_memory(device_list=self.device_list)
+                    memory_monitor.log_summary()
+                    cnt = 1
+                cnt += 1
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
@@ -1391,7 +1387,7 @@ class BaseCompressor(object):
                     block.to("cpu")
                     clear_memory(device_list=self.device_list)
 
-                for _, m in block.named_modules():
+                for name, m in block.named_modules():
                     # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
                     # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
                     if hasattr(m, "imatrix"):
@@ -1400,12 +1396,14 @@ class BaseCompressor(object):
                         self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.global_name)
 
-                    # elif len(list(m.children()))==0 and len(m.state_dict())>0:
-                    #     shard_saver(self,m,m.global_name,False)
+                    elif len(list(m.children()))==0 and len(m.state_dict())>0: # no effect
+                        set_module(block, name, copy.deepcopy(m))
+                        m.to("meta")
+                        shard_saver(self,name=m.global_name,is_finalize=False)
 
-
-                if not self.is_immediate_saving: # TODO try to delete this one
-                    mv_module_from_gpu(block) # some modules may be flushed, so you could not move to gpu
+                if not self.is_immediate_saving:
+                    # some modules may have been flushed and set to meta, so we could not  move to gpu
+                    mv_module_from_gpu(block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
