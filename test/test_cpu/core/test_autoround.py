@@ -47,7 +47,7 @@ class TestAutoRound:
             amp=False,
         )
         autoround.quantize_and_save(self.save_folder, inplace=False, format="fake")
-        shutil.rmtree(self.save_folder)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_remove_whole_block(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -386,7 +386,7 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        shutil.rmtree(self.save_folder)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_embed_quant(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True

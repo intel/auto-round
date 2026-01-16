@@ -55,7 +55,7 @@ class TestAutoRoundAsym(unittest.TestCase):
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_folder)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_asym_bits(self):
         model_name = self.model_name
@@ -76,7 +76,7 @@ class TestAutoRoundAsym(unittest.TestCase):
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_folder)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
 
     # use parameters later
     def test_asym_format(self):
@@ -97,4 +97,4 @@ class TestAutoRoundAsym(unittest.TestCase):
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_folder)
+            shutil.rmtree(self.save_folder, ignore_errors=True)

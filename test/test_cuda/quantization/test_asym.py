@@ -57,7 +57,7 @@ class TestAutoRoundAsym:
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir)
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_asym_bits(self, tiny_opt_model_path):
         for bits in [2, 3, 8]:
@@ -77,7 +77,7 @@ class TestAutoRoundAsym:
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir)
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     # use parameters later
     def test_asym_format(self, tiny_opt_model_path):
@@ -97,7 +97,7 @@ class TestAutoRoundAsym:
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir)
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_asym_group_size_with_tuning(self, tiny_opt_model_path):
         for group_size in [32, 64, 128]:
@@ -117,7 +117,7 @@ class TestAutoRoundAsym:
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir)
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_asym_bits_with_tuning(self, tiny_opt_model_path):
         for bits in [2, 3, 8]:
@@ -137,7 +137,7 @@ class TestAutoRoundAsym:
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir)
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     # use parameters later
     def test_asym_format_with_tuning(self, tiny_opt_model_path):
@@ -157,4 +157,4 @@ class TestAutoRoundAsym:
 
             # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             # model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir)
+            shutil.rmtree(self.save_dir, ignore_errors=True)

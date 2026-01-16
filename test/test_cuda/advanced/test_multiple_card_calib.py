@@ -44,7 +44,7 @@ class TestAutoRound:
 
         ##test llm script
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model /models/Meta-Llama-3.1-8B-Instruct --devices '0,1' --quant_lm_head --iters 1 --nsamples 1 --output_dir None"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model /models/Meta-Llama-3.1-8B-Instruct --devices '0,1' --quant_lm_head --iters 1 --nsamples 1 --output_dir None"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
@@ -55,7 +55,7 @@ class TestAutoRound:
 
         ##test llm script
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {python_path} -m auto_round --model facebook/opt-125m  --scheme NVFP4 --devices '0,1' --iters 1 --nsamples 1 --enable_torch_compile --low_gpu_mem_usage"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model facebook/opt-125m  --scheme NVFP4 --devices '0,1' --iters 1 --nsamples 1 --enable_torch_compile --low_gpu_mem_usage"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
