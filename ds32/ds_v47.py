@@ -1,26 +1,29 @@
-
+import logging
+from typing import Optional
 
 import torch
 import torch.nn as nn
+import transformers.quantizers as qz
+
+# import transformers.integrations.finegrained_fp8 as fgfp8
+import transformers.quantizers.auto as qa
+import transformers.quantizers.quantizer_finegrained_fp8 as qf8
+
+# from transformers.utils.import_utils import is_grouped_mm_available
+from transformers import PreTrainedModel
+
 # from transformers.models.deepseek_v2.modeling_deepseek_v2 import ACT2FN
 # from transformers.models.deepseek_v2.modular_deepseek_v2 import  DeepseekV2Config, DeepseekV2DecoderLayer, DeepseekV2Attention, DeepseekV2PreTrainedModel
 from transformers.modeling_utils import PreTrainedModel
-from transformers.utils import auto_docstring
-# from transformers.utils.import_utils import is_grouped_mm_available
-from transformers import PreTrainedModel
 from transformers.quantizers import quantizer_finegrained_fp8
-import transformers.quantizers as qz
-import transformers.quantizers.quantizer_finegrained_fp8 as qf8
-# import transformers.integrations.finegrained_fp8 as fgfp8
-import transformers.quantizers.auto as qa
 from transformers.quantizers.quantizers_utils import get_module_from_name
-import logging
-from typing import Optional
+from transformers.utils import auto_docstring
+
 logger = logging.getLogger(__name__)
 
 
-
 from accelerate import init_empty_weights
+
 
 def _replace_with_fp8_linear(
     model,
@@ -116,9 +119,15 @@ class OOTFineGrainedFP8HfQuantizer(qf8.FineGrainedFP8HfQuantizer):
 
         model.config.quantization_config = self.quantization_config
 
-    def get_weight_conversions(self): return
-    def validate_environment(self, *args, **kwargs): return True
-    def update_missing_keys(self, model, missing_keys: list[str], prefix: str) -> list[str]: return []
+    def get_weight_conversions(self):
+        return
+
+    def validate_environment(self, *args, **kwargs):
+        return True
+
+    def update_missing_keys(self, model, missing_keys: list[str], prefix: str) -> list[str]:
+        return []
+
     def param_needs_quantization(self, model: "PreTrainedModel", param_name: str, **kwargs) -> bool:
         # from ..integrations.finegrained_fp8 import FP8Linear
 
@@ -130,6 +139,7 @@ class OOTFineGrainedFP8HfQuantizer(qf8.FineGrainedFP8HfQuantizer):
                 return True
         return False
 
+
 qf8.FineGrainedFP8HfQuantizer = OOTFineGrainedFP8HfQuantizer
 # Patch common aliases too (if re-exported)
 if hasattr(qz, "FineGrainedFP8HfQuantizer"):
@@ -138,9 +148,8 @@ if hasattr(qz, "FineGrainedFP8HfQuantizer"):
 qa.AUTO_QUANTIZER_MAPPING["fp8"] = OOTFineGrainedFP8HfQuantizer
 
 
-
-
 from auto_round.utils.model import dequant_block_fp8_weight
+
 
 class FP8Linear(nn.Linear):
     dtype = torch.float8_e4m3fn
@@ -154,7 +163,6 @@ class FP8Linear(nn.Linear):
         block_size: Optional[tuple[int, int]] = None,
         device=None,
         activation_scheme="dynamic",
-        
     ):
         super().__init__(in_features, out_features)
 
@@ -185,7 +193,6 @@ class FP8Linear(nn.Linear):
         input_scale, input_fp8 = quant_tensor(bf16_input)
         qdq_input_bf16 = input_fp8.to(bf16_input.dtype) * input_scale
         return qdq_input_bf16
-    
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         dequant_weight = dequant_block_fp8_weight(
