@@ -16,10 +16,13 @@ import json
 import os
 import re
 from collections import UserDict
+from contextlib import contextmanager
 from dataclasses import asdict, fields
+from functools import wraps
 from pathlib import Path
 from typing import Union
 
+import psutil
 import torch
 import transformers
 
@@ -906,11 +909,161 @@ def pad_block_fp8_weight_naive(
     return weight, orig_M, orig_N
 
 
-def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
+@contextmanager
+def _with_thread_limits(div=1):
+    """
+    Context manager to temporarily set OMP_NUM_THREADS and PyTorch threads.
+    Inspired by vLLM's thread limit decorator. https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
+    """
+    # Save original settings
+    old_omp = envs.OMP_NUM_THREADS
+    old_torch = torch.get_num_threads()
+
+    try:
+        if psutil is not None:
+            num_cores = len(psutil.Process().cpu_affinity() or [])
+            if num_cores == 0:
+                num_cores = os.cpu_count() or 1
+        else:
+            num_cores = os.cpu_count() or 1
+
+        # Set new limits
+        new_threads = max(1, num_cores // div)
+        os.environ["OMP_NUM_THREADS"] = str(new_threads)
+        torch.set_num_threads(new_threads)
+        yield
+    finally:
+        # Restore original settings
+        if old_omp is None:
+            os.environ.pop("OMP_NUM_THREADS", None)
+        else:
+            os.environ["OMP_NUM_THREADS"] = old_omp
+        torch.set_num_threads(old_torch)
+
+
+def _create_e4m3_lut(variant="e4m3fn") -> torch.Tensor:
+    """Create a lookup table for float8_e4m3 (standard or G2) to bfloat16 conversion.
+
+    e4m3fn (Standard/OCP):
+    - Bias: 7
+    - Max: 448.0
+    - Zeros: 0x00, 0x80
+    - NaN: 0x7F, 0xFF
+
+    e4m3fnuz (G2):
+    - Bias: 7
+    - Max: 240.0
+    - Zero: 0x00 (Unit Zero)
+    - NaN: 0x80
+    """
+    lut = torch.zeros(256, dtype=torch.bfloat16)
+
+    for i in range(256):
+        sign = (i >> 7) & 0x1
+        exponent = (i >> 3) & 0xF
+        mantissa = i & 0x7
+
+        if variant == "e4m3fnuz":
+            # G2 variant: UZ (Unit Zero), NaN at 0x80
+            if i == 0x80:
+                lut[i] = float("nan")
+                continue
+            if exponent == 15:  # NaNs > 240
+                lut[i] = float("nan")
+                continue
+            if i == 0x00:
+                lut[i] = 0.0
+                continue
+        else:
+            # Standard e4m3fn
+            if (i & 0x7F) == 0x7F:  # 0x7F and 0xFF are NaN
+                lut[i] = float("nan")
+                continue
+            if exponent == 0 and mantissa == 0:
+                lut[i] = 0.0
+                continue
+
+        # Normal/Subnormal calculation
+        if exponent == 0:
+            # Subnormal
+            value = (mantissa / 8.0) * (2.0 ** (1 - 7))
+        elif variant == "e4m3fn" and exponent == 15:
+            # Standard e4m3fn uses exp 15 for values
+            value = (1.0 + mantissa / 8.0) * (2.0 ** (15 - 7))
+        else:
+            # Normal
+            value = (1.0 + mantissa / 8.0) * (2.0 ** (exponent - 7))
+
+        if sign and not (variant == "e4m3fnuz" and i == 0x00):
+            value = -value
+
+        lut[i] = value
+
+    return lut
+
+
+_FP8_LUT_CACHE = {}
+
+
+def _dequant_fp8_to_bf16(weight: torch.Tensor, variant="e4m3fn") -> torch.Tensor:
+    """Dequantize float8 weights to bfloat16 using a lookup table."""
+    global _FP8_LUT_CACHE
+
+    if variant not in _FP8_LUT_CACHE:
+        _FP8_LUT_CACHE[variant] = _create_e4m3_lut(variant)
+
+    lut = _FP8_LUT_CACHE[variant].to(weight.device)
+    weight_uint8 = weight.view(torch.uint8)
+    orig_shape = weight_uint8.shape
+
+    weight_flat = weight_uint8.flatten().long()
+    dequant_flat = lut[weight_flat]
+    dequant = dequant_flat.reshape(orig_shape)
+
+    return dequant
+
+
+def dequant_block_fp8_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+) -> torch.Tensor:
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
     assert len(block_size) == 2
+
+    variant = "e4m3fn"
+    if data_type is not None and "e4m3fnuz" in data_type.lower():
+        variant = "e4m3fnuz"
+    elif hasattr(weight, "dtype") and hasattr(torch, "float8_e4m3fnuz") and weight.dtype == torch.float8_e4m3fnuz:
+        variant = "e4m3fnuz"
+
+    # Automatic fallback for Gaudi2: dequantize on CPU to avoid HPU NaN issues for values > 240
+    from auto_round.utils.device import is_gaudi2
+
+    force_cpu = is_gaudi2() and weight.device.type == "hpu"
+    # Also fallback if variant is not natively supported on CPU (like e4m3fnuz)
+    need_lut = variant == "e4m3fnuz" and weight.device.type == "cpu"
+
+    if force_cpu or need_lut:
+        from auto_round.utils import logger
+
+        if force_cpu:
+            logger.warning_once(
+                f"Detected float8_{variant} weights on Gaudi2. "
+                "Forcing dequantization on CPU to avoid potential NaN issues."
+            )
+        else:
+            logger.warning_once(f"Detected float8_{variant} weights on CPU. Using lookup table for dequantization.")
+
+        orig_shape = weight.shape
+        orig_device = weight.device
+        weight_cpu = weight.to("cpu")
+
+        # Use threading limits for manual dequantization on CPU
+        with _with_thread_limits():
+            weight_cpu = _dequant_fp8_to_bf16(weight_cpu, variant=variant)
+
+        weight = weight_cpu.to(orig_device).view(orig_shape)
 
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
@@ -1015,7 +1168,8 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
         dq_weight = layer.compressor.decompress_module(layer)
     else:
         weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+        data_type = getattr(layer, "data_type", None)
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 

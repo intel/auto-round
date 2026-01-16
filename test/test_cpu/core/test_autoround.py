@@ -643,6 +643,54 @@ class TestAutoRound:
         assert dequant_weight.shape[0] == 32
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
 
+    def test_dequant_g2_fp8_weight(self):
+        """Test Gaudi2-specific dequantization redirection and versatility on CPU."""
+        from auto_round.utils.model import _create_e4m3_lut, _dequant_fp8_to_bf16, dequant_block_fp8_weight
+
+        # Test 1: Verify Standard e4m3fn LUT max value is 448.0
+        lut_std = _create_e4m3_lut(variant="e4m3fn")
+        max_val_std = torch.max(lut_std[torch.isfinite(lut_std)]).item()
+        assert abs(max_val_std - 448.0) < 1e-3, f"Expected 448.0 for standard e4m3fn, got {max_val_std}"
+
+        # Test 2: Verify G2 e4m3fnuz LUT max value is 240.0
+        lut_g2 = _create_e4m3_lut(variant="e4m3fnuz")
+        max_val_g2 = torch.max(lut_g2[torch.isfinite(lut_g2)]).item()
+        assert abs(max_val_g2 - 240.0) < 1e-3, f"Expected 240.0 for e4m3fnuz, got {max_val_g2}"
+
+        # Test 3: Key mappings for Standard e4m3fn
+        # 0x7E: normal max (exp 15, mant 6) -> (1 + 6/8) * 2^(15-7) = 1.75 * 256 = 448.0
+        assert abs(lut_std[0x7E].item() - 448.0) < 1e-3
+        # 0x7F: NaN
+        assert torch.isnan(lut_std[0x7F])
+
+        # Test 4: Key mappings for G2 e4m3fnuz
+        # 0x77: normal max (exp 14, mant 7) -> (1 + 7/8) * 2^(14-7) = 1.875 * 128 = 240.0
+        assert abs(lut_g2[0x77].item() - 240.0) < 1e-3
+        # 0x80: NaN in UZ
+        assert torch.isnan(lut_g2[0x80])
+
+        # Test 5: Actual dequantization helper
+        weight_uint8 = torch.tensor([[0x00, 0x7E, 0x77]], dtype=torch.uint8)
+
+        # Standard
+        dq_std = _dequant_fp8_to_bf16(weight_uint8, variant="e4m3fn")
+        assert abs(dq_std[0, 1].item() - 448.0) < 1e-3
+
+        # G2
+        dq_g2 = _dequant_fp8_to_bf16(weight_uint8, variant="e4m3fnuz")
+        assert abs(dq_g2[0, 2].item() - 240.0) < 1e-3
+
+        # Test 6: Block-wise dequantization with e4m3fn (force CPU logic check)
+        weight = torch.randint(0, 256, (128, 128), dtype=torch.uint8)
+        weight_scale = torch.ones(1, 8, dtype=torch.bfloat16)
+        block_size = [128, 16]
+
+        # data_type="fp8_e4m3fn" on CPU should use native PyTorch .to() unless forced
+        # But we verify it still produces bfloat16 correctly
+        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size, data_type="fp8_e4m3fn")
+        assert dequant_weight.dtype == torch.bfloat16
+        assert dequant_weight.shape == (128, 128)
+
     def test_mixed_bit_setting(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
         layer_config = {"model.decoder.layers.1.fc1": {"bits": 8, "act_bits": 8}}
