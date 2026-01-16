@@ -102,7 +102,6 @@ function run_unit_test() {
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -r test_cuda/requirements_sglang.txt
-    uv pip install transformers==5.0.0rc3
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
