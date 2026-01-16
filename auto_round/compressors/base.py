@@ -2976,9 +2976,6 @@ class BaseCompressor(object):
                 for n, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                         continue
-                    # elif len(list(tmp_m.children()))==0 and len(m.state_dict())>0:
-                    #     set_module(m,n,copy.deepcopy(tmp_m))
-                    #     tmp_m.to("cuda")
                     self._immediate_pack(tmp_m.global_name)
 
             if self.is_immediate_saving:
