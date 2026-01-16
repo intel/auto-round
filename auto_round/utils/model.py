@@ -996,13 +996,15 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
             f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). "
             "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length."
         )
-
+from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 
 def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
     """ """
     from auto_round.schemes import QuantizationScheme
-
-    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+    # if "indexer" in getattr(layer, "tmp_name", ""):
+    #     return layer  # skip indexer layer
+    with skip_weights_initialize():
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
     scheme_keys = (f.name for f in fields(QuantizationScheme))
