@@ -202,7 +202,8 @@ class ShardSaver:
 
 
 # Entry point function to maintain compatibility with your current flow
-def shard_saver(rounder: object, m: torch.nn.Module, name: str = None, last_group: bool = False):
+@torch.no_grad()
+def shard_saver(rounder: object, m: torch.nn.Module=None, name: str = None, is_finalize: bool = False):
     if not hasattr(rounder, "_shard_saver"):
         rounder._shard_saver = ShardSaver(rounder)
 
@@ -212,12 +213,13 @@ def shard_saver(rounder: object, m: torch.nn.Module, name: str = None, last_grou
 
     layer_names = rounder.quantized_layer_names_outside_blocks
     if len(layer_names) > 0 and name != layer_names[-1]:
-        last_group = False
+        is_finalize = False
 
     # Perform the save
-    rounder._shard_saver.save_module(m, name)
+    if m is not None:
+        rounder._shard_saver.save_module(m, name)
 
-    if last_group:
+    if is_finalize:
         rounder._shard_saver.finalize()
         # Optional: cleanup the saver object from rounder
         del rounder._shard_saver

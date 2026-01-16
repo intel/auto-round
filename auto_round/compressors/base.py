@@ -1270,20 +1270,21 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            if clear_mem_freq == 0:
-                clear_mem_freq = 1
-            pbar = tqdm(all_to_quantized_module_names)
-            cnt = 1
-            for name in pbar:
-                pbar.set_description(f"Quantizing {name}")
-                self._quantize_layer_via_rtn(name)
-                if cnt % clear_mem_freq == 0:
-                    clear_memory(device_list=self.device_list)
-                    memory_monitor.log_summary()
-                    cnt = 1
-                cnt += 1
+            pass
+            # block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            # clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+            # if clear_mem_freq == 0:
+            #     clear_mem_freq = 1
+            # pbar = tqdm(all_to_quantized_module_names)
+            # cnt = 1
+            # for name in pbar:
+            #     pbar.set_description(f"Quantizing {name}")
+            #     self._quantize_layer_via_rtn(name)
+            #     if cnt % clear_mem_freq == 0:
+            #         clear_memory(device_list=self.device_list)
+            #         memory_monitor.log_summary()
+            #         cnt = 1
+            #     cnt += 1
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
@@ -1398,7 +1399,12 @@ class BaseCompressor(object):
                     if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                         self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.global_name)
-                if not self.is_immediate_saving:
+
+                    # elif len(list(m.children()))==0 and len(m.state_dict())>0:
+                    #     shard_saver(self,m,m.global_name,False)
+
+
+                if not self.is_immediate_saving: # TODO try to delete this one
                     mv_module_from_gpu(block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
@@ -1415,6 +1421,8 @@ class BaseCompressor(object):
                 dtype = torch.float32
             self._quantize_layer_via_rtn(name, dtype=dtype)
             # clear_memory(device_list=self.device_list)
+        if self.is_immediate_saving:
+            shard_saver(self, is_finalize=True)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1481,7 +1489,9 @@ class BaseCompressor(object):
             formats = self.formats
             if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
                 self.is_immediate_packing = True
+            if self.low_cpu_mem_usage and self.is_immediate_packing:
                 self.is_immediate_saving = True
+
             if self.low_cpu_mem_usage and not self.is_immediate_packing:
                 logger.warning(
                     "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
@@ -1720,7 +1730,7 @@ class BaseCompressor(object):
 
             if self.is_immediate_saving:
                 m = get_module(self.model, layer_name)
-                shard_saver(self, m, name=layer_name, last_group=True)
+                shard_saver(self, m, name=layer_name, is_finalize=True)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
             memory_monitor.log_summary()
@@ -2965,8 +2975,8 @@ class BaseCompressor(object):
                     self._immediate_pack(tmp_m.global_name)
 
             if self.is_immediate_saving:
-                last_group = (i + nblocks) >= len(block_names)
-                shard_saver(self, m, last_group=last_group)
+                is_finalize = (i + nblocks) >= len(block_names)
+                shard_saver(self, m, is_finalize=is_finalize)
         if pbar is not None:
             pbar.update(1)
 
