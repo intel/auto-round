@@ -54,7 +54,6 @@ class ShardSaver:
         # Directory Setup
         self.output_dir = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
         os.makedirs(self.output_dir, exist_ok=True)
-        self.is_finalized = False
 
     def _parse_size(self, size_str: str) -> int:
         if isinstance(size_str, int):
@@ -149,10 +148,6 @@ class ShardSaver:
     def finalize(self):
         """Saves remaining weights, renames files, and writes the index JSON."""
         # 1. Capture remaining weights not yet saved
-        if self.is_finalized:
-            return
-
-
         full_sd = self.model.state_dict()
         tie_word_embeddings = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
         all_saved_names = {p for meta in self.shard_meta for p in meta["params"]}
@@ -210,21 +205,18 @@ class ShardSaver:
 
 # Entry point function to maintain compatibility with your current flow
 @torch.no_grad()
-def shard_saver(rounder: object, m: torch.nn.Module=None, name: str = None, is_finalize: bool = False):
+def shard_saver(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
     if m is None and name is None and not is_finalize:
         raise ValueError("Must specify either name or m")
-
     if not hasattr(rounder, "_shard_saver"):
         rounder._shard_saver = ShardSaver(rounder)
-    if rounder._shard_saver.is_finalized:
-        return
     # Handle logic for determining if this is actually the last group
-    if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
-        rounder.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
-
-    layer_names = rounder.quantized_layer_names_outside_blocks
-    if len(layer_names) > 0 and name != layer_names[-1]:
-        is_finalize = False
+    # if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
+    #     rounder.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
+    #
+    # layer_names = rounder.quantized_layer_names_outside_blocks
+    # if len(layer_names) > 0 and name != layer_names[-1]:
+    #     is_finalize = False
     if m is None and name is not None:
         m = get_module(rounder.model,name)
         # Perform the save
