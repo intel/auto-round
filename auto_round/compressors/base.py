@@ -1481,12 +1481,14 @@ class BaseCompressor(object):
             formats = self.formats
             if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block :
                 self.is_immediate_packing = True
+                self.is_immediate_saving = True
             if self.low_cpu_mem_usage and not self.is_immediate_packing:
                 logger.warning(
                     "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
                     "Setting `low_cpu_mem_usage` to False."
                 )
                 self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
 
             if self.low_cpu_mem_usage and self.is_immediate_packing:
                 if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters==0:
@@ -1505,13 +1507,13 @@ class BaseCompressor(object):
                     )
                     self.low_cpu_mem_usage = False
                     self.is_immediate_saving = False
-                if formats[0].is_gguf() :
+                elif formats[0].is_gguf() :
                     logger.warning(
                         "`low_cpu_mem_usage` is not fully supported for gguf format"
                         "Setting `low_cpu_mem_usage `to False."
                     )
                     self.low_cpu_mem_usage = False
-                    self.is_immediate_saving = True
+                    self.is_immediate_saving = False
 
 
         if self.is_immediate_saving and "int" not in self.data_type:
