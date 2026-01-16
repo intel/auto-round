@@ -1473,6 +1473,7 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = False
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
+
         if self.has_qlayer_outside_block: # Ugly code
             self.inplace = False
         if not hasattr(self, "formats"):
