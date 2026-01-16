@@ -1484,8 +1484,15 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = False
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
-        # Ugly code
-        if self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn)):
+
+        def _should_disable_inplace_due_to_layers_outside_block() -> bool:
+            return self.has_qlayer_outside_block and (
+                self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn)
+            )
+
+        # Disable inplace mode when there are quantized layers outside blocks
+        # under specific iteration/optimization settings.
+        if _should_disable_inplace_due_to_layers_outside_block():
             self.inplace = False
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
