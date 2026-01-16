@@ -1480,7 +1480,7 @@ class BaseCompressor(object):
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
         # Ugly code
-        if self.has_qlayer_outside_block and (self.iters!=0 or  (self.iters==0 and not self.disable_opt_rtn)):
+        if self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn)):
             self.inplace = False
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
@@ -1517,7 +1517,7 @@ class BaseCompressor(object):
                     )
                     self.low_cpu_mem_usage = False
                     self.is_immediate_saving = False
-                elif formats[0].is_gguf() :
+                elif formats[0].is_gguf():
                     logger.warning(
                         "`low_cpu_mem_usage` is not fully supported for gguf format"
                         "Setting `low_cpu_mem_usage `to False."
