@@ -1,0 +1,79 @@
+
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import transformers
+from transformers.utils.import_utils import clear_import_cache
+
+# clear cache to reload modified code
+clear_import_cache()
+model_name = "/storage/yiliu7/deepseek-ai/DeepSeek-V3.2/"
+model_name = "/storage/yiliu7/DeepSeek-V3.2-4layers/"
+device = "cpu"
+
+from ds_v47 import *
+def fixed_seed(seed: int):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    import random
+    random.seed(seed)
+    import numpy as np
+    np.random.seed(seed)
+
+fixed_seed(42)
+
+def quant_ar(model, tokenizer, output_dir):
+
+    from auto_round import AutoRound
+    scheme = "W4A16"
+    autoround = AutoRound(
+        model,
+        tokenizer,
+        scheme=scheme,
+        enable_torch_compile=False,
+        iters=0,
+        low_gpu_mem_usage=True,
+        disable_opt_rtn=True,
+        ignore_layers="indexer",
+    )
+    model_base_name = model_name.rstrip("/").split("/")[-1]
+    print(f"Output dir: {output_dir}")
+
+    model, save_folder = autoround.quantize_and_save(
+        output_dir=output_dir,
+    )
+
+def check_meta_module(model):
+    for name, module in model.named_modules():
+        for pname, param in module.named_parameters(recurse=False):
+            if param.device.type == "meta":
+                print("Found meta parameter:", pname, "in module:", name, "shape:", param.shape)
+                breakpoint()
+                raise RuntimeError(
+                    f"The model contains some parameters on the meta device (found in module {name}, parameter {name}). "
+                )
+
+def main():
+    with torch.no_grad():
+        trust_remote_code = False
+        # trust_remote_code = True
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype="auto", trust_remote_code=trust_remote_code,
+            #   _experts_implementation="eager",
+            device_map="cpu",\
+            # device_map="auto",
+        )
+        msg = "The capital of France is"
+        model.eval()
+        print(model)
+        inputs = tokenizer(msg, return_tensors="pt").to(device)
+        outputs = model.generate(**inputs, max_new_tokens=32)
+
+        
+        print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+        output_dir = f"/storage/yiliu7/{model_name.rstrip('/').split('/')[-1]}-fp8-w4a16-4layers"
+        quant_ar(model, tokenizer, output_dir=output_dir)
+main()
