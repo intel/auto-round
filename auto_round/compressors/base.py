@@ -1478,8 +1478,30 @@ class BaseCompressor(object):
             formats = self.formats
             if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
                 self.is_immediate_packing = True
-                if not formats[0].is_gguf() and self.low_cpu_mem_usage:
-                    self.is_immediate_saving = True
+                if self.low_cpu_mem_usage:
+                    if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iter==0:
+                        logger.warning(
+                            "`low_cpu_mem_usage` is not fully supported "
+                            "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                            "Setting `low_cpu_mem_usage` to False."
+                        )
+                        self.low_cpu_mem_usage = False
+                        self.is_immediate_saving = False
+                    elif self.has_qlayer_outside_block and self.iters>0:
+                        logger.warning(
+                            "`low_cpu_mem_usage` is not fully supported "
+                            "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                            "Setting low_cpu_mem_usage to False."
+                        )
+                        self.low_cpu_mem_usage = False
+                        self.is_immediate_saving = False
+                    if formats[0].is_gguf() :
+                        logger.warning(
+                            "`low_cpu_mem_usage` is not fully supported for gguf format"
+                            "Setting `low_cpu_mem_usage `to False."
+                        )
+                        self.low_cpu_mem_usage = False
+                        self.is_immediate_saving = True
 
         if self.is_immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
@@ -1500,7 +1522,7 @@ class BaseCompressor(object):
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self._get_quantized_layer_names_outside_blocks()
-        self.start_time = time.time()
+        start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         if len(layer_names) > 0:
             logger.info(
@@ -1571,7 +1593,7 @@ class BaseCompressor(object):
                     set_module(self.model, n, new_layer)
 
         end_time = time.time()
-        cost_time = end_time - self.start_time
+        cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
 
         # Dump a summary
