@@ -218,7 +218,7 @@ def shard_saver(rounder: object, m: torch.nn.Module = None, name: str = None, is
     # if len(layer_names) > 0 and name != layer_names[-1]:
     #     is_finalize = False
     if m is None and name is not None:
-        m = get_module(rounder.model,name)
+        m = get_module(rounder.model, name)
         # Perform the save
     if m is not None:
         rounder._shard_saver.save_module(m, name)
