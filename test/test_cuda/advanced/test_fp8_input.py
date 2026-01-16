@@ -145,26 +145,21 @@ class TestAutoRound:
     def test_ignore_layers_fp8(self):
         """Test that ignore_layers works correctly with FP8 models."""
         from auto_round.compressors.utils import get_fp_layer_names
-        
+
         model, tokenizer = self.tiny_fp8_model()
-        
+
         # Test that get_fp_layer_names can find FP8Linear layers
         # Using "mlp" as the ignore pattern which should match mlp layers in the model
         layer_names = get_fp_layer_names(model, "mlp")
-        
+
         # Verify that some layers were found
         assert len(layer_names) > 0, "Should find layers matching 'mlp' pattern in FP8 model"
-        
+
         # Now test with AutoRound using ignore_layers
-        ar = AutoRound(
-            model=model, 
-            tokenizer=tokenizer, 
-            iters=0,
-            ignore_layers="mlp"
-        )
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0, ignore_layers="mlp")
         ar.quantize_and_save(output_dir=self.save_dir)
-        
+
         # Verify the model was saved successfully
         assert os.path.exists(self.save_dir), "Model should be saved"
-        
+
         shutil.rmtree(self.save_dir, ignore_errors=True)
