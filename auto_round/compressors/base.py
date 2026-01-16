@@ -1423,7 +1423,7 @@ class BaseCompressor(object):
             self._quantize_layer_via_rtn(name, dtype=dtype)
             # clear_memory(device_list=self.device_list)
         if self.is_immediate_saving:
-            shard_saver(self, is_finalize=True)
+            shard_saver(self, is_finalize=False)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1614,6 +1614,8 @@ class BaseCompressor(object):
                 if is_fp8_linear(m):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
                     set_module(self.model, n, new_layer)
+        if self.is_immediate_saving:
+            shard_saver(self, is_finalize=True)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -1731,7 +1733,7 @@ class BaseCompressor(object):
 
             if self.is_immediate_saving:
                 m = get_module(self.model, layer_name)
-                shard_saver(self, m, name=layer_name, is_finalize=True)
+                shard_saver(self, m, name=layer_name, is_finalize=False)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
             memory_monitor.log_summary()
@@ -2976,8 +2978,7 @@ class BaseCompressor(object):
                     self._immediate_pack(tmp_m.global_name)
 
             if self.is_immediate_saving:
-                is_finalize = (i + nblocks) >= len(block_names)
-                shard_saver(self, m, is_finalize=is_finalize)
+                shard_saver(self, m, is_finalize=False)
         if pbar is not None:
             pbar.update(1)
 
