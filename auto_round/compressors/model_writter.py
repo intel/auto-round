@@ -90,20 +90,20 @@ class ShardSaver:
         t_size = tensor.numel() * tensor.element_size()
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
-
+        tensor = tensor.detach().cpu()
         # If single tensor exceeds limit, flush current, save it solo, then continue
         if t_size > self.max_shard_size:
             self._flush_shard()
-            self.current_shard_tensors[name] = tensor.cpu()
+            self.current_shard_tensors[name] = tensor
             self.current_shard_size = t_size
             self._flush_shard()
         # If adding exceeds limit, flush first
         elif self.current_shard_size + t_size > self.max_shard_size and self.current_shard_size > 0:
             self._flush_shard()
-            self.current_shard_tensors[name] = tensor.cpu()
+            self.current_shard_tensors[name] = tensor
             self.current_shard_size = t_size
         else:
-            self.current_shard_tensors[name] = tensor.cpu()
+            self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
 
     def _flush_shard(self):
