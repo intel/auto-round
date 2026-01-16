@@ -34,7 +34,7 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.model_writer import shard_saver
+from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -78,8 +78,7 @@ from auto_round.utils import (
     compile_func,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
-    convert_fp8_model_to_16b_model,
-    copy_python_files_from_model_cache,
+    convert_fp8_module_to_16b,
     detect_device,
     find_matching_blocks,
     flatten_list,
@@ -1171,7 +1170,7 @@ class BaseCompressor(object):
         if self.is_immediate_saving:
             m = get_module(self.model, name)
             m.to("cpu")
-            shard_saver(self, m, name, False)
+            shard_writer(self, m, name, False)
 
     def _immediate_pack(self, name: str):
         if not self.is_immediate_packing:
@@ -1266,26 +1265,31 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            if clear_mem_freq == 0:
-                clear_mem_freq = 1
+            cnt = 0
             pbar = tqdm(all_to_quantized_module_names)
-            cnt = 1
-            for name in pbar:
-                pbar.set_description(f"Quantizing {name}")
-                self._quantize_layer_via_rtn(name)
-                if cnt % clear_mem_freq == 0:
-                    clear_memory(device_list=self.device_list)
-                    memory_monitor.log_summary()
-                    cnt = 1
-                cnt += 1
+            for n, m in self.model.named_modules():
+                if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                    pbar.set_description(f"Quantizing {m.global_name}")
+                    self._quantize_layer_via_rtn(m.global_name)
+                    cnt += 1
+                    pbar.update()
+                    if cnt % clear_mem_freq == 0:
+                        clear_memory(device_list=self.device_list)
+                        memory_monitor.log_summary()
+                # A workaround to trigger garbage collection in time
+                elif len(list(m.children())) == 0 and len(list(m.state_dict())) > 0:
+                    set_module(self.model, n, copy.deepcopy(m))
+                    if self.is_immediate_saving:
+                        shard_writer(self, name=n)
+                    m.to("meta")
+
         # Convert remaining fp8
         if is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
+            convert_fp8_module_to_16b(self.model, self.amp_dtype, self.device)
         if self.is_immediate_saving:
-            shard_saver(self, is_finalize=True)
+            shard_writer(self, is_finalize=True)
 
         self.quantized = True
         return self.model, self.layer_config
@@ -1353,7 +1357,7 @@ class BaseCompressor(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 if is_fp8_model(self.model):
-                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
+                    convert_fp8_module_to_16b(block, dtype=self.amp_dtype, device=self.device)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -1423,7 +1427,7 @@ class BaseCompressor(object):
             self._quantize_layer_via_rtn(name, dtype=dtype)
             # clear_memory(device_list=self.device_list)
         if self.is_immediate_saving:
-            shard_saver(self, is_finalize=False)
+            shard_writer(self, is_finalize=False)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1615,7 +1619,7 @@ class BaseCompressor(object):
                     new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
                     set_module(self.model, n, new_layer)
         if self.is_immediate_saving:
-            shard_saver(self, is_finalize=True)
+            shard_writer(self, is_finalize=True)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -1733,7 +1737,7 @@ class BaseCompressor(object):
 
             if self.is_immediate_saving:
                 m = get_module(self.model, layer_name)
-                shard_saver(self, m, name=layer_name, is_finalize=False)
+                shard_writer(self, m, name=layer_name, is_finalize=False)
             del layer_input
             clear_memory(q_layer_input, device_list=self.device_list)
             memory_monitor.log_summary()
@@ -2978,7 +2982,7 @@ class BaseCompressor(object):
                     self._immediate_pack(tmp_m.global_name)
 
             if self.is_immediate_saving:
-                shard_saver(self, m, is_finalize=False)
+                shard_writer(self, m, is_finalize=False)
         if pbar is not None:
             pbar.update(1)
 

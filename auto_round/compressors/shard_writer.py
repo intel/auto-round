@@ -22,7 +22,7 @@ from auto_round.logger import logger
 from auto_round.utils import get_lm_head_name, get_module
 
 
-class ShardSaver:
+class ShardWriter:
     """
     Handles shard-saving of model parameters to disk with memory management.
     """
@@ -205,25 +205,19 @@ class ShardSaver:
 
 # Entry point function to maintain compatibility with your current flow
 @torch.no_grad()
-def shard_saver(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
+def shard_writer(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
     if m is None and name is None and not is_finalize:
         raise ValueError("Must specify either name or m")
-    if not hasattr(rounder, "_shard_saver"):
-        rounder._shard_saver = ShardSaver(rounder)
-    # Handle logic for determining if this is actually the last group
-    # if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
-    #     rounder.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
-    #
-    # layer_names = rounder.quantized_layer_names_outside_blocks
-    # if len(layer_names) > 0 and name != layer_names[-1]:
-    #     is_finalize = False
+    if not hasattr(rounder, "_shard_writer"):
+        rounder._shard_writer = ShardWriter(rounder)
+
     if m is None and name is not None:
         m = get_module(rounder.model, name)
         # Perform the save
     if m is not None:
-        rounder._shard_saver.save_module(m, name)
+        rounder._shard_writer.save_module(m, name)
 
     if is_finalize:
-        rounder._shard_saver.finalize()
+        rounder._shard_writer.finalize()
         # Optional: cleanup the saver object from rounder
-        del rounder._shard_saver
+        del rounder._shard_writer
