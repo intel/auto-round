@@ -1479,7 +1479,7 @@ class BaseCompressor(object):
             if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
                 self.is_immediate_packing = True
                 if self.low_cpu_mem_usage:
-                    if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iter==0:
+                    if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iter == 0:
                         logger.warning(
                             "`low_cpu_mem_usage` is not fully supported "
                             "when there are quantized layers outside blocks and optimized RTN is disabled. "
@@ -1487,7 +1487,7 @@ class BaseCompressor(object):
                         )
                         self.low_cpu_mem_usage = False
                         self.is_immediate_saving = False
-                    elif self.has_qlayer_outside_block and self.iters>0:
+                    elif self.has_qlayer_outside_block and self.iters > 0:
                         logger.warning(
                             "`low_cpu_mem_usage` is not fully supported "
                             "when there are quantized layers outside blocks and optimized RTN is disabled. "
@@ -1495,7 +1495,7 @@ class BaseCompressor(object):
                         )
                         self.low_cpu_mem_usage = False
                         self.is_immediate_saving = False
-                    if formats[0].is_gguf() :
+                    if formats[0].is_gguf():
                         logger.warning(
                             "`low_cpu_mem_usage` is not fully supported for gguf format"
                             "Setting `low_cpu_mem_usage `to False."
