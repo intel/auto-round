@@ -51,11 +51,11 @@ if is_hpex_available():
 
     class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
         def __init__(self, original, config):
-            super.__init__()
+            super().__init__()
             self.rope_type = original.rope_type
 
-            self.max_seq_len_cached = original.max_position_embeddings
-            self.original_max_seq_len = original.max_position_embeddings
+            self.max_seq_len_cached = original.max_seq_len_cached
+            self.original_max_seq_len = original.original_max_seq_len
 
             self.config = original.config
             self.rope_init_fn = original.rope_init_fn
@@ -100,7 +100,7 @@ if is_hpex_available():
             self.layer_idx = original.layer_idx
             self.attention_dropout = original.attention_dropout
             self.hidden_size = original.hidden_size
-            self.num_heads = original.num_attention_heads
+            self.num_heads = original.num_heads
             self.head_dim = original.head_dim
             self.max_position_embeddings = original.max_position_embeddings
             self.rope_theta = original.rope_theta

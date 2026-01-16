@@ -19,13 +19,17 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import LazyImport, logger
+from auto_round.utils import is_hpex_available, LazyImport, logger
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
     "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
     "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
 }
+
+
+if is_hpex_available():
+    BUILTIN_MODULES["DeepseekV2Attention"] = LazyImport("auto_round.modelling.deepseek_v2")
 
 
 def _import_required_replacements(model: torch.nn.Module) -> None:
