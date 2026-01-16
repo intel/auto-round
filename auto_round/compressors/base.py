@@ -34,7 +34,7 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.model_writter import shard_saver
+from auto_round.compressors.model_writer import shard_saver
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -1284,6 +1284,9 @@ class BaseCompressor(object):
         # Convert remaining fp8
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
+        if self.is_immediate_saving:
+            shard_saver(self, is_finalize=True)
+
         self.quantized = True
         return self.model, self.layer_config
 
@@ -1396,10 +1399,10 @@ class BaseCompressor(object):
                         self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.global_name)
 
-                    elif len(list(m.children()))==0 and len(m.state_dict())>0: # no effect
-                        set_module(block, name, copy.deepcopy(m))
-                        m.to("meta")
-                        shard_saver(self,name=m.global_name,is_finalize=False)
+                    # elif len(list(m.children()))==0 and len(m.state_dict())>0: # no effect
+                    #     set_module(block, name, copy.deepcopy(m))
+                    #     m.to("meta")
+                    #     shard_saver(self,name=m.global_name,is_finalize=False)
 
                 if not self.is_immediate_saving:
                     # some modules may have been flushed and set to meta, so we could not  move to gpu
