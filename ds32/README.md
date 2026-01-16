@@ -4,7 +4,9 @@
   
 ### Quantize
 ```bash
-python quant_ds_v32.py
+export MODEL_NAME=/storage/yiliu7/deepseek-ai/DeepSeek-V3.2/
+export OUTPUT_DIR=/storage/yiliu7/deepseek-ai/DeepSeek-V3.2-W416
+python quant_ds_v32.py --model_name $MODEL_NAME --output_dir $OUTPUT_DIR
 ```
 
 ### Eval
@@ -20,7 +22,7 @@ VLLM_USE_PRECOMPILED=1 uv pip install --editable .
 
 ```bash
 VLLM_ALLREDUCE_USE_SYMM_MEM=0  NCCL_NVLS_ENABLE=0  VLLM_USE_FUSED_MOE_GROUPED_TOPK=0 \
-  vllm serve /storage/yiliu7/DeepSeek-V3.2-fp8-w4a16/ \
+  vllm serve $OUTPUT_DIR \
    --tensor-parallel-size 4 \
    --tokenizer-mode deepseek_v32 \
    --tool-call-parser deepseek_v32 \
@@ -30,7 +32,7 @@ VLLM_ALLREDUCE_USE_SYMM_MEM=0  NCCL_NVLS_ENABLE=0  VLLM_USE_FUSED_MOE_GROUPED_TO
 
 ```bash
 lm_eval --model local-completions \
-    --model_args "model=/storage/yiliu7/DeepSeek-V3.2-fp8-w4a16/,base_url=http://0.0.0.0:8000/v1/completions,max_length=8192,tokenized_requests=False,tokenizer_backend=None,num_concurrent=32" \
+    --model_args "model=$OUTPUT_DIR,base_url=http://0.0.0.0:8000/v1/completions,max_length=8192,tokenized_requests=False,tokenizer_backend=None,num_concurrent=32" \
     --tasks gsm8k \
     --num_fewshot 5
 ```

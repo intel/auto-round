@@ -55,7 +55,8 @@ def check_meta_module(model):
                     f"The model contains some parameters on the meta device (found in module {name}, parameter {name}). "
                 )
 
-def main():
+def main(args):
+    model_name = args.model_name
     with torch.no_grad():
         trust_remote_code = False
         # trust_remote_code = True
@@ -74,6 +75,13 @@ def main():
 
         
         print(tokenizer.decode(outputs[0], skip_special_tokens=True))
-        output_dir = f"/storage/yiliu7/{model_name.rstrip('/').split('/')[-1]}-fp8-w4a16-4layers"
+        output_dir = args.output_dir if args.output_dir is not None else f"/storage/yiliu7/{model_name.rstrip('/').split('/')[-1]}-fp8-w4a16-4layers"
         quant_ar(model, tokenizer, output_dir=output_dir)
-main()
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    # input model path
+    parser.add_argument("--model_name", type=str, default=model_name, help="Path to the pretrained model")
+    parser.add_argument("--output_dir", type=str, default=None, help="Path to save the quantized model")
+    args = parser.parse_args()
+    main(args)
