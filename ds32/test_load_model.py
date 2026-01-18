@@ -1,8 +1,6 @@
-
-
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import transformers
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils.import_utils import clear_import_cache
 
 # model = AutoModel.from_pretrained("bert-base-uncased")
@@ -33,7 +31,7 @@ model_name = "/storage/yiliu7/DeepSeek-V3.2-4layers/"
 # model_name = "/storage/yiliu7/DeepSeek-V3.2-fp8-w4a16/"
 # model_name = "/mnt/disk6/hf_models/DeepSeek-V3.1"
 # !THIS ONE IS BETTER FOR DS V32
-# https://github.com/huggingface/transformers/pull/42767 
+# https://github.com/huggingface/transformers/pull/42767
 # model_name = "/storage/yiliu7/deepseek-ai/DeepSeek-R1/"
 # model_name = "/storage/yiliu7/tflsxyy/DeepSeek-V3-bf16-4layers/"
 # Hello, my dog isorrionic cannonballoonshak Sovythobiaaugnil admissions navigatorically excessescribed spiral incapac
@@ -48,8 +46,9 @@ device = "cpu"
 # register_checkpoint_conversion_mapping("deepseek_v3", [], overwrite=True)
 # from ds_v2 import *
 from ds_v47 import *
+
 # register_checkpoint_conversion_mapping("deepseek_v2", [], overwrite=True)
-# 
+#
 # from ds_v2 import apply_ds_v2_fixes, apply_ds_v3_fixes
 # apply_ds_v2_fixes()
 # apply_ds_v3_fixes()
@@ -71,17 +70,20 @@ def fixed_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     import random
+
     random.seed(seed)
     import numpy as np
+
     np.random.seed(seed)
 
-fixed_seed(42)
 
+fixed_seed(42)
 
 
 def quant_ar(model, tokenizer, output_dir):
 
     from auto_round import AutoRound
+
     # model_name = args.model
     # scheme = "FP8_STATIC"
     scheme = "W4A16"
@@ -109,6 +111,7 @@ def quant_ar(model, tokenizer, output_dir):
         # format="llm_compressor",
     )
 
+
 def check_meta_module(model):
     for name, module in model.named_modules():
         for pname, param in module.named_parameters(recurse=False):
@@ -119,16 +122,18 @@ def check_meta_module(model):
                     f"The model contains some parameters on the meta device (found in module {name}, parameter {name}). "
                 )
 
+
 def main():
     with torch.no_grad():
         trust_remote_code = False
         # trust_remote_code = True
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype="auto", trust_remote_code=trust_remote_code,
+            model_name,
+            torch_dtype="auto",
+            trust_remote_code=trust_remote_code,
             #   _experts_implementation="eager",
-            device_map="cpu",\
-            # device_map="auto",
+            device_map="cpu",  # device_map="auto",
         )
         # generate some text
         # Create a four layers model and save it to disk
@@ -148,7 +153,7 @@ def main():
         outputs = model.generate(**inputs, max_new_tokens=32)
         # encode = tokenizer.encode(msg, return_tensors="pt")
         # outputs = model.generate(encode, max_new_tokens=32)
-        
+
         print(tokenizer.decode(outputs[0], skip_special_tokens=True))
         # output_dir = "/mnt/disk9/hf_models/test-deepseek-r1-fp8-static"
         # output_dir = "/mnt/disk9/hf_models/test-DeepSeek-V2-Lite-Chat"
@@ -156,6 +161,8 @@ def main():
         # output_dir = f"/storage/yiliu7/{model_name.rstrip('/').split('/')[-1]}-fp8-w4a16"
         # check_meta_module(model)
         quant_ar(model, tokenizer, output_dir=output_dir)
+
+
 main()
 
 
