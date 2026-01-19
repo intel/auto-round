@@ -13,6 +13,7 @@ uv pip install -r /auto-round/test/test_cpu/requirements.txt \
 # install latest gguf for ut test
 cd ~ || exit 1
 git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install . sentencepiece
+uv pip install --upgrade transformers
 
 cd /auto-round && uv pip install .
 
