@@ -16,10 +16,6 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 class TestGGUFQ4KM:
 
     @classmethod
-    def setup_class(self):
-        pass
-
-    @classmethod
     def teardown_class(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
