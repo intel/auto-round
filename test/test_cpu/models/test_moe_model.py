@@ -11,7 +11,7 @@ from ...helpers import get_model_path
 
 gpt_oss_name_or_path = get_model_path("unsloth/gpt-oss-20b-BF16")
 llama4_name_or_path = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
-
+qwen3_vl_moe_name_or_path = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
 # local path for debug
 # llama4_name_or_path = get_model_path("/dataset/Llama-4-Scout-17B-16E-Instruct")
 
@@ -44,7 +44,7 @@ def setup_llama4():
 @pytest.fixture
 def setup_qwen3_vl_moe():
     """Fixture to set up the qwen3_vl_moe model and tokenizer."""
-    model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-VL-30B-A3B-Instruct"
+    model_name = qwen3_vl_moe_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
     config.vision_config.num_hidden_layers = 1
