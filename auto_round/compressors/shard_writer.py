@@ -207,7 +207,6 @@ class ShardWriter:
                 json.dump(index_data, f, indent=2)
 
         logger.info(f"model has been saved to {self.output_dir}")
-        self.is_finalized = True
 
 
 # Entry point function to maintain compatibility with your current flow
