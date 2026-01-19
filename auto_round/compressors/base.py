@@ -14,7 +14,6 @@
 
 import copy
 import os
-import re
 import sys
 import time
 import traceback
@@ -46,7 +45,6 @@ from auto_round.compressors.utils import (
     init_cache,
     is_mx_fp,
     is_nv_fp,
-    is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
