@@ -645,6 +645,9 @@ def tune(args):
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
+    low_cpu_mem_usage = True
+    if args.disable_cpu_mem_usage:
+        low_cpu_mem_usage = False
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -657,7 +660,7 @@ def tune(args):
         batch_size=args.batch_size,
         gradient_accumulate_steps=args.gradient_accumulate_steps,
         low_gpu_mem_usage=args.low_gpu_mem_usage,
-        low_cpu_mem_usage=True,
+        low_cpu_mem_usage=low_cpu_mem_usage,
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,
