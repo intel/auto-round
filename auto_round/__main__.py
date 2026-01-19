@@ -651,7 +651,7 @@ def tune(args):
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
     low_cpu_mem_usage = True
-    if args.disable_cpu_mem_usage:
+    if args.disable_low_cpu_mem_usage:
         low_cpu_mem_usage = False
 
     autoround: BaseCompressor = AutoRound(
