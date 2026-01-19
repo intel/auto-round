@@ -23,7 +23,8 @@ from auto_round.utils import clear_memory, unsupported_meta_device
 class SequentialLlama4TextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
         self.num_experts = original.gate_up_proj.shape[0]
-        with no_init_weights():
+        target_device = next(original.parameters()).device
+        with no_init_weights(), torch.device(target_device):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
 
         if not unsupported_meta_device(original):

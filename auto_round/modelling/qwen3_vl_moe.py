@@ -155,9 +155,9 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 gate_proj = gate_up[:, :intermediate_size]
                 up_proj = gate_up[:, intermediate_size:]
 
-                _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
-                _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
-                _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
+                _update_parameter(self[i].gate_proj, "weight", gate_proj.t())
+                _update_parameter(self[i].up_proj, "weight", up_proj.t())
+                _update_parameter(self[i].down_proj, "weight", down.t())
             del gate_up, down, gate_proj, up_proj
             original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
