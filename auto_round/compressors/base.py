@@ -1456,6 +1456,71 @@ class BaseCompressor(object):
             fill_default_value=fill_default_value,
         )
 
+
+    def _adjust_immediate_packing_and_saving(self):
+
+
+
+        formats = self.formats
+        if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
+            self.is_immediate_packing = True
+
+        if not ("causallm" in self.model.__class__.__name__.lower() and not self.mllm):
+            # TODO For tied keys, there may some issues, we haven't not verified this
+            tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
+            if len(tied_weight_keys) > 1:
+                self.is_immediate_saving = False
+                if self.low_cpu_mem_usage:
+                    logger.warning("reset low_cpu_mem_usage to False due to tied weights")
+                return
+            if len(tied_weight_keys) == 1:
+                key = tied_weight_keys.keys[0]
+                if not "lm_head" in key:
+                    self.is_immediate_saving = False
+                    if self.low_cpu_mem_usage:
+                        logger.warning("reset low_cpu_mem_usage to False due to tied weights")
+                    return
+
+        if self.low_cpu_mem_usage and self.is_immediate_packing:
+            self.is_immediate_saving = True
+
+        if self.low_cpu_mem_usage and not self.is_immediate_packing:
+            logger.warning(
+                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
+                "Setting `low_cpu_mem_usage` to False."
+            )
+            self.low_cpu_mem_usage = False
+            self.is_immediate_saving = False
+
+        if self.low_cpu_mem_usage and self.is_immediate_packing:
+            if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported "
+                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                    "Setting `low_cpu_mem_usage` to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+            elif self.has_qlayer_outside_block and self.iters > 0:
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported "
+                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                    "Setting low_cpu_mem_usage to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+            elif formats[0].is_gguf():
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported for gguf format"
+                    "Setting `low_cpu_mem_usage `to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+
+        if self.is_immediate_saving and "int" not in self.data_type:
+            logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.is_immediate_saving = False
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
@@ -1491,48 +1556,8 @@ class BaseCompressor(object):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
             # Determine if immediate packing is required
-            formats = self.formats
-            if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
-                self.is_immediate_packing = True
-            if self.low_cpu_mem_usage and self.is_immediate_packing:
-                self.is_immediate_saving = True
+            self._adjust_immediate_packing_and_saving()
 
-            if self.low_cpu_mem_usage and not self.is_immediate_packing:
-                logger.warning(
-                    "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
-                    "Setting `low_cpu_mem_usage` to False."
-                )
-                self.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
-
-            if self.low_cpu_mem_usage and self.is_immediate_packing:
-                if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
-                    logger.warning(
-                        "`low_cpu_mem_usage` is not fully supported "
-                        "when there are quantized layers outside blocks and optimized RTN is disabled. "
-                        "Setting `low_cpu_mem_usage` to False."
-                    )
-                    self.low_cpu_mem_usage = False
-                    self.is_immediate_saving = False
-                elif self.has_qlayer_outside_block and self.iters > 0:
-                    logger.warning(
-                        "`low_cpu_mem_usage` is not fully supported "
-                        "when there are quantized layers outside blocks and optimized RTN is disabled. "
-                        "Setting low_cpu_mem_usage to False."
-                    )
-                    self.low_cpu_mem_usage = False
-                    self.is_immediate_saving = False
-                elif formats[0].is_gguf():
-                    logger.warning(
-                        "`low_cpu_mem_usage` is not fully supported for gguf format"
-                        "Setting `low_cpu_mem_usage `to False."
-                    )
-                    self.low_cpu_mem_usage = False
-                    self.is_immediate_saving = False
-
-        if self.is_immediate_saving and "int" not in self.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
-            self.is_immediate_saving = False
         if self.iters == 0:
             return self._quantize_rtn()
 
