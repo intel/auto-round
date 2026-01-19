@@ -651,7 +651,7 @@ def tune(args):
         batch_size=args.batch_size,
         gradient_accumulate_steps=args.gradient_accumulate_steps,
         low_gpu_mem_usage=args.low_gpu_mem_usage,
-        low_cpu_mem_usage=args.low_cpu_mem_usage,
+        low_cpu_mem_usage=True,
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,

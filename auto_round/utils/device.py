@@ -463,16 +463,29 @@ def _clear_memory_for_cpu_and_cuda(
         torch.xpu.empty_cache()
 
 
-@torch._dynamo.disable()
-def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
-    from auto_round.utils.device import is_hpex_available
+class ClearMemory:
+    def __init__(self, device_list: list | tuple | None = None):
+        self.device_list = device_list
 
-    memory_monitor.update(device_list=device_list)
-    if is_hpex_available():
-        # hpu does not have empty_cache
-        return
-    else:
-        _clear_memory_for_cpu_and_cuda(tensor, device_list)
+    def __call__(
+        self,
+        tensor: torch.Tensor | None | list[torch.Tensor | dict] = None,
+        device_list: list | tuple | None = None,
+    ):
+        from auto_round.utils.device import is_hpex_available
+
+        if is_hpex_available():
+            memory_monitor.update_cpu()
+            return
+        else:
+            if device_list is not None:
+                self.device_list = device_list
+            final_device_list = self.device_list
+            memory_monitor.update(final_device_list)
+            _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
+
+
+clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
 
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):

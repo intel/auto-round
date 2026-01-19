@@ -470,7 +470,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
-        # logger.info(self.orig_layer.tmp_name)
+        # logger.info(self.orig_layer.global_name)
         x = x.to(self.device)
         weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
