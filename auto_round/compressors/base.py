@@ -386,10 +386,7 @@ class BaseCompressor(object):
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
         if enable_opt_rtn and disable_opt_rtn:
-            raise ValueError(
-                "`enable_opt_rtn` and `disable_opt_rtn` are mutually exclusive; "
-                "only one can be set."
-            )
+            raise ValueError("`enable_opt_rtn` and `disable_opt_rtn` are mutually exclusive; " "only one can be set.")
         if enable_opt_rtn:
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
@@ -422,7 +419,6 @@ class BaseCompressor(object):
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
-
 
         # Whether to pack the layer immediately after tuning
         self.is_immediate_packing = False

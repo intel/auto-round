@@ -135,8 +135,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Enable memory-efficient mode by offloading intermediate features to CPU. "
             "Useful when working with large models that don't fit in GPU memory.",
         )
-        basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Deprecated, Lower CPU memory mode. Defaults to False.")
-        basic.add_argument("--disable_low_cpu_mem_usage", action="store_true", help="disable lower CPU memory mode. Defaults to False.")
+        basic.add_argument(
+            "--low_cpu_mem_usage", action="store_true", help="Deprecated, Lower CPU memory mode. Defaults to False."
+        )
+        basic.add_argument(
+            "--disable_low_cpu_mem_usage", action="store_true", help="disable lower CPU memory mode. Defaults to False."
+        )
         basic.add_argument(
             "--format",
             "--formats",
@@ -513,6 +517,7 @@ def tune(args):
         )
 
     from auto_round.utils import detect_device, get_library_version, logger
+
     if args.low_cpu_mem_usage:
         logger.warning(
             "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
