@@ -40,7 +40,6 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 self[i].down_proj.weight.data.copy_(down.t())
             del gate_up, down, gate_proj, up_proj
             original.to_empty(device="meta")  # release original experts parameters
-            clear_memory()
 
 
 class SequentialLlama4TextMoe(ReplacementModuleBase):
