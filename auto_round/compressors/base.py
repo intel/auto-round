@@ -229,7 +229,7 @@ class BaseCompressor(object):
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, to_quant_block_names,
-                  enable_norm_bias_tuning, enable_quanted_input,
+                  enable_norm_bias_tuning, enable_quanted_input, enable_opt_rtn,
                   disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms,momentum
         Raises:
             ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
@@ -303,6 +303,7 @@ class BaseCompressor(object):
         self.momentum = kwargs.pop("momentum", 0.0)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         static_attention_dtype = kwargs.pop("static_attention_dtype", None)
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         device = kwargs.pop("device", None)
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
@@ -384,7 +385,15 @@ class BaseCompressor(object):
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
+        if enable_opt_rtn and disable_opt_rtn:
+            raise ValueError(
+                "`enable_opt_rtn` and `disable_opt_rtn` are mutually exclusive; "
+                "only one can be set."
+            )
+        if enable_opt_rtn:
+            disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
+
         if self.iters != 0 and self.orig_disable_opt_rtn is not None:
             logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
             disable_opt_rtn = True
@@ -413,6 +422,7 @@ class BaseCompressor(object):
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
+
 
         # Whether to pack the layer immediately after tuning
         self.is_immediate_packing = False
@@ -1104,7 +1114,7 @@ class BaseCompressor(object):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
             set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
-        # Step 1: Try quantization on GPU first, fall back to CPU if OOM
+        # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
         if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
             m = m.to(tuning_device)
             m.scale = None

@@ -135,7 +135,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Enable memory-efficient mode by offloading intermediate features to CPU. "
             "Useful when working with large models that don't fit in GPU memory.",
         )
-        basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
+        basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Deprecated, Lower CPU memory mode. Defaults to False.")
+        basic.add_argument("--disable_low_cpu_mem_usage", action="store_true", help="disable lower CPU memory mode. Defaults to False.")
         basic.add_argument(
             "--format",
             "--formats",
@@ -253,8 +254,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action="store_true",
             help="Enable PyTorch deterministic algorithms for reproducible results. ",
         )
-        group = tuning.add_mutually_exclusive_group()
-        group.add_argument(
+        group_opt_rtn = tuning.add_mutually_exclusive_group()
+        group_opt_rtn.add_argument(
             "--disable_opt_rtn",
             action="store_const",
             const=True,
@@ -263,7 +264,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
-        group.add_argument(
+        group_opt_rtn.add_argument(
             "--enable_opt_rtn",
             action="store_const",
             const=False,
@@ -512,6 +513,11 @@ def tune(args):
         )
 
     from auto_round.utils import detect_device, get_library_version, logger
+    if args.low_cpu_mem_usage:
+        logger.warning(
+            "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
+            "To disable it, use `--disable_low_cpu_mem_usage`."
+        )
 
     if args.format is None:
         args.format = "auto_round"
