@@ -1456,10 +1456,7 @@ class BaseCompressor(object):
             fill_default_value=fill_default_value,
         )
 
-
     def _adjust_immediate_packing_and_saving(self):
-
-
 
         formats = self.formats
         if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
@@ -1475,7 +1472,7 @@ class BaseCompressor(object):
                 return
             if len(tied_weight_keys) == 1:
                 key = tied_weight_keys.keys[0]
-                if not "lm_head" in key:
+                if "lm_head" not in key:
                     self.is_immediate_saving = False
                     if self.low_cpu_mem_usage:
                         logger.warning("reset low_cpu_mem_usage to False due to tied weights")
@@ -1511,8 +1508,7 @@ class BaseCompressor(object):
                 self.is_immediate_saving = False
             elif formats[0].is_gguf():
                 logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported for gguf format"
-                    "Setting `low_cpu_mem_usage `to False."
+                    "`low_cpu_mem_usage` is not fully supported for gguf format" "Setting `low_cpu_mem_usage `to False."
                 )
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
