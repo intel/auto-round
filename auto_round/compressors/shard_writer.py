@@ -94,7 +94,7 @@ class ShardWriter:
             self._add_tensor(param_name, v)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
-        t_size = tensor.numel() * tensor.element_size()
+        t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
         tensor = tensor.detach().cpu()
