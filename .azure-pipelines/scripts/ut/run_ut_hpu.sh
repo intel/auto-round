@@ -7,6 +7,7 @@ export TQDM_MININTERVAL=60
 pip install pytest-cov pytest-html
 pip list
 
+rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
 export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH

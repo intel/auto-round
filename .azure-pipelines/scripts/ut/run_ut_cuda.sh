@@ -27,14 +27,14 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
-    uv pip install torch==2.8.0 torchvision
+    uv pip install torch==2.9.1 torchvision
     uv pip install -r requirements.txt
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
     uv pip install --no-build-isolation .
-    uv pip install pytest-cov pytest-html cmake==4.0.2
+    uv pip install pytest-cov pytest-html cmake
 }
 
 function print_test_results_table() {
@@ -42,9 +42,9 @@ function print_test_results_table() {
     local test_type=$2
 
     echo ""
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     echo "Test Results Summary - ${test_type}" >> ${SUMMARY_LOG}
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     printf "%-30s %-10s %-50s\n" "Test Case" "Result" "Log File" >> ${SUMMARY_LOG}
     printf "%-30s %-10s %-50s\n" "----------" "------" "--------" >> ${SUMMARY_LOG}
 
@@ -81,9 +81,9 @@ function print_test_results_table() {
         fi
     done
 
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     printf "Total: %d, Passed: %d, Failed: %d\n" ${total_tests} ${passed_tests} ${failed_tests} >> ${SUMMARY_LOG}
-    echo "==========================================" >> ${SUMMARY_LOG}
+    { printf '=%.0s' {1..120}; echo; } >> ${SUMMARY_LOG}
     echo "" >> ${SUMMARY_LOG}
 }
 
@@ -95,12 +95,13 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
-    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
+    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v5.6.12 --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
+    uv pip install -r test_cuda/requirements_sglang.txt
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
