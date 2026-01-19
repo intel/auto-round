@@ -1421,8 +1421,8 @@ class BaseCompressor(object):
                 dtype = torch.float32
             self._quantize_layer_via_rtn(name, dtype=dtype)
             # clear_memory(device_list=self.device_list)
-        if self.is_immediate_saving:
-            shard_writer(self, is_finalize=False)
+        # if self.is_immediate_saving:
+        #     shard_writer(self, is_finalize=True)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
