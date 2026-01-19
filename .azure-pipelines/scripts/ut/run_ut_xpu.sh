@@ -11,6 +11,7 @@ echo "##[endgroup]"
 uv pip list
 
 # test ark cpu part only before external xpu available
+rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
