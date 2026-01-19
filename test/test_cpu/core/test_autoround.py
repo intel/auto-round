@@ -796,14 +796,15 @@ class TestAutoRound:
     def test_fp_layers_deprecation(self, tiny_opt_model_path, dataloader):
         """Test that fp_layers is correctly renamed to ignore_layers and warning is emitted."""
         import warnings
+
         from auto_round import AutoRound
-        
+
         model_name = tiny_opt_model_path
-        
+
         # Capture warnings
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            
+
             # Create AutoRound with deprecated fp_layers parameter
             autoround = AutoRound(
                 model_name,
@@ -815,20 +816,21 @@ class TestAutoRound:
                 dataset=dataloader,
                 fp_layers="model.decoder.layers.0",
             )
-            
+
             # Verify that ignore_layers was set correctly
-            assert autoround.ignore_layers == "model.decoder.layers.0", \
-                f"Expected ignore_layers to be 'model.decoder.layers.0', got '{autoround.ignore_layers}'"
-            
+            assert (
+                autoround.ignore_layers == "model.decoder.layers.0"
+            ), f"Expected ignore_layers to be 'model.decoder.layers.0', got '{autoround.ignore_layers}'"
+
         # Note: The warning is logged via logger.warning_once, not standard warnings module
         # So we verify by checking that the attribute was properly set
-        
+
     def test_ignore_layers_direct(self, tiny_opt_model_path, dataloader):
         """Test that ignore_layers parameter works directly without deprecation."""
         from auto_round import AutoRound
-        
+
         model_name = tiny_opt_model_path
-        
+
         # Create AutoRound with ignore_layers parameter directly
         autoround = AutoRound(
             model_name,
@@ -840,7 +842,8 @@ class TestAutoRound:
             dataset=dataloader,
             ignore_layers="model.decoder.layers.1",
         )
-        
+
         # Verify that ignore_layers was set correctly
-        assert autoround.ignore_layers == "model.decoder.layers.1", \
-            f"Expected ignore_layers to be 'model.decoder.layers.1', got '{autoround.ignore_layers}'"
+        assert (
+            autoround.ignore_layers == "model.decoder.layers.1"
+        ), f"Expected ignore_layers to be 'model.decoder.layers.1', got '{autoround.ignore_layers}'"
