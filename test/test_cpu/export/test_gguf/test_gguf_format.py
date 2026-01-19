@@ -2,13 +2,11 @@ import os
 import shutil
 import sys
 
-import pytest
-import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, get_tiny_model, save_tiny_model
+from ....helpers import get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
