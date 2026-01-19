@@ -19,7 +19,7 @@ from torch import nn
 from transformers.activations import ACT2FN
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import logger, unsupported_meta_device
+from auto_round.utils import clear_memory, logger, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -113,7 +113,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
                 next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
 
-        if transformers_version <= version.parse("4.57.3"):
+        if transformers_version < version.parse("5.0"):
             return next_states, router_logits
         else:
             return next_states
@@ -143,7 +143,9 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
             Qwen3VLMoeTextMLP,
         )
 
-        super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        target_device = next(original.parameters()).device
+        with torch.device(target_device):
+            super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
 
         if not unsupported_meta_device(original):
             for i in range(self.num_experts):
@@ -153,6 +155,9 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 gate_proj = gate_up[:, :intermediate_size]
                 up_proj = gate_up[:, intermediate_size:]
 
-                _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
-                _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
-                _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
+                _update_parameter(self[i].gate_proj, "weight", gate_proj.t())
+                _update_parameter(self[i].up_proj, "weight", up_proj.t())
+                _update_parameter(self[i].down_proj, "weight", down.t())
+            del gate_up, down, gate_proj, up_proj
+            original.to_empty(device="meta")  # release original experts parameters
+            clear_memory()
