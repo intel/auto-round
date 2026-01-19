@@ -486,7 +486,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     need_ipex_itrex_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
-    print("~~~~~~~~!!!!!!!!!!!!!!",flush=True)
+    print("~~~~~~~~!!!!!!!!!!!!!!", flush=True)
     for backend in used_backends:
         if backend.startswith("auto_gptq"):
             need_autogptq_init = True
