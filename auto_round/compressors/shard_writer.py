@@ -213,7 +213,7 @@ class ShardWriter:
 # Entry point function to maintain compatibility with your current flow
 @torch.no_grad()
 def shard_writer(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
-    if m is None and name is None and not is_finalize:
+    if m is None and name is None and not is_finalize and not is_finalize:
         raise ValueError("Must specify either name or m")
     if not hasattr(rounder, "_shard_writer"):
         rounder._shard_writer = ShardWriter(rounder)
