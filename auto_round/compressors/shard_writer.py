@@ -144,13 +144,11 @@ class ShardWriter:
 
         for param_full_name in saved_params:
             module_path = param_full_name.rsplit(".", 1)[0]
-            try:
-                module = get_module(self.model, module_path)
-                # Check if all parameters of this module are now in 'all_saved'
-                if all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys()):
-                    module.to("meta")
-            except Exception:
-                continue
+
+            module = get_module(self.model, module_path)
+            # Check if all parameters of this module are now in 'all_saved'
+            if module is not None and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys()):
+                module.to("meta")
 
     def finalize(self):
         """Saves remaining weights, renames files, and writes the index JSON."""
