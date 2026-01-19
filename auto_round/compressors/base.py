@@ -188,7 +188,7 @@ class BaseCompressor(object):
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
-        low_cpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = True,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -1461,7 +1461,6 @@ class BaseCompressor(object):
         )
 
     def _adjust_immediate_packing_and_saving(self):
-
         formats = self.formats
         if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
             self.is_immediate_packing = True

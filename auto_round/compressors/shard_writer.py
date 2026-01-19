@@ -207,7 +207,6 @@ class ShardWriter:
         logger.info(f"model has been saved to {self.output_dir}")
 
 
-# Entry point function to maintain compatibility with your current flow
 @torch.no_grad()
 def shard_writer(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
     if m is None and name is None and not is_finalize and not is_finalize:
