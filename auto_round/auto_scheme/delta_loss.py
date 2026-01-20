@@ -343,13 +343,9 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
 
             # Save input information and ensure tensors are on CPU
             input_info = {
-                "args": [
-                    arg.detach().clone().to("cpu") if isinstance(arg, torch.Tensor) else arg
-                    for arg in args
-                ],
+                "args": [arg.detach().clone().to("cpu") if isinstance(arg, torch.Tensor) else arg for arg in args],
                 "kwargs": {
-                    k: v.detach().clone().to("cpu") if isinstance(v, torch.Tensor) else v
-                    for k, v in kwargs.items()
+                    k: v.detach().clone().to("cpu") if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()
                 },
             }
             block_inputs[module_name] = input_info
@@ -362,10 +358,7 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
                 if isinstance(result, torch.Tensor):
                     result = result.requires_grad_(True)
                 elif isinstance(result, tuple):
-                    result = tuple(
-                        r.requires_grad_(True) if isinstance(r, torch.Tensor) else r
-                        for r in result
-                    )
+                    result = tuple(r.requires_grad_(True) if isinstance(r, torch.Tensor) else r for r in result)
 
             pbar.update(1)
             return result
@@ -403,9 +396,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
         # Register backward hook on the last block
         last_block = get_module(model, block_names[-1])
-        last_block_backward_hook = last_block.register_full_backward_pre_hook(
-            backward_pre_hook
-        )
+        last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
 
         data = to_device(data, model.device)
         output = model.forward(**data, labels=data["input_ids"], use_cache=False)
@@ -430,12 +421,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             # Retrieve stored inputs for the block
             block_input_info = block_inputs.get(block_name, {})
 
-            block_input_args = to_device(
-                block_input_info.get("args", []), major_device
-            )
-            block_input_kwargs = to_device(
-                block_input_info.get("kwargs", {}), major_device
-            )
+            block_input_args = to_device(block_input_info.get("args", []), major_device)
+            block_input_kwargs = to_device(block_input_info.get("kwargs", {}), major_device)
             block_input_args[0].requires_grad_(True)
 
             # Move the block module to GPU
@@ -644,6 +631,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
     best_loss, best_path = dp[best_params]
     return best_loss, best_path
+
 
 def move_module_to_tuning_device(module, major_device="cpu"):
     for n, m in module.named_modules():
