@@ -941,7 +941,7 @@ def gen_layer_config(
 
     device_list = parse_available_devices(device_map)
 
-    # gradient checkpointing
+    # Enable gradient checkpointing if supported
     if model.supports_gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
