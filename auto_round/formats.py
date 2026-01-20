@@ -76,8 +76,8 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
         )
     gguf_format_name = get_gguf_scheme(ar.scheme)
     if gguf_format_name:
-        # if gguf_format_name.lower().endswith("mixed"):
-        #     gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
+        if gguf_format_name.lower().endswith("mixed"):
+            gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
         if any([f.lower() not in ["fake", gguf_format_name.lower()] for f in formats]):
             tmp_format_name = gguf_format_name.lower() if "fake" not in formats else f"{gguf_format_name.lower()},fake"
             logger.warning(
@@ -669,7 +669,7 @@ class GGUFFormat(OutputFormat):
             if format.lower().endswith("_mixed"):
                 from auto_round.schemes import _handle_special_schemes
 
-                ar.layer_config = _handle_special_schemes(scheme, ar.layer_config, ar.model)
+                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
                 gguf_format = gguf_format.lower().replace("_mixed", "_s")
             if isinstance(scheme, str) and scheme.lower() != gguf_format:
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
