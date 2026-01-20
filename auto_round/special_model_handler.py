@@ -56,14 +56,13 @@ def update_module(model, formats: list[OutputFormat] = None, trust_remote_code: 
     if formats is not None and any([format_.is_gguf() for format_ in formats]):
         return model
 
-    # only update deepseek_v2 module when not trust_remote_code and on hpu
-    if not (
-        not trust_remote_code
-        and is_hpex_available()
+    # Only update deepseek_v2 module when not trust_remote_code and on hpu
+    if (
+        is_hpex_available()
         and hasattr(model, "config")
         and model.config.model_type == "deepseek_v2"
     ):
-        return model
+        return model if trust_remote_code else apply_replacements(model)
     return apply_replacements(model)
 
 
