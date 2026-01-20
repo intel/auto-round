@@ -258,7 +258,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(tensor, bits, scale_dtype, imatrix)
             tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
 
-            qdq_w,_,_ = quant_tensor_gguf_asym_dq(
+            qdq_w, _, _ = quant_tensor_gguf_asym_dq(
                 tensor=tensor,
                 bits=bits,
                 scale_dtype=scale_dtype,
@@ -896,7 +896,7 @@ def _gen_layer_config(
 
 
 # Support model, need to clear gradient
-@register_scheme_methods(("default","DeltaLoss"))
+@register_scheme_methods(("default", "DeltaLoss"))
 def gen_layer_config(
     auto_scheme: AutoScheme,
     model: Union[str, torch.nn.Module],
