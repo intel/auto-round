@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import is_hpex_available, LazyImport, logger
+from auto_round.utils import LazyImport, is_hpex_available, logger
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),

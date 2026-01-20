@@ -266,11 +266,11 @@ def save_quantized_as_static_fp(
     quantization_config = QuantizationConfig(
         config_groups=config_groups,
         kv_cache_scheme=(
-            _construct_kv_scheme() 
+            _construct_kv_scheme()
             if (
-                _use_fp8_kv(serialization_dict.get("static_kv_dtype", None)) 
+                _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
                 or _use_fp8_kv(serialization_dict.get("static_attention_dtype", None))
-            ) 
+            )
             else None
         ),
         quantization_status=QuantizationStatus.COMPRESSED,

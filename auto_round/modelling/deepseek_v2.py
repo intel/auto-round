@@ -17,9 +17,9 @@ from functools import partial
 from typing import Callable, Optional
 
 import torch
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+from transformers.cache_utils import Cache
 from transformers.modeling_rope_utils import dynamic_rope_update
-from transformers.cache_utils  import Cache
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.deepseek_v2.configuration_deepseek_v2 import DeepseekV2Config
 from transformers.models.deepseek_v2.modeling_deepseek_v2 import eager_attention_forward
 
