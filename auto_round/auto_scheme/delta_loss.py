@@ -858,7 +858,7 @@ def _gen_layer_config(
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
     options = copy.deepcopy(auto_scheme.options)
-    # Replace scheme index with
+    # Replace scheme preset names with actual QuantizationScheme objects
     for index in range(len(options)):
         if isinstance(options[index], str):
             options[index] = preset_name_to_scheme(options[index])
