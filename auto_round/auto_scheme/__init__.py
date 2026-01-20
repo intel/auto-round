@@ -13,20 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.logger import logger
-
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-
-def __getattr__(name):
-    if name == "AUTO_SCHEME_METHODS":
-        try:
-            import auto_round.auto_scheme.default_alg
-        except ImportError:
-            logger.warning("AutoScheme is currently supported only on Linux.")
-
-        from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
-
-        return AUTO_SCHEME_METHODS
-
-    raise AttributeError(f"auto-scheme has no attribute '{name}'")
+import auto_round.auto_scheme.delta_loss
+from auto_round.auto_scheme.register import AUTO_SCHEME_METHODS
