@@ -271,7 +271,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         elif bits in [3, 6]:
             group_size = 16
             tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-            scale, d_scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype)
+            scale, d_scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=1)
             tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
             qdq_w, _, _ = quant_tensor_gguf_sym_dq(
                 tensor=tensor, bits=bits, scale_dtype=scale_dtype, imatrix=imatrix, scale=scale, d_scale=d_scale
