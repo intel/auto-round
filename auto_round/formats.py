@@ -146,7 +146,7 @@ def _check_divisible_by_32(ar):
                         continue
                     ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"some layers are skipped quantization (shape not divisible by 32).")
+                    logger.warning_once("some layers are skipped quantization (shape not divisible by 32).")
 
 
 class OutputFormat(ABC):
