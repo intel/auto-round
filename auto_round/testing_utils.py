@@ -47,9 +47,6 @@ def is_ipex_available():
         return False
 
 
-def is_itrex_available():
-    return importlib.util.find_spec("intel_extension_for_transformers") is not None
-
 
 def is_flash_attn_available():
     return importlib.util.find_spec("flash_attn") is not None
@@ -127,16 +124,6 @@ def require_ipex(test_case):
 
     """
     return unittest.skipUnless(is_ipex_available(), "test requires intel-extension-for-pytorch>=2.5")(test_case)
-
-
-def require_itrex(test_case):
-    """
-    Decorator marking a test that requires intel-extension-for-transformers.
-
-    These tests are skipped when intel-extension-for-transformers isn't installed.
-
-    """
-    return unittest.skipUnless(is_itrex_available(), "test requires intel-extension-for-transformers")(test_case)
 
 
 def require_optimum(test_case):
