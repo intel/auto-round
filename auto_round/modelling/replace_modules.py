@@ -25,11 +25,8 @@ BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
     "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
     "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
+    "DeepseekV2Attention": LazyImport("auto_round.modelling.deepseek_v2")
 }
-
-
-if is_hpex_available():
-    BUILTIN_MODULES["DeepseekV2Attention"] = LazyImport("auto_round.modelling.deepseek_v2")
 
 
 def _import_required_replacements(model: torch.nn.Module) -> None:
