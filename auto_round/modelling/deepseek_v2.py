@@ -21,11 +21,14 @@ from transformers.cache_utils import Cache
 from transformers.modeling_rope_utils import dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.deepseek_v2.configuration_deepseek_v2 import DeepseekV2Config
+from transformers.models.deepseek_v2.modeling_deepseek_v2 import DeepseekV2Attention as OrigDeepseekV2Attention
+from transformers.models.deepseek_v2.modeling_deepseek_v2 import (
+    DeepseekV2RotaryEmbedding as OrigDeepseekV2RotaryEmbedding,
+)
 from transformers.models.deepseek_v2.modeling_deepseek_v2 import (
     eager_attention_forward,
-    DeepseekV2RotaryEmbedding as OrigDeepseekV2RotaryEmbedding,
-    DeepseekV2Attention as OrigDeepseekV2Attention,
 )
+
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 
 
