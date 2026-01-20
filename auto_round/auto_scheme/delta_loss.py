@@ -314,7 +314,6 @@ def cal_imatrix(model, dataloader):
 
 
 class MyCustomError(Exception):
-    """用于中断反向传播的自定义异常"""
 
     def __init__(self, message):
         super().__init__(message)
@@ -337,16 +336,19 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
         @wraps(original_forward)
         def new_forward(*args, **kwargs):
             move_module_to_tuning_device(module, major_device=major_device)
-            # 调用原始forward
+
+            # Call the original forward
             with torch.no_grad():
                 result = original_forward(*args, **kwargs)
-            # 保存输入信息，并确保张量在GPU上且需要梯度
+
+            # Save input information and ensure tensors are on CPU
             input_info = {
                 "args": [
-                    arg.detach().clone().to("cpu") if isinstance(arg, torch.Tensor) else arg for arg in args  # To CPU
+                    arg.detach().clone().to("cpu") if isinstance(arg, torch.Tensor) else arg
+                    for arg in args
                 ],
                 "kwargs": {
-                    k: v.detach().clone().to("cpu") if isinstance(v, torch.Tensor) else v  # To CPU
+                    k: v.detach().clone().to("cpu") if isinstance(v, torch.Tensor) else v
                     for k, v in kwargs.items()
                 },
             }
@@ -354,22 +356,27 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
 
             module.to("cpu")
             # torch.cuda.empty_cache()
+
+            # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
                 if isinstance(result, torch.Tensor):
                     result = result.requires_grad_(True)
                 elif isinstance(result, tuple):
-                    result = tuple(r.requires_grad_(True) if isinstance(r, torch.Tensor) else r for r in result)
-            pbar.update(1)
+                    result = tuple(
+                        r.requires_grad_(True) if isinstance(r, torch.Tensor) else r
+                        for r in result
+                    )
 
+            pbar.update(1)
             return result
 
         return new_forward
 
-    # 为每个模块设置临时名称
+    # Assign a temporary name to each module
     for n, m in model.named_modules():
         m.tmp_name = n
 
-    # 包装每个block的forward方法
+    # Wrap the forward method of each block
     for block_name in block_names:
         module = get_module(model, block_name)
         module.forward = wrap_forward(module, block_name)
@@ -384,32 +391,34 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         module.orig_forward = module.forward
 
     def backward_pre_hook(module, grad_input):
-        """反向传播前的钩子函数"""
+        """Hook executed before backward propagation."""
         global last_grad_input
         last_grad_input = grad_input
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         raise MyCustomError("Interrupt backward pass")
-        return grad_input
 
     for data in dataloader:
         prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar)
-        # 为最后一个block注册反向钩子
+
+        # Register backward hook on the last block
         last_block = get_module(model, block_names[-1])
-        last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
+        last_block_backward_hook = last_block.register_full_backward_pre_hook(
+            backward_pre_hook
+        )
 
         data = to_device(data, model.device)
         output = model.forward(**data, labels=data["input_ids"], use_cache=False)
 
         try:
-            # 反向传播（会被钩子中断）
+            # Backward pass (will be interrupted by the hook)
             output.loss.backward()
         except MyCustomError:
             pass
 
         current_grad = last_grad_input
 
-        # 手动计算梯度
+        # Manually compute gradients block by block
         last_block_backward_hook.remove()
 
         for name in block_names:
@@ -418,13 +427,18 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
         for block_name in reversed(block_names):
 
-            # 获取block输入
+            # Retrieve stored inputs for the block
             block_input_info = block_inputs.get(block_name, {})
 
-            block_input_args = to_device(block_input_info.get("args", []), major_device)
-            block_input_kwargs = to_device(block_input_info.get("kwargs", {}), major_device)
+            block_input_args = to_device(
+                block_input_info.get("args", []), major_device
+            )
+            block_input_kwargs = to_device(
+                block_input_info.get("kwargs", {}), major_device
+            )
             block_input_args[0].requires_grad_(True)
-            # 获取block模块并移动到GPU
+
+            # Move the block module to GPU
             block_module = get_module(model, block_name)
             for n, m in block_module.named_modules():
                 if hasattr(m, "grad_mode"):
@@ -436,29 +450,29 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
                 elif len(list(m.children())) == 0:
                     m.to(major_device)
 
-            # 设置模型为训练模式以启用梯度计算
+            # Set the block to eval mode while enabling gradient computation
             block_module.eval()
 
-            # 重新计算block输出
+            # Recompute the block output
             block_output = block_module(*block_input_args, **block_input_kwargs)
 
-            # 确保输出需要梯度
+            # Ensure the output requires gradients
             if isinstance(block_output, tuple):
-                # 对于元组输出，我们通常关心第一个元素（hidden states）
+                # For tuple outputs, we usually care about the first element (hidden states)
                 main_output = block_output[0]
                 main_output = main_output.requires_grad_(True)
             else:
                 main_output = block_output.requires_grad_(True)
 
-            # 计算梯度
+            # Backward pass for the current block
             torch.autograd.backward(
                 tensors=main_output,
                 # inputs=block_input_args,
                 grad_tensors=current_grad,
-                retain_graph=True,  # False有些grad会为0，比如mxfp4
+                retain_graph=True,  # False may lead to zero gradients for some cases (e.g., MXFP4)
             )
 
-            # 获取输入的梯度
+            # Extract gradients w.r.t. the block input
             if block_input_args and isinstance(block_input_args[0], torch.Tensor):
                 current_grad = block_input_args[0].grad.detach().clone()
             else:
@@ -582,12 +596,18 @@ def get_score_for_scheme(
 
 def choose_bits_per_layer_with_path(layers: dict, P: int):
     """
-    layers: 每层的候选选项列表 (bits, params, loss)
-    P: 参数量上限
-    返回: (最小loss, 最优选择路径 [每层的(bits, params, loss, name_list)]) 或 (None, None)
+    Args:
+        layers: A dict mapping each layer name to a list of candidate options.
+                Each option is a tuple of (scheme, bits_cost, loss_cost, layer_names).
+        P: Upper bound on the total parameter (bit) budget.
+
+    Returns:
+        (min_loss, best_path), where best_path is a list of
+        (layer_names, scheme) for each layer, or (None, None) if no feasible
+        solution exists.
     """
-    # dp: params_total -> (loss, path)
-    # path 直接存 [选项...]
+    # dp: total_params -> (accumulated_loss, chosen_path)
+    # The path explicitly stores the selected options.
     dp: dict[int, tuple[float, list]] = {0: (0.0, [])}
 
     for layer_name, opts in layers.items():
@@ -598,15 +618,18 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
                 np_total = cur_params + bits_cost
                 if np_total > P:
                     continue
+
                 new_loss = cur_loss + loss_cost
                 new_path = cur_path + [(layer_names, scheme)]
-                # 取更小 loss 的路径
+
+                # Keep the path with smaller loss for the same parameter budget
                 if np_total not in new_dp or new_loss < new_dp[np_total][0]:
                     new_dp[np_total] = (new_loss, new_path)
+
         if not new_dp:
             return None, None
 
-        # Pareto 剪枝
+        # Pareto pruning: remove dominated (params, loss) states
         items = sorted(new_dp.items(), key=lambda x: x[0])  # (params, (loss, path))
         pruned: dict[int, tuple[float, list]] = {}
         best_loss_so_far = float("inf")
@@ -614,13 +637,13 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
             if loss_val < best_loss_so_far:
                 pruned[params_val] = (loss_val, path_val)
                 best_loss_so_far = loss_val
+
         dp = pruned
 
-    # 选最优
+    # Select the solution with the minimum loss
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
     best_loss, best_path = dp[best_params]
     return best_loss, best_path
-
 
 def move_module_to_tuning_device(module, major_device="cpu"):
     for n, m in module.named_modules():
