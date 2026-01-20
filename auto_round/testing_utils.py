@@ -47,7 +47,6 @@ def is_ipex_available():
         return False
 
 
-
 def is_flash_attn_available():
     return importlib.util.find_spec("flash_attn") is not None
 

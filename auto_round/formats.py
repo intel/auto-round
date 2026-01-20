@@ -590,6 +590,7 @@ class AutoAWQFormat(OutputFormat):
             **kwargs,
         )
 
+
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
     support_schemes = [
