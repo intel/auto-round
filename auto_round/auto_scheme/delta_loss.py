@@ -895,7 +895,7 @@ def _gen_layer_config(
     return layer_config
 
 
-# Support model, need to clear gradient
+# Supports model with gradient clearing between iterations
 @register_scheme_methods(("default", "DeltaLoss"))
 def gen_layer_config(
     auto_scheme: AutoScheme,
