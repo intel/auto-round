@@ -55,8 +55,8 @@ def apply_rotary_emb(
 
 class DeepseekV2RotaryEmbedding(ReplacementModuleBase, OrigDeepseekV2RotaryEmbedding):
     def __init__(self, original, config):
-        ReplacementModuleBase.__init__()
-        OrigDeepseekV2RotaryEmbedding.__init__(config)
+        ReplacementModuleBase.__init__(self)
+        OrigDeepseekV2RotaryEmbedding.__init__(self, config)
 
     @torch.no_grad()
     @dynamic_rope_update
@@ -89,8 +89,8 @@ class DeepseekV2RotaryEmbedding(ReplacementModuleBase, OrigDeepseekV2RotaryEmbed
 
 class DeepseekV2Attention(ReplacementModuleBase, OrigDeepseekV2Attention):
     def __init__(self, original, config):
-        ReplacementModuleBase.__init__()
-        OrigDeepseekV2Attention.__init__(config, original.layer_idx)
+        ReplacementModuleBase.__init__(self)
+        OrigDeepseekV2Attention.__init__(self, config, original.layer_idx)
 
         cur_mod = [name for name, _ in self.named_modules()]
         for name, mod in original.named_modules():
