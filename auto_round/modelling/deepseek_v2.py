@@ -157,7 +157,8 @@ class DeepseekV2Attention(ReplacementModuleBase):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
         if "padding_mask" in kwargs:
             warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
+                "Passing `padding_mask` is deprecated and will be removed in v4.37. "
+                "Please make sure use `attention_mask` instead.`"
             )
         batch_size, seq_length = hidden_states.shape[:-1]
         query_shape = (batch_size, seq_length, -1, self.qk_head_dim)
