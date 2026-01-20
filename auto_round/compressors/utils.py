@@ -382,7 +382,7 @@ def set_layer_config(
                 if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
                     layer_config.setdefault(n, copy.deepcopy(default_dict))
                     layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+                    # logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
     # enforce shape divisibility for mxfp/nvfp
     if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
         for n, m in model.named_modules():
