@@ -57,11 +57,7 @@ def update_module(model, formats: list[OutputFormat] = None, trust_remote_code: 
         return model
 
     # Only update deepseek_v2 module when not trust_remote_code and on hpu
-    if (
-        is_hpex_available()
-        and hasattr(model, "config")
-        and model.config.model_type == "deepseek_v2"
-    ):
+    if is_hpex_available() and hasattr(model, "config") and model.config.model_type == "deepseek_v2":
         return model if trust_remote_code else apply_replacements(model)
     return apply_replacements(model)
 
