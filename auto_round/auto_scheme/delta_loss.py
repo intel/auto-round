@@ -815,8 +815,8 @@ def _gen_layer_config(
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
     not_fixed_embedding_layers_names = [name for name in embedding_layers_names if name not in fixed_layer_scheme]
-    for sorted_indice in sorted_indices:
-        tmp_scheme = schemes[sorted_indice]
+    for sorted_index in sorted_indices:
+        tmp_scheme = schemes[sorted_index]
         if isinstance(tmp_scheme, str):
             tmp_scheme = asdict(preset_name_to_scheme(tmp_scheme))
 
