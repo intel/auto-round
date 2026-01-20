@@ -21,8 +21,11 @@ from transformers.cache_utils import Cache
 from transformers.modeling_rope_utils import dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.deepseek_v2.configuration_deepseek_v2 import DeepseekV2Config
-from transformers.models.deepseek_v2.modeling_deepseek_v2 import eager_attention_forward
-
+from transformers.models.deepseek_v2.modeling_deepseek_v2 import (
+    eager_attention_forward,
+    DeepseekV2RotaryEmbedding as OrigDeepseekV2RotaryEmbedding,
+    DeepseekV2Attention as OrigDeepseekV2Attention,
+)
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 
 
@@ -47,20 +50,10 @@ def apply_rotary_emb(
     return xq_out, xk_out
 
 
-class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
+class DeepseekV2RotaryEmbedding(ReplacementModuleBase, OrigDeepseekV2RotaryEmbedding):
     def __init__(self, original, config):
-        super().__init__()
-        self.rope_type = original.rope_type
-
-        self.max_seq_len_cached = original.max_seq_len_cached
-        self.original_max_seq_len = original.original_max_seq_len
-
-        self.config = original.config
-        self.rope_init_fn = original.rope_init_fn
-
-        self.attention_scaling = original.attention_scaling
-        self.register_buffer("inv_freq", original.original_inv_freq, persistent=False)
-        self.original_inv_freq = original.original_inv_freq
+        ReplacementModuleBase.__init__()
+        OrigDeepseekV2RotaryEmbedding.__init__(config)
 
     @torch.no_grad()
     @dynamic_rope_update
@@ -91,41 +84,10 @@ class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
         return cls(original, config)
 
 
-class DeepseekV2Attention(ReplacementModuleBase):
+class DeepseekV2Attention(ReplacementModuleBase, OrigDeepseekV2Attention):
     def __init__(self, original, config):
-        super().__init__()
-        self.config = original.config
-        self.layer_idx = original.layer_idx
-        self.attention_dropout = original.attention_dropout
-        self.hidden_size = original.hidden_size
-        self.num_heads = original.num_heads
-        self.head_dim = original.head_dim
-        self.max_position_embeddings = original.max_position_embeddings
-        self.rope_theta = original.rope_theta
-        self.q_lora_rank = original.q_lora_rank
-        self.qk_rope_head_dim = original.qk_rope_head_dim
-        self.kv_lora_rank = original.kv_lora_rank
-        self.v_head_dim = original.v_head_dim
-        self.qk_nope_head_dim = original.qk_nope_head_dim
-        self.qk_head_dim = original.qk_head_dim
-        self.num_key_value_groups = original.num_key_value_groups
-
-        self.is_causal = original.is_causal
-
-        if self.q_lora_rank is None:
-            self.q_proj = original.q_proj
-        else:
-            self.q_a_proj = original.q_a_proj
-            self.q_a_layernorm = original.q_a_layernorm
-            self.q_b_proj = original.q_b_proj
-
-        self.kv_a_proj_with_mqa = original.kv_a_proj_with_mqa
-        self.kv_a_layernorm = original.kv_a_layernorm
-        self.kv_b_proj = original.kv_b_proj
-
-        self.o_proj = original.o_proj
-
-        self.scaling = original.scaling
+        ReplacementModuleBase.__init__()
+        OrigDeepseekV2Attention.__init__(config, original.layer_idx)
 
         cur_mod = [name for name, _ in self.named_modules()]
         for name, mod in original.named_modules():
