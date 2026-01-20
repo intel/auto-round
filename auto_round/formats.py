@@ -591,48 +591,6 @@ class AutoAWQFormat(OutputFormat):
         )
 
 
-@OutputFormat.register("itrex")
-@OutputFormat.register("itrex_xpu")
-class ITREXFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
-    format_name = "itrex"
-
-    def pack_layer(self, *args, **kwargs):
-        pass
-
-    def save_quantized(
-        self,
-        output_dir: str,
-        model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
-        inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
-        **kwargs,
-    ) -> torch.nn.Module:
-        backend = self.get_backend_name()
-        if backend == "itrex":
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex
-
-            export_func = save_quantized_as_itrex
-        else:
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex_xpu
-
-            export_func = save_quantized_as_itrex_xpu
-        return export_func(
-            output_dir=output_dir,
-            model=model,
-            tokenizer=tokenizer,
-            layer_config=layer_config,
-            inplace=inplace,
-            device=device,
-            backend=backend,
-            serialization_dict=serialization_dict,
-            **kwargs,
-        )
-
-
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
     support_schemes = [
