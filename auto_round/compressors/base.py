@@ -256,6 +256,7 @@ class BaseCompressor(object):
         model_dtype = kwargs.pop("model_dtype", None)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
+        self.enable_adam = kwargs.pop("enable_adam") if "enable_adam" in kwargs else False
         self.quantized = False
         if isinstance(model, str):
             model, tokenizer = llm_load_model(
@@ -413,7 +414,6 @@ class BaseCompressor(object):
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
-        self.optimizer = self._get_optimizer(None)
         self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
@@ -915,19 +915,6 @@ class BaseCompressor(object):
             processor=self.processor if hasattr(self, "processor") else None,
             image_processor=self.image_processor if hasattr(self, "image_processor") else None,
         )
-
-    def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
-        keys = inputs.keys()
-        input_id_str = [key for key in keys if key.startswith("hidden_state")]
-        if len(input_id_str) != 1:
-            raise RuntimeError(
-                "hidden_states arg mismatch error,"
-                "please raise an issue in https://github.com/intel/auto-round/issues"
-            )
-        inputs["input_ids"] = inputs.pop(input_id_str[0], None)
-        if q_inputs is not None:
-            q_inputs = q_inputs.pop(input_id_str[0], None)
-        return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
         fill_default_value = True
@@ -1600,7 +1587,7 @@ class BaseCompressor(object):
             amp=self.amp,
             amp_dtype=self.amp_dtype,
             cache_device=self.cache_device,
-            diffusion=self.diffusion,
+            is_diffusion=self.diffusion,
         )
         ar_quantizer = ARQuantizer(self)
         return ar_quantizer.quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
@@ -1717,55 +1704,6 @@ class BaseCompressor(object):
         else:
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
-
-    def _get_optimizer(self, optimizer: Any):
-        """Returns the specified optimizer. In SignRound, we fix the optimizer.
-
-        Args:
-        optimizer: The optimizer to be used.
-
-        Returns:
-        The specified optimizer.
-        """
-        return SignSGD
-
-    def _get_scaler(self):
-        """Returns scaler, in SignRound, no need to use scaler."""
-        return None
-
-    def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
-        """Scales the loss and performs backward pass.
-
-        Args:
-        scaler: The scaler to be used.
-        loss: The loss to be scaled.
-
-        Returns:
-        The scaled loss.
-        """
-        scale_loss = loss * 1000
-        scale_loss.backward()
-        if is_hpex_available():
-            htcore.mark_step()
-        return scale_loss
-
-    def _step(self, scaler: Any, optimizer: Any, lr_schedule: Any):
-        """Performs a step in the optimization process.
-
-        Args:
-        scaler: The scaler to be used.
-        optimizer: The optimizer for the step.
-        lr_schedule: The learning rate schedule.
-
-        Returns:
-        None
-        """
-        optimizer.step()
-        # for hpu
-        if is_hpex_available():
-            htcore.mark_step()
-        optimizer.zero_grad()
-        lr_schedule.step()
 
     @classmethod
     @torch.no_grad()

@@ -38,16 +38,21 @@ from auto_round.quantizers.utils import (
     preprocess_block_inputs,
     quantize_embedding_layer,
     register_act_max_hook,
+    update_inputs,
 )
+from auto_round.sign_sgd import SignSGD
 from auto_round.utils import (
+    check_is_cpu,
     check_to_quantized,
     clear_memory,
     convert_fp8_layer_to_linear,
     get_block_names,
     get_module,
+    htcore,
     is_auto_device_mapping,
     is_fp8_linear,
     is_fp8_model,
+    is_hpex_available,
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
@@ -68,43 +73,42 @@ class ARQuantizer(AlgsBaseQuantizer):
 
     def __init__(self, compressor: "BaseCompressor"):
         super().__init__(compressor)
+        self.all_blocks = []
+        self.layer_names = []
+        self.all_q_inputs = None
+        self.optimizer = self._get_optimizer(None)
+        self.is_adam = False
 
-    def pre_quantize(self, *args, **kwargs):
-        return super().pre_quantize(*args, **kwargs)
-
-    def quantize(self, *args, **kwargs):
+    def _pre_quantize_impl(self, *args, **kwargs):
         if bool(self.compressor.quant_block_list):
-            all_blocks = self.compressor.quant_block_list
+            self.all_blocks = self.compressor.quant_block_list
         else:
-            all_blocks = get_block_names(self.compressor.model)
-
-        if len(all_blocks) == 0:
+            self.all_blocks = get_block_names(self.compressor.model)
+        if len(self.all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
             return self.compressor.model, self.compressor.layer_config
 
         if self.compressor.amp and self.compressor.model.dtype != self.compressor.amp_dtype:
             self.compressor.model = self.compressor.model.to(self.compressor.amp_dtype)
 
-        layer_names = get_quantized_layer_names_outside_blocks(
+        self.layer_names = get_quantized_layer_names_outside_blocks(
             model=self.compressor.model,
             layer_config=self.compressor.layer_config,
             supported_types=self.compressor.supported_types,
             quant_block_list=self.compressor.quant_block_list,
         )
-        start_time = time.time()
-        all_first_block_names = [block[0] for block in all_blocks]
-        if len(layer_names) > 0:
+        self.all_first_block_names = [block[0] for block in self.all_blocks]
+        if len(self.layer_names) > 0:
             logger.info(
-                "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
+                "Starting to cache block inputs. This may be slow due to external block layers: %s", self.layer_names
             )
         else:
             logger.info("start to cache block inputs")
 
         # TODO: refactor this
-        all_inputs = self.compressor.try_cache_inter_data_gpucpu(
-            all_first_block_names, self.compressor.nsamples, layer_names=layer_names
+        self.all_inputs = self.compressor.try_cache_inter_data_gpucpu(
+            self.all_first_block_names, self.compressor.nsamples, layer_names=self.layer_names
         )
-
         is_quantized_embedding = quantize_embedding_layer(
             model=self.compressor.model,
             layer_config=self.compressor.layer_config,
@@ -114,13 +118,12 @@ class ARQuantizer(AlgsBaseQuantizer):
             device_list=self.compressor.device_list,
         )
         clear_memory(device_list=self.compressor.device_list)
-        all_q_inputs = None
         if is_quantized_embedding:
-            all_inputs = copy.deepcopy(self.compressor.inputs)
+            self.all_inputs = copy.deepcopy(self.compressor.inputs)
             clear_memory(self.compressor.inputs, device_list=self.compressor.device_list)
             # TODO: refactor this
-            all_q_inputs = self.compressor.try_cache_inter_data_gpucpu(
-                all_first_block_names, self.compressor.nsamples, layer_names=layer_names
+            self.all_q_inputs = self.compressor.try_cache_inter_data_gpucpu(
+                self.all_first_block_names, self.compressor.nsamples, layer_names=self.layer_names
             )
         self.compressor.model = mv_module_from_gpu(self.compressor.model)
         clear_memory(device_list=self.compressor.device_list)
@@ -130,21 +133,24 @@ class ARQuantizer(AlgsBaseQuantizer):
                 self.compressor.model
             )  # self.compressor.model.hf_device_map has not been changed
         logger.info("caching done")
-        if len(all_blocks) > 1:
-            pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.compressor.nblocks))
+
+    def _quantize_impl(self, *args, **kwargs):
+        start_time = time.time()
+
+        if len(self.all_blocks) > 1:
+            pbar = tqdm(range(0, sum([len(i) for i in self.all_blocks]), self.compressor.nblocks))
         else:
-            pbar = tqdm(range(0, len(all_blocks[0]), self.compressor.nblocks))  # move the alg warning outside pbar
+            pbar = tqdm(range(0, len(self.all_blocks[0]), self.compressor.nblocks))  # move the alg warning outside pbar
 
-        for block_names in all_blocks:
-            inputs = all_inputs[block_names[0]]
-            all_inputs.pop(block_names[0])
+        for block_names in self.all_blocks:
+            inputs = self.all_inputs[block_names[0]]
+            self.all_inputs.pop(block_names[0])
             q_inputs = None
-            if all_q_inputs is not None:
-                q_inputs = all_q_inputs[block_names[0]]
-                all_q_inputs.pop(block_names[0])
+            if self.all_q_inputs is not None:
+                q_inputs = self.all_q_inputs[block_names[0]]
+                self.all_q_inputs.pop(block_names[0])
 
-            # TODO: refactor this
-            inputs, q_inputs = self.compressor._update_inputs(inputs, q_inputs)
+            inputs, q_inputs = update_inputs(inputs, q_inputs, self.compressor.diffusion)
 
             clear_memory(self.compressor.inputs, device_list=self.compressor.device_list)
 
@@ -170,8 +176,15 @@ class ARQuantizer(AlgsBaseQuantizer):
                 )
         pbar.set_description("Quantizing done")
         pbar.close()
-        self._quantize_layers(layer_names, all_inputs)
+        self._quantize_layers(self.layer_names, self.all_inputs)
 
+        end_time = time.time()
+        cost_time = end_time - start_time
+        logger.info(f"quantization tuning time {cost_time}")
+
+        return self.compressor.model, self.compressor.layer_config
+
+    def _post_quantize_impl(self, *args, **kwargs):
         if is_fp8_model(self.compressor.model):
             for n, m in self.compressor.model.named_modules():
                 if is_fp8_linear(m):
@@ -179,10 +192,6 @@ class ARQuantizer(AlgsBaseQuantizer):
                         "cpu"
                     )
                     set_module(self.compressor.model, n, new_layer)
-
-        end_time = time.time()
-        cost_time = end_time - start_time
-        logger.info(f"quantization tuning time {cost_time}")
 
         # Dump a summary
         quantized_layers = []
@@ -203,7 +212,6 @@ class ARQuantizer(AlgsBaseQuantizer):
         logger.info(summary_info)
 
         self.compressor.quantized = True
-        return self.compressor.model, self.compressor.layer_config
 
     def _quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
@@ -342,7 +350,7 @@ class ARQuantizer(AlgsBaseQuantizer):
             amp=self.compressor.amp,
             amp_dtype=self.compressor.amp_dtype,
             cache_device=self.compressor.cache_device,
-            diffusion=self.compressor.diffusion,
+            is_diffusion=self.compressor.diffusion,
         )
 
         if pbar is None:
@@ -363,23 +371,8 @@ class ARQuantizer(AlgsBaseQuantizer):
 
             m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = self.quantize_block(
-                m,
-                input_ids,
-                input_others,
-                q_input=q_input,
-                device=device,
+                m, input_ids, input_others, q_input=q_input, device=device, last_group=(i + nblocks) >= len(block_names)
             )
-            if hasattr(model, "config"):
-                del m.config
-            if self.compressor.immediate_packing:
-                for _, tmp_m in m.named_modules():
-                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
-                        continue
-                    self.compressor._immediate_pack(tmp_m.tmp_name)
-
-            if self.compressor.immediate_saving:
-                last_group = (i + nblocks) >= len(block_names)
-                immediate_saving(self.compressor, m, last_group=last_group)
         if pbar is not None:
             pbar.update(1)
 
@@ -396,7 +389,9 @@ class ARQuantizer(AlgsBaseQuantizer):
 
         clear_memory(device_list=self.compressor.device_list)
 
-    def quantize_layer(self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"):
+    def _quantize_layer_impl(
+        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
+    ):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
@@ -462,12 +457,11 @@ class ARQuantizer(AlgsBaseQuantizer):
         lr = torch.tensor(self.compressor.lr)
         minmax_lr = torch.tensor(self.compressor.minmax_lr)
         if self.compressor.enable_minmax_tuning:
-            optimizer = self.compressor.optimizer(
+            optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
             )
         else:
-            optimizer = self.compressor.optimizer(round_params, lr=lr, weight_decay=0)
-
+            optimizer = self.optimizer([{"params": round_params}], lr=lr, weight_decay=0)
         if self.compressor.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
                 optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.compressor.iters
@@ -477,7 +471,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         nsamples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
-        scaler = self.compressor._get_scaler()  # pylint: disable=assignment-from-none
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         gradient_accumulate_steps = self.compressor.batch_size  # Force to low gpu
         total_loss = 0
@@ -546,7 +540,7 @@ class ARQuantizer(AlgsBaseQuantizer):
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
-                self.compressor.scale_loss_and_backward(scaler, loss)
+                self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
 
@@ -561,7 +555,7 @@ class ARQuantizer(AlgsBaseQuantizer):
             if not self.compressor.not_use_best_mse:
                 if 0 < self.compressor.dynamic_max_gap <= i - last_best_iter:
                     break
-            self.compressor._step(scaler, optimizer, lr_schedule)
+            self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
         best_iter = self.compressor.iters
@@ -574,7 +568,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def quantize_block(
+    def _quantize_block_impl(
         self,
         block: torch.nn.Module,
         input_ids: Union[list[torch.Tensor], dict],
@@ -582,6 +576,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload=True,
+        **kwargs,
     ):
         """Quantize the weights of a given block of the model.
 
@@ -713,9 +708,8 @@ class ARQuantizer(AlgsBaseQuantizer):
 
         lr = torch.tensor(self.compressor.lr)
         minmax_lr = torch.tensor(self.compressor.minmax_lr)
-        is_adam = "adam" in self.compressor.__class__.__name__.lower()
 
-        extra_kwargs = {} if is_adam else {"momentum": self.compressor.momentum}
+        extra_kwargs = {} if self.is_adam else {"momentum": self.compressor.momentum}
 
         if self.compressor.enable_minmax_tuning:
             params = [
@@ -725,7 +719,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         else:
             params = round_params
 
-        optimizer = self.compressor.optimizer(
+        optimizer = self.optimizer(
             params,
             lr=lr,
             weight_decay=0,
@@ -760,7 +754,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         if self.compressor.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        scaler = self.compressor._get_scaler()  # pylint: disable=assignment-from-none
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
         total_loss = 0
@@ -801,7 +795,7 @@ class ARQuantizer(AlgsBaseQuantizer):
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.5, device_list=self.compressor.device_list)
 
-                self.compressor._scale_loss_and_backward(scaler, loss)
+                self._scale_loss_and_backward(scaler, loss)
                 if self.compressor.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.8, device_list=self.compressor.device_list)
@@ -822,7 +816,7 @@ class ARQuantizer(AlgsBaseQuantizer):
             if not self.compressor.not_use_best_mse:
                 if 0 < self.compressor.dynamic_max_gap <= i - last_best_iter:
                     break
-            self.compressor._step(scaler, optimizer, lr_schedule)
+            self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
         best_iter = self.compressor.iters
@@ -883,6 +877,26 @@ class ARQuantizer(AlgsBaseQuantizer):
 
             return None, output
 
+    def _post_quantize_block_impl(self, block: torch.nn.Module, *args, last_group: bool, **kwargs):
+        """Post-process after quantizing a block.
+
+        Args:
+        block: The block of the model that was quantized.
+
+        Returns:
+        None
+        """
+        if hasattr(block, "config"):
+            del block.config
+        if self.compressor.immediate_packing:
+            for _, tmp_m in block.named_modules():
+                if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
+                    continue
+                self.compressor._immediate_pack(tmp_m.tmp_name)
+
+        if self.compressor.immediate_saving:
+            immediate_saving(self.compressor, block, last_group=last_group)
+
     @staticmethod
     def _get_current_output(
         output: list[torch.Tensor], indices: list[int], batch_dim: int, diffusion: bool = False
@@ -896,3 +910,100 @@ class ARQuantizer(AlgsBaseQuantizer):
         current_output = [output[x] for x in indices]
         current_output = torch.cat(current_output, dim=batch_dim)
         return current_output
+
+    def _step(self, scaler: Any, optimizer: Any, lr_schedule: Any):
+        """Performs a step in the optimization process.
+
+        Args:
+        scaler: The scaler to be used.
+        optimizer: The optimizer for the step.
+        lr_schedule: The learning rate schedule.
+
+        Returns:
+        None
+        """
+        optimizer.step()
+        # for hpu
+        if is_hpex_available():
+            htcore.mark_step()
+        optimizer.zero_grad()
+        lr_schedule.step()
+
+    def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
+        """Scales the loss and performs backward pass.
+
+        Args:
+        scaler: The scaler to be used.
+        loss: The loss to be scaled.
+
+        Returns:
+        The scaled loss.
+        """
+        scale_loss = loss * 1000
+        scale_loss.backward()
+        if is_hpex_available():
+            htcore.mark_step()
+        return scale_loss
+
+    def _get_scaler(self):
+        """Returns scaler, in SignRound, no need to use scaler."""
+        return None
+
+    def _get_optimizer(self, optimizer: Any):
+        """Returns the specified optimizer. In SignRound, we fix the optimizer.
+
+        Args:
+        optimizer: The optimizer to be used.
+
+        Returns:
+        The specified optimizer.
+        """
+        return SignSGD
+
+
+class ARAdamQuantizer(ARQuantizer):
+    """AutoRound Quantizer with Adam optimizer."""
+
+    def __init__(self, compressor: "BaseCompressor"):
+        super().__init__(compressor)
+        self.optimizer = self._get_optimizer("AdamW")
+        self.is_adam = True
+
+    def _step(self, scaler, optimizer, lr_schedule):
+        if scaler is not None:
+            scaler.step(optimizer)
+            optimizer.zero_grad()
+            lr_schedule.step()
+            scaler.update()
+        else:
+            optimizer.step()
+            optimizer.zero_grad()
+            lr_schedule.step()
+        if is_hpex_available():
+            htcore.mark_step()
+
+    def _scale_loss_and_backward(self, scaler, loss):
+        if scaler is not None:
+            loss = scaler.scale(loss)
+
+        loss.backward()
+        if is_hpex_available():
+            htcore.mark_step()
+        return loss
+
+    def _get_scaler(self):
+        scaler = None
+        if self.compressor.amp and not check_is_cpu(self.compressor.device):
+            from torch.cuda.amp import GradScaler
+
+            scaler = GradScaler(init_scale=1024, growth_interval=100000)
+        return scaler
+
+    def _get_optimizer(self, optimizer):
+        if optimizer is None:
+            optimizer = torch.optim.AdamW
+        elif isinstance(optimizer, str):
+            optimizer = getattr(torch.optim, optimizer)
+        else:
+            optimizer = optimizer
+        return optimizer

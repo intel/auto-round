@@ -16,14 +16,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
 
-from auto_round.quantizers.algs.auto_round import ARQuantizer
+from auto_round.quantizers.algs.auto_round import ARAdamQuantizer, ARQuantizer
 from auto_round.quantizers.algs.rtn import OptRTNQuantizer, RTNQuantizer
 
 
 class AutoRoundQuantizer:
     def __new__(cls, compressor: "BaseCompressor", dynamic_quantizers: dict = None):
         assert dynamic_quantizers is not None, "Please provide dynamic_quantizers dict."
-        quantizer_cls = type("AutoRoundQuantizer", tuple(dynamic_quantizers.values()), {})
+        quantizer_cls = type("AutoRoundQuantizer", (dynamic_quantizers["data_type"], dynamic_quantizers["algs"]), {})
         return quantizer_cls(compressor)
 
 
@@ -33,9 +33,7 @@ class Quantizers:
 
     def quantize(self, *args, **kwargs):
         for quantizer in self.quantizers:
-            quantizer.pre_quantize(*args, **kwargs)
             model, layer_config = quantizer.quantize(*args, **kwargs)
-            quantizer.post_quantize(*args, **kwargs)
         return model, layer_config
 
 
@@ -43,7 +41,7 @@ def create_quantizers(compressor: "BaseCompressor"):
 
     alg_cls = None
     if compressor.iters > 0:
-        alg_cls = ARQuantizer
+        alg_cls = ARQuantizer if compressor.enable_adam is False else ARAdamQuantizer
     else:
         alg_cls = OptRTNQuantizer if compressor.disable_opt_rtn is False else RTNQuantizer
 

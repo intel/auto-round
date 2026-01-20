@@ -957,13 +957,19 @@ def immediate_saving(rounder: object, m: torch.nn.Module, name: str = None, last
     import json
     from collections import OrderedDict
 
+    from auto_round.quantizers.utils import get_quantized_layer_names_outside_blocks
     from auto_round.utils import clear_memory, get_module
 
     # User configurable (can be preset on rounder)
     max_shard_size = getattr(rounder, "max_shard_size", "5GB")
     safe_serialization = getattr(rounder, "safe_serialization", True)
     if not hasattr(rounder, "quantized_layer_names_outside_blocks"):
-        rounder.quantized_layer_names_outside_blocks = rounder._get_quantized_layer_names_outside_blocks()
+        rounder.quantized_layer_names_outside_blocks = get_quantized_layer_names_outside_blocks(
+            rounder.model,
+            rounder.layer_config,
+            rounder.supported_types,
+            rounder.quant_block_list,
+        )
     layer_names = rounder.quantized_layer_names_outside_blocks
     if len(layer_names) > 0 and name != layer_names[-1]:
         last_group = False

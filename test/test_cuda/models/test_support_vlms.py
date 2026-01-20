@@ -30,7 +30,7 @@ class TestSupportVLMS:
         model_path = "/models/Qwen2-VL-2B-Instruct/"
         # test tune
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}"
         )
         assert not (res > 0 or res == -1), "qwen2 tuning fail"
@@ -85,7 +85,7 @@ class TestSupportVLMS:
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}"
         )
         assert not (res > 0 or res == -1), "Phi-3.5 tuning fail"
@@ -133,7 +133,7 @@ class TestSupportVLMS:
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --quant_nontext_module "
             f"--nsample 64 --seqlen 32 "
             f"--format auto_awq --output_dir {self.save_dir} --device {self.device}"
@@ -181,7 +181,7 @@ class TestSupportVLMS:
         model_path = "/models/glm-4v-9b/"
         ## test tune
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {self.python_path} -m auto_round "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round "
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
         assert not (res > 0 or res == -1), "glm-4v-9b tuning fail"
@@ -190,7 +190,7 @@ class TestSupportVLMS:
         model_path = "/models/granite-vision-3.2-2b"
         ## test tune
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {self.python_path} -m auto_round "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round "
             f"--model {model_path} --iter 1 --output_dir {self.save_dir} --device {self.device}"
         )
         assert not (res > 0 or res == -1), "granite-vision-3.2-2b tuning fail"

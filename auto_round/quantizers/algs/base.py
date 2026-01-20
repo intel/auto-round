@@ -21,7 +21,31 @@ if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
 
 
-class AlgsBaseQuantizer(BaseQuantizer):
+class AlgsBaseQuantizer(BaseQuantizer, ABC):
+    def _pre_quantize_impl(self, *args, **kwargs):
+        pass
+
     @abstractmethod
-    def quantize(self, *args, **kwargs):
+    def _quantize_impl(self, *args, **kwargs):
+        pass
+
+    def _post_quantize_impl(self, *args, **kwargs):
+        pass
+
+    def _pre_quantize_layer_impl(self, *args, **kwargs):
+        pass
+
+    def _quantize_layer_impl(self, *args, **kwargs):
+        pass
+
+    def _post_quantize_layer_impl(self, *args, **kwargs):
+        pass
+
+    def _pre_quantize_block_impl(self, *args, **kwargs):
+        pass
+
+    def _quantize_block_impl(self, *args, **kwargs):
+        pass
+
+    def _post_quantize_block_impl(self, *args, **kwargs):
         pass

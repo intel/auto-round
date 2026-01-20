@@ -72,7 +72,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
             n for n, m in self.compressor.model.named_modules() if check_to_quantized(m)
         ]
 
-    def pre_quantize(self, *args, **kwargs):
+    def _pre_quantize_impl(self, *args, **kwargs):
         if self.compressor.amp and self.compressor.model.dtype != self.compressor.amp_dtype:
             self.compressor.model.to(self.compressor.amp_dtype)
 
@@ -96,7 +96,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
             logger.info("Finished updating fused layer global scales.")
 
     @torch.inference_mode()
-    def quantize(self, *args, **kwargs) -> tuple[torch.nn.Module, dict[str, Any]]:
+    def _quantize_impl(self, *args, **kwargs) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
         If the target format includes GGUF with `k`, and optimized RTN is enabled,
@@ -171,9 +171,6 @@ class RTNQuantizer(AlgsBaseQuantizer):
             convert_fp8_model_to_16b_model(self.compressor.model, self.compressor.amp_dtype, self.compressor.device)
         self.compressor.quantized = True
         return self.compressor.model, self.compressor.layer_config
-
-    def post_quantize(self, *args, **kwargs):
-        pass
 
     def _quantize_via_rtn_blockwise(self) -> None:
         """Quantize model layers block by block using cached inputs."""
@@ -416,7 +413,7 @@ class OptRTNQuantizer(RTNQuantizer):
         return hook_handles
 
     @torch.inference_mode()
-    def quantize(self, *args, **kwargs) -> tuple[torch.nn.Module, dict[str, Any]]:
+    def _quantize_impl(self, *args, **kwargs) -> tuple[torch.nn.Module, dict[str, Any]]:
         enable_imatrix = False
         has_gguf_k = (
             any(fmt.is_gguf() and "k" in fmt.output_format for fmt in getattr(self.compressor, "formats", []))
@@ -434,7 +431,7 @@ class OptRTNQuantizer(RTNQuantizer):
             self.compressor.quantized = True
             return self.compressor.model, self.compressor.layer_config
         else:
-            return super().quantize(*args, **kwargs)
+            return super()._quantize_impl(*args, **kwargs)
 
     def _quant_rtn_with_imatrix(self, *args, **kwargs) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using Optimized RTN strategy.

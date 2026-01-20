@@ -220,8 +220,8 @@ def get_non_zero_cnt(tensor: list[torch.Tensor], indices: list[int]) -> int:
     return non_zero_cnt
 
 
-def split_inputs(inputs: dict, first_input_name: str, diffusion: bool = False) -> tuple[torch.Tensor, dict]:
-    if diffusion:
+def split_inputs(inputs: dict, first_input_name: str, is_diffusion: bool = False) -> tuple[torch.Tensor, dict]:
+    if is_diffusion:
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
@@ -240,9 +240,9 @@ def preprocess_block_inputs(
     amp: bool = False,
     amp_dtype: torch.dtype = torch.float32,
     cache_device: Union[str, torch.device] = "cpu",
-    diffusion: bool = False,
+    is_diffusion: bool = False,
 ):
-    input_ids, input_others = split_inputs(inputs, first_input_name, diffusion=diffusion)
+    input_ids, input_others = split_inputs(inputs, first_input_name, is_diffusion=is_diffusion)
     clear_memory(device_list=device_list)
     input_ids = to_device(input_ids, cache_device)
     input_others = to_device(input_others, cache_device)
@@ -260,3 +260,23 @@ def preprocess_block_inputs(
             for i in range(len(input_others[key])):
                 to_dtype(input_others[key][i], tmp_dtype)
     return input_ids, input_others
+
+
+def update_inputs(inputs: dict, q_inputs: dict, is_diffusion: bool) -> tuple[dict, dict]:
+    if is_diffusion:
+        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        if q_inputs is not None:
+            q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
+        return inputs, q_inputs
+    else:
+        keys = inputs.keys()
+        input_id_str = [key for key in keys if key.startswith("hidden_state")]
+        if len(input_id_str) != 1:
+            raise RuntimeError(
+                "hidden_states arg mismatch error,"
+                "please raise an issue in https://github.com/intel/auto-round/issues"
+            )
+        inputs["input_ids"] = inputs.pop(input_id_str[0], None)
+        if q_inputs is not None:
+            q_inputs = q_inputs.pop(input_id_str[0], None)
+        return inputs, q_inputs
