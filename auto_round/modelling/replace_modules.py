@@ -41,30 +41,30 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             imported.add(class_name)
             logger.debug(f"Loaded replacement module for {class_name}")
 
-def materialize_block_(block: torch.nn.Module) -> None:
+def materialize_model_(model: torch.nn.Module) -> None:
     def _materialize_module(module: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
             module.materialize_weights()
-    block.apply(_materialize_module)
+    model.apply(_materialize_module)
     # check if any module on meta device remains
     found_meta = False
-    for name, param in block.named_parameters():
+    for name, param in model.named_parameters():
         if param.device.type == "meta":
             logger.warning(f"Parameter {name} is still on meta device after materialization.")
             found_meta = True
-    for name, buffer in block.named_buffers():
+    for name, buffer in model.named_buffers():
         if buffer.device.type == "meta":
             logger.warning(f"Buffer {name} is still on meta device after materialization.")
             found_meta = True
     if not found_meta:
         logger.debug("All parameters and buffers have been materialized from meta device.")
-    release_original_module_(block)
+    release_original_module_(model)
 
-def release_original_module_(block: torch.nn.Module) -> None:
+def release_original_module_(model: torch.nn.Module) -> None:
     def _clear_source_module(module: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
             module.release_original_module()
-    block.apply(_clear_source_module)
+    model.apply(_clear_source_module)
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
     """
@@ -153,16 +153,22 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         pass
     
     def materialize_weights(self):
-        """Materialize weights if needed. Default is no-op."""
+        """Materialize weights if needed."""
         if not self._materialized:
             self._materialize_weights()
             self.post_process_materialization()
     
     def _materialize_weights(self) -> None:
+        """Materialize weights from the original module.
+
+        Subclasses should override this method to implement
+        weight materialization logic.
+        """
         pass
 
     def release_original_module(self) -> None:
-        pass
+        """Release reference to the original module to free memory."""
+        self._source_original = None  # release reference to original module
     
     def post_process_materialization(self) -> None:
         """Mark the replacement module as materialized."""

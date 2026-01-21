@@ -65,7 +65,7 @@ from auto_round.schemes import (
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import update_module
-from auto_round.modelling.replace_modules import materialize_block_
+from auto_round.modelling.replace_modules import materialize_model_
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -1209,7 +1209,7 @@ class BaseCompressor(object):
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         self.all_to_quantized_module_names = all_to_quantized_module_names
         if is_nv_fp(self.data_type):
-            materialize_block_(self.model)
+            materialize_model_(self.model)
             self.model.to("cpu")
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -1247,7 +1247,7 @@ class BaseCompressor(object):
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
         if enable_imatrix:
-            materialize_block_(self.model)
+            materialize_model_(self.model)
             self.model.to("cpu")
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
@@ -1275,7 +1275,7 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            materialize_block_(self.model)
+            materialize_model_(self.model)
             self.model.to("cpu")
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
@@ -1359,7 +1359,7 @@ class BaseCompressor(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
-                materialize_block_(block)
+                materialize_model_(block)
                 block.to("cpu")
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
@@ -2600,7 +2600,7 @@ class BaseCompressor(object):
         """
         memory_monitor.update()
         memory_monitor.log_summary("Before quantizing block")
-        materialize_block_(block)
+        materialize_model_(block)
         memory_monitor.update()
         memory_monitor.log_summary("After materializing block")
         if is_fp8_model(self.model):
