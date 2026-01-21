@@ -116,8 +116,7 @@ class QuantLinear(nn.Module):
             raise NotImplementedError(
                 f"Device type {self.qweight.device.type} is not supported. Only CPU and XPU devices are supported."
             )
-        if self.qweight.device.type != "cpu" and self.asym:
-            raise NotImplementedError("Asymmetric quantization is only supported on CPU devices")
+
         if "awq" in self.QUANT_TYPE:
             intweight, zeros = unpack_awq(
                 self.qweight, self.qzeros, self.bits

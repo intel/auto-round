@@ -29,8 +29,6 @@ class TestAutoRoundARKBackend:
             limit = 1000
             if not torch.xpu.is_available():
                 pytest.skip("No XPU device")
-            if sym is False:
-                pytest.skip("No asym support for XPU")
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if fast_cfg:
@@ -56,9 +54,9 @@ class TestAutoRoundARKBackend:
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @pytest.mark.parametrize("format", ["auto_round", "auto_round:gptqmodel"])
-    @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])
+    @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, False), (8, 128, True)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
-    @pytest.mark.parametrize("device", ["cpu", "xpu"])
+    @pytest.mark.parametrize("device", ["xpu", "cpu"])
     def test_formats(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
 
