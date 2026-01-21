@@ -57,6 +57,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
+from auto_round.modelling.replace_modules import materialize_model_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -65,7 +66,6 @@ from auto_round.schemes import (
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import update_module
-from auto_round.modelling.replace_modules import materialize_model_
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -1205,10 +1205,11 @@ class BaseCompressor(object):
         """
         if self.amp and self.model.dtype != self.amp_dtype:
             self.model.to(self.amp_dtype)
-        
+
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         self.all_to_quantized_module_names = all_to_quantized_module_names
         if is_nv_fp(self.data_type):
+            # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
             from auto_round.data_type.nvfp import calculate_gparam
@@ -1232,7 +1233,6 @@ class BaseCompressor(object):
         if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
 
-        
         # Release memory
         clear_memory(device_list=self.device_list)
 
@@ -1247,6 +1247,7 @@ class BaseCompressor(object):
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
         if enable_imatrix:
+            # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
@@ -1275,6 +1276,7 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
+            # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
