@@ -43,7 +43,6 @@ USER hostuser
 ENV PATH="/home/hostuser/.venv/bin:$PATH"
 ENV VIRTUAL_ENV="/home/hostuser/.venv"
 ENV UV_NO_PROGRESS=1 \
-    UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
 RUN uv venv --python=3.12 /home/hostuser/.venv
