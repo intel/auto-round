@@ -99,7 +99,6 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
             clear_memory()
 
         torch.nn.Module.to_empty(original.experts, device="meta")
-        self._source_original = None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape
