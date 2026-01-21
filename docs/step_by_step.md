@@ -702,7 +702,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
 |--------------------------------------|----------|---------|-----------|----------|-----------------|-------------------------------|
 | ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
-| itrex                                | cpu      | 2,4,8   | BF16/FP16 | 1        | gptq_zp+-1/awq  | <br/>intel-extension-for-transformers |
 | marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
 | exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
 | exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
