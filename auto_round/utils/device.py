@@ -1346,6 +1346,7 @@ def is_gaudi2():
     except ImportError:
         return False
 
+
 class MemoryUsageContext:
     """Context manager to record RAM and VRAM at entry and exit and log diffs.
 
@@ -1449,9 +1450,7 @@ class MemoryUsageContext:
         )
         diff_vram_str = ", ".join(vram_diff_items) if len(vram_diff_items) > 0 else ""
 
-        msg = (
-            f"[mem-ctx:{self.label}] start_ram={round(self.start_ram, 2)}GB"
-        )
+        msg = f"[mem-ctx:{self.label}] start_ram={round(self.start_ram, 2)}GB"
         if start_vram_str:
             msg += f", start_vram={{{{ {start_vram_str} }}}}"
         msg += f", end_ram={round(self.end_ram, 2)}GB"
@@ -1466,7 +1465,6 @@ class MemoryUsageContext:
 
 def memory_ctx(label: str = "", device_list=None) -> MemoryUsageContext:
     return MemoryUsageContext(label=label, device_list=device_list)
-
 
 
 class MemoryMonitor:
