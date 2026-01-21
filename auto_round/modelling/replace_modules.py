@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import LazyImport, is_hpex_available, logger
+from auto_round.utils import LazyImport, logger
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
@@ -95,13 +95,12 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     def is_to_be_replaced(
         cls,
         original: torch.nn.Module,
-        module_class_name: str,
     ) -> bool:
         """Determine if the given module should be replaced.
 
         Users can extend this method to add custom logic for replacement.
         """
-        return cls.is_registered(module_class_name)
+        return cls.is_registered(original.__class__.__name__)
 
     @classmethod
     def get_registered_modules(cls) -> list:
@@ -157,7 +156,10 @@ def apply_replacements(
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if ReplacementModuleBase.is_to_be_replaced(module, class_name):
+        if (
+            ReplacementModuleBase.is_registered(class_name)
+            and ReplacementModuleBase.get_replacement_class(class_name).is_to_be_replaced(module)
+        ):
             modules_to_replace.append((name, module, class_name))
 
     # Step 2: Replace modules
