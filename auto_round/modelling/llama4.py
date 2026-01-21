@@ -24,9 +24,12 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
         self.num_experts = original.gate_up_proj.shape[0]
         target_device = next(original.parameters()).device
-        with no_init_weights(), torch.device(target_device):
+        with no_init_weights(), torch.device("meta"):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
+        self._source_original = original
 
+    def _materialize_weights(self) -> None:
+        original = self._source_original
         if not unsupported_meta_device(original):
             intermediate_size = original.down_proj.shape[1]
 
@@ -40,7 +43,11 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 self[i].up_proj.weight.data.copy_(up_proj.t())
                 self[i].down_proj.weight.data.copy_(down.t())
             del gate_up, down, gate_proj, up_proj
-            original.to_empty(device="meta")  # release original experts parameters
+            original.to_empty(device="meta")
+
+    def release_original_module(self) -> None:
+        if hasattr(self, "_source_original"):
+            del self._source_original
 
 
 class SequentialLlama4TextMoe(ReplacementModuleBase):
@@ -50,7 +57,10 @@ class SequentialLlama4TextMoe(ReplacementModuleBase):
         self.top_k = config.num_experts_per_tok
         self.hidden_dim = config.hidden_size
         self.num_experts = config.num_local_experts
-        self.experts = SequentialLlama4TextExperts(config, original.experts)
+        with torch.device("meta"):
+            self.experts = SequentialLlama4TextExperts(config, original.experts)
+        self._source_original = original
+
         self.router = original.router
         self.shared_expert = original.shared_expert
 
@@ -91,3 +101,12 @@ class SequentialLlama4TextMoe(ReplacementModuleBase):
     ) -> "SequentialLlama4TextMoe":
         """Create an instance from the original module."""
         return cls(original, config)
+
+    def _materialize_weights(self) -> None:
+        original = self._source_original
+        self.experts._materialize_weights()
+        clear_memory()
+
+    def release_original_module(self) -> None:
+        self.experts.release_original_module()
+        super().release_original_module()

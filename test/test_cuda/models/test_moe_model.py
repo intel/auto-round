@@ -29,6 +29,7 @@ def setup_gpt_oss():
 def setup_llama4():
     """Fixture to set up the llama4 model and tokenizer."""
     model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct"
+    model_name = "/storage/mengni/Llama-4-Maverick-17B-128E-Instruct/"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
