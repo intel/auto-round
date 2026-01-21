@@ -17,7 +17,6 @@ import transformers
 from packaging import version
 from torch import nn
 from transformers.activations import ACT2FN
-from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, logger, unsupported_meta_device
@@ -60,7 +59,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
         self.gate = original.gate
         self.calibrate_all_experts = calibrate_all_experts
         self._source_original = original
-        with skip_weights_initialize(), torch.device("meta"):
+        with torch.device("meta"):
             self.experts = SequentialQwen3VLMoeTextExperts(text_config, original.experts)
         if not transformers_version < version.parse(
             "5.0"
