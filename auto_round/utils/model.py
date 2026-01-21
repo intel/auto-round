@@ -16,7 +16,7 @@ import json
 import os
 import re
 from collections import UserDict
-from contextlib import contextmanager
+from contextlib import ContextDecorator, contextmanager
 from dataclasses import asdict, fields
 from functools import wraps
 from pathlib import Path
@@ -909,36 +909,46 @@ def pad_block_fp8_weight_naive(
     return weight, orig_M, orig_N
 
 
-@contextmanager
-def _with_thread_limits(div=1):
+class with_thread_limits(ContextDecorator):
     """
-    Context manager to temporarily set OMP_NUM_THREADS and PyTorch threads.
-    Inspired by vLLM's thread limit decorator. https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
+    Context manager and decorator to temporarily set OMP_NUM_THREADS and PyTorch threads.
+    Inspired by vLLM's thread limit decorator.
+    https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
     """
-    # Save original settings
-    old_omp = envs.OMP_NUM_THREADS
-    old_torch = torch.get_num_threads()
 
-    try:
-        if psutil is not None:
-            num_cores = len(psutil.Process().cpu_affinity() or [])
-            if num_cores == 0:
+    def __init__(self, div=1):
+        self.div = div
+        self.old_omp = None
+        self.old_torch = None
+
+    def __enter__(self):
+        # Save original settings
+        self.old_omp = envs.OMP_NUM_THREADS
+        self.old_torch = torch.get_num_threads()
+
+        try:
+            if psutil is not None:
+                num_cores = len(psutil.Process().cpu_affinity() or [])
+                if num_cores == 0:
+                    num_cores = os.cpu_count() or 1
+            else:
                 num_cores = os.cpu_count() or 1
-        else:
-            num_cores = os.cpu_count() or 1
 
-        # Set new limits
-        new_threads = max(1, num_cores // div)
-        os.environ["OMP_NUM_THREADS"] = str(new_threads)
-        torch.set_num_threads(new_threads)
-        yield
-    finally:
+            # Set new limits
+            new_threads = max(1, num_cores // self.div)
+            os.environ["OMP_NUM_THREADS"] = str(new_threads)
+            torch.set_num_threads(new_threads)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         # Restore original settings
-        if old_omp is None:
+        if self.old_omp is None:
             os.environ.pop("OMP_NUM_THREADS", None)
         else:
-            os.environ["OMP_NUM_THREADS"] = old_omp
-        torch.set_num_threads(old_torch)
+            os.environ["OMP_NUM_THREADS"] = self.old_omp
+        torch.set_num_threads(self.old_torch)
 
 
 def _create_e4m3_lut(variant="e4m3fn") -> torch.Tensor:
@@ -1023,52 +1033,26 @@ def _dequant_fp8_to_bf16(weight: torch.Tensor, variant="e4m3fn") -> torch.Tensor
     return dequant
 
 
-def dequant_block_fp8_weight(
+def _dequant_block_fp8_weight(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
 ) -> torch.Tensor:
+    """Core dequantization logic for block-wise FP8 weights."""
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
     assert len(block_size) == 2
 
     variant = "e4m3fn"
-    if data_type is not None and "e4m3fnuz" in data_type.lower():
-        variant = "e4m3fnuz"
-    elif hasattr(weight, "dtype") and hasattr(torch, "float8_e4m3fnuz") and weight.dtype == torch.float8_e4m3fnuz:
-        variant = "e4m3fnuz"
 
-    # Automatic fallback for Gaudi2: dequantize on CPU to avoid HPU NaN issues for values > 240
-    from auto_round.utils.device import is_gaudi2
-
-    force_cpu = is_gaudi2() and weight.device.type == "hpu"
-    # Also fallback if variant is not natively supported on CPU (like e4m3fnuz)
-    need_lut = variant == "e4m3fnuz" and weight.device.type == "cpu"
-
-    if force_cpu or need_lut:
-        from auto_round.utils import logger
-
-        if force_cpu:
-            logger.warning_once(
-                f"Detected float8_{variant} weights on Gaudi2. "
-                "Forcing dequantization on CPU to avoid potential NaN issues."
-            )
-        else:
-            logger.warning_once(f"Detected float8_{variant} weights on CPU. Using lookup table for dequantization.")
-
+    # CPU fallback using LUT
+    if weight.device.type == "cpu":
         orig_shape = weight.shape
-        orig_device = weight.device
-        weight_cpu = weight.to("cpu")
-
-        # Use threading limits for manual dequantization on CPU
-        with _with_thread_limits():
-            weight_cpu = _dequant_fp8_to_bf16(weight_cpu, variant=variant)
-
-        weight = weight_cpu.to(orig_device).view(orig_shape)
+        weight = _dequant_fp8_to_bf16(weight, variant=variant)
+        weight = weight.view(orig_shape)
 
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
     weight_shape_len = len(weight.shape)
-
     block_size_m, block_size_n = block_size
 
     # mul scale
@@ -1092,6 +1076,35 @@ def dequant_block_fp8_weight(
     dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
 
     return dequant_weight
+
+
+@with_thread_limits()
+def _dequant_block_fp8_weight_cpu(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+) -> torch.Tensor:
+    """Thread-limited CPU dequantization path for FP8 weights."""
+    orig_device = weight.device
+    weight_cpu = weight.to("cpu")
+    weight_scale_cpu = weight_scale.to("cpu") if weight_scale is not None else None
+
+    logger.warning_once(
+        "Detected float8 dequantization on Gaudi2. " "Forcing dequantization on CPU to avoid potential NaN issues."
+    )
+
+    res = _dequant_block_fp8_weight(weight_cpu, weight_scale_cpu, block_size, data_type)
+    return res.to(orig_device)
+
+
+def dequant_block_fp8_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+) -> torch.Tensor:
+    """Dequantize block-wise FP8 weight, with automatic CPU redirection for Gaudi2."""
+    from auto_round.utils.device import is_gaudi2
+
+    if is_gaudi2():
+        return _dequant_block_fp8_weight_cpu(weight, weight_scale, block_size, data_type)
+    else:
+        return _dequant_block_fp8_weight(weight, weight_scale, block_size, data_type)
 
 
 def check_to_quantized(config):
