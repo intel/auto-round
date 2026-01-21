@@ -27,7 +27,6 @@ def _update_parameter(
     name: str,
     data: torch.Tensor,
 ) -> None:
-    """Replace a parameter, works even if original is on meta device."""
     old_param = getattr(module, name)
     new_param = nn.Parameter(data, requires_grad=old_param.requires_grad)
     setattr(module, name, new_param)
