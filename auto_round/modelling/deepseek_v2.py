@@ -167,10 +167,7 @@ class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
         cls,
         original: torch.nn.Module,
     ) -> bool:
-        """Determine if the given module should be replaced.
-
-        Users can extend this method to add custom logic for replacement.
-        """
+        """Determine if the given module should be replaced."""
         return (
             cls.is_registered(original.__class__.__name__)
             and is_hpex_available()
@@ -205,10 +202,7 @@ class DeepseekV2Attention(ReplacementModuleBase):
         cls,
         original: torch.nn.Module,
     ) -> bool:
-        """Determine if the given module should be replaced.
-
-        Users can extend this method to add custom logic for replacement.
-        """
+        """Determine if the given module should be replaced."""
         return (
             cls.is_registered(original.__class__.__name__)
             and is_hpex_available()
