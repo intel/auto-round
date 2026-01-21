@@ -222,7 +222,7 @@ def apply_replacements(
     # Step 2: Replace modules
     if modules_to_replace:
         logger.info(f"Found {len(modules_to_replace)} modules to replace")
-        for name, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
+        for name, module, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
             module = model.get_submodule(name)
             memory_monitor.update()
             memory_monitor.log_summary(f"Before replacing module {name}")
