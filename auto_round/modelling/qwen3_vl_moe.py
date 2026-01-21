@@ -20,9 +20,9 @@ from transformers.activations import ACT2FN
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, logger, unsupported_meta_device
-
+from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 transformers_version = version.parse(transformers.__version__)
-
+from auto_round.modelling.utils import _update_parameter
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,14 +31,6 @@ if TYPE_CHECKING:
         Qwen3VLMoeTextSparseMoeBlock,
     )
 
-
-def _update_parameter(
-    module: torch.nn.Module,
-    name: str,
-    data: torch.Tensor,
-) -> None:
-    param = getattr(module, name)
-    param.data.copy_(data)
 
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/qwen3_vl_moe.py
@@ -66,13 +58,24 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
         # https://github.com/JJJYmmm/transformers/commit/f5dea1c694af8c994c769170813a8702332119ee
         self.gate = original.gate
         self.calibrate_all_experts = calibrate_all_experts
-        self.experts = SequentialQwen3VLMoeTextExperts(text_config, original.experts)
+        self._source_original = original
+        with skip_weights_initialize(), torch.device("meta"):
+            self.experts = SequentialQwen3VLMoeTextExperts(text_config, original.experts)
         if not transformers_version < version.parse(
             "5.0"
         ):  # remove conversion_mapping for qwen3_vl_moe when transformers>=5.0
             from transformers.conversion_mapping import register_checkpoint_conversion_mapping
 
             register_checkpoint_conversion_mapping(config.model_type, [], overwrite=True)
+        
+    def _materialize_weights(self) -> None:
+        original = self._source_original
+        self.experts._materialize_weights()
+        clear_memory()
+    
+    def release_original_module(self) -> None:
+        self.experts.release_original_module()
+        self._source_original = None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -144,9 +147,14 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
         )
 
         target_device = next(original.parameters()).device
-        with torch.device(target_device):
-            super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
 
+        with torch.device("meta"):
+            super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        self._source_original = original
+
+    def _materialize_weights(self) -> None:
+        original = self._source_original
+        intermediate_size = original.down_proj.shape[1]
         if not unsupported_meta_device(original):
             for i in range(self.num_experts):
                 gate_up = original.gate_up_proj[i]
@@ -161,3 +169,7 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
             del gate_up, down, gate_proj, up_proj
             original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
+
+    def release_original_module(self) -> None:
+        if hasattr(self, '_source_original'):
+            del self._source_original  # release reference to original module

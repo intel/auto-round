@@ -168,12 +168,13 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     def release_original_module(self) -> None:
         """Release reference to the original module to free memory."""
-        self._source_original = None  # release reference to original module
-    
+        if hasattr(self, '_source_original'):
+            del self._source_original
+
     def post_process_materialization(self) -> None:
         """Mark the replacement module as materialized."""
         self._materialized = True
-        self._source_original = None
+        self.release_original_module()
 
 
 # Note: adapted from llm-compressor

@@ -21,16 +21,7 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
-
-def _update_parameter(
-    module: torch.nn.Module,
-    name: str,
-    data: torch.Tensor,
-) -> None:
-    old_param = getattr(module, name)
-    new_param = nn.Parameter(data, requires_grad=old_param.requires_grad)
-    setattr(module, name, new_param)
-
+from auto_round.modelling.utils import _update_parameter
 
 class GPTOssSingleExpert(nn.Module):
     def __init__(self, hidden_size: int, intermediate_size: int, dtype: torch.dtype | None = None):
