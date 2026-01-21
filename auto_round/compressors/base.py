@@ -1205,10 +1205,12 @@ class BaseCompressor(object):
         """
         if self.amp and self.model.dtype != self.amp_dtype:
             self.model.to(self.amp_dtype)
-        materialize_block_(self.model)
+        
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         self.all_to_quantized_module_names = all_to_quantized_module_names
         if is_nv_fp(self.data_type):
+            materialize_block_(self.model)
+            self.model.to("cpu")
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
 
@@ -1230,7 +1232,7 @@ class BaseCompressor(object):
         if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
 
-        self.model.to("cpu")
+        
         # Release memory
         clear_memory(device_list=self.device_list)
 
@@ -1245,6 +1247,8 @@ class BaseCompressor(object):
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
         if enable_imatrix:
+            materialize_block_(self.model)
+            self.model.to("cpu")
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic,
@@ -1271,6 +1275,8 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
+            materialize_block_(self.model)
+            self.model.to("cpu")
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             if clear_mem_freq == 0:
@@ -1353,6 +1359,8 @@ class BaseCompressor(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
+                materialize_block_(block)
+                block.to("cpu")
                 if is_fp8_model(self.model):
                     convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype, device=self.device)
 
@@ -1459,7 +1467,7 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(self.model, formats=formats)
+        self.model = update_module(self.model, formats=formats, cleanup_original=False)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.

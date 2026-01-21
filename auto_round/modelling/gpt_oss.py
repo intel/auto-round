@@ -97,8 +97,10 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
             original.experts.to_empty(device="meta")  # release original experts parameters
             clear_memory()
-
-        torch.nn.Module.to_empty(original.experts, device="meta")
+    
+    def release_original_module(self) -> None:
+        # torch.nn.Module.to_empty(original.experts, device="meta")
+        self._source_original = None  # release reference to original module
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape

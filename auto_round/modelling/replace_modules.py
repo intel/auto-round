@@ -58,6 +58,13 @@ def materialize_block_(block: torch.nn.Module) -> None:
             found_meta = True
     if not found_meta:
         logger.debug("All parameters and buffers have been materialized from meta device.")
+    release_original_module_(block)
+
+def release_original_module_(block: torch.nn.Module) -> None:
+    def _clear_source_module(module: torch.nn.Module) -> None:
+        if isinstance(module, ReplacementModuleBase):
+            module.release_original_module()
+    block.apply(_clear_source_module)
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
     """
@@ -152,6 +159,9 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
             self.post_process_materialization()
     
     def _materialize_weights(self) -> None:
+        pass
+
+    def release_original_module(self) -> None:
         pass
     
     def post_process_materialization(self) -> None:
