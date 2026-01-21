@@ -99,7 +99,6 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
             clear_memory()
     
     def release_original_module(self) -> None:
-        # torch.nn.Module.to_empty(original.experts, device="meta")
         self._source_original = None  # release reference to original module
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
