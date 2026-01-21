@@ -159,6 +159,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument(
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
+        basic.add_argument(
+            "--disable_trust_remote_code",
+            action="store_true",
+            help="Disable trusting remote code when loading models. "
+            "Use for security if you don't trust the model source.",
+        )
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
@@ -349,12 +355,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         ## ======================= eval =======================
         eval_args = self.add_argument_group("eval arguments")
-        eval_args.add_argument(
-            "--disable_trust_remote_code",
-            action="store_true",
-            help="Disable trusting remote code when loading models. "
-            "Use for security if you don't trust the model source.",
-        )
         eval_args.add_argument(
             "--tasks",
             "--task",
@@ -661,6 +661,7 @@ def tune(args):
         layer_config=layer_config,
         model_dtype=args.model_dtype,
         momentum=args.momentum,
+        trust_remote_code=not args.disable_trust_remote_code,
     )
 
     model_name = args.model.rstrip("/")
