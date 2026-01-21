@@ -2,15 +2,14 @@ import shutil
 
 import pytest
 import torch
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 from ...helpers import get_model_path
 
-
 deepseekv2_model_name = get_model_path("deepseek-ai/DeepSeek-V2-Lite-Chat")
-deepseekv3_mdoel_name = get_model_path("tflsxyy/DeepSeek-V3-bf16-4layers")
+deepseekv3_model_name = get_model_path("tflsxyy/DeepSeek-V3-bf16-4layers")
 
 
 @pytest.fixture

@@ -64,6 +64,7 @@ def rotary_emb_forward(module, x, position_ids):
         sin = torch.sin(freqs) * module.attention_scaling
     return cos, sin
 
+
 def attn_forward(
     module,
     hidden_states: torch.Tensor,
@@ -180,7 +181,8 @@ class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
 class DeepseekV2Attention(ReplacementModuleBase):
     def __init__(self, original, config):
         super().__init__()
-       # In case the attn_module is prepared for kv_cache quantization
+
+    # In case the attn_module is prepared for kv_cache quantization
 
     @classmethod
     def original_module_class(cls) -> str:
@@ -212,4 +214,3 @@ class DeepseekV2Attention(ReplacementModuleBase):
             and is_hpex_available()
             and inspect.getfile(original.__class__) == inspect.getfile(eager_attention_forward)
         )
-

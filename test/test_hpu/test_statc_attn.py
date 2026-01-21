@@ -2,13 +2,12 @@ import shutil
 
 import pytest
 import torch
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.utils import is_hpex_available
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 from ..helpers import get_model_path, is_pytest_mode_lazy
-
 
 deepseekv2_model_name = get_model_path("deepseek-ai/DeepSeek-V2-Lite-Chat")
 

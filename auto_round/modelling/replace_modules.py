@@ -156,10 +156,9 @@ def apply_replacements(
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if (
-            ReplacementModuleBase.is_registered(class_name)
-            and ReplacementModuleBase.get_replacement_class(class_name).is_to_be_replaced(module)
-        ):
+        if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
+            class_name
+        ).is_to_be_replaced(module):
             modules_to_replace.append((name, module, class_name))
 
     # Step 2: Replace modules
