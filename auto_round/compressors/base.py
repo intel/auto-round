@@ -877,7 +877,9 @@ class BaseCompressor(object):
         else:
             model, _ = self.quantize()
         # Save the quantized model in the specified format_list
-        model, folders = self.save_quantized(output_dir, format=format, inplace=inplace, return_folders=True, **kwargs)
+        model, folders = self.save_quantized(
+            output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs
+        )
         memory_monitor.log_summary()
 
         return model, folders
@@ -2968,7 +2970,7 @@ class BaseCompressor(object):
             object: The compressed model object.
         """
         self.orig_output_dir = output_dir
-        if isinstance(format, str):
+        if isinstance(format, str) and getattr(self, "formats", None) is None:
             formats = get_formats(format, self)
             if not hasattr(self, "formats"):
                 self.formats = formats
@@ -2977,7 +2979,7 @@ class BaseCompressor(object):
             logger.warning("please run autoround.quantize first")
             return
         folders = []
-        for format in formats:
+        for format in self.formats:
             save_folder = self._get_save_folder_name(format)
             if self.act_bits <= 8 and format.is_fake():
                 logger.warning(
