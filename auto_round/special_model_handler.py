@@ -52,7 +52,7 @@ def _handle_special_model(model):
     return model
 
 
-def update_module(model, formats: list[OutputFormat] = None):
+def update_module(model, formats: list[OutputFormat] = None, trust_remote_code: bool = True):
     if formats is not None and any([format_.is_gguf() for format_ in formats]):
         return model
 
