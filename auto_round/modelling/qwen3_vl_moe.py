@@ -17,20 +17,21 @@ import transformers
 from packaging import version
 from torch import nn
 from transformers.activations import ACT2FN
+from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, logger, unsupported_meta_device
-from transformers.modeling_utils import no_init_weights as skip_weights_initialize
+
 transformers_version = version.parse(transformers.__version__)
-from auto_round.modelling.utils import _update_parameter
 from typing import TYPE_CHECKING
+
+from auto_round.modelling.utils import _update_parameter
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
         Qwen3VLMoeTextSparseMoeBlock,
     )
-
 
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/qwen3_vl_moe.py
@@ -67,15 +68,15 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
             from transformers.conversion_mapping import register_checkpoint_conversion_mapping
 
             register_checkpoint_conversion_mapping(config.model_type, [], overwrite=True)
-        
+
     def _materialize_weights(self) -> None:
         original = self._source_original
         self.experts._materialize_weights()
         clear_memory()
-    
+
     def release_original_module(self) -> None:
         self.experts.release_original_module()
-        self._source_original = None
+        super().release_original_module()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -171,5 +172,5 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
             clear_memory()
 
     def release_original_module(self) -> None:
-        if hasattr(self, '_source_original'):
+        if hasattr(self, "_source_original"):
             del self._source_original  # release reference to original module

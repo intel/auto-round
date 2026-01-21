@@ -20,8 +20,9 @@ from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
 from auto_round.modelling.utils import _update_parameter
+from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
+
 
 class GPTOssSingleExpert(nn.Module):
     def __init__(self, hidden_size: int, intermediate_size: int, dtype: torch.dtype | None = None):
@@ -42,6 +43,7 @@ class GPTOssSingleExpert(nn.Module):
         glu = gate * torch.sigmoid(gate * self.alpha)
         act = (up + 1) * glu
         return self.down_proj(act)
+
 
 class SequentialGPTOSSMoE(ReplacementModuleBase):
     """
@@ -87,9 +89,6 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
             original.experts.to_empty(device="meta")
             clear_memory()
-    
-    def release_original_module(self) -> None:
-        self._source_original = None  # release reference to original module
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape
