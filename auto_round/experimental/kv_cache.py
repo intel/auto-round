@@ -125,12 +125,12 @@ class QuantizedKVParameterCache(DynamicCache):
         cache_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get the k_scale and v_scale
+        Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
-        self._quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
-        self._quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
+        qdq_key_states = self._quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
+        qdq_value_states = self._quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
 
-        keys_to_return, values_to_return = key_states, value_states
+        keys_to_return, values_to_return = qdq_key_states, qdq_value_states
 
         return keys_to_return, values_to_return
 
@@ -172,8 +172,9 @@ class QuantizedKVParameterCache(DynamicCache):
             assert kv_type == KVCacheScaleType.VALUE
             scales = self.v_scales
 
-        _, scale = per_tensor_fp8_qdq(tensor)
+        qdq_tensor, scale = per_tensor_fp8_qdq(tensor)
         _pad_and_append_at_idx_(scales, layer_idx, scale.squeeze(0))
+        return qdq_tensor
 
 
 def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn):
