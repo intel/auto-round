@@ -80,5 +80,5 @@ class TestAutoRoundARKBackend:
 if __name__ == "__main__":
     p = TestAutoRoundARKBackend()
     p.setup_class()
-    p.test_formats("auto_round:auto_awq", 4, 32, True, torch.bfloat16, "xpu")
+    p.test_formats("auto_round:auto_awq", 4, 64, True, torch.bfloat16, "xpu")
     p.teardown_class()

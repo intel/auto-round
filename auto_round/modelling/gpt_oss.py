@@ -20,7 +20,7 @@ from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
+from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
 
 def _update_parameter(
     module: torch.nn.Module,
@@ -95,6 +95,8 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
                 _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
+            original.experts.to_empty(device="meta")  # release original experts parameters
+            clear_memory()
 
         torch.nn.Module.to_empty(original.experts, device="meta")
         self._source_original = None

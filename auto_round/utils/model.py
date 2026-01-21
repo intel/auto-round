@@ -598,9 +598,9 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return False
 
 
-def is_moe(module: torch.nn.Module) -> bool:
+def is_moe_layer(module: torch.nn.Module) -> bool:
     """Returns whether the module is an MOE layer."""
-    return any(
+    return "moe" in type(module).__name__.lower() or any(
         key in type(module).__name__.lower()
         for key in [
             "MixtralSparseMoeBlock".lower(),
@@ -763,6 +763,7 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
         # w1_linear and v1_linear are input projections, w2_linear is output
         return ["w1_linear", "v1_linear"]
     else:
+        logger.warning_once("Using default input projection names ['w1', 'w3'] for MoE expert alignment. ")
         # Default: w1 and w3 are input projections, w2 is output
         return ["w1", "w3"]
 
@@ -809,7 +810,10 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
         tmp_model_type = hparams.model_type
     if "mistral" == tmp_model_type:
         is_mistral_format = True
-        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+        try:
+            hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+        except Exception:
+            is_mistral_format = False
     if not is_mistral_format:
         model_class = get_model_architecture(hparams, model_type)
     elif model_type == ModelType.MMPROJ:
@@ -1187,6 +1191,17 @@ def mv_module_from_gpu(module):
         return module.to("cpu")
 
 
+def is_moe_model(model: torch.nn.Module) -> bool:
+    if hasattr(model, "config"):
+        for key in model.config.to_dict().keys():
+            if "moe" in key or "expert" in key:
+                return True
+    for n, m in model.named_modules():
+        if "expert" in n:
+            return True
+    return False
+
+
 def to_dtype(input, dtype=torch.float32):
     """Moves input data to the specified data type.
 
@@ -1277,7 +1292,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         model = get_module(model, moe_name)
     # Handle input quantizers of experts that are not calibrated
     for name, sub_module in model.named_modules():
-        if not (is_moe(sub_module) and hasattr(sub_module, "experts")):
+        if not (is_moe_layer(sub_module) and hasattr(sub_module, "experts")):
             continue
         expert_linear_names = get_expert_linear_names(sub_module)
         # Get input projection names for FP8 dispatch unification
@@ -1288,7 +1303,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                 # For other MoE models (like Mixtral) with iterable experts
                 try:
                     # Determine if this is an input projection that needs scale unification
-                    unify_scale = linear_name in expert_input_proj_names
+                    unify_scale = linear_name in expert_input_proj_names and envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
 
                     set_amax_for_uncalibrated_experts(
                         [getattr(expert, linear_name, None) for expert in sub_module.experts],

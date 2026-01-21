@@ -17,6 +17,7 @@ import inspect
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Union
 
 import threadpoolctl as tctl
 import torch
@@ -50,7 +51,7 @@ __all__ = [
 ]
 
 
-def pack_layer(name, model, backend, device=None):
+def pack_layer(name, model, device=None):
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
@@ -118,7 +119,17 @@ def pack_layer(name, model, backend, device=None):
     release_layer_safely(layer)
 
 
-def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
+def save_quantized_as_fp(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    backend: str = None,
+    serialization_dict: dict = None,
+    **kwargs,
+) -> torch.nn.Module:
     """
     Saves a quantized model of mxfp/nvfp data_type in the llm-compressor format.
 
@@ -140,22 +151,15 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     Raises:
         ValueError: If the backend is not supported.
     """
-    model = kwargs["model"]
-    backend = kwargs.get("backend", None)
-    bits = kwargs.get("bits", None)
-    data_type = kwargs.get("data_type", None)
-    act_bits = kwargs.get("act_bits", None)
-    act_data_type = kwargs.get("act_data_type", None)
+    bits = serialization_dict.get("bits", None)
+    data_type = serialization_dict.get("data_type", None)
+    act_bits = serialization_dict.get("act_bits", None)
+    act_data_type = serialization_dict.get("act_data_type", None)
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_config = kwargs["layer_config"]
-    device = kwargs.get("device", None)
-    tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
-    ar_quantization_config = kwargs["serialization_dict"]
-    regex_config = ar_quantization_config.pop("regex_config")
-    layer_config = kwargs["layer_config"]
+    regex_config = serialization_dict.pop("regex_config")
     extra_config = {}
 
     if act_bits <= 8:
@@ -195,7 +199,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
                 def wrapper(name):
                     pbar.set_description(f"packing {name}")
                     with tctl.threadpool_limits(limits=1):
-                        pack_layer(name, model, backend, device)
+                        pack_layer(name, model, device)
                     pbar.update(1)
 
                 for _ in executor.map(wrapper, names):

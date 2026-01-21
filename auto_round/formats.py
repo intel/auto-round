@@ -18,6 +18,7 @@ import copy
 import os
 import re
 import sys
+from abc import ABC, abstractmethod
 from dataclasses import asdict
 from enum import Enum
 from typing import TYPE_CHECKING, Callable, Union
@@ -38,7 +39,13 @@ from auto_round.schemes import (
     QuantizationScheme,
     get_gguf_scheme,
 )
-from auto_round.utils import SUPPORTED_FORMATS, logger
+from auto_round.utils import (
+    SUPPORTED_FORMATS,
+    check_to_quantized,
+    copy_python_files_from_model_cache,
+    get_module,
+    logger,
+)
 
 
 class AutoRoundExportFormat(str, Enum):
@@ -91,7 +98,7 @@ def get_formats(
         seen = set()
         return [x for x in lst if not (x in seen or seen.add(x))]
 
-    formats = format.replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
+    formats = format.lower().replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
     formats = remove_duplicates(formats)  # need the keep origin order
 
     formats = _check_compatibility(formats, ar)
@@ -142,11 +149,11 @@ def _check_divisible_by_32(ar):
                     logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
 
 
-class OutputFormat:
+class OutputFormat(ABC):
     """ "Base class for different output formats.
 
     format: determines which method from export module to use for exporting.
-            For example, auto_round, gguf, llmcompressor etc.
+            For example, auto_round, gguf, llm_compressor etc.
     backend: determines the specific export process within the format.
             For example, auto_round:fp8_static, auto_round:auto_awq etc.
     """
@@ -181,12 +188,16 @@ class OutputFormat:
     @classmethod
     def get_support_matrix(cls: OutputFormat) -> str:
         output_str = ""
-        for k, v in cls._format_list.items():
+        for k, v in sorted(cls._format_list.items()):
             if k == "fake":
-                support_scheme = "All schemes"
+                support_schemes = "All schemes"
             else:
-                support_scheme = ", ".join(v.support_schemes).rstrip(",")
-            output_str += f"\x1b[31;1m{k}\x1b[0m support scheme:\n\t{support_scheme}\n"
+                if ":" in k and k.split(":")[1] in cls._format_list:
+                    support_schemes = cls._format_list[k.split(":")[1]].support_schemes
+                else:
+                    support_schemes = v.support_schemes
+                support_schemes = ", ".join(support_schemes).rstrip(",")
+            output_str += f"\x1b[31;1m{k}\x1b[0m support scheme:\n\t{support_schemes}\n"
         return output_str
 
     def get_backend_name(self) -> str:
@@ -196,10 +207,7 @@ class OutputFormat:
         # auto_round:llm_compressor:fp8_static
         if self.backend.backend is not None:
             return f"{self.output_format}:{self.backend.get_backend_name()}"
-        # auto_round:auto_awq, auto_round:auto_gptq
-        elif self.backend.get_backend_name() in self._format_list:
-            return f"{self.output_format}:{self.backend.get_backend_name()}"
-        # auto_round:fp8_static, llm_compressor:fp8_static
+        # auto_round:fp8_static, llm_compressor:fp8_static, auto_round:auto_awq
         else:
             return self.backend.get_backend_name()
 
@@ -237,6 +245,21 @@ class OutputFormat:
 
         return None
 
+    @abstractmethod
+    def pack_layer(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def save_quantized(self, *args, **kwargs):
+        pass
+
+    def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device, **kwargs):
+        m = get_module(model, name)
+        if not check_to_quantized(m):
+            return
+
+        self.pack_layer(name, model, device=device)
+
     def is_gguf(self) -> bool:
         return "gguf" in self.output_format
 
@@ -261,8 +284,36 @@ class FakeFormat(OutputFormat):
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
         return None
 
+    # fake format will not execute pack_layer.
+    def pack_layer(self, *args, **kwargs):
+        pass
 
-@OutputFormat.register("llm_compressor", "llmcompressor")
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ):
+        model = model.to("cpu")
+        model.save_pretrained(output_dir)
+        if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
+            tokenizer.save_pretrained(output_dir)
+        processor = kwargs.get("processor", None)
+        if processor is not None:
+            processor.save_pretrained(output_dir)
+        try:
+            copy_python_files_from_model_cache(model, output_dir)
+        except Exception as e:
+            logger.warning("Skipping source model Python file copy due to error: %s", e)
+        return model
+
+
+@OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
     support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"]
     format_name = "llm_compressor"
@@ -274,7 +325,8 @@ class LLMCompressorFormat(OutputFormat):
                 f"but got scheme {ar.scheme}, please change to fake or auto_round etc."
             )
             exit(-1)
-        if format.startswith("llm_compressor"):
+        # if format.startswith("llm_compressor"):
+        if re.search("^(auto_round:)?llm_compressor", format):
             self.output_format = format
             self.backend = None
             if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
@@ -326,6 +378,58 @@ class LLMCompressorFormat(OutputFormat):
             return None
         return None
 
+    def pack_layer(self, layer_name, model, device=None, **kwargs):
+        if self.backend is not None:
+            return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
+        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", self.output_format):
+            from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
+
+            return pack_layer(layer_name, model, device=device)
+        elif re.search(f"{AutoRoundExportFormat.FP8_STATIC.value}", self.output_format):
+            from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
+
+            return pack_layer(layer_name, model, self.get_backend_name(), device=device)
+
+        ## passed as no other llm_compressor format is supported yet
+        logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
+        return
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        backend = self.get_backend_name()
+        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
+            from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
+
+            export_func = save_quantized_as_fp
+        elif re.search(f"{AutoRoundExportFormat.FP8_STATIC.value}", backend):
+            from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
+
+            export_func = save_quantized_as_static_fp
+        else:
+            from auto_round.export.export_to_llmcompressor.export import save_quantized_as_llmcompressor
+
+            export_func = save_quantized_as_llmcompressor
+        return export_func(
+            output_dir=output_dir,
+            model=model,
+            tokenizer=tokenizer,
+            layer_config=layer_config,
+            inplace=inplace,
+            device=device,
+            backend=backend,
+            serialization_dict=serialization_dict,
+            **kwargs,
+        )
+
 
 @OutputFormat.register("auto_gptq", "gptqmodel")
 class AutoGPTQFormat(OutputFormat):
@@ -344,10 +448,52 @@ class AutoGPTQFormat(OutputFormat):
             _check_divisible_by_32(ar)
         return super().check_and_reset_format(ar)
 
+    def pack_layer(self, layer_name, model, device=None, **kwargs):
+        if self.output_format.startswith("auto_round"):
+            from auto_round.export.export_to_autoround.export import pack_layer
+
+            pack_layer(layer_name, model, backend=self.output_format, device=device)
+        else:
+            from auto_round.export.export_to_autogptq.export import pack_layer
+
+            pack_layer(layer_name, model, backend=self.output_format, device=device)
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        backend = self.get_backend_name()
+        if backend == "auto_round:auto_gptq" or backend == "auto_round:gptqmodel":
+            from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
+
+            export_func = save_quantized_as_autoround
+        else:
+            from auto_round.export.export_to_autogptq.export import save_quantized_as_autogptq
+
+            export_func = save_quantized_as_autogptq
+        return export_func(
+            output_dir=output_dir,
+            model=model,
+            tokenizer=tokenizer,
+            layer_config=layer_config,
+            inplace=inplace,
+            device=device,
+            backend=backend,
+            serialization_dict=serialization_dict,
+            **kwargs,
+        )
+
 
 @OutputFormat.register("auto_awq")
 class AutoAWQFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
+    support_schemes = ["W4A16"]
     format_name = "auto_awq"
 
     @staticmethod
@@ -406,12 +552,43 @@ class AutoAWQFormat(OutputFormat):
 
         return super().check_and_reset_format(ar)
 
+    def pack_layer(self, layer_name, model, device=None, **kwargs):
+        from auto_round.export.export_to_awq.export import pack_layer
 
-@OutputFormat.register("itrex")
-@OutputFormat.register("itrex_xpu")
-class ITREXFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
-    format_name = "itrex"
+        pack_layer(layer_name, model, backend=self.output_format, device=device)
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        backend = self.get_backend_name()
+        if backend == "auto_round:auto_awq":
+            from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
+
+            export_func = save_quantized_as_autoround
+        else:
+            from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
+
+            export_func = save_quantized_as_autoawq
+
+        return export_func(
+            output_dir=output_dir,
+            model=model,
+            tokenizer=tokenizer,
+            layer_config=layer_config,
+            inplace=inplace,
+            backend=backend,
+            device=device,
+            serialization_dict=serialization_dict,
+            **kwargs,
+        )
 
 
 @OutputFormat.register("gguf")
@@ -431,6 +608,7 @@ class GGUFFormat(OutputFormat):
         "GGUF:Q5_K_M",
         "GGUF:Q6_K",
         "GGUF:Q8_0",
+        "GGUF:Q2_K_MIXED",
     ]
     format_name = "gguf"
 
@@ -439,14 +617,24 @@ class GGUFFormat(OutputFormat):
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
-            ar.scheme = format.upper()
 
             self.output_format = "gguf"
             self.backend_cls = GGUFFormat
             self.backend = GGUFFormat(format.split(":")[-1], ar)
         else:
-            self.output_format = f"gguf:{format}"
+            scheme = ar.scheme
+            gguf_format = f"gguf:{format.lower()}"
+            if format.lower().endswith("_mixed"):
+                from auto_round.schemes import _handle_special_schemes
+
+                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
+                gguf_format = gguf_format.lower().replace("_mixed", "_s")
+            if isinstance(scheme, str) and scheme.lower() != gguf_format:
+                logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
+                ar.scheme = gguf_format
+            self.output_format = gguf_format
             self.backend = None
+        self.mllm = ar.mllm
 
     def check_and_reset_format(self, ar):
         if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
@@ -460,6 +648,59 @@ class GGUFFormat(OutputFormat):
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
         return super().check_and_reset_format(ar)
+
+    def pack_layer(
+        self,
+        name,
+        model,
+        backend,
+        output_dir,
+        layer_config,
+        tokenizer,
+        processor=None,
+        image_processor=None,
+        model_type=ModelType.TEXT,
+        device="cpu",
+    ):
+        from auto_round.export.export_to_gguf.export import pack_gguf_layer
+
+        pack_gguf_layer(
+            name,
+            model,
+            backend,
+            output_dir,
+            layer_config,
+            tokenizer,
+            processor,
+            image_processor,
+            model_type,
+            device,
+        )
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        from auto_round.export.export_to_gguf.export import save_quantized_as_gguf
+
+        backend = self.get_backend_name()
+        return save_quantized_as_gguf(
+            output_dir=output_dir,
+            model=model,
+            backend=backend,
+            layer_config=layer_config,
+            mllm=self.mllm,
+            device=device,
+            serialization_dict=serialization_dict,
+            **kwargs,
+        )
 
     @staticmethod
     def gguf_args_check(args_or_ar, formats: Union[str, list[str]] = None, model_type=ModelType.TEXT):
@@ -574,6 +815,36 @@ class GGUFFormat(OutputFormat):
         # Removed obsolete commented-out block for improved readability and maintainability.
         return args_or_ar
 
+    def immediate_pack(
+        self,
+        name: str,
+        model: torch.nn.Module,
+        device: torch.device,
+        output_dir: str = None,
+        mllm: bool = False,
+        layer_config: dict = None,
+        tokenizer=None,
+        processor=None,
+        image_processor=None,
+        **kwargs,
+    ):
+        m = get_module(model, name)
+        if not check_to_quantized(m):
+            return
+        model_type = ModelType.MMPROJ if mllm else ModelType.TEXT
+        self.pack_layer(
+            name,
+            model,
+            self.get_backend_name(),
+            output_dir,
+            layer_config=layer_config,
+            tokenizer=tokenizer,
+            processor=processor,
+            image_processor=image_processor,
+            model_type=model_type,
+            device=device,
+        )
+
 
 @OutputFormat.register("auto_round")
 @OutputFormat.register("auto_round:auto_awq")
@@ -602,7 +873,7 @@ class AutoRoundFormat(OutputFormat):
 
         if format == "auto_round":
             if ar.sym and "int" in ar.data_type:
-                self.backend = AutoGPTQFormat("auto_gptq", ar)
+                self.backend = AutoGPTQFormat("auto_round:auto_gptq", ar)
             elif ar.bits == 4 and not ar.sym and "int" in ar.data_type:
                 if ar.layer_config is None:
                     enable_awq = True
@@ -611,7 +882,7 @@ class AutoRoundFormat(OutputFormat):
                         config["bits"] == ar.bits or config["bits"] >= 16 for config in ar.layer_config.values()
                     )
                 if enable_awq:
-                    self.backend = AutoAWQFormat("auto_awq", ar)
+                    self.backend = AutoAWQFormat("auto_round:auto_awq", ar)
             elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
                 self.backend = AutoRoundFormat(ar.data_type, ar)
             elif is_static_wfp8afp8(ar):  # static wfp8afp8
@@ -624,6 +895,7 @@ class AutoRoundFormat(OutputFormat):
                     "for the current quantization configuration, "
                     "please change to `fake` format for research purpose"
                 )
+        # for auto_round:fp8_static, auto_round:nv_fp etc.
         elif not format.startswith("auto_round"):
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
@@ -631,7 +903,7 @@ class AutoRoundFormat(OutputFormat):
             self.backend = None
         else:
             backend = format.split(":")[1] if ":" in format else None
-            self.backend = self._format_list.get(backend)(backend, ar) if backend else None
+            self.backend = self._format_list.get(backend)(format, ar) if backend else None
 
         if self.backend is not None:
             self.support_schemes = self.backend.support_schemes
@@ -655,3 +927,85 @@ class AutoRoundFormat(OutputFormat):
         if self.backend is None:
             _check_divisible_by_32(ar)
         return None
+
+    def pack_layer(self, layer_name, model, device=None, **kwargs):
+        if self.backend is not None:
+            return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
+
+        backend = self.get_backend_name()
+
+        if self.output_format in [
+            f"auto_round:{AutoRoundExportFormat.NV_FP.value}",
+            f"auto_round:{AutoRoundExportFormat.MX_FP.value}",
+            f"auto_round:{AutoRoundExportFormat.MX_FP_RCEIL.value}",
+            f"auto_round:{AutoRoundExportFormat.NV_FP4_WITH_STATIC_GS.value}",
+        ]:
+            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
+
+            pack_func = pack_layer
+        elif self.output_format in [
+            f"auto_round:{AutoRoundExportFormat.FP8.value}",
+            f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
+            f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
+        ]:
+            from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
+
+            pack_func = pack_layer
+        else:
+            from auto_round.export.export_to_autoround.export import pack_layer
+
+            pack_func = pack_layer
+        return pack_func(layer_name, model, backend, device)
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        if self.backend is not None:
+            return self.backend.save_quantized(
+                output_dir=output_dir,
+                model=model,
+                tokenizer=tokenizer,
+                layer_config=layer_config,
+                inplace=inplace,
+                device=device,
+                serialization_dict=serialization_dict,
+                **kwargs,
+            )
+        backend = self.get_backend_name()
+        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
+            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
+
+            backend = "auto_round:llm_compressor"
+            export_func = save_quantized_as_fp
+        elif (
+            serialization_dict.get("data_type", "int") == "fp"
+            and serialization_dict.get("bits", 16) == 8
+            and serialization_dict.get("act_bits", 16) >= 16
+        ):
+            from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
+
+            backend = "auto_round"
+            export_func = save_quantized_as_autoround
+        else:
+            from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
+
+            export_func = save_quantized_as_autoround
+        return export_func(
+            output_dir=output_dir,
+            model=model,
+            tokenizer=tokenizer,
+            layer_config=layer_config,
+            inplace=inplace,
+            device=device,
+            backend=backend,
+            serialization_dict=serialization_dict,
+            **kwargs,
+        )

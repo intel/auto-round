@@ -24,6 +24,7 @@ import copy
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Union
 
 import threadpoolctl as tctl
 import torch
@@ -79,13 +80,18 @@ def pack_layer(name, model, backend, device=None):
     release_layer_safely(layer)
 
 
-def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
+def save_quantized_as_autoawq(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable = None,
+    layer_config: dict = None,
+    inplace: bool = True,
+    device: Union[str, torch.device] = "cpu",
+    serialization_dict: dict = None,
+    **kwargs,
+) -> torch.nn.Module:
     """Export the model to autogptq format to easily leverage cuda kernel."""
-    model = kwargs["model"]
-    layer_config = kwargs["layer_config"]
-    to_quant_block_names = kwargs.get("to_quant_block_names", None)
-    device = kwargs.get("device", None)
-    tokenizer = kwargs.get("tokenizer", None)
+    to_quant_block_names = serialization_dict.get("to_quant_block_names", None)
     processor = kwargs.get("processor", None)
     image_processor = kwargs.get("image_processor", None)
     modules_to_not_convert = []
@@ -136,13 +142,12 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if output_dir is None:
         return model
 
-    quantization_config = kwargs["serialization_dict"]
+    quantization_config = serialization_dict
     regex_config = quantization_config.pop("regex_config", {})  # awq do not support mixed bits config saving
 
     if output_dir is None:
         return compressed_model
 
-    layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
