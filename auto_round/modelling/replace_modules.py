@@ -18,13 +18,14 @@ from typing import Dict, Type
 import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
-from auto_round.utils import memory_monitor
-from auto_round.utils import LazyImport, logger
+
+from auto_round.utils import LazyImport, logger, memory_monitor
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
     "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
     "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
+    "DeepseekV2Attention": LazyImport("auto_round.modelling.deepseek_v2"),
 }
 
 
@@ -41,10 +42,12 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             imported.add(class_name)
             logger.debug(f"Loaded replacement module for {class_name}")
 
+
 def materialize_model_(model: torch.nn.Module) -> None:
     def _materialize_module(module: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
             module.materialize_weights()
+
     model.apply(_materialize_module)
     # check if any module on meta device remains
     found_meta = False
@@ -60,11 +63,14 @@ def materialize_model_(model: torch.nn.Module) -> None:
         logger.debug("All parameters and buffers have been materialized from meta device.")
     release_original_module_(model)
 
+
 def release_original_module_(model: torch.nn.Module) -> None:
     def _clear_source_module(module: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
             module.release_original_module()
+
     model.apply(_clear_source_module)
+
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
     """
@@ -123,13 +129,12 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     def is_to_be_replaced(
         cls,
         original: torch.nn.Module,
-        module_class_name: str,
     ) -> bool:
         """Determine if the given module should be replaced.
 
         Users can extend this method to add custom logic for replacement.
         """
-        return cls.is_registered(module_class_name)
+        return cls.is_registered(original.__class__.__name__)
 
     @classmethod
     def get_registered_modules(cls) -> list:
@@ -151,13 +156,13 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     ) -> "ReplacementModuleBase":
         """Create replacement module from original module."""
         pass
-    
+
     def materialize_weights(self):
         """Materialize weights if needed."""
         if not self._materialized:
             self._materialize_weights()
             self.post_process_materialization()
-    
+
     def _materialize_weights(self) -> None:
         """Materialize weights from the original module.
 
@@ -168,7 +173,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     def release_original_module(self) -> None:
         """Release reference to the original module to free memory."""
-        if hasattr(self, '_source_original'):
+        if hasattr(self, "_source_original"):
             del self._source_original
 
     def post_process_materialization(self) -> None:
@@ -209,8 +214,10 @@ def apply_replacements(
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if ReplacementModuleBase.is_to_be_replaced(module, class_name):
-            modules_to_replace.append((name, class_name))
+        if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
+            class_name
+        ).is_to_be_replaced(module):
+            modules_to_replace.append((name, module, class_name))
 
     # Step 2: Replace modules
     if modules_to_replace:

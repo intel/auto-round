@@ -257,6 +257,7 @@ class BaseCompressor(object):
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
         if isinstance(model, str):
@@ -265,6 +266,7 @@ class BaseCompressor(object):
                 platform=platform,
                 device="cpu",  # always load cpu first
                 model_dtype=model_dtype,
+                trust_remote_code=self.trust_remote_code,
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
@@ -1469,7 +1471,9 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(self.model, formats=formats, cleanup_original=False)
+        self.model = update_module(
+            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+        )
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.

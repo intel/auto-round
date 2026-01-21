@@ -95,7 +95,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
             cur_query_max.detach().to(getattr(module, QUERY_MAX_NAME).data.device),
         )
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
-        query, query_scale = per_tensor_fp8_qdq(query, tensor_max=query_max)
+        _, query_scale = per_tensor_fp8_qdq(query, tensor_max=query_max)
         update_parameter_data(module, query_scale.squeeze(0), QUERY_SCALE_NAME)
         # original attention
         return ALL_ATTENTION_FUNCTIONS[self._original_impl](

@@ -54,6 +54,7 @@ steps:
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
           && python setup.py bdist_wheel lib \
           && pip install dist/*.whl \
+          && pip install -r test/test_hpu/requirements.txt \
           && pip list"
       displayName: "HPU Env Setup"
 
