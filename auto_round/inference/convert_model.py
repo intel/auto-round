@@ -472,7 +472,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
     This function handles backend-specific post-init steps, including AutoGPTQ,
-    GPTQModel, IPEX/ITREx layers, and ExLLaMAv2 kernels. It also ensures the
+    GPTQModel, IPEX layers, and ExLLaMAv2 kernels. It also ensures the
     model's data type is compatible with all used backends.
 
     Args:
@@ -482,7 +482,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """
     need_autogptq_init = False
     need_gptqmodel_init = False
-    need_ipex_itrex_init = False
+    need_ipex_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -493,7 +493,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
         elif backend.startswith(("ipex", "auto_round_kernel")):
-            need_ipex_itrex_init = True
+            need_ipex_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -507,8 +507,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
         model = gptq_post_init(model, use_act_order=False)
 
-    # IPEX/ITREx post-init
-    if need_ipex_itrex_init:
+    # IPEX post-init
+    if need_ipex_init:
         message = "repacking to CPU/XPU format"
         layers = []  ## ipex post_init  will add one more layer
         for n, m in model.named_modules():
