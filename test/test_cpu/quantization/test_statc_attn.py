@@ -25,7 +25,7 @@ def setup_deepseekv2():
 
 
 @pytest.fixture
-def setup_deepseekv2():
+def setup_deepseekv3():
     """Fixture to set up model and tokenizer."""
     model_name = deepseekv3_model_name
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
@@ -45,7 +45,7 @@ def test_deepseek_v2(setup_deepseekv2):
         static_attention_dtype="fp8",
         iters=0,
         seqlen=2,
-        trust_remote_code=True,
+        trust_remote_code=False,
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="llm_compressor", output_dir=output_dir)
     assert quantized_model is not None, "Expected quantized_model to be not None"
@@ -67,7 +67,7 @@ def test_deepseek_v3(setup_deepseekv3):
         static_attention_dtype="fp8",
         iters=0,
         seqlen=2,
-        trust_remote_code=True,
+        trust_remote_code=False,
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="llm_compressor", output_dir=output_dir)
     assert quantized_model is not None, "Expected quantized_model to be not None"
