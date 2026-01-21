@@ -2968,7 +2968,7 @@ class BaseCompressor(object):
             object: The compressed model object.
         """
         self.orig_output_dir = output_dir
-        if isinstance(format, str) and self.formats is None:
+        if isinstance(format, str) and getattr(self, "formats", None) is None:
             formats = get_formats(format, self)
             if not hasattr(self, "formats"):
                 self.formats = formats
