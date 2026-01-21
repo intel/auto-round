@@ -179,8 +179,6 @@ class DeepseekV2Attention(ReplacementModuleBase):
     def __init__(self, original, config):
         super().__init__()
 
-    # In case the attn_module is prepared for kv_cache quantization
-
     @classmethod
     def original_module_class(cls) -> str:
         """Return the class name of the module this replaces."""
