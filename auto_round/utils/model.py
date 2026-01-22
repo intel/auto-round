@@ -1429,3 +1429,27 @@ def is_separate_lm_head(model: torch.nn.Module) -> bool:
             return True
         else:
             return False
+
+
+def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
+    dir_path = model.name_or_path
+    if not os.path.isdir(dir_path):
+        dir_path = download_hf_model(dir_path)
+    if not tensor_name.endswith(".weight"):
+        tensor_name += ".weight"
+
+    if "model.safetensors.index.json" in os.listdir(dir_path):
+        with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
+            index_mapping = json.load(f)
+            if tensor_name in index_mapping["weight_map"]:
+                return True
+            else:
+                return False
+    else:
+        from safetensors import safe_open
+
+        f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
+        if tensor_name in f.keys():
+            return True
+        else:
+            return False
