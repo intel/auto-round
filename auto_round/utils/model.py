@@ -897,7 +897,6 @@ def get_layer_names_in_block(
         list: A list of strings, where each string is the name of a layer
               within a block of the model.
     """
-    from auto_round.utils.common import is_supported_type
     if class_names is None:
         class_names = []
     for n, m in model.named_modules():

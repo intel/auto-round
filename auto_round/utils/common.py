@@ -159,9 +159,13 @@ deepspeed_exists = False
 if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
     deepspeed_exists = True
 
+vllm_exists = False
+if importlib.util.find_spec("vllm"):
+    vllm_exists = True
+
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 SUPPORTED_FORMATS = SupportedFormats()
-SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D, "ColumnParallelLinear", "MergedColumnParallelLinear", "RowParallelLinear", "ReplicatedLinear")
+SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 # Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
 # transformers.integrations.finegrained_fp8.FP8Linear
@@ -169,6 +173,23 @@ if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
+
+if vllm_exists:
+    from vllm.model_executor.layers.linear import (
+        ColumnParallelLinear,
+        MergedColumnParallelLinear,
+        RowParallelLinear,
+        ReplicatedLinear,
+        QKVParallelLinear,
+    )
+
+    SUPPORTED_LAYER_TYPES += (
+        ColumnParallelLinear,
+        MergedColumnParallelLinear,
+        RowParallelLinear,
+        ReplicatedLinear,
+        QKVParallelLinear,
+    )
 
 MM_KEYS = [
     "multi_modal_projector",
@@ -187,10 +208,6 @@ MM_KEYS = [
     "pre_mm_projector_norm",
     "vision",
 ]
-
-
-def is_supported_type(module):
-    return type(module) in SUPPORTED_LAYER_TYPES or module.__class__.__name__ in SUPPORTED_LAYER_TYPES
 
 
 def is_debug_mode():

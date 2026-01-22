@@ -24,7 +24,6 @@ from auto_round.utils import (
     check_to_quantized,
     compile_func,
     deepspeed_exists,
-    is_supported_type,
     set_module,
 )
 
@@ -670,7 +669,7 @@ def wrapper_block(
     quantized_layers = []
     unquantized_layers = []
     for n, m in block.named_modules():
-        if is_supported_type(m):
+        if type(m) in SUPPORTED_LAYER_TYPES:
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
