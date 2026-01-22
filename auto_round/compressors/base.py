@@ -1290,6 +1290,8 @@ class BaseCompressor(object):
                     module = get_module(self.model, name)
                     if module is None:
                         continue
+                    else:
+                        cleaned_names.append(name)
                 return cleaned_names
 
             all_to_quantized_module_names = clean_module_names(all_to_quantized_module_names)
