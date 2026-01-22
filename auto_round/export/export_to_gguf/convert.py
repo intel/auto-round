@@ -57,6 +57,7 @@ from auto_round.utils import (
     get_module,
     get_packing_device,
     is_fp8_model,
+    is_separate_lm_head,
     logger,
 )
 
@@ -372,7 +373,6 @@ def prepare_tensors(cls):
     device = get_packing_device(cls.device)
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-
         if data_torch is None or data_torch.numel() == 0:
             continue
         # we don't need these
@@ -406,6 +406,8 @@ def prepare_tensors(cls):
         orig_device = data_torch.device
         data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
+            if ("lm_head" in name or new_name == "output.weight") and not is_separate_lm_head(cls.model):
+                continue
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
                 if new_name in tensor_info:
