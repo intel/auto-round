@@ -1471,8 +1471,11 @@ class BaseCompressor(object):
 
     def _adjust_immediate_packing_and_saving(self):
         formats = self.formats
-        if len(formats) == 1 and not formats[0].is_fake() and self.inplace and not self.has_qlayer_outside_block:
+        if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
             self.is_immediate_packing = True
+
+        if self.has_qlayer_outside_block and self.iters != 0:
+            self.is_immediate_packing = False
 
         if not ("causallm" in self.model.__class__.__name__.lower() and not self.mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this
