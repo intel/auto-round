@@ -21,6 +21,9 @@ concurrency:
 
 jobs:
   compatibility-test-arm:
+    permissions:
+      contents: read
+      pull-requests: read
     name: ${{ matrix.os-name }} on ARM64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60

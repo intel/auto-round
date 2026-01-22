@@ -12,6 +12,9 @@ from auto_round.testing_utils import require_gguf
 
 from ...helpers import get_model_path, get_tiny_model, save_tiny_model
 
+AUTO_ROUND_PATH = __file__.split("/")
+AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
 
 class TestAutoRound:
     save_dir = "./saved"
@@ -56,7 +59,7 @@ class TestAutoRound:
 
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
-            f"cd .. && {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
@@ -64,8 +67,8 @@ class TestAutoRound:
 
         from llama_cpp import Llama
 
-        gguf_file = os.listdir(f"{save_dir}/tmp_tiny_qwen_model_path-gguf")[0]
-        llm = Llama(f"{save_dir}/tmp_tiny_qwen_model_path-gguf/{gguf_file}", n_gpu_layers=-1)
+        gguf_file = os.listdir(f"{save_dir}/tiny_qwen_model_path-gguf")[0]
+        llm = Llama(f"{save_dir}/tiny_qwen_model_path-gguf/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
         shutil.rmtree(save_dir, ignore_errors=True)
@@ -137,46 +140,52 @@ class TestAutoRound:
                 shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gguf
-    def test_vlm_gguf(self):
-        model_name = "/models/Qwen2-VL-2B-Instruct"
-        from auto_round import AutoRoundMLLM
-        from auto_round.utils import mllm_load_model
+    def test_special_model(self):
+        from ...helpers import save_tiny_model
 
-        model, processor, tokenizer, image_processor = mllm_load_model(model_name)
-        autoround = AutoRoundMLLM(
-            model,
-            tokenizer=tokenizer,
-            processor=processor,
-            image_processor=image_processor,
-            device="auto",
+        model_name = get_model_path("ibm-granite/granite-4.0-h-tiny")
+        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=2)
+        from auto_round import AutoRound
+
+        autoround = AutoRound(
+            tiny_model_path,
             iters=0,
+            nsamples=8,
+            disable_opt_rtn=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        assert "mmproj-model.gguf" in os.listdir("./saved")
-        file_size = os.path.getsize("./saved/Qwen2-VL-2B-Instruct-Q4_0.gguf") / 1024**2
-        assert abs(file_size - 4242) < 5.0
-        file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        assert abs(file_size - 2580) < 5.0
+        file_name = os.listdir(quantized_model_path)[0]
+        file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
+        assert abs(file_size - 307) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(tiny_model_path, ignore_errors=True)
 
-        model_name = "/models/gemma-3-12b-it"
+    @require_gguf
+    def test_vlm_gguf(self):
+        from ...helpers import save_tiny_model
 
-        model, processor, tokenizer, image_processor = mllm_load_model(model_name)
-        autoround = AutoRoundMLLM(
-            model,
-            tokenizer=tokenizer,
-            processor=processor,
-            image_processor=image_processor,
+        model_name = "/models/gemma-3-4b-it"
+        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True)
+        from auto_round import AutoRound
+
+        autoround = AutoRound(
+            tiny_model_path,
             device="auto",
             nsamples=32,
             iters=0,
+            disable_opt_rtn=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
         assert "mmproj-model.gguf" in os.listdir("./saved")
-        file_size = os.path.getsize("./saved/gemma-3-12B-it-Q4_K_M.gguf") / 1024**2
-        assert abs(file_size - 6568) < 5.0
-        file_size = os.path.getsize("./saved/mmproj-model.gguf") / 1024**2
-        assert abs(file_size - 1599) < 5.0
+        for file in os.listdir("./saved"):
+            print(f"{file}: {os.path.getsize(os.path.join('./saved', file)) / 1024**2} MB")
+            file_size = os.path.getsize(os.path.join("./saved", file)) / 1024**2
+            if "mmproj-model.gguf" in file:
+                assert abs(file_size - 75) < 5.0
+            else:
+                assert abs(file_size - 690) < 5.0
+
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+        shutil.rmtree(tiny_model_path, ignore_errors=True)

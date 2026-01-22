@@ -98,7 +98,7 @@ def get_formats(
         seen = set()
         return [x for x in lst if not (x in seen or seen.add(x))]
 
-    formats = format.replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
+    formats = format.lower().replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
     formats = remove_duplicates(formats)  # need the keep origin order
 
     formats = _check_compatibility(formats, ar)
@@ -146,7 +146,7 @@ def _check_divisible_by_32(ar):
                         continue
                     ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+                    logger.warning_once("some layers are skipped quantization (shape not divisible by 32).")
 
 
 class OutputFormat(ABC):
@@ -353,7 +353,7 @@ class LLMCompressorFormat(OutputFormat):
             self.output_format = f"llm_compressor:{format}"
             self.backend = None
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str:
+    def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -493,7 +493,7 @@ class AutoGPTQFormat(OutputFormat):
 
 @OutputFormat.register("auto_awq")
 class AutoAWQFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
+    support_schemes = ["W4A16"]
     format_name = "auto_awq"
 
     @staticmethod
@@ -591,48 +591,6 @@ class AutoAWQFormat(OutputFormat):
         )
 
 
-@OutputFormat.register("itrex")
-@OutputFormat.register("itrex_xpu")
-class ITREXFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
-    format_name = "itrex"
-
-    def pack_layer(self, *args, **kwargs):
-        pass
-
-    def save_quantized(
-        self,
-        output_dir: str,
-        model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
-        inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
-        **kwargs,
-    ) -> torch.nn.Module:
-        backend = self.get_backend_name()
-        if backend == "itrex":
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex
-
-            export_func = save_quantized_as_itrex
-        else:
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex_xpu
-
-            export_func = save_quantized_as_itrex_xpu
-        return export_func(
-            output_dir=output_dir,
-            model=model,
-            tokenizer=tokenizer,
-            layer_config=layer_config,
-            inplace=inplace,
-            device=device,
-            backend=backend,
-            serialization_dict=serialization_dict,
-            **kwargs,
-        )
-
-
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
     support_schemes = [
@@ -650,6 +608,7 @@ class GGUFFormat(OutputFormat):
         "GGUF:Q5_K_M",
         "GGUF:Q6_K",
         "GGUF:Q8_0",
+        "GGUF:Q2_K_MIXED",
     ]
     format_name = "gguf"
 
@@ -658,13 +617,22 @@ class GGUFFormat(OutputFormat):
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
-            ar.scheme = format.upper()
 
             self.output_format = "gguf"
             self.backend_cls = GGUFFormat
             self.backend = GGUFFormat(format.split(":")[-1], ar)
         else:
-            self.output_format = f"gguf:{format}"
+            scheme = ar.scheme
+            gguf_format = f"gguf:{format.lower()}"
+            if format.lower().endswith("_mixed"):
+                from auto_round.schemes import _handle_special_schemes
+
+                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
+                gguf_format = gguf_format.lower().replace("_mixed", "_s")
+            if isinstance(scheme, str) and scheme.lower() != gguf_format:
+                logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
+                ar.scheme = gguf_format
+            self.output_format = gguf_format
             self.backend = None
         self.mllm = ar.mllm
 
