@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import re
-from dataclasses import field, dataclass
-from typing import Callable, Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import torch
 
@@ -132,6 +132,7 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
 
 class ModelNameMatcher:
     """model.config.name_or_path"""
+
     def __init__(self, pattern: str, mode="in"):
         self.pattern = pattern
         self.mode = mode
@@ -147,8 +148,10 @@ class ModelNameMatcher:
         else:
             raise ValueError("unsupported mode {self.mode}")
 
+
 class ArchitectureMatcher:
     """匹配 config.architectures"""
+
     def __init__(self, arch: str, mode="in"):
         self.arch = arch
         self.mode = mode
@@ -175,10 +178,13 @@ class PreDefinedIgnoreLayers:
 
 _PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
 
-def register_ignore_layers(matchers:list[Callable[[Any], bool]],
-                           ignore_layers:list[str|Callable[[torch.nn.Module], str|list[str]]]):
-    rule = PreDefinedIgnoreLayers(matchers,ignore_layers)
+
+def register_ignore_layers(
+    matchers: list[Callable[[Any], bool]], ignore_layers: list[str | Callable[[torch.nn.Module], str | list[str]]]
+):
+    rule = PreDefinedIgnoreLayers(matchers, ignore_layers)
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
+
 
 # Qwen3MOE
 register_ignore_layers(
@@ -186,47 +192,50 @@ register_ignore_layers(
         ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
     ],
     ignore_layers=[
-        "mlp.gate", # vllm inference issue
-    ]
+        "mlp.gate",  # vllm inference issue
+    ],
 )
 
-#longcat
+# longcat
 register_ignore_layers(
     matchers=[
         ArchitectureMatcher(r"Longcat", mode="in"),
     ],
     ignore_layers=[
-        "classifier", # transforms directly call the weights of this layer
-    ]
+        "classifier",  # transforms directly call the weights of this layer
+    ],
 )
 
-def get_glm_flash_ignore_layers(model)->list[str]:
+
+def get_glm_flash_ignore_layers(model) -> list[str]:
     num_dense_layer = 1
-    if hasattr(model, "config") and hasattr(model.config,"first_k_dense_replace"):
+    if hasattr(model, "config") and hasattr(model.config, "first_k_dense_replace"):
         num_dense_layer = model.config.first_k_dense_replace
     ignore_layers = [f"layers.{i}.mlp" for i in range(num_dense_layer)]
     return ignore_layers
 
-#glmflash
+
+# glmflash
 register_ignore_layers(
     matchers=[
         ArchitectureMatcher(r"Glm4MoeLite", mode="in"),
     ],
     ignore_layers=[
-        get_glm_flash_ignore_layers, # vllm issu
-    ]
+        get_glm_flash_ignore_layers,  # vllm issue
+    ],
 )
 
-def get_predefined_ignore_layers(model:torch.nn.Module) -> list[str]:
+
+def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
         if all(m(model) for m in rule.matchers):
             for ignore_layer in rule.ignore_layers:
-                if isinstance(ignore_layer,str):
+                if isinstance(ignore_layer, str):
                     layers.append(ignore_layer)
                 else:
-                    res=ignore_layer(model)
-                    if isinstance(res,str):
+                    res = ignore_layer(model)
+                    if isinstance(res, str):
                         layers.append(res)
                     else:
                         layers.extend(res)
