@@ -105,28 +105,13 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
         )
         self.add_argument("--add_bos_token", action="store_true", help="add BOS token")
-
-        # vllm related arguments
-        vllm_args = self.add_argument_group("vllm backend arguments")
-        vllm_args.add_argument("--revision", default=None, type=str, help="model revision for vllm")
-        vllm_args.add_argument("--tokenizer", default=None, type=str, help="tokenizer to use with vllm")
-        vllm_args.add_argument(
-            "--tokenizer_mode", default="auto", type=str, help="tokenizer mode for vllm (e.g. auto/fast/slow)"
+        self.add_argument(
+            "--vllm_args",
+            default=None,
+            type=str,
+            help="(for vllm) Custom vllm arguments in format: '--arg1=value1,--arg2=value2'. "
+            "Example: '--tensor_parallel_size=2,--gpu_memory_utilization=0.9'",
         )
-        vllm_args.add_argument("--tokenizer_revision", default=None, type=str, help="tokenizer revision for vllm")
-        vllm_args.add_argument("--prefix_token_id", default=None, type=int, help="prefix token id for vllm")
-        vllm_args.add_argument("--tensor_parallel_size", default=1, type=int, help="tensor parallel size for vllm")
-        vllm_args.add_argument("--data_parallel_size", default=1, type=int, help="data parallel size for vllm")
-        vllm_args.add_argument("--quantization", default=None, type=str, help="quantization setting for vllm")
-        vllm_args.add_argument("--max_gen_toks", default=256, type=int, help="max generation tokens for vllm")
-        vllm_args.add_argument("--swap_space", default=4, type=float, help="swap space (GB) for vllm")
-        vllm_args.add_argument("--max_batch_size", default=None, type=int, help="max batch size for vllm")
-        vllm_args.add_argument("--max_length", default=None, type=int, help="max generation length for vllm")
-        vllm_args.add_argument("--max_model_len", default=None, type=int, help="maximum model sequence length for vllm")
-        vllm_args.add_argument(
-            "--gpu_memory_utilization", default=0.9, type=float, help="target GPU memory utilization for vllm"
-        )
-        vllm_args.add_argument("--lora_local_path", default=None, type=str, help="local LoRA path for vllm")
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -162,36 +147,12 @@ def eval(args):
 
     if (batch_size := args.eval_bs) is None:
         batch_size = "auto:8"
-    is_gguf_file = False
-    if os.path.exists(args.model):
-        if os.path.isfile(args.model) and args.model.endswith(".gguf"):
-            is_gguf_file = True
-            gguf_file = os.path.basename(args.model)
-            model = os.path.dirname(args.model)
-        else:
-            for file in os.listdir(args.model):
-                if file.endswith(".gguf"):
-                    is_gguf_file = True
-                    gguf_file = file
-            model = args.model
-    eval_model_dtype = get_model_dtype(args.eval_model_dtype)
+
+    model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(args.model, args.eval_model_dtype)
+
     if is_gguf_file:
-        import torch
         from lm_eval.utils import make_table  # pylint: disable=E0401
-        from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-
-        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
-        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
-            logger.warning(
-                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
-                " but may affect accuracy."
-            )
-        model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
-        )
-        model.eval()
         st = time.time()
         res = simple_evaluate_user_model(
             model,
@@ -222,6 +183,52 @@ def eval(args):
 
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
+
+
+def eval_with_vllm(args):
+    import time
+
+    from lm_eval import evaluator  # pylint: disable=E0401
+    from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
+    from lm_eval.models.vllm_vlms import VLLM_VLM  # pylint: disable=E0401
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+
+    st = time.time()
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    device_str, _ = get_device_and_parallelism(args.device_map)
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+    if (batch_size := args.eval_bs) is None:
+        batch_size = "auto:8"
+
+    # Parse custom vllm_args if provided
+    custom_vllm_kwargs = parse_vllm_args(getattr(args, "vllm_args", None))
+
+    # Build vllm kwargs with base parameters
+    vllm_kwargs = {
+        "pretrained": args.model,
+        "dtype": eval_model_dtype,
+        "trust_remote_code": not args.disable_trust_remote_code,
+        "add_bos_token": args.add_bos_token,
+        "device": device_str,
+        "batch_size": batch_size,
+    }
+
+    # Override with custom vllm_args if provided
+    if custom_vllm_kwargs:
+        from auto_round.logger import logger
+
+        logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
+        vllm_kwargs.update(custom_vllm_kwargs)
+
+    vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
+    res = evaluator.simple_evaluate(
+        model=vllm_lm,
+        tasks=args.tasks,
+        limit=args.limit,
+    )
+
+    print(make_table(res))
+    print("evaluation running time=%ds" % (time.time() - st))
 
 
 def eval_task_by_task(
@@ -256,34 +263,17 @@ def eval_task_by_task(
 
     if batch_size is None:
         batch_size = "auto:8"
-    is_gguf_file = False
+
     if not isinstance(model, str):
         parallelism = False
+        is_gguf_file = False
+        gguf_file = None
     else:
-        if os.path.isfile(model) and model.endswith(".gguf"):
-            is_gguf_file = True
-            gguf_file = os.path.basename(model)
-            model = os.path.dirname(model)
-        else:
-            for file in os.listdir(model):
-                if file.endswith(".gguf"):
-                    is_gguf_file = True
-                    gguf_file = file
-    eval_model_dtype = get_model_dtype(eval_model_dtype)
-    if is_gguf_file:
-        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
-        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
-            logger.warning(
-                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
-                " but may affect accuracy."
-            )
+        model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(model, eval_model_dtype)
+        if is_gguf_file:
+            parallelism = False
 
-        model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
-        )
-        model.eval()
-        parallelism = False
+    eval_model_dtype = get_model_dtype(eval_model_dtype)
     if mllm:
         if batch_size is None or batch_size == "auto":
             logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
@@ -314,18 +304,93 @@ def eval_task_by_task(
             add_bos_token=add_bos_token,
         )
 
+    _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry_times)
+
+
+def _load_gguf_model_if_needed(model_path, eval_model_dtype=None):
+    """Detect and load GGUF model if the path points to a GGUF file.
+
+    Args:
+        model_path: Path to model or GGUF file
+        eval_model_dtype: Data type for model evaluation
+
+    Returns:
+        Tuple of (model, tokenizer, is_gguf_file, gguf_file_name)
+        If not a GGUF file, returns (model_path, None, False, None)
+    """
+    from auto_round.utils import logger
+
+    is_gguf_file = False
+    gguf_file = None
+    tokenizer = None
+    model = model_path
+
+    # Check if model_path is a string before processing
+    if isinstance(model_path, str):
+        if os.path.isfile(model_path) and model_path.endswith(".gguf"):
+            is_gguf_file = True
+            gguf_file = os.path.basename(model_path)
+            model = os.path.dirname(model_path)
+        elif os.path.exists(model_path):
+            for file in os.listdir(model_path):
+                if file.endswith(".gguf"):
+                    is_gguf_file = True
+                    gguf_file = file
+                    break
+
+    if is_gguf_file:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        eval_model_dtype = get_model_dtype(eval_model_dtype)
+        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+
+        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
+        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
+            logger.warning(
+                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
+                " but may affect accuracy."
+            )
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+        )
+        model.eval()
+
+    return model, tokenizer, is_gguf_file, gguf_file
+
+
+def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry_times):
+    """Evaluate tasks with automatic retry on OOM errors.
+
+    Args:
+        tasks: List of task names to evaluate
+        hflm: HuggingFace LM model instance
+        device_str: Device string for evaluation
+        batch_size: Batch size for evaluation
+        limit: Limit number of examples per task
+        retry_times: Number of retry attempts on failure
+
+    Returns:
+        Aggregated results dictionary containing results, versions, n-shot, and higher_is_better
+    """
+    import time
+    import traceback
+
+    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+
+    from auto_round.utils import logger
+
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
 
-    from lm_eval.utils import make_table  # pylint: disable=E0401
-
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
-    import time
-
     st = time.time()
+
     for task in tasks:
-        while retry_times:
+        current_retry_times = retry_times
+        while current_retry_times:
             try:
                 res = lm_simple_evaluate(
                     model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit
@@ -350,7 +415,7 @@ def eval_task_by_task(
                     logger.error(cuda_error_msg)
                     traceback.print_exc()
                     break
-            retry_times -= 1
+            current_retry_times -= 1
 
         if not res_all:
             res_all = res
@@ -365,49 +430,57 @@ def eval_task_by_task(
     print("total eval time:", time.time() - st)
 
 
-def eval_with_vllm(args):
-    import time
+def parse_vllm_args(vllm_args_str):
+    """Parse custom vllm arguments from string format.
 
-    from lm_eval import evaluator  # pylint: disable=E0401
-    from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
-    from lm_eval.utils import make_table  # pylint: disable=E0401
+    Args:
+        vllm_args_str: String containing vllm arguments in format:
+                      "--arg1=value1,--arg2=value2" or "arg1=value1,arg2=value2"
 
-    st = time.time()
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    device_str, _ = get_device_and_parallelism(args.device_map)
-    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-    if (batch_size := args.eval_bs) is None:
-        batch_size = "auto:8"
+    Returns:
+        Dictionary of parsed arguments with appropriate types (int, float, bool, or string)
 
-    vllm_lm = VLLM(
-        pretrained=args.model,
-        dtype=eval_model_dtype,
-        revision=args.revision,
-        trust_remote_code=not args.disable_trust_remote_code,
-        tokenizer=args.tokenizer,
-        tokenizer_mode=args.tokenizer_mode,
-        tokenizer_revision=args.tokenizer_revision,
-        add_bos_token=args.add_bos_token,
-        prefix_token_id=args.prefix_token_id,
-        tensor_parallel_size=args.tensor_parallel_size,
-        quantization=args.quantization,
-        max_gen_toks=args.max_gen_toks,
-        swap_space=args.swap_space,
-        batch_size=batch_size,
-        max_batch_size=args.max_batch_size,
-        max_length=args.max_length,
-        max_model_len=args.max_model_len,
-        seed=args.seed,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        device=device_str,
-        data_parallel_size=args.data_parallel_size,
-        lora_local_path=args.lora_local_path,
-    )
-    res = evaluator.simple_evaluate(
-        model=vllm_lm,
-        tasks=args.tasks,
-        limit=args.limit,
-    )
+    Example:
+        >>> parse_vllm_args("--tensor_parallel_size=2,--gpu_memory_utilization=0.9")
+        {'tensor_parallel_size': 2, 'gpu_memory_utilization': 0.9}
+    """
+    from auto_round.logger import logger
 
-    print(make_table(res))
-    print("evaluation running time=%ds" % (time.time() - st))
+    custom_vllm_kwargs = {}
+
+    if not vllm_args_str:
+        return custom_vllm_kwargs
+
+    logger.info(f"Parsing custom vllm arguments: {vllm_args_str}")
+
+    for arg_pair in vllm_args_str.split(","):
+        arg_pair = arg_pair.strip()
+        if "=" in arg_pair:
+            # Remove leading '--' if present
+            arg_pair = arg_pair.removeprefix("--")
+            key, value = arg_pair.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            # Try to convert value to appropriate type
+            try:
+                # Try int first
+                if value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
+                    custom_vllm_kwargs[key] = int(value)
+                # Try float
+                elif "." in value:
+                    custom_vllm_kwargs[key] = float(value)
+                # Try boolean
+                elif value.lower() in ("true", "false"):
+                    custom_vllm_kwargs[key] = value.lower() == "true"
+                # Keep as string
+                else:
+                    custom_vllm_kwargs[key] = value
+                logger.info(
+                    f"  Parsed vllm arg: {key}={custom_vllm_kwargs[key]} (type: {type(custom_vllm_kwargs[key]).__name__})"
+                )
+            except Exception as e:
+                logger.warning(f"  Failed to parse vllm arg '{key}={value}': {e}, keeping as string")
+                custom_vllm_kwargs[key] = value
+
+    return custom_vllm_kwargs
