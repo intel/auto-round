@@ -175,18 +175,17 @@ class PreDefinedIgnoreLayers:
 
 _PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
 
-def register_ignore_layers(matchers, ignore_layers):
+def register_ignore_layers(matchers:list[Callable[[Any], bool]], ignore_layers:list[str]):
     rule = PreDefinedIgnoreLayers(matchers,ignore_layers)
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
-    _PRE_DEFINED_IGNORE_LAYERS.sort(key=lambda r: r.priority)
 
 # Qwen3MOE
 register_ignore_layers(
     matchers=[
-        ArchitectureMatcher(r"Qwen3.*moe", mode="regex"),
+        ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
     ],
     ignore_layers=[
-        "mlp.gate",
+        "mlp.gate", # vllm inference issue
     ]
 )
 
@@ -196,7 +195,7 @@ register_ignore_layers(
         ArchitectureMatcher(r"Longcat", mode="in"),
     ],
     ignore_layers=[
-        "classifier",
+        "classifier", # transforms directly call the weights of this layer
     ]
 )
 
