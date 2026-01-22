@@ -175,7 +175,8 @@ class PreDefinedIgnoreLayers:
 
 _PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
 
-def register_ignore_layers(matchers:list[Callable[[Any], bool]], ignore_layers:list[str]):
+def register_ignore_layers(matchers:list[Callable[[Any], bool]],
+                           ignore_layers:list[str|Callable[[torch.nn.Module], str|list[str]]]):
     rule = PreDefinedIgnoreLayers(matchers,ignore_layers)
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
@@ -199,11 +200,36 @@ register_ignore_layers(
     ]
 )
 
+def get_glm_flash_ignore_layers(model)->list[str]:
+    num_dense_layer = 1
+    if hasattr(model, "config") and hasattr(model.config,"first_k_dense_replace"):
+        num_dense_layer = model.config.first_k_dense_replace
+    ignore_layers = [f"layers.{i}.mlp" for i in range(num_dense_layer)]
+    return ignore_layers
+
+#glmflash
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Glm4MoeLite", mode="in"),
+    ],
+    ignore_layers=[
+        get_glm_flash_ignore_layers, # vllm issu
+    ]
+)
+
 def get_predefined_ignore_layers(model:torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
         if all(m(model) for m in rule.matchers):
-            layers.extend(rule.ignore_layers)
+            for ignore_layer in rule.ignore_layers:
+                if isinstance(ignore_layer,str):
+                    layers.append(ignore_layer)
+                else:
+                    res=ignore_layer(model)
+                    if isinstance(res,str):
+                        layers.append(res)
+                    else:
+                        layers.extend(res)
             break
 
     return list(dict.fromkeys(layers))
