@@ -189,7 +189,7 @@ class MLLMCompressor(BaseCompressor):
             for require_lib in ["pillow", "torchvision"]:
                 require_version(
                     f"{require_lib}",
-                    f"pillow and torchvision are required for quantizing non-text modules, please install them with `pip install pillow torchvision`",
+                    "pillow and torchvision are required for quantizing non-text modules, please install them with `pip install pillow torchvision`",
                 )
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -454,7 +454,12 @@ class MLLMCompressor(BaseCompressor):
         if self.processor is not None and not hasattr(self.processor, "chat_template"):
             self.processor.chat_template = None
         compressed_model = super().save_quantized(
-            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, quant_nontext_module=self.quant_nontext_module if hasattr(self, "quant_nontext_module") else False, **kwargs
+            output_dir=output_dir,
+            format=format,
+            inplace=inplace,
+            processor=self.processor,
+            quant_nontext_module=self.quant_nontext_module if hasattr(self, "quant_nontext_module") else False,
+            **kwargs,
         )
         return compressed_model
 
@@ -468,7 +473,7 @@ class MLLMCompressor(BaseCompressor):
                 if vlm_key in layer_name and check_to_quantized(layer_config[layer_name]):
                     return True
         return quant_nontext_module
-    
+
     def _immediate_pack(self, name: str):
         if not self.immediate_packing:
             return

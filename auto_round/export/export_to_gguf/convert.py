@@ -84,7 +84,9 @@ def download_convert_file(redownload=False):
         f.write(response.text)
 
 
-def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usage=False, device=None, quant_nontext_module=False):
+def wrapper_model_instance(
+    model_instance, model, layer_config, low_cpu_mem_usage=False, device=None, quant_nontext_module=False
+):
     if model_instance.model_arch == gguf.MODEL_ARCH.MMPROJ and model_instance.fname_out.is_dir():
         model_instance.fname_out = model_instance.fname_out / "mmproj-model.gguf"
     model_instance.model = model
@@ -526,7 +528,7 @@ def prepare_tensors(cls):
                     data_qtype = gguf.GGMLQuantizationType.Q5_0
                 elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q8_0
-            
+
             if cls.model_arch == gguf.MODEL_ARCH.MMPROJ and cls.quant_nontext_module is False:
                 data_qtype = gguf.GGMLQuantizationType.F32
 
