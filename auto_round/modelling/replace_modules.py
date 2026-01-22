@@ -72,6 +72,22 @@ def release_original_module_(model: torch.nn.Module) -> None:
     model.apply(_clear_source_module)
 
 
+def _has_meta_params_or_buffers(model: PreTrainedModel) -> bool:
+    for _, param in model.named_parameters():
+        if param.device.type == "meta":
+            return True
+    for _, buffer in model.named_buffers():
+        if buffer.device.type == "meta":
+            return True
+    return False
+
+
+def safe_to_cpu_(model: torch.nn.Module) -> None:
+    if _has_meta_params_or_buffers(model):
+        materialize_model_(model)
+    model.to("cpu")
+
+
 class ReplacementModuleBase(ABC, torch.nn.Module):
     """
     Abstract base class for module replacement during calibration phase.
