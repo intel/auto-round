@@ -167,7 +167,7 @@ class ArchitectureMatcher:
         elif self.mode == "regex":
             return re.search(self.arch, archs_str) is not None
         else:
-            raise ValueError("unsupported mode {self.mode}")
+            raise ValueError(f"unsupported mode {self.mode}")
 
 
 @dataclass
