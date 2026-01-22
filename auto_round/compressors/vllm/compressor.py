@@ -140,12 +140,12 @@ class VllmCompressor(BaseCompressor):
         check_vllm_installed()
         from vllm import LLM
 
-        logger.warning("Vllm model quantization is experimental.")
-        self.llm, self.model = vllm_load_model(model)
+        logger.warning("vllm model quantization is experimental.")
+        self.llm, model, tokenizer = vllm_load_model(model)
 
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
 
-        all_blocks = get_block_names(self.model)
+        all_blocks = get_block_names(model)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
@@ -162,10 +162,9 @@ class VllmCompressor(BaseCompressor):
 
         seqlen = 2048 if seqlen is None else seqlen
 
-        kwargs["vllm"] = True
         super(VllmCompressor, self).__init__(
-            model=self.model,
-            tokenizer=self.llm.llm_engine.input_processor.tokenizer,
+            model=model,
+            tokenizer=tokenizer,
             platform=platform,
             scheme=scheme,
             layer_config=layer_config,
