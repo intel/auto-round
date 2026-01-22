@@ -2011,6 +2011,7 @@ class BaseCompressor(object):
                                 )
 
                             try:
+                                materialize_model_(self.model)
                                 self.model = dispatch_model(self.model, device_map=device_map)
                             except ValueError as e:
                                 if "offload_dir" in e.__str__():
