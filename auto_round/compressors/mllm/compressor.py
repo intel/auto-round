@@ -189,7 +189,8 @@ class MLLMCompressor(BaseCompressor):
             for require_lib in ["pillow", "torchvision"]:
                 require_version(
                     f"{require_lib}",
-                    "pillow and torchvision are required for quantizing non-text modules, please install them with `pip install pillow torchvision`",
+                    "pillow and torchvision are required for quantizing non-text modules,"
+                    " please install them with `pip install pillow torchvision`",
                 )
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -475,7 +476,7 @@ class MLLMCompressor(BaseCompressor):
         return quant_nontext_module
 
     def _immediate_pack(self, name: str):
-        if not self.immediate_packing:
+        if not self.is_immediate_packing:  # pylint: disable=E1101
             return
         self.formats[0].immediate_pack(
             name=name,
