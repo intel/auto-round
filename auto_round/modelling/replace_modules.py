@@ -26,6 +26,7 @@ BUILTIN_MODULES = {
     "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
     "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
     "DeepseekV2Attention": LazyImport("auto_round.modelling.deepseek_v2"),
+    "Glm4MoeLiteMoE": LazyImport("auto_round.modelling.glm4_moe_lite"),
 }
 
 
@@ -180,3 +181,4 @@ def apply_replacements(
         logger.info(f"Replaced {len(replaced)} modules")
 
     return model
+

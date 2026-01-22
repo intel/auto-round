@@ -3,7 +3,7 @@ import shutil
 import pytest
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
+from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3ForCausalLM, Qwen3MLP
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
@@ -22,6 +22,18 @@ def setup_gpt_oss():
     config.num_hidden_layers = 1  # Reduce layers for testing
     model = GptOssForCausalLM(config)
     output_dir = "test_quantized_gpt_oss"
+    return model, tokenizer, output_dir, config
+
+
+@pytest.fixture
+def setup_glm4_moe_lite():
+    """Fixture to set up the glm4_moe_lite model and tokenizer."""
+    model_name = "/dataset/GLM-4.7-Flash/"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name)
+    config.num_hidden_layers = 2  # Reduce layers for testing
+    model = AutoModelForCausalLM.from_config(config)
+    output_dir = "/tmp/test_quantized_glm4_moe_lite"
     return model, tokenizer, output_dir, config
 
 
@@ -231,3 +243,53 @@ def test_register_module_out_of_tree_model(setup_qwen3):
     for name in check_module_names:
         assert has_module(loaded_model, name), f"Module {name} not found in loaded model."
     loaded_model.to("cuda")
+
+
+def test_glm4_moe_lite(setup_glm4_moe_lite):
+    model, tokenizer, output_dir, config = setup_glm4_moe_lite
+    autoround = AutoRound(
+        model,
+        tokenizer=tokenizer,
+        scheme="W4A16",
+        nsamples=2,
+        seqlen=32,
+        iters=1,
+        ignore_layers="shared_experts,layers.0.mlp",
+    )
+    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    assert quantized_model is not None, "Quantized model should not be None."
+    loaded_model = AutoModelForCausalLM.from_pretrained(output_dir, device_map="auto")
+
+    for n, m in quantized_model.named_modules():
+        if m.__class__.__name__ == "QuantLinear":
+            loaded_m = loaded_model.get_submodule(n)
+            assert (loaded_m.qweight.to("cuda") == m.qweight.to("cuda")).all()
+    # test generation
+    tokenizer = AutoTokenizer.from_pretrained(output_dir)
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(device=loaded_model.device)
+    print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
+    # test vllm loading
+    from vllm import LLM, SamplingParams
+
+    # Sample prompts.
+    prompts = [
+        "The capital of France is",
+        "The future of AI is",
+    ]
+    # Create a sampling params object.
+    sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+    # Create an LLM.
+    QUANTIZATION = "auto-round"  # quantized_model_path
+    llm = LLM(model=output_dir, quantization=QUANTIZATION, trust_remote_code=True, tensor_parallel_size=4)
+    outputs = llm.generate(prompts, sampling_params)
+    # Print the outputs.
+    for output in outputs:
+        prompt = output.prompt
+        generated_text = output.outputs[0].text
+        # if "France" in prompt:
+        assert "!!!" not in generated_text
+        print(f"{prompt}: {generated_text}")
+    # clean the output directory after test
+    shutil.rmtree(output_dir, ignore_errors=True)
+

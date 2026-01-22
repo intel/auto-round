@@ -1,7 +1,7 @@
 import shutil
 
 import pytest
-from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
+from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
@@ -12,6 +12,7 @@ from ...helpers import get_model_path
 gpt_oss_name_or_path = get_model_path("unsloth/gpt-oss-20b-BF16")
 llama4_name_or_path = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
 qwen3_vl_moe_name_or_path = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
+glm4_moe_lite_name_or_path = get_model_path("zai-org/GLM-4.7-Flash")
 # local path for debug
 # llama4_name_or_path = get_model_path("/dataset/Llama-4-Scout-17B-16E-Instruct")
 
@@ -54,6 +55,18 @@ def setup_qwen3_vl_moe():
     model = Qwen3VLMoeForConditionalGeneration(config)
     output_dir = "/tmp/test_quantized_qwen3_vl_moe"
     return model, tokenizer, processor, output_dir, config
+
+
+@pytest.fixture
+def setup_glm4_moe_lite():
+    """Fixture to set up the glm4_moe_lite model and tokenizer."""
+    model_name = glm4_moe_lite_name_or_path
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name)
+    config.num_hidden_layers = 2  # Reduce layers for testing
+    model = AutoModelForCausalLM.from_config(config)
+    output_dir = "/tmp/test_quantized_glm4_moe_lite"
+    return model, tokenizer, output_dir, config
 
 
 def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
@@ -171,3 +184,32 @@ def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def test_glm4_moe_lite(setup_glm4_moe_lite):
+    model, tokenizer, output_dir, config = setup_glm4_moe_lite
+    autoround = AutoRound(
+        model,
+        tokenizer=tokenizer,
+        scheme="W4A16",
+        nsamples=2,
+        seqlen=32,
+        iters=1,
+        ignore_layers="shared_experts,layers.0.mlp",
+    )
+    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    assert quantized_model is not None, "Quantized model should not be None."
+    loaded_model = AutoModelForCausalLM.from_pretrained(output_dir, device_map="cpu")
+
+    for n, m in quantized_model.named_modules():
+        if m.__class__.__name__ == "QuantLinear":
+            loaded_m = loaded_model.get_submodule(n)
+            assert (loaded_m.qweight.to("cpu") == m.qweight.to("cpu")).all()
+    # test generation
+    tokenizer = AutoTokenizer.from_pretrained(output_dir)
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(device=loaded_model.device)
+    print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
+    # clean the output directory after test
+    shutil.rmtree(output_dir, ignore_errors=True)
+
