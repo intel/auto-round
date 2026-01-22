@@ -1283,7 +1283,7 @@ class BaseCompressor(object):
                 if lm_head_name is not None:
                     tied_weight_values.append(lm_head_name)
 
-            if block_way: # The ram usage is a little higher
+            if block_way:  # The ram usage is a little higher
                 all_to_quantized_module_names = list(set(all_to_quantized_module_names))
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
@@ -1296,7 +1296,11 @@ class BaseCompressor(object):
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                                 all_to_quantized_module_names.remove(m.global_name)
-                            elif not any(m.children()) and len(m.state_dict()) > 0 and m.global_name not in tied_weight_values:
+                            elif (
+                                not any(m.children())
+                                and len(m.state_dict()) > 0
+                                and m.global_name not in tied_weight_values
+                            ):
                                 set_module(self.model, name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
                                     shard_writer(self, name=name)
