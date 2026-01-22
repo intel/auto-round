@@ -1297,9 +1297,9 @@ class BaseCompressor(object):
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                                 all_to_quantized_module_names.remove(m.global_name)
                             elif not any(m.children()) and len(m.state_dict()) > 0 and m.global_name not in tied_weight_values:
-                                set_module(self.model, name, copy.deepcopy(m))
+                                set_module(self.model, m.global_name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
-                                    shard_writer(self, name=name)
+                                    shard_writer(self, name=m.global_name)
                                 m.to("meta")
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
