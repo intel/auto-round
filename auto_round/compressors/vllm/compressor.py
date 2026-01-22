@@ -250,7 +250,6 @@ class VllmCompressor(BaseCompressor):
         if is_fp8_model(self.model):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
         self.quantized = True
-        import pdb;pdb.set_trace()
         return self.model, self.layer_config
 
     def _quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
@@ -313,9 +312,10 @@ class VllmCompressor(BaseCompressor):
 
         # self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         all_to_quantized_module_names = list(set(all_to_quantized_module_names))
-        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
 
         all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
         for block_names in all_blocks:
@@ -429,5 +429,51 @@ class VllmCompressor(BaseCompressor):
         Returns:
             object: The compressed model object.
         """
+        import os
+        import json
+        from functools import partial
+        from huggingface_hub import split_torch_state_dict_into_shards
+        from safetensors.torch import save_file as safe_save_file
+
+        def save_pretrained(model_to_save, save_directory, max_shard_size="5GB", safe_serialization=True, **kwargs):
+            model_to_save.config.save_pretrained(save_directory)
+            state_dict = model_to_save.state_dict()
+            filename_pattern = "model{suffix}.safetensors"
+
+            state_dict_split = split_torch_state_dict_into_shards(
+                state_dict, filename_pattern=filename_pattern, max_shard_size=max_shard_size
+            )
+
+            metadata = {}
+            metadata["format"] = "pt"
+
+            index = None
+            if state_dict_split.is_sharded:
+                total_params = list(model_to_save.named_parameters())
+                total_numel = []
+                for _, param in total_params:
+                    total_numel.append(param.numel())
+                index = {
+                    "metadata": {"total_parameters": sum(total_numel), **state_dict_split.metadata},
+                    "weight_map": state_dict_split.tensor_to_filename,
+            }
+            for shard_file, tensor_names in state_dict_split.filename_to_tensors.items():
+                filename = os.path.join(save_directory, shard_file)
+                shard_state_dict = {}
+                for tensor_name in tensor_names:
+                    # Get the tensor, and remove it from state_dict to avoid keeping the ref
+                    tensor = state_dict.pop(tensor_name)
+                    shard_state_dict[tensor_name] = tensor.contiguous()
+                safe_save_file(shard_state_dict, filename, metadata=metadata)
+            del shard_state_dict
+
+            if index is not None:
+                save_index_file = os.path.join(save_directory, "model.safetensors.index.json")
+                # Save the index as well
+                with open(save_index_file, "w", encoding="utf-8") as f:
+                    content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                    f.write(content)
+
+        self.model.save_pretrained = partial(save_pretrained, self.model)
         compressed_model = super().save_quantized(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
         return compressed_model

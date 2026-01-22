@@ -188,6 +188,10 @@ def pack_layer(layer_name, model, backend, device=None):
     elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
+    else:
+        # vllm module
+        in_features = layer.weight.shape[0]
+        out_features = layer.weight.shape[1]
     bias = layer.bias is not None
 
     new_layer = QuantLinear(  ##pylint: disable=E1123
