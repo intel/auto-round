@@ -97,7 +97,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device,
+    unsupported_meta_device, get_lm_head_name
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -1273,6 +1273,14 @@ class BaseCompressor(object):
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             cnt = 0
             pbar = tqdm(all_to_quantized_module_names)
+            # A workaround to trigger garbage collection in time
+            tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
+            tied_weight_values = list(tied_weight_keys.values())
+            # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
+            if hasattr(self, "formats") and self.formats[0].is_gguf():
+                lm_head_name = get_lm_head_name(self.model)
+                if lm_head_name is not None:
+                    tied_weight_values.append(lm_head_name)
             for n, m in self.model.named_modules():
                 if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                     pbar.set_description(f"Quantizing {m.global_name}")
@@ -1282,8 +1290,8 @@ class BaseCompressor(object):
                     if cnt % clear_mem_freq == 0:
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
-                # A workaround to trigger garbage collection in time
-                elif not any(m.children()) and len(m.state_dict()) > 0:
+
+                elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weight_values:
                     set_module(self.model, n, copy.deepcopy(m))
                     if self.is_immediate_saving:
                         shard_writer(self, name=n)
