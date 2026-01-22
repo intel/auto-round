@@ -1283,6 +1283,16 @@ class BaseCompressor(object):
             # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
+
+            def clean_module_names(all_to_quantized_module_names: list[str]) -> list[str]:
+                cleaned_names = []
+                for name in all_to_quantized_module_names:
+                    module = get_module(self.model, name)
+                    if module is None:
+                        continue
+                return cleaned_names
+
+            all_to_quantized_module_names = clean_module_names(all_to_quantized_module_names)
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             if clear_mem_freq == 0:
