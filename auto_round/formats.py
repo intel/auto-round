@@ -43,10 +43,10 @@ from auto_round.utils import (
     SUPPORTED_FORMATS,
     check_to_quantized,
     copy_python_files_from_model_cache,
+    find_matching_blocks,
+    get_block_names,
     get_module,
     logger,
-    get_block_names,
-    find_matching_blocks
 )
 
 
@@ -682,7 +682,7 @@ class GGUFFormat(OutputFormat):
             image_processor,
             model_type,
             device,
-            quant_nontext_module
+            quant_nontext_module,
         )
 
     def save_quantized(

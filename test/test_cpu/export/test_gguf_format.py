@@ -214,7 +214,7 @@ class TestGGUF:
                 assert abs(file_size - 264) < 5.0
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree(tiny_model_path, ignore_errors=True)
-    
+
     def test_vlm_gguf_wo_quant_nontext_module(self):
         from ...helpers import save_tiny_model
 
