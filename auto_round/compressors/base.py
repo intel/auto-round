@@ -1470,7 +1470,7 @@ class BaseCompressor(object):
         )
 
     def _adjust_immediate_packing_and_saving(self):
-        formats = self.formats
+        formats = get_attr(self,"formats",[])
         if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
             self.is_immediate_packing = True
 
