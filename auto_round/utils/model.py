@@ -544,6 +544,7 @@ def vllm_load_model(
 ):
     check_vllm_installed()
     from vllm import LLM
+    from transformers import AutoTokenizer
 
     if isinstance(pretrained_model_name_or_path, str):
         llm = LLM(pretrained_model_name_or_path, enforce_eager=True, cpu_offload_gb=1024, gpu_memory_utilization=0.5)
@@ -553,6 +554,8 @@ def vllm_load_model(
         model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     else:
         raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
+
+    tokenizer = AutoTokenizer.from_pretrained(llm.llm_engine.model_config.model)
 
     if not hasattr(model.__class__, 'dtype'):
         @property
@@ -566,7 +569,7 @@ def vllm_load_model(
             return self.lm_head.weight.device
         setattr(model.__class__, 'device', device)
 
-    return llm, model
+    return llm, model, tokenizer
 
 
 def is_pure_text_model(model):
