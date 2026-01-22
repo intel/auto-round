@@ -152,7 +152,7 @@ class ModelNameMatcher:
 
 
 class ArchitectureMatcher:
-    """匹配 config.architectures"""
+    """match config.architectures"""
 
     def __init__(self, arch: str, mode="in"):
         self.arch = arch
