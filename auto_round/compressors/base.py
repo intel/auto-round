@@ -1274,7 +1274,7 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            block_way = False
+            use_blockwise_quantization = False
             tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
             tied_weight_values = list(tied_weight_keys.values())
             # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
@@ -1283,7 +1283,7 @@ class BaseCompressor(object):
                 if lm_head_name is not None:
                     tied_weight_values.append(lm_head_name)
 
-            if block_way:  # The ram usage is a little higher
+            if use_blockwise_quantization:  # The ram usage is a little higher
                 all_to_quantized_module_names = list(set(all_to_quantized_module_names))
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
