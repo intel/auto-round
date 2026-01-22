@@ -146,7 +146,7 @@ def _check_divisible_by_32(ar):
                         continue
                     ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+                    logger.warning_once("some layers are skipped quantization (shape not divisible by 32).")
 
 
 class OutputFormat(ABC):
@@ -353,7 +353,7 @@ class LLMCompressorFormat(OutputFormat):
             self.output_format = f"llm_compressor:{format}"
             self.backend = None
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str:
+    def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend

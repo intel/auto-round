@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/intel/auto-round/blob/main/docs/step_by_step.md
+    about: Please check the documentation for usage instructions
+  - name: Community Discussion
+    url: https://github.com/intel/auto-round/discussions
+    about: Ask questions and discuss with the community
