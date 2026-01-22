@@ -62,7 +62,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import update_module
+from auto_round.special_model_handler import update_module, get_predefined_ignore_layers
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -314,6 +314,10 @@ class BaseCompressor(object):
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
+        predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+        if predefined_ignore_layers:
+            logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+            self.ignore_layers.extend(predefined_ignore_layers)
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)

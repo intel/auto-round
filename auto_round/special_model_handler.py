@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
+from dataclasses import field, dataclass
+from typing import Callable, Any
+
 import torch
 
 import auto_round.modelling as auto_round_modelling
@@ -124,3 +128,83 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
             )
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
+
+
+class ModelNameMatcher:
+    """model.config.name_or_path"""
+    def __init__(self, pattern: str, mode="in"):
+        self.pattern = pattern
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        name = getattr(model.config, "name_or_path", "")
+        if self.mode == "full":
+            return name == self.pattern
+        elif self.mode == "in":
+            return self.pattern in name
+        elif self.mode == "regex":
+            return re.search(self.pattern, name) is not None
+        else:
+            raise ValueError("unsupported mode {self.mode}")
+
+class ArchitectureMatcher:
+    """匹配 config.architectures"""
+    def __init__(self, arch: str, mode="in"):
+        self.arch = arch
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        archs = getattr(model.config, "architectures", [])
+        archs_str = ",".join(archs) if isinstance(archs, list) else str(archs)
+
+        if self.mode == "full":
+            return archs_str == self.arch
+        elif self.mode == "in":
+            return self.arch in archs_str
+        elif self.mode == "regex":
+            return re.search(self.arch, archs_str) is not None
+        else:
+            raise ValueError("unsupported mode {self.mode}")
+
+
+@dataclass
+class PreDefinedIgnoreLayers:
+    matchers: list[Callable[[Any], bool]]
+    ignore_layers: list[str] = field(default_factory=list)
+
+
+_PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
+
+def register_ignore_layers(matchers, ignore_layers):
+    rule = PreDefinedIgnoreLayers(matchers,ignore_layers)
+    _PRE_DEFINED_IGNORE_LAYERS.append(rule)
+    _PRE_DEFINED_IGNORE_LAYERS.sort(key=lambda r: r.priority)
+
+# Qwen3MOE
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Qwen3.*moe", mode="regex"),
+    ],
+    ignore_layers=[
+        "mlp.gate",
+    ]
+)
+
+#longcat
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Longcat", mode="in"),
+    ],
+    ignore_layers=[
+        "classifier",
+    ]
+)
+
+def get_predefined_ignore_layers(model:torch.nn.Module) -> list[str]:
+    layers = []
+    for rule in _PRE_DEFINED_IGNORE_LAYERS:
+        if all(m(model) for m in rule.matchers):
+            layers.extend(rule.ignore_layers)
+            break
+
+    return list(dict.fromkeys(layers))
