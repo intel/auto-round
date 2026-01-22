@@ -36,6 +36,20 @@ body:
       required: false
   
   - type: textarea
+    id: definition-of-done
+    attributes:
+      label: Definition of Done
+      description: Define the criteria that determine when this feature is complete. What needs to be implemented, tested, or documented?
+      placeholder: |
+        - [ ] Feature implemented and working as described
+        - [ ] Unit tests added/updated
+        - [ ] Documentation updated
+        - [ ] Performance impact assessed
+        - [ ] Example usage provided
+    validations:
+      required: false
+  
+  - type: textarea
     id: additional-context
     attributes:
       label: Additional Context
