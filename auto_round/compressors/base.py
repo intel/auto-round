@@ -82,6 +82,7 @@ from auto_round.utils import (
     flatten_list,
     get_block_names,
     get_layer_names_in_block,
+    get_lm_head_name,
     get_module,
     htcore,
     is_auto_device_mapping,
@@ -97,7 +98,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device, get_lm_head_name
+    unsupported_meta_device,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
