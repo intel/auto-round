@@ -1274,11 +1274,7 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            cnt = 0
-            pbar = tqdm(all_to_quantized_module_names)
-            # A workaround to trigger garbage collection in time
+            block_way = False
             tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
             tied_weight_values = list(tied_weight_keys.values())
             # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
@@ -1286,21 +1282,57 @@ class BaseCompressor(object):
                 lm_head_name = get_lm_head_name(self.model)
                 if lm_head_name is not None:
                     tied_weight_values.append(lm_head_name)
-            for n, m in self.model.named_modules():
-                if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
-                    pbar.set_description(f"Quantizing {m.global_name}")
-                    self._quantize_layer_via_rtn(m.global_name)
-                    cnt += 1
-                    pbar.update()
-                    if cnt % clear_mem_freq == 0:
+
+            if block_way: # The ram usage is a little higher
+                all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+
+                all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+                pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+                for block_names in all_blocks:
+                    for block_name in block_names:
+                        pbar.set_description(f"Quantizing {block_name}")
+                        block = get_module(self.model, block_name)
+                        for name, m in block.named_modules():
+                            if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                                self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                                all_to_quantized_module_names.remove(m.global_name)
+                            elif not any(m.children()) and len(m.state_dict()) > 0 and m.global_name not in tied_weight_values:
+                                set_module(self.model, name, copy.deepcopy(m))
+                                if self.is_immediate_saving:
+                                    shard_writer(self, name=name)
+                                m.to("meta")
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
+                        pbar.update(1)
+                cnt = 1
+                for name in all_to_quantized_module_names:
+                    logger.info(f"Quantizing remaining layer {name} on CPU.")
+                    self._quantize_layer_via_rtn(name, to_cpu=True)
+                    cnt += 1
+                    if cnt % 10 == 0:
+                        clear_memory(device_list=self.device_list)
+                        memory_monitor.log_summary()
+            else:
+                block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+                clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+                cnt = 0
+                pbar = tqdm(all_to_quantized_module_names)
 
-                elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weight_values:
-                    set_module(self.model, n, copy.deepcopy(m))
-                    if self.is_immediate_saving:
-                        shard_writer(self, name=n)
-                    m.to("meta")
+                for n, m in self.model.named_modules():
+                    if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                        pbar.set_description(f"Quantizing {m.global_name}")
+                        self._quantize_layer_via_rtn(m.global_name)
+                        cnt += 1
+                        pbar.update()
+                        if cnt % clear_mem_freq == 0:
+                            clear_memory(device_list=self.device_list)
+                            memory_monitor.log_summary()
+
+                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weight_values:
+                        set_module(self.model, n, copy.deepcopy(m))
+                        if self.is_immediate_saving:
+                            shard_writer(self, name=n)
+                        m.to("meta")
 
         # Convert remaining fp8
         if is_fp8_model(self.model):
