@@ -181,4 +181,3 @@ def apply_replacements(
         logger.info(f"Replaced {len(replaced)} modules")
 
     return model
-

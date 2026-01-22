@@ -25,9 +25,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from transformers import Glm4MoeLiteConfig
-    from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import (
-    Glm4MoeLiteMoE
-)
+    from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteMoE
 
 
 def _update_parameter(
@@ -66,7 +64,7 @@ class LinearGlm4MoeLiteMoE(ReplacementModuleBase):
         self.calibrate_all_experts = calibrate_all_experts
         self.experts = SequentialGlm4MoeLiteNaiveMoe(config, original.experts)
         self.shared_experts = original.shared_experts
-    
+
     def forward(self, hidden_states):
         residuals = hidden_states
         orig_shape = hidden_states.shape
@@ -76,11 +74,9 @@ class LinearGlm4MoeLiteMoE(ReplacementModuleBase):
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         experts_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(
-                topk_indices, num_classes=len(self.experts)
-            )
+            expert_mask = torch.nn.functional.one_hot(topk_indices, num_classes=len(self.experts))
             expert_mask = expert_mask.permute(2, 0, 1)
-            
+
         for expert_idx, expert in enumerate(self.experts):
             mask = expert_mask[expert_idx]
             token_indices, weight_indices = torch.where(mask)
@@ -144,8 +140,8 @@ class SequentialGlm4MoeLiteNaiveMoe(torch.nn.ModuleList):
                 gate_up = original.gate_up_proj[i]
                 down = original.down_proj[i]
 
-                gate_proj = gate_up[:intermediate_size,:]
-                up_proj = gate_up[intermediate_size:,:]
+                gate_proj = gate_up[:intermediate_size, :]
+                up_proj = gate_up[intermediate_size:, :]
 
                 _update_parameter(self[i].gate_proj, "weight", gate_proj)
                 _update_parameter(self[i].up_proj, "weight", up_proj)
@@ -153,4 +149,3 @@ class SequentialGlm4MoeLiteNaiveMoe(torch.nn.ModuleList):
             del gate_up, down, gate_proj, up_proj
             original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
-

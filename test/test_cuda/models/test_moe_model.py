@@ -292,4 +292,3 @@ def test_glm4_moe_lite(setup_glm4_moe_lite):
         print(f"{prompt}: {generated_text}")
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
-

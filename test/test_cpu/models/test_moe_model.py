@@ -212,4 +212,3 @@ def test_glm4_moe_lite(setup_glm4_moe_lite):
     print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
-
