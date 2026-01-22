@@ -57,6 +57,7 @@ from auto_round.utils import (
     get_module,
     get_packing_device,
     is_fp8_model,
+    is_separate_tensor,
     logger,
 )
 
@@ -375,7 +376,8 @@ def prepare_tensors(cls):
     device = get_packing_device(cls.device)
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-
+        if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
+            continue
         if data_torch is None or data_torch.numel() == 0:
             continue
         # we don't need these

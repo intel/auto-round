@@ -160,7 +160,7 @@ class MLLMCompressor(BaseCompressor):
         nsamples: int = 128,
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
+        low_gpu_mem_usage: bool = True,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,

@@ -45,8 +45,8 @@ def register_dataset(name):
             names = name
         else:
             names = [name]
-        for tmp_name in names:
-            CALIB_DATASETS[tmp_name] = dataset
+        for global_name in names:
+            CALIB_DATASETS[global_name] = dataset
         return dataset
 
     return register
