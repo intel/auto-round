@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import re
-from dataclasses import field, dataclass
-from typing import Callable, Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import torch
 
@@ -132,6 +132,7 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
 
 class ModelNameMatcher:
     """model.config.name_or_path"""
+
     def __init__(self, pattern: str, mode="in"):
         self.pattern = pattern
         self.mode = mode
@@ -147,8 +148,10 @@ class ModelNameMatcher:
         else:
             raise ValueError("unsupported mode {self.mode}")
 
+
 class ArchitectureMatcher:
     """匹配 config.architectures"""
+
     def __init__(self, arch: str, mode="in"):
         self.arch = arch
         self.mode = mode
@@ -175,10 +178,12 @@ class PreDefinedIgnoreLayers:
 
 _PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
 
+
 def register_ignore_layers(matchers, ignore_layers):
-    rule = PreDefinedIgnoreLayers(matchers,ignore_layers)
+    rule = PreDefinedIgnoreLayers(matchers, ignore_layers)
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
     _PRE_DEFINED_IGNORE_LAYERS.sort(key=lambda r: r.priority)
+
 
 # Qwen3MOE
 register_ignore_layers(
@@ -187,20 +192,21 @@ register_ignore_layers(
     ],
     ignore_layers=[
         "mlp.gate",
-    ]
+    ],
 )
 
-#longcat
+# longcat
 register_ignore_layers(
     matchers=[
         ArchitectureMatcher(r"Longcat", mode="in"),
     ],
     ignore_layers=[
         "classifier",
-    ]
+    ],
 )
 
-def get_predefined_ignore_layers(model:torch.nn.Module) -> list[str]:
+
+def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
         if all(m(model) for m in rule.matchers):

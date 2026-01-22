@@ -62,7 +62,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import update_module, get_predefined_ignore_layers
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
