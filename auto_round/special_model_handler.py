@@ -149,6 +149,8 @@ class ModelNameMatcher:
             raise ValueError("unsupported mode {self.mode}")
 
     """Matches config.architectures."""
+
+
 class ArchitectureMatcher:
     """匹配 config.architectures"""
 
