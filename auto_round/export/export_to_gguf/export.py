@@ -74,6 +74,7 @@ def create_model_class(
     low_cpu_mem_usage=False,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
     device="cpu",
+    quant_nontext_module: bool = False,
 ):
     tmp_work_dir = model.name_or_path
     os.makedirs(output_dir, exist_ok=True)
@@ -118,7 +119,7 @@ def create_model_class(
             small_first_shard=False,
         )
         model_instance = wrapper_model_instance(
-            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage, device=device
+            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage, device=device, quant_nontext_module=quant_nontext_module
         )
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
@@ -136,6 +137,7 @@ def pack_gguf_layer(
     image_processor=None,
     model_type=convert_hf_to_gguf.ModelType.TEXT,
     device="cpu",
+    quant_nontext_module=False,
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -153,6 +155,7 @@ def pack_gguf_layer(
                 low_cpu_mem_usage=True,
                 model_type=convert_hf_to_gguf.ModelType.TEXT,
                 device=device,
+                quant_nontext_module=quant_nontext_module
             )
         ]
         if model_type == convert_hf_to_gguf.ModelType.MMPROJ:
@@ -165,6 +168,7 @@ def pack_gguf_layer(
                     low_cpu_mem_usage=True,
                     model_type=convert_hf_to_gguf.ModelType.MMPROJ,
                     device=device,
+                    quant_nontext_module=quant_nontext_module,
                 )
             )
 
@@ -215,7 +219,7 @@ def pack_gguf_layer(
 
 @torch.inference_mode()
 def save_quantized_as_gguf(
-    output_dir, model=None, backend="gguf:q4_0", layer_config=None, mllm=False, device="cpu", **kwargs
+    output_dir, model=None, backend="gguf:q4_0", layer_config=None, mllm=False, device="cpu", quant_nontext_module=False, **kwargs
 ):
     """Export the model to gguf format."""
     st = time.time()
@@ -224,7 +228,7 @@ def save_quantized_as_gguf(
     if "gguf_model_instance_global" not in globals():
         gguf_model_instance_global = [
             create_model_class(
-                output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device
+                output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT, device=device, quant_nontext_module=quant_nontext_module
             )
         ]
         if mllm:
@@ -236,6 +240,7 @@ def save_quantized_as_gguf(
                     backend,
                     model_type=convert_hf_to_gguf.ModelType.MMPROJ,
                     device=device,
+                    quant_nontext_module=quant_nontext_module
                 )
             )
 

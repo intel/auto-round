@@ -45,6 +45,8 @@ from auto_round.utils import (
     copy_python_files_from_model_cache,
     get_module,
     logger,
+    get_block_names,
+    find_matching_blocks
 )
 
 
@@ -647,6 +649,10 @@ class GGUFFormat(OutputFormat):
         elif ar.bits >= 8 and ar.iters != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
+        if getattr(ar, "quant_nontext_module", False):
+            # for gguf export, leave vl model for gguf itself
+            all_blocks = get_block_names(ar.model, False)
+            ar.quant_block_list = find_matching_blocks(ar.model, all_blocks, None)
         return super().check_and_reset_format(ar)
 
     def pack_layer(
@@ -661,6 +667,7 @@ class GGUFFormat(OutputFormat):
         image_processor=None,
         model_type=ModelType.TEXT,
         device="cpu",
+        quant_nontext_module=False,
     ):
         from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
@@ -675,6 +682,7 @@ class GGUFFormat(OutputFormat):
             image_processor,
             model_type,
             device,
+            quant_nontext_module
         )
 
     def save_quantized(
@@ -826,6 +834,7 @@ class GGUFFormat(OutputFormat):
         tokenizer=None,
         processor=None,
         image_processor=None,
+        quant_nontext_module: bool = False,
         **kwargs,
     ):
         m = get_module(model, name)
@@ -843,6 +852,7 @@ class GGUFFormat(OutputFormat):
             image_processor=image_processor,
             model_type=model_type,
             device=device,
+            quant_nontext_module=quant_nontext_module,
         )
 
 

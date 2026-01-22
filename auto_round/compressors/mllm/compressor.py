@@ -186,10 +186,11 @@ class MLLMCompressor(BaseCompressor):
         if quant_nontext_module:
             from transformers.utils.versions import require_version
 
-            require_version(
-                "pillow",
-                "pillow is required for quantizing non-text modules, please install it with `pip install pillow`",
-            )
+            for require_lib in ["pillow", "torchvision"]:
+                require_version(
+                    f"{require_lib}",
+                    f"pillow and torchvision are required for quantizing non-text modules, please install them with `pip install pillow torchvision`",
+                )
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
@@ -453,7 +454,7 @@ class MLLMCompressor(BaseCompressor):
         if self.processor is not None and not hasattr(self.processor, "chat_template"):
             self.processor.chat_template = None
         compressed_model = super().save_quantized(
-            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs
+            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, quant_nontext_module=self.quant_nontext_module if hasattr(self, "quant_nontext_module") else False, **kwargs
         )
         return compressed_model
 
@@ -467,3 +468,19 @@ class MLLMCompressor(BaseCompressor):
                 if vlm_key in layer_name and check_to_quantized(layer_config[layer_name]):
                     return True
         return quant_nontext_module
+    
+    def _immediate_pack(self, name: str):
+        if not self.immediate_packing:
+            return
+        self.formats[0].immediate_pack(
+            name=name,
+            model=self.model,
+            device=self.device,
+            output_dir=self._get_save_folder_name(self.formats[0]),
+            mllm=self.mllm,
+            layer_config=self.layer_config,
+            tokenizer=self.tokenizer,
+            processor=self.processor if hasattr(self, "processor") else None,
+            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+            quant_nontext_module=self.quant_nontext_module if hasattr(self, "quant_nontext_module") else False,
+        )
