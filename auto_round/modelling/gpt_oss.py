@@ -52,7 +52,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
     """
 
     def __init__(self, original: GptOssMLP, config: GptOssConfig):
-        super().__init__()
+        super().__init__(original)
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
         dtype_str = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
@@ -63,7 +63,6 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         self.top_k = top_k
         self.router = original.router
         self.shared_expert = getattr(original, "shared_expert", None)
-        self._source_original = original
 
         # Number of experts
         E = original.experts.gate_up_proj.shape[0]
@@ -77,7 +76,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
     def _materialize_weights(self) -> None:
-        original = self._source_original
+        original = self._get_original_module()
         if not unsupported_meta_device(original):
             for i, mlp in enumerate(self.experts):
                 _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
