@@ -1072,7 +1072,6 @@ class BaseCompressor(object):
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
-            model = model.to("cpu")
             clear_memory(device_list=self.device_list)
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         except torch.OutOfMemoryError:
@@ -1084,7 +1083,6 @@ class BaseCompressor(object):
                     "Fallback to CPU. "
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
-                model = model.to("cpu")
                 clear_memory(device_list=self.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
@@ -1259,9 +1257,6 @@ class BaseCompressor(object):
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
         if enable_imatrix:
-            # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
-            materialize_model_(self.model)
-            self.model.to("cpu")
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic,
