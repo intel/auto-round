@@ -85,6 +85,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_lm_head_name,
     get_module,
+    global_state,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -1071,7 +1072,6 @@ class BaseCompressor(object):
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
-            model = model.to("cpu")
             clear_memory(device_list=self.device_list)
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         except torch.OutOfMemoryError:
@@ -1083,7 +1083,6 @@ class BaseCompressor(object):
                     "Fallback to CPU. "
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
-                model = model.to("cpu")
                 clear_memory(device_list=self.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
@@ -1258,9 +1257,6 @@ class BaseCompressor(object):
             elif self.data_type == "int" and self.sym:
                 enable_imatrix = True
         if enable_imatrix:
-            # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
-            materialize_model_(self.model)
-            self.model.to("cpu")
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic,
@@ -1287,7 +1283,8 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            use_blockwise_quantization = False
+            # By default, we go with layer-wise way if no replacement happened
+            use_blockwise_quantization = global_state.replaced_module_count > 0
             tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
             if tied_weights_keys is None:
                 tied_weights_keys = []
