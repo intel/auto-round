@@ -1452,6 +1452,7 @@ class MemoryMonitor:
         """Log memory usage summary."""
         summary = self.get_summary()
         logger.info(summary)
+
         return summary
 
 
