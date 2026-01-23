@@ -1291,7 +1291,6 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            # A workaround to trigger garbage collection in time
             use_blockwise_quantization = False
             tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
             tied_weight_values = list(tied_weight_keys.values())
