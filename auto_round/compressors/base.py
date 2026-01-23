@@ -2896,7 +2896,7 @@ class BaseCompressor(object):
             global_indices = index_sampler.next_batch()
             if self.attention_mask:
                 num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
-            logger.trace(f"Quant block iter {i}/{self.iters}, best loss so far: {best_loss}")
+
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 current_output = self._get_current_output(output, indices)
