@@ -233,4 +233,3 @@ class TestAutoRound:
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > 0.14
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-

@@ -266,4 +266,3 @@ def save_quantized_as_fp(
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
-

@@ -312,5 +312,3 @@ class TestAutoRound:
             print(f"{prompt}: {generated_text}")
             assert "!!!" not in generated_text
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-
