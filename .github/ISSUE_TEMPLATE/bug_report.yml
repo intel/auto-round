@@ -1,0 +1,63 @@
+name: Bug Report
+description: Report a bug or issue with AutoRound
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug! Please fill out the following sections to help us understand and fix the issue.
+  
+  - type: textarea
+    id: problem-description
+    attributes:
+      label: Problem Description
+      description: Please provide a clear and detailed description of the problem you're experiencing.
+      placeholder: Describe what went wrong, what you expected to happen, and what actually happened.
+    validations:
+      required: true
+  
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Reproduction Steps
+      description: Please provide detailed steps to reproduce the issue.
+      placeholder: |
+        1. Run command '...'
+        2. Use model '...'
+        3. Set parameters '...'
+        4. See error
+    validations:
+      required: true
+  
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Information
+      description: Please provide information about your environment
+      placeholder: |
+        - OS: [e.g. Ubuntu 22.04]
+        - Python version: [e.g. 3.10]
+        - AutoRound version: [e.g. 0.9.5]
+        - Hardware: [e.g. CPU/GPU model]
+    validations:
+      required: false
+  
+  - type: textarea
+    id: error-logs
+    attributes:
+      label: Error Logs
+      description: If applicable, please paste any error messages or logs
+      placeholder: Paste error logs here
+      render: shell
+    validations:
+      required: false
+  
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem here (e.g., related issues, potential solutions)
+      placeholder: Any additional information that might be helpful
+    validations:
+      required: false

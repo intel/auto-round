@@ -23,13 +23,14 @@ else:
 from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import unsupported_meta_device
+from auto_round.utils import clear_memory, unsupported_meta_device
 
 
 class SequentialLlama4TextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
         self.num_experts = original.gate_up_proj.shape[0]
-        with no_init_weights():
+        target_device = next(original.parameters()).device
+        with no_init_weights(), torch.device(target_device):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
 
         if not unsupported_meta_device(original):
@@ -44,6 +45,8 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 self[i].gate_proj.weight.data.copy_(gate_proj.t())
                 self[i].up_proj.weight.data.copy_(up_proj.t())
                 self[i].down_proj.weight.data.copy_(down.t())
+            del gate_up, down, gate_proj, up_proj
+            original.to_empty(device="meta")  # release original experts parameters
 
 
 class SequentialLlama4TextMoe(ReplacementModuleBase):

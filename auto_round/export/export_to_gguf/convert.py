@@ -57,6 +57,7 @@ from auto_round.utils import (
     get_module,
     get_packing_device,
     is_fp8_model,
+    is_separate_tensor,
     logger,
 )
 
@@ -84,7 +85,9 @@ def download_convert_file(redownload=False):
         f.write(response.text)
 
 
-def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usage=False, device=None):
+def wrapper_model_instance(
+    model_instance, model, layer_config, low_cpu_mem_usage=False, device=None, quant_nontext_module=False
+):
     if model_instance.model_arch == gguf.MODEL_ARCH.MMPROJ and model_instance.fname_out.is_dir():
         model_instance.fname_out = model_instance.fname_out / "mmproj-model.gguf"
     model_instance.model = model
@@ -95,6 +98,7 @@ def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usag
     model_instance.prepare_tensors = partial(prepare_tensors, model_instance)
 
     model_instance.device = device
+    model_instance.quant_nontext_module = quant_nontext_module
 
     return model_instance
 
@@ -372,7 +376,8 @@ def prepare_tensors(cls):
     device = get_packing_device(cls.device)
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-
+        if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
+            continue
         if data_torch is None or data_torch.numel() == 0:
             continue
         # we don't need these
@@ -404,6 +409,7 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, name)
         orig_device = data_torch.device
+        data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
@@ -524,6 +530,9 @@ def prepare_tensors(cls):
                     data_qtype = gguf.GGMLQuantizationType.Q5_0
                 elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q8_0
+
+            if cls.model_arch == gguf.MODEL_ARCH.MMPROJ and cls.quant_nontext_module is False:
+                data_qtype = gguf.GGMLQuantizationType.F32
 
             from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
 

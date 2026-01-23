@@ -43,6 +43,8 @@ from auto_round.utils import (
     SUPPORTED_FORMATS,
     check_to_quantized,
     copy_python_files_from_model_cache,
+    find_matching_blocks,
+    get_block_names,
     get_module,
     logger,
 )
@@ -76,8 +78,8 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
         )
     gguf_format_name = get_gguf_scheme(ar.scheme)
     if gguf_format_name:
-        # if gguf_format_name.lower().endswith("mixed"):
-        #     gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
+        if gguf_format_name.lower().endswith("mixed"):
+            gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
         if any([f.lower() not in ["fake", gguf_format_name.lower()] for f in formats]):
             tmp_format_name = gguf_format_name.lower() if "fake" not in formats else f"{gguf_format_name.lower()},fake"
             logger.warning(
@@ -146,7 +148,7 @@ def _check_divisible_by_32(ar):
                         continue
                     ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+                    logger.warning_once("some layers are skipped quantization (shape not divisible by 32).")
 
 
 class OutputFormat(ABC):
@@ -353,7 +355,7 @@ class LLMCompressorFormat(OutputFormat):
             self.output_format = f"llm_compressor:{format}"
             self.backend = None
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str:
+    def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -591,48 +593,6 @@ class AutoAWQFormat(OutputFormat):
         )
 
 
-@OutputFormat.register("itrex")
-@OutputFormat.register("itrex_xpu")
-class ITREXFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
-    format_name = "itrex"
-
-    def pack_layer(self, *args, **kwargs):
-        pass
-
-    def save_quantized(
-        self,
-        output_dir: str,
-        model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
-        inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
-        **kwargs,
-    ) -> torch.nn.Module:
-        backend = self.get_backend_name()
-        if backend == "itrex":
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex
-
-            export_func = save_quantized_as_itrex
-        else:
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex_xpu
-
-            export_func = save_quantized_as_itrex_xpu
-        return export_func(
-            output_dir=output_dir,
-            model=model,
-            tokenizer=tokenizer,
-            layer_config=layer_config,
-            inplace=inplace,
-            device=device,
-            backend=backend,
-            serialization_dict=serialization_dict,
-            **kwargs,
-        )
-
-
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
     support_schemes = [
@@ -669,7 +629,7 @@ class GGUFFormat(OutputFormat):
             if format.lower().endswith("_mixed"):
                 from auto_round.schemes import _handle_special_schemes
 
-                ar.layer_config = _handle_special_schemes(scheme, ar.layer_config, ar.model)
+                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
                 gguf_format = gguf_format.lower().replace("_mixed", "_s")
             if isinstance(scheme, str) and scheme.lower() != gguf_format:
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
@@ -689,6 +649,10 @@ class GGUFFormat(OutputFormat):
         elif ar.bits >= 8 and ar.iters != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
+        if getattr(ar, "quant_nontext_module", False):
+            # for gguf export, leave vl model for gguf itself
+            all_blocks = get_block_names(ar.model, False)
+            ar.quant_block_list = find_matching_blocks(ar.model, all_blocks, None)
         return super().check_and_reset_format(ar)
 
     def pack_layer(
@@ -703,6 +667,7 @@ class GGUFFormat(OutputFormat):
         image_processor=None,
         model_type=ModelType.TEXT,
         device="cpu",
+        quant_nontext_module=False,
     ):
         from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
@@ -717,6 +682,7 @@ class GGUFFormat(OutputFormat):
             image_processor,
             model_type,
             device,
+            quant_nontext_module,
         )
 
     def save_quantized(
@@ -868,6 +834,7 @@ class GGUFFormat(OutputFormat):
         tokenizer=None,
         processor=None,
         image_processor=None,
+        quant_nontext_module: bool = False,
         **kwargs,
     ):
         m = get_module(model, name)
@@ -885,6 +852,7 @@ class GGUFFormat(OutputFormat):
             image_processor=image_processor,
             model_type=model_type,
             device=device,
+            quant_nontext_module=quant_nontext_module,
         )
 
 

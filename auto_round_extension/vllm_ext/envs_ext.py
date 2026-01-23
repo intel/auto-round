@@ -26,6 +26,7 @@ extra_environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ENABLE_STATIC_MOE": lambda: os.getenv("VLLM_ENABLE_STATIC_MOE", "0") in ("1", "true", "True"),
     "VLLM_AR_MXFP4_MODULAR_MOE": lambda: os.getenv("VLLM_AR_MXFP4_MODULAR_MOE", "1") in ("1", "true", "True"),
     "VLLM_AR_POST_PROCESS_GPTOSS": lambda: os.getenv("VLLM_AR_POST_PROCESS_GPTOSS", "0") in ("1", "true", "True"),
+    "VLLM_AR_FLASHINFER_WORKSPACE_BUFFER_SIZE": lambda: int(os.getenv("VLLM_AR_FLASHINFER_WORKSPACE_BUFFER_SIZE", "0")),
 }
 # Add the extra environment variables to vllm.envs
 import vllm.envs as envs

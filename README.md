@@ -10,7 +10,7 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.9.4-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.9.5-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -212,7 +212,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### Device/Speed Configuration
 - **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
-- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `False`).
+- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `True`).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
 
 </details>

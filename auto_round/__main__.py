@@ -135,7 +135,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Enable memory-efficient mode by offloading intermediate features to CPU. "
             "Useful when working with large models that don't fit in GPU memory.",
         )
-        basic.add_argument("--low_cpu_mem_usage", action="store_true", help="Lower CPU memory mode. Defaults to False.")
+        basic.add_argument(
+            "--low_cpu_mem_usage", action="store_true", help="Deprecated, Lower CPU memory mode. Defaults to False."
+        )
+        basic.add_argument(
+            "--disable_low_cpu_mem_usage", action="store_true", help="disable lower CPU memory mode. Defaults to False."
+        )
         basic.add_argument(
             "--format",
             "--formats",
@@ -158,6 +163,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         basic.add_argument(
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
+        )
+        basic.add_argument(
+            "--disable_trust_remote_code",
+            action="store_true",
+            help="Disable trusting remote code when loading models. "
+            "Use for security if you don't trust the model source.",
         )
 
         tuning = self.add_argument_group("Tuning Arguments")
@@ -253,8 +264,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action="store_true",
             help="Enable PyTorch deterministic algorithms for reproducible results. ",
         )
-        group = tuning.add_mutually_exclusive_group()
-        group.add_argument(
+        group_opt_rtn = tuning.add_mutually_exclusive_group()
+        group_opt_rtn.add_argument(
             "--disable_opt_rtn",
             action="store_const",
             const=True,
@@ -263,7 +274,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
-        group.add_argument(
+        group_opt_rtn.add_argument(
             "--enable_opt_rtn",
             action="store_const",
             const=False,
@@ -349,12 +360,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         ## ======================= eval =======================
         eval_args = self.add_argument_group("eval arguments")
-        eval_args.add_argument(
-            "--disable_trust_remote_code",
-            action="store_true",
-            help="Disable trusting remote code when loading models. "
-            "Use for security if you don't trust the model source.",
-        )
         eval_args.add_argument(
             "--tasks",
             "--task",
@@ -513,6 +518,12 @@ def tune(args):
 
     from auto_round.utils import detect_device, get_library_version, logger
 
+    if args.low_cpu_mem_usage:
+        logger.warning(
+            "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
+            "To disable it, use `--disable_low_cpu_mem_usage`."
+        )
+
     if args.format is None:
         args.format = "auto_round"
 
@@ -639,6 +650,9 @@ def tune(args):
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
         )
+    low_cpu_mem_usage = True
+    if args.disable_low_cpu_mem_usage:
+        low_cpu_mem_usage = False
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -651,7 +665,7 @@ def tune(args):
         batch_size=args.batch_size,
         gradient_accumulate_steps=args.gradient_accumulate_steps,
         low_gpu_mem_usage=args.low_gpu_mem_usage,
-        low_cpu_mem_usage=args.low_cpu_mem_usage,
+        low_cpu_mem_usage=low_cpu_mem_usage,
         device_map=args.device_map,
         enable_torch_compile=enable_torch_compile,
         seed=args.seed,
@@ -661,6 +675,7 @@ def tune(args):
         layer_config=layer_config,
         model_dtype=args.model_dtype,
         momentum=args.momentum,
+        trust_remote_code=not args.disable_trust_remote_code,
     )
 
     model_name = args.model.rstrip("/")

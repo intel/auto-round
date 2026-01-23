@@ -45,8 +45,8 @@ def register_dataset(name):
             names = name
         else:
             names = [name]
-        for tmp_name in names:
-            CALIB_DATASETS[tmp_name] = dataset
+        for global_name in names:
+            CALIB_DATASETS[global_name] = dataset
         return dataset
 
     return register
@@ -146,9 +146,9 @@ def get_pile_dataset(
         # Check for proxy or SSL error
         if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
             logger.error(
-                "Network error detected, please checking proxy settings."
-                "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`"
-                " and set '--dataset swift/pile-val-backup' in AutoRound API."
+                f"Network error detected, please check proxy settings. "
+                f"Error: {error_message}. Or consider using a backup dataset by `pip install modelscope` "
+                f"and set '--dataset swift/pile-val-backup' in AutoRound API."
             )
         else:
             logger.error(f"Failed to load the dataset: {error_message}")
