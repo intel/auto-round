@@ -72,11 +72,6 @@ def simple_evaluate(
     device: Optional[str] = None,
     **kwargs,
 ):
-    try:
-        from transformers import AutoRoundConfig
-    except:
-        from auto_round.inference.auto_quantizer import AutoHfQuantizer
-
     return lm_simple_evaluate(
         model=model,
         model_args=model_args,
