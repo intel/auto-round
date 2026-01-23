@@ -199,6 +199,8 @@ def eval_with_vllm(args):
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if (batch_size := args.eval_bs) is None:
         batch_size = "auto:8"
+    if isinstance(args.tasks, str):
+        tasks = args.tasks.split(",")
 
     # Parse custom vllm_args if provided
     custom_vllm_kwargs = parse_vllm_args(getattr(args, "vllm_args", None))
@@ -241,7 +243,7 @@ def eval_with_vllm(args):
     vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(
         model=vllm_lm,
-        tasks=args.tasks,
+        tasks=tasks,
         limit=args.limit,
     )
 
