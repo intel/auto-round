@@ -112,7 +112,7 @@ PKG_INSTALL_CFG = {
 }
 
 ###############################################################################
-# Configuration for auto_round_hpu package
+# Configuration for auto-round-hpu package
 # From pip:
 # pip install auto-round-hpu
 # From source:
@@ -135,7 +135,7 @@ HPU_INSTALL_CFG = {
 
 if __name__ == "__main__":
 
-    package_name = "auto_round"
+    package_name = "auto-round"
 
     # From v0.9.3, auto-round-hpu will be published to replace auto-round-lib.
     hpu_build = "hpu" in sys.argv
@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
     should_build_hpu = hpu_build or BUILD_HPU_ONLY
     if should_build_hpu:
-        package_name = "auto_round_hpu"
+        package_name = "auto-round-hpu"
         INSTALL_CFG = HPU_INSTALL_CFG
     else:
         INSTALL_CFG = PKG_INSTALL_CFG
