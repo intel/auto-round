@@ -183,7 +183,7 @@ class MLLMCompressor(BaseCompressor):
 
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
-        if quant_nontext_module:
+        if quant_nontext_module and iters > 0:
             import importlib.util
 
             missing_libs = []
@@ -191,7 +191,7 @@ class MLLMCompressor(BaseCompressor):
                 if importlib.util.find_spec(require_lib) is None:
                     missing_libs.append(require_lib)
             if len(missing_libs) > 0:
-                raise ImportError(
+                logger.error(
                     f"{', '.join(missing_libs)} are required for quantizing non-text modules,"
                     f" please install them with `pip install {' '.join(missing_libs)}`",
                 )
