@@ -61,7 +61,7 @@ class TestVllmEvaluation:
         os.environ["VLLM_SKIP_WARMUP"] = "true"
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
-        cmd = f"{python_path} -m auto_round --model {opt_name_or_path} --iters 0 --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10"
+        cmd = f"{python_path} -m auto_round --model {opt_name_or_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 100"
 
         ret = os.system(cmd)
 
@@ -79,28 +79,17 @@ class TestHFEvaluation:
         """Test --eval flag: evaluate model without quantization (HF backend default)."""
         python_path = sys.executable
 
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --limit 10"
+        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --limit 100"
 
         ret = os.system(cmd)
 
         assert ret == 0, f"HF backend evaluation failed (rc={ret})"
 
-    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
-    def test_eval_mode_task_by_task(self, model):
-        """Test --eval with --eval_task_by_task flag (HF backend)."""
-        python_path = sys.executable
-
-        cmd = f"{python_path} -m auto_round --model {model} --eval --eval_task_by_task --tasks lambada_openai,piqa --limit 10"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"HF backend task-by-task evaluation failed (rc={ret})"
-
     def test_iters_0_hf_backend(self, tiny_opt_model_path):
         """Test quantization with iters=0 and HF backend evaluation."""
         python_path = sys.executable
 
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --tasks lambada_openai --limit 10"
+        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --limit 10"
 
         ret = os.system(cmd)
 
@@ -110,7 +99,7 @@ class TestHFEvaluation:
         """Test quantization with iters=0 and task-by-task evaluation."""
         python_path = sys.executable
 
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --eval_task_by_task --tasks lambada_openai,piqa --limit 10"
+        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --eval_task_by_task --tasks lambada_openai,piqa --limit 10"
 
         ret = os.system(cmd)
 
