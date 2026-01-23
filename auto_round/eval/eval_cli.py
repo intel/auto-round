@@ -221,6 +221,23 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
+    if "tensor_parallel_size" not in vllm_kwargs:
+        # Parse device_map to determine tensor_parallel_size and set CUDA_VISIBLE_DEVICES
+        # Only accept formats like "0" or "0,1,2"
+        device_map = args.device_map
+        if device_map and device_map not in ("cpu", "hpu"):
+            device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
+            if device_ids:
+                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(device_ids)
+                tensor_parallel_size = len(device_ids)
+                vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
+                from auto_round.logger import logger
+
+                logger.info(
+                    f"Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}, "
+                    f"tensor_parallel_size={tensor_parallel_size}"
+                )
+
     vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(
         model=vllm_lm,
