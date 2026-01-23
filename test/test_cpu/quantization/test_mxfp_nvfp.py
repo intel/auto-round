@@ -345,7 +345,7 @@ class TestAutoRoundFP:
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
-        assert is_model_outputs_similar(model_name, quantized_model_path) # 0.518
+        assert is_model_outputs_similar(model_name, quantized_model_path)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.parametrize(
