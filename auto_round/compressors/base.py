@@ -85,6 +85,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_lm_head_name,
     get_module,
+    global_state,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -100,7 +101,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupported_meta_device,
-    global_state,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
