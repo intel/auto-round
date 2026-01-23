@@ -329,7 +329,7 @@ def _handle_special_schemes(
 
             supported_types = SUPPORTED_DTYPES
         if inner_supported_types is None:
-            from atuo_round.util import INNER_SUPPORTED_DTYPES
+            from auto_round.util import INNER_SUPPORTED_DTYPES
 
             inner_supported_types = INNER_SUPPORTED_DTYPES
         for n, m in model.named_modules():
