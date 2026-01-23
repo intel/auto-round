@@ -282,7 +282,6 @@ configuration to suit your specific requirements and available resources.
 | default | 8          | 200   | 2048   | 128      | None  |
 | best    | 8          | 1000  | 2048   | 512      | None  |
 | light   | 8          | 50    | 2048   | 128      | 5e-3  |
-| fast    | 4          | 200   | 512    | 128      | None  |
 
 </details>
 
