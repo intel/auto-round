@@ -188,7 +188,7 @@ def save_quantized_as_autoround(
             neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
-                for key in scheme_keys:
+                for key in neq_keys:
                     if cfg[key] is not None:
                         extra_config[layer_name][key] = cfg[key]
 
@@ -236,3 +236,4 @@ def save_quantized_as_autoround(
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+

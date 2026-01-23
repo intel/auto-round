@@ -294,9 +294,14 @@ def save_quantized_as_autoround(
 
     regex_config = quantization_config.pop("regex_config")
     if regex_config is not None:
-        for name in regex_config.keys():
+        for name, cfg in regex_config.items():
             regex_name = to_standard_regex(name)
-            extra_config[regex_name] = {**{k: regex_config[name][k] for k in scheme_keys}}
+            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
+            if len(neq_keys) > 0:
+                extra_config[regex_name] = {}
+                for key in neq_keys:
+                    if cfg.get(key) is not None:
+                        extra_config[regex_name][key] = cfg[key]
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
@@ -344,3 +349,4 @@ def save_quantized_as_autoround(
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
+
