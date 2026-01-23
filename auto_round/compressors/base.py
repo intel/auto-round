@@ -1281,13 +1281,19 @@ class BaseCompressor(object):
                 handle.remove()
         else:
             use_blockwise_quantization = False
-            tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
-            tied_weight_values = list(tied_weight_keys.values())
+            tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
+            if tied_weights_keys is None:
+                tied_weights_keys = []
+            if isinstance(tied_weights_keys, dict):
+                tied_weights_values = list(tied_weights_keys.values())
+            else:
+                tied_weights_values = list(tied_weights_keys)
+            tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
             # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
             if hasattr(self, "formats") and self.formats[0].is_gguf():
                 lm_head_name = get_lm_head_name(self.model)
                 if lm_head_name is not None:
-                    tied_weight_values.append(lm_head_name)
+                    tied_weights_layers.append(lm_head_name)
 
             if use_blockwise_quantization:  # The ram usage is a little higher
                 all_to_quantized_module_names = list(set(all_to_quantized_module_names))
@@ -1305,7 +1311,7 @@ class BaseCompressor(object):
                             elif (
                                 not any(m.children())
                                 and len(m.state_dict()) > 0
-                                and m.global_name not in tied_weight_values
+                                and m.global_name not in tied_weights_layers
                             ):
                                 set_module(self.model, m.global_name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
@@ -1338,7 +1344,7 @@ class BaseCompressor(object):
                             clear_memory(device_list=self.device_list)
                             memory_monitor.log_summary()
 
-                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weight_values:
+                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weights_layers:
                         set_module(self.model, n, copy.deepcopy(m))
                         if self.is_immediate_saving:
                             shard_writer(self, name=n)
