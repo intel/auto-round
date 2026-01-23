@@ -17,7 +17,7 @@ GPU tests for VLLM evaluation functionality.
 Tests the eval_with_vllm function and custom vllm_args parameter parsing.
 Validates accuracy thresholds for quantized models.
 
-Run with: pytest test/test_cuda/integrations/test_vllm_eval.py -v
+Run with: pytest test/test_cuda/advanced/test_evaluation.py -v
 """
 
 import os
