@@ -109,8 +109,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--vllm_args",
             default=None,
             type=str,
-            help="(for vllm) Custom vllm arguments in format: '--arg1=value1,--arg2=value2'. "
-            "Example: '--tensor_parallel_size=2,--gpu_memory_utilization=0.9'",
+            help="(for vllm) Custom vllm arguments in format: 'arg1=value1,arg2=value2'. "
+            "Example: 'tensor_parallel_size=2,gpu_memory_utilization=0.9'",
         )
 
 
@@ -475,6 +475,11 @@ def parse_vllm_args(vllm_args_str):
 
     for arg_pair in vllm_args_str.split(","):
         arg_pair = arg_pair.strip()
+        # Normalize: replace space separator with '=' (e.g., "--arg value" -> "--arg=value")
+        if "=" not in arg_pair and " " in arg_pair:
+            parts = arg_pair.split(None, 1)  # Split on whitespace, max 2 parts
+            if len(parts) == 2:
+                arg_pair = f"{parts[0]}={parts[1]}"
         if "=" in arg_pair:
             # Remove leading '--' if present
             arg_pair = arg_pair.removeprefix("--")
