@@ -4,17 +4,20 @@ import sys
 
 import pytest
 import torch
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from packaging import version
 from ...helpers import get_model_path, get_tiny_model, save_tiny_model, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
-@pytest.mark.skipif(transformers_version >= version.parse("5.0.0"), reason="GGUF format saveing and loading falied in transformers v5")
+
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"), reason="GGUF format saving and loading failed in transformers v5"
+)
 class TestGGUF:
 
     @classmethod
@@ -61,7 +64,7 @@ class TestGGUF:
 
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
         gguf_file = os.listdir(quantized_model_path)[0]
-        
+
         # TODO: fix the issue of gguf loading error in transformers v5
         # cls = transformers.generation.configuration_utils.GenerationConfig'>, json_file = None
         #     def _dict_from_json_file(cls, json_file: str | os.PathLike):

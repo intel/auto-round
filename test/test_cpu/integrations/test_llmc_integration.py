@@ -3,11 +3,12 @@ import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
 from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from ...helpers import transformers_version
 from packaging import version
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round.calib_dataset import get_dataset
+
+from ...helpers import transformers_version
 
 recipe_str = """
 quant_stage:
@@ -40,8 +41,11 @@ recipe_modifier_full = AutoRoundModifier(
     },
 )
 
-@pytest.mark.skipif(transformers_version >= version.parse("5.0.0"), \
-    reason="transformers 5.0 use_auth_token is deprecated and llmcompressor oneshot has not been updated yet")
+
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="transformers 5.0 use_auth_token is deprecated and llmcompressor oneshot has not been updated yet",
+)
 @pytest.mark.parametrize(
     "recipe",
     [
