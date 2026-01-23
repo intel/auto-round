@@ -733,47 +733,37 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ## 5 Evaluation
 
-### Combine evaluation with tuning
+AutoRound leverages [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness) for evaluation. If `--tasks` is not specified, a set of default tasks (typically 10+ common benchmarks) will be automatically used.
 
-- We leverage lm-eval-harnessing for the evaluation. 
-If not explicitly specify '--task', the default value will be used (typically covering 10+ common tasks).
-  ~~~bash
-   auto-round --model Qwen/Qwen3-0.6B  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
-  ~~~
-  The last format will be used in evaluation if multiple formats have been exported.
+### Single GPU Evaluation
 
+**HF Backend (default):**
+```bash
+auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
+```
 
-###  Eval the Quantized model
+**vLLM Backend:**
+```bash
+auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --tasks mmlu --eval_backend vllm
+```
 
-- AutoRound format
-  For lm-eval-harness, you could just call
-  ~~~bash
-  auto-round --model="your_model_path" --eval  --tasks lambada_openai --eval_bs 16
-  ~~~
-  > Note: To use the vllm backend, add `--eval_backend vllm` to the command above. Common vllm parameters are already supported, such as `--tensor_parallel_size`.
+### Multi-GPU Evaluation
 
-  Multiple gpu evaluation
-  ~~~bash
-  auto-round --model="your_model_path" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
-  ~~~
-  For other evaluation framework, if the framework could support Huggingface models, typically it could support
-  AutoRound format, only you need to do is import the following in the beginning of your code
-  ~~~python
-  from auto_round import AutoRoundConfig
-  ~~~  
+**HF Backend:**
+```bash
+auto-round --model="your_model_path" --eval --device 0,1 --tasks lambada_openai --eval_bs 16
+```
 
-- AutoGPTQ/AutoAWQ format
+**vLLM Backend:**
+```bash
+CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_openai --eval_backend vllm --vllm_args="tensor_parallel_size=2,gpu_memory_utilization=0.8"
+```
 
-  Please refer to their repo and check the evaluation framework's compatibility.
-  For lm-eval-harness, you could just call
-  ~~~bash
-  lm_eval --model hf --model_args pretrained="your_model_path" --device cuda:0 --tasks lambada_openai --batch_size 16
-  ~~~
-  Multiple gpu evaluation
-  ~~~bash
-  CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
-  ~~~
+### Important Notes
 
+- Use the `--eval` flag to evaluate models directly. This supports both original and quantized models.
+- The `--eval_task_by_task` option helps handle task failures by evaluating tasks sequentially. This only applies to the HF backend.
+- When multiple formats are exported, the last format in the list will be used for evaluation.
 
 
 ## 6 Known Issues

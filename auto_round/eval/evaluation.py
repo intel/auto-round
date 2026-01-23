@@ -400,6 +400,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         vllm_args.device_map = getattr(args, "device_map", device_str)
         # Optional common parameters
         vllm_args.eval_bs = getattr(args, "eval_bs", None)
+        vllm_args.mllm = getattr(args, "mllm", None)
         vllm_args.limit = getattr(args, "limit", None)
         vllm_args.eval_model_dtype = getattr(args, "eval_model_dtype", None)
         vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", False)

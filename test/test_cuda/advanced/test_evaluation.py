@@ -24,6 +24,7 @@ import os
 import sys
 
 import pytest
+from ...helpers import opt_name_or_path
 
 # Test models for vllm evaluation
 VLLM_EVAL_MODELS = [
@@ -46,20 +47,20 @@ class TestVllmEvaluation:
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
         # Test with custom vllm_args
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.8,max_model_len=2048"
+        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 128 --eval_backend vllm --limit 100 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.6,max_model_len=2048"
 
         ret = os.system(cmd)
 
         assert ret == 0, f"vllm evaluation with custom args failed (rc={ret})"
 
-    def test_vllm_backend_with_quantization_iters_0(self, tiny_opt_model_path):
+    def test_vllm_backend_with_quantization_iters_0(self):
         """Test vllm evaluation with iters=0 (quantization without fine-tuning)."""
         python_path = sys.executable
 
         os.environ["VLLM_SKIP_WARMUP"] = "true"
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10"
+        cmd = f"{python_path} -m auto_round --model {opt_name_or_path} --iters 0 --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10"
 
         ret = os.system(cmd)
 
