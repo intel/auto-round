@@ -112,16 +112,16 @@ PKG_INSTALL_CFG = {
 }
 
 ###############################################################################
-# Configuration for auto_round_lib
+# Configuration for auto_round_hpu package
 # From pip:
-# pip install auto-round-lib
+# pip install auto-round-hpu
 # From source:
-# python setup.py lib install
+# python setup.py hpu install
 ###############################################################################
 
 
-LIB_REQUIREMENTS_FILE = "requirements-lib.txt"
-LIB_INSTALL_CFG = {
+HPU_REQUIREMENTS_FILE = "requirements-hpu.txt"
+HPU_INSTALL_CFG = {
     "include_packages": find_packages(
         include=[
             "auto_round",
@@ -130,31 +130,22 @@ LIB_INSTALL_CFG = {
             "auto_round_extension.*",
         ],
     ),
-    "install_requires": fetch_requirements(LIB_REQUIREMENTS_FILE),
+    "install_requires": fetch_requirements(HPU_REQUIREMENTS_FILE),
 }
 
 if __name__ == "__main__":
 
     package_name = "auto_round"
-    # There are two ways to install hpu-only package:
-    # 1. python setup.py lib install
-    # 2. Within the gaudi docker where the HPU is available, we install the "auto_round_lib" by default.
-    # 3. This package is deprecated and will be removed from v1.0.0 release, please replace with auto_round_hpu.
-    is_user_requesting_library_build = "lib" in sys.argv
-    if is_user_requesting_library_build:
-        sys.argv.remove("lib")
-    should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
-    if should_build_library:
-        package_name = "auto_round_lib"
 
     # From v0.9.3, auto-round-hpu will be published to replace auto-round-lib.
     hpu_build = "hpu" in sys.argv
     if hpu_build:
         sys.argv.remove("hpu")
-        package_name = "auto_round_hpu"
 
-    if should_build_library or hpu_build:
-        INSTALL_CFG = LIB_INSTALL_CFG
+    should_build_hpu = hpu_build or BUILD_HPU_ONLY
+    if should_build_hpu:
+        package_name = "auto_round_hpu"
+        INSTALL_CFG = HPU_INSTALL_CFG
     else:
         INSTALL_CFG = PKG_INSTALL_CFG
 
@@ -184,5 +175,5 @@ if __name__ == "__main__":
             "License :: OSI Approved :: Apache Software License",
         ],
         include_package_data=True,
-        package_data={"": ["mllm/templates/*.json", "*.abi3.so", "*.pyd"]},
+        package_data={"": ["mllm/templates/*.json"]},
     )
