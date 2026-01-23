@@ -317,7 +317,7 @@ def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.n
             if n in layer_config:
                 continue
             if isinstance(m, torch.nn.Linear):
-                if "expert" in n and "shared_experts" not in n:
+                if "expert" in n and "shared" not in n:
                     layer_config[n] = {"bits": 4}
                 elif n != "lm_head":
                     layer_config[n] = {"bits": 8}

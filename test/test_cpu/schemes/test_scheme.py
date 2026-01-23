@@ -41,6 +41,24 @@ class TestAutoRound:
         assert ar.bits == 2
         ar.quantize()
 
+    def test_w4a16_mixed(self, tiny_qwen_moe_model_path, dataloader):
+        ar = AutoRound(
+            tiny_qwen_moe_model_path,
+            scheme="W4A16_MIXED",
+            nsamples=1,
+            iters=0,
+            seqlen=2,
+            dataset=dataloader,
+            low_cpu_mem_usage=False,
+        )
+        ar.quantize()
+        assert ar.bits == 4
+        assert ar.model.model.layers[0].self_attn.q_proj.bits == 8
+        assert ar.model.model.layers[0].mlp.experts[0].up_proj.bits == 4
+        assert ar.model.model.layers[0].mlp.shared_expert.gate_proj.bits == 8
+
+        shutil.rmtree(self.save_folder, ignore_errors=True)
+
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         assert ar.bits == 4
