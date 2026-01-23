@@ -951,89 +951,8 @@ class with_thread_limits(ContextDecorator):
         torch.set_num_threads(self.old_torch)
 
 
-def _create_e4m3_lut(variant="e4m3fn") -> torch.Tensor:
-    """Create a lookup table for float8_e4m3 (standard or G2) to bfloat16 conversion.
-
-    e4m3fn (Standard/OCP):
-    - Bias: 7
-    - Max: 448.0
-    - Zeros: 0x00, 0x80
-    - NaN: 0x7F, 0xFF
-
-    e4m3fnuz (G2):
-    - Bias: 7
-    - Max: 240.0
-    - Zero: 0x00 (Unit Zero)
-    - NaN: 0x80
-    """
-    lut = torch.zeros(256, dtype=torch.bfloat16)
-
-    for i in range(256):
-        sign = (i >> 7) & 0x1
-        exponent = (i >> 3) & 0xF
-        mantissa = i & 0x7
-
-        if variant == "e4m3fnuz":
-            # G2 variant: UZ (Unit Zero), NaN at 0x80
-            if i == 0x80:
-                lut[i] = float("nan")
-                continue
-            if exponent == 15:  # NaNs > 240
-                lut[i] = float("nan")
-                continue
-            if i == 0x00:
-                lut[i] = 0.0
-                continue
-        else:
-            # Standard e4m3fn
-            if (i & 0x7F) == 0x7F:  # 0x7F and 0xFF are NaN
-                lut[i] = float("nan")
-                continue
-            if exponent == 0 and mantissa == 0:
-                lut[i] = 0.0
-                continue
-
-        # Normal/Subnormal calculation
-        if exponent == 0:
-            # Subnormal
-            value = (mantissa / 8.0) * (2.0 ** (1 - 7))
-        elif variant == "e4m3fn" and exponent == 15:
-            # Standard e4m3fn uses exp 15 for values
-            value = (1.0 + mantissa / 8.0) * (2.0 ** (15 - 7))
-        else:
-            # Normal
-            value = (1.0 + mantissa / 8.0) * (2.0 ** (exponent - 7))
-
-        if sign and not (variant == "e4m3fnuz" and i == 0x00):
-            value = -value
-
-        lut[i] = value
-
-    return lut
-
-
-_FP8_LUT_CACHE = {}
-
-
-def _dequant_fp8_to_bf16(weight: torch.Tensor, variant="e4m3fn") -> torch.Tensor:
-    """Dequantize float8 weights to bfloat16 using a lookup table."""
-    global _FP8_LUT_CACHE
-
-    if variant not in _FP8_LUT_CACHE:
-        _FP8_LUT_CACHE[variant] = _create_e4m3_lut(variant)
-
-    lut = _FP8_LUT_CACHE[variant].to(weight.device)
-    weight_uint8 = weight.view(torch.uint8)
-    orig_shape = weight_uint8.shape
-
-    weight_flat = weight_uint8.flatten().long()
-    dequant_flat = lut[weight_flat]
-    dequant = dequant_flat.reshape(orig_shape)
-
-    return dequant
-
-
-def _dequant_block_fp8_weight(
+@with_thread_limits()
+def dequant_block_fp8_weight(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
 ) -> torch.Tensor:
     """Core dequantization logic for block-wise FP8 weights."""
@@ -1042,13 +961,9 @@ def _dequant_block_fp8_weight(
         return weight
     assert len(block_size) == 2
 
-    variant = "e4m3fn"
-
-    # CPU fallback using LUT
-    if weight.device.type == "cpu":
-        orig_shape = weight.shape
-        weight = _dequant_fp8_to_bf16(weight, variant=variant)
-        weight = weight.view(orig_shape)
+    # If weight is stored as uint8, view it as float8_e4m3fn
+    if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
+        weight = weight.view(torch.float8_e4m3fn)
 
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
@@ -1076,35 +991,6 @@ def _dequant_block_fp8_weight(
     dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
 
     return dequant_weight
-
-
-@with_thread_limits()
-def _dequant_block_fp8_weight_cpu(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
-) -> torch.Tensor:
-    """Thread-limited CPU dequantization path for FP8 weights."""
-    orig_device = weight.device
-    weight_cpu = weight.to("cpu")
-    weight_scale_cpu = weight_scale.to("cpu") if weight_scale is not None else None
-
-    logger.warning_once(
-        "Detected float8 dequantization on Gaudi2. " "Forcing dequantization on CPU to avoid potential NaN issues."
-    )
-
-    res = _dequant_block_fp8_weight(weight_cpu, weight_scale_cpu, block_size, data_type)
-    return res.to(orig_device)
-
-
-def dequant_block_fp8_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
-) -> torch.Tensor:
-    """Dequantize block-wise FP8 weight, with automatic CPU redirection for Gaudi2."""
-    from auto_round.utils.device import is_gaudi2
-
-    if is_gaudi2():
-        return _dequant_block_fp8_weight_cpu(weight, weight_scale, block_size, data_type)
-    else:
-        return _dequant_block_fp8_weight(weight, weight_scale, block_size, data_type)
 
 
 def check_to_quantized(config):
@@ -1176,6 +1062,10 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
+    from auto_round.utils.device import is_gaudi2
+
+    if is_gaudi2():
+        device = "cpu"
     layer = layer.to(device)
     if layer.__class__.__name__ == "CompressedLinear":
         dq_weight = layer.compressor.decompress_module(layer)

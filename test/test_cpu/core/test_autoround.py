@@ -627,15 +627,22 @@ class TestAutoRound:
     def test_dequant_fp8_weight(self):
         from auto_round.utils import dequant_block_fp8_weight
 
-        # test pad and unpad
+        # test high precision weight (should skip LUT and not crash)
         weight = torch.randn(587, 7168)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
         dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
+        # test low precision weight (should use LUT)
+        weight = torch.randint(0, 255, (587, 7168), dtype=torch.uint8)
+        weight_scale = torch.randn(5, 56)
+        block_size = [128, 128]
+        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        assert dequant_weight.shape.numel() == 4207616
+
         # test experts are stacked.
-        weight = torch.randn([32, 5760, 1440])
+        weight = torch.randint(0, 255, [32, 5760, 1440], dtype=torch.uint8)
         weight_scale = torch.randn([32, 5760, 90])
         block_size = [1, 16]
         dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
@@ -644,52 +651,45 @@ class TestAutoRound:
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
 
     def test_dequant_g2_fp8_weight(self):
-        """Test Gaudi2-specific dequantization redirection and versatility on CPU."""
-        from auto_round.utils.model import _create_e4m3_lut, _dequant_fp8_to_bf16, dequant_block_fp8_weight
+        """Test Gaudi2-specific dequantization redirection logic in convert_fp8_layer_to_linear."""
+        from unittest.mock import MagicMock, patch
 
-        # Test 1: Verify Standard e4m3fn LUT max value is 448.0
-        lut_std = _create_e4m3_lut(variant="e4m3fn")
-        max_val_std = torch.max(lut_std[torch.isfinite(lut_std)]).item()
-        assert abs(max_val_std - 448.0) < 1e-3, f"Expected 448.0 for standard e4m3fn, got {max_val_std}"
+        from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
 
-        # Test 2: Verify G2 e4m3fnuz LUT max value is 240.0
-        lut_g2 = _create_e4m3_lut(variant="e4m3fnuz")
-        max_val_g2 = torch.max(lut_g2[torch.isfinite(lut_g2)]).item()
-        assert abs(max_val_g2 - 240.0) < 1e-3, f"Expected 240.0 for e4m3fnuz, got {max_val_g2}"
+        # Test 1: Verify Standard e4m3fn native dequantization result
+        weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)
+        weight_scale = torch.ones(1, 1, dtype=torch.bfloat16)
+        block_size = [1, 2]
 
-        # Test 3: Key mappings for Standard e4m3fn
-        # 0x7E: normal max (exp 15, mant 6) -> (1 + 6/8) * 2^(15-7) = 1.75 * 256 = 448.0
-        assert abs(lut_std[0x7E].item() - 448.0) < 1e-3
-        # 0x7F: NaN
-        assert torch.isnan(lut_std[0x7F])
+        dq_weight = dequant_block_fp8_weight(weight_uint8, weight_scale, block_size)
+        assert dq_weight.dtype == torch.bfloat16
+        assert abs(dq_weight[0, 0].item() - 448.0) < 1e-3
 
-        # Test 4: Key mappings for G2 e4m3fnuz
-        # 0x77: normal max (exp 14, mant 7) -> (1 + 7/8) * 2^(14-7) = 1.875 * 128 = 240.0
-        assert abs(lut_g2[0x77].item() - 240.0) < 1e-3
-        # 0x80: NaN in UZ
-        assert torch.isnan(lut_g2[0x80])
+        # Test 2: Verify Gaudi2 redirection in convert_fp8_layer_to_linear
+        mock_layer = MagicMock()
+        mock_layer.in_features = 2
+        mock_layer.out_features = 1
+        mock_layer.bias = None
+        mock_layer.weight = weight_uint8
+        mock_layer.weight_scale = weight_scale
+        mock_layer.block_size = block_size
+        mock_layer.data_type = "fp8_e4m3fn"
+        mock_layer.__class__.__name__ = "FP8Linear"
 
-        # Test 5: Actual dequantization helper
-        weight_uint8 = torch.tensor([[0x00, 0x7E, 0x77]], dtype=torch.uint8)
+        # mock_layer.to should return a mock layer that we can check
+        mock_layer.to.return_value = mock_layer
 
-        # Standard
-        dq_std = _dequant_fp8_to_bf16(weight_uint8, variant="e4m3fn")
-        assert abs(dq_std[0, 1].item() - 448.0) < 1e-3
+        with patch("auto_round.utils.device.is_gaudi2", return_value=True):
+            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            # Verify it was moved to CPU
+            mock_layer.to.assert_called_with("cpu")
 
-        # G2
-        dq_g2 = _dequant_fp8_to_bf16(weight_uint8, variant="e4m3fnuz")
-        assert abs(dq_g2[0, 2].item() - 240.0) < 1e-3
-
-        # Test 6: Block-wise dequantization with e4m3fn (force CPU logic check)
-        weight = torch.randint(0, 256, (128, 128), dtype=torch.uint8)
-        weight_scale = torch.ones(1, 8, dtype=torch.bfloat16)
-        block_size = [128, 16]
-
-        # data_type="fp8_e4m3fn" on CPU should use native PyTorch .to() unless forced
-        # But we verify it still produces bfloat16 correctly
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size, data_type="fp8_e4m3fn")
-        assert dequant_weight.dtype == torch.bfloat16
-        assert dequant_weight.shape == (128, 128)
+        with patch("auto_round.utils.device.is_gaudi2", return_value=False):
+            # Reset mock
+            mock_layer.to.reset_mock()
+            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            # Verify it was moved to HPU (as requested in device arg)
+            mock_layer.to.assert_called_with("hpu")
 
     def test_mixed_bit_setting(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
