@@ -355,13 +355,13 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 
 ## Publications & Events
-[SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (202512 paper)
+[SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (2025.12 paper)
 
-[Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (202309 paper)
+[Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (2023.09 paper)
 
-[TEQ: Trainable Equivalent Transformation for Quantization of LLMs](https://arxiv.org/abs/2310.10944) (202310 paper)
+[TEQ: Trainable Equivalent Transformation for Quantization of LLMs](https://arxiv.org/abs/2310.10944) (2023.10 paper)
 
-[Effective Post-Training Quantization for Large Language Models](https://medium.com/intel-analytics-software/effective-post-training-quantization-for-large-language-models-with-enhanced-smoothquant-approach-93e9d104fb98) (202304 blog)
+[Effective Post-Training Quantization for Large Language Models](https://medium.com/intel-analytics-software/effective-post-training-quantization-for-large-language-models-with-enhanced-smoothquant-approach-93e9d104fb98) (2023.04 blog)
 
 Check out [Full Publication List](./docs/publication_list.md).
 
