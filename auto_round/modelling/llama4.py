@@ -18,8 +18,6 @@ from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextM
 
 from auto_round.modelling.replace_modules import ReplacementModuleBase
 from auto_round.modelling.utils import _update_parameter
-
-# from auto_round.modelling.utils import with_thread_limits
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 
@@ -47,7 +45,7 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
             del gate_up, down, gate_proj, up_proj
-            original.to_empty(device="meta")
+            original.to_empty(device="meta")  # release original experts parameters
 
 
 class SequentialLlama4TextMoe(ReplacementModuleBase):

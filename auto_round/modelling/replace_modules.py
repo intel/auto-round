@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, Type
 
 import torch
@@ -267,16 +268,12 @@ def apply_replacements(
     return model
 
 
-from dataclasses import dataclass
-
-
 @dataclass
 class ReplacedModuleInfo:
     original_module: torch.nn.Module
     replacement_module: ReplacementModuleBase
 
 
-# Define a class to track replaced modules, let's we can find the original module based on replacement module
 class ModuleReplacementTracker:
     """Tracker to maintain mapping between replacement modules and their original modules.
 
@@ -348,5 +345,4 @@ class ModuleReplacementTracker:
         logger.debug("Cleared module replacement tracker")
 
 
-# Global tracker instance
 _global_tracker = ModuleReplacementTracker()

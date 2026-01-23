@@ -86,7 +86,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
                 _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
-            original.experts.to_empty(device="meta")
+            original.experts.to_empty(device="meta")  # release original experts parameters
             clear_memory()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
