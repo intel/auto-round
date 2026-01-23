@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import LazyImport, logger, memory_monitor
+from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, logger, memory_monitor
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
@@ -43,6 +43,7 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             logger.debug(f"Loaded replacement module for {class_name}")
 
 
+@dump_mem_usage("Materializing model", log_level="info")
 def materialize_model_(model: torch.nn.Module) -> None:
     def _materialize_module(module: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
@@ -126,10 +127,14 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
             cls._replacement_registry[cls.original_module_class()] = cls
             logger.trace(f"Registered {cls.__name__} for replacing {cls.original_module_class()}")
 
-    def __init__(self):
+    def __init__(self, original: torch.nn.Module):
         super().__init__()
+        _global_tracker.register_replacement(
+            name=str(id(self)),
+            original=original,
+            replacement=self,
+        )
         self._materialized = False
-        self._source_original = None
 
     @classmethod
     def get_replacement_class(cls, module_class_name: str) -> Type["ReplacementModuleBase"]:
@@ -189,8 +194,12 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     def release_original_module(self) -> None:
         """Release reference to the original module to free memory."""
-        if hasattr(self, "_source_original"):
-            del self._source_original
+        # Release from global tracker
+        _global_tracker.release_original(self)
+
+    def _get_original_module(self) -> torch.nn.Module:
+        """Get the original module associated with this replacement."""
+        return _global_tracker.get_original(self)
 
     def post_process_materialization(self) -> None:
         """Mark the replacement module as materialized."""
@@ -240,16 +249,14 @@ def apply_replacements(
         logger.info(f"Found {len(modules_to_replace)} modules to replace")
         for name, module, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
             module = model.get_submodule(name)
-            memory_monitor.update()
-            memory_monitor.log_summary(f"Before replacing module {name}")
-            replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
-            replacement = replacement_cls.from_original(
-                module,
-                model.config,
-            )
-            model.set_submodule(name, replacement)
-            replaced.append((name, replacement_cls))
-            memory_monitor.log_summary(f"After replacing module {name}")
+            with dump_memory_usage_ctx(f"Replacing module {name}"):
+                replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+                replacement = replacement_cls.from_original(
+                    module,
+                    model.config,
+                )
+                model.set_submodule(name, replacement)
+                replaced.append((name, replacement_cls))
     else:
         logger.debug("No modules found for replacement")
 
@@ -258,3 +265,88 @@ def apply_replacements(
         logger.info(f"Replaced {len(replaced)} modules")
 
     return model
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class ReplacedModuleInfo:
+    original_module: torch.nn.Module
+    replacement_module: ReplacementModuleBase
+
+
+# Define a class to track replaced modules, let's we can find the original module based on replacement module
+class ModuleReplacementTracker:
+    """Tracker to maintain mapping between replacement modules and their original modules.
+
+    This is a singleton class - only one instance can exist.
+    """
+
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(ModuleReplacementTracker, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        # Only initialize once
+        if ModuleReplacementTracker._initialized:
+            return
+
+        # Map from replacement module id to original module
+        self._replacement_to_original: Dict[int, torch.nn.Module] = {}
+        # Map from module name to ReplacedModuleInfo
+        self._name_to_info: Dict[str, ReplacedModuleInfo] = {}
+
+        ModuleReplacementTracker._initialized = True
+
+    @classmethod
+    def get_instance(cls) -> "ModuleReplacementTracker":
+        """Get the singleton instance of the tracker."""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def register_replacement(self, name: str, original: torch.nn.Module, replacement: ReplacementModuleBase) -> None:
+        """Register a module replacement."""
+        self._replacement_to_original[id(replacement)] = original
+        self._name_to_info[name] = ReplacedModuleInfo(original_module=original, replacement_module=replacement)
+        logger.trace(f"Registered replacement for module: {name}")
+
+    def get_original(self, replacement: ReplacementModuleBase) -> torch.nn.Module:
+        """Get the original module for a given replacement module."""
+        return self._replacement_to_original.get(id(replacement))
+
+    def get_info_by_name(self, name: str) -> ReplacedModuleInfo:
+        """Get replacement info by module name."""
+        return self._name_to_info.get(name)
+
+    def release_original(self, replacement: ReplacementModuleBase) -> None:
+        """Release the original module associated with a replacement module."""
+        replacement_id = id(replacement)
+        if replacement_id in self._replacement_to_original:
+            original = self._replacement_to_original[replacement_id]
+            # Delete the original module to free memory
+            del original
+            del self._replacement_to_original[replacement_id]
+            logger.trace(f"Released original module for replacement {replacement_id}")
+
+    def release_all_originals(self) -> None:
+        """Release all tracked original modules."""
+        count = len(self._replacement_to_original)
+        if count > 0:
+            self._replacement_to_original.clear()
+            logger.debug(f"Released {count} original modules from tracker")
+
+    def clear(self) -> None:
+        """Clear all tracked information."""
+        self._replacement_to_original.clear()
+        self._name_to_info.clear()
+        logger.debug("Cleared module replacement tracker")
+
+
+# Global tracker instance
+_global_tracker = ModuleReplacementTracker()

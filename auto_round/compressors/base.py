@@ -2742,11 +2742,7 @@ class BaseCompressor(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        memory_monitor.update()
-        memory_monitor.log_summary("Before quantizing block")
         materialize_model_(block)
-        memory_monitor.update()
-        memory_monitor.log_summary("After materializing block")
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
                 if is_fp8_linear(m):

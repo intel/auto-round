@@ -1448,13 +1448,53 @@ class MemoryMonitor:
                 summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
-    def log_summary(self, msg: str = ""):
+    def log_summary(self, msg: str = "", level: str = "info"):
         """Log memory usage summary."""
         summary = self.get_summary()
-        logger.info(f"{msg} {summary}")
+        logger_method = getattr(logger, level.lower(), logger.info)
+        logger_method(f"{msg} {summary}")
 
         return summary
 
 
 # Global singleton instance
 memory_monitor = MemoryMonitor()
+
+# Define a context manager to dump the memory usage summary before and after a code block
+from contextlib import contextmanager
+
+
+@contextmanager
+def dump_memory_usage_ctx(msg: str = "", log_level: str = "info"):
+    """Context manager to dump memory usage before and after a code block."""
+    memory_monitor.update_cpu()
+    logger_method = getattr(logger, log_level.lower(), logger.info)
+    logger_method(f"[Memory Monitor] Before {msg}: {memory_monitor.get_summary()}")
+    try:
+        yield
+    finally:
+        memory_monitor.update_cpu()
+        logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
+
+
+import functools
+
+
+# Define a decorator to dump the memory usage summary before and after a code block
+def dump_mem_usage(msg: str = "", log_level: str = "info"):
+    """Decorator to dump memory usage before and after a function call."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            memory_monitor.update_cpu()
+            logger_method = getattr(logger, log_level.lower(), logger.info)
+            logger_method(f"[Memory Monitor] Before {msg}: {memory_monitor.get_summary()}")
+            result = func(*args, **kwargs)
+            memory_monitor.update_cpu()
+            logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
+            return result
+
+        return wrapper
+
+    return decorator
