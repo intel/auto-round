@@ -73,7 +73,6 @@ from auto_round.utils import (
     check_and_mark_fp8_model,
     check_seqlen_compatible,
     check_to_quantized,
-    clean_module_names,
     clear_memory,
     compile_func,
     convert_dtype_str2torch,
@@ -1264,7 +1263,6 @@ class BaseCompressor(object):
             # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
-            all_to_quantized_module_names = clean_module_names(self.model, all_to_quantized_module_names)
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic,
@@ -1337,7 +1335,6 @@ class BaseCompressor(object):
             else:
                 materialize_model_(self.model)
                 self.model.to("cpu")
-                all_to_quantized_module_names = clean_module_names(self.model, all_to_quantized_module_names)
                 block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
                 clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
                 cnt = 0
