@@ -22,6 +22,7 @@ from typing import Union
 
 import torch
 import transformers
+from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
@@ -1002,7 +1003,8 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     """ """
     from auto_round.schemes import QuantizationScheme
 
-    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+    with skip_weights_initialize():
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias is not None:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
     scheme_keys = (f.name for f in fields(QuantizationScheme))
