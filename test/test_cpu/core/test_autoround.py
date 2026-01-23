@@ -4,12 +4,13 @@ import shutil
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
+from packaging import version
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path
+from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path, transformers_version
 
 
 class TestAutoRound:
@@ -456,8 +457,12 @@ class TestAutoRound:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
         )
-        assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-        assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
+        if transformers_version < version.parse("5.0.0"):
+            assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+            assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
+        else:
+            assert isinstance(model.model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+            assert not isinstance(model.model.visual.merger.mlp[0], QuantLinear)
         if hasattr(model.model, "language_model"):
             assert isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear)
         else:
