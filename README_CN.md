@@ -260,7 +260,7 @@ ar.quantize_and_save()
 
 ### 视觉语言模型（VLM）的 API 调用方法
 
-如果在量化过程中遇到问题，尝试设置 `iters=0`​（启用 RTN）并将 `group_size=32`，通常能获得更好的效果。
+如果在量化过程中遇到问题，可以尝试设置 `iters=0`​（启用 RTN）并将 `group_size=32`，一般能获得更好的效果。
 
 
 <details>
