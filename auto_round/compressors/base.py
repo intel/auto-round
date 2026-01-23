@@ -1207,11 +1207,8 @@ class BaseCompressor(object):
             model=self.model,
             device=self.device,
             output_dir=self._get_save_folder_name(self.formats[0]),
-            mllm=self.mllm,
             layer_config=self.layer_config,
             tokenizer=self.tokenizer,
-            processor=self.processor if hasattr(self, "processor") else None,
-            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
         )
 
     @torch.inference_mode()
