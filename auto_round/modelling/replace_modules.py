@@ -44,7 +44,7 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             logger.debug(f"Loaded replacement module for {class_name}")
 
 
-@dump_mem_usage("Materializing model", log_level="info")
+@dump_mem_usage("Materializing model", log_level="debug")
 def materialize_model_(model: torch.nn.Module) -> None:
     def _materialize_module(module: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
@@ -250,7 +250,7 @@ def apply_replacements(
         logger.info(f"Found {len(modules_to_replace)} modules to replace")
         for name, module, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
             module = model.get_submodule(name)
-            with dump_memory_usage_ctx(f"Replacing module {name}"):
+            with dump_memory_usage_ctx(f"Replacing module {name}", log_level="debug"):
                 replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
                 replacement = replacement_cls.from_original(
                     module,
