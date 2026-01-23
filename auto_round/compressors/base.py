@@ -39,6 +39,7 @@ from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
     check_skippable_keywords,
+    clean_module_names,
     collect_best_params,
     get_shared_keys,
     infer_bits_by_data_type,
@@ -1254,6 +1255,7 @@ class BaseCompressor(object):
             # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
+            all_to_quantized_module_names = clean_module_names(self.model, all_to_quantized_module_names)
             self._quant_rtn_with_imatrix(all_to_quantized_module_names)
         elif self.act_bits <= 8 and check_need_act_calibration(
             self.act_dynamic,
@@ -1283,18 +1285,7 @@ class BaseCompressor(object):
             # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
             materialize_model_(self.model)
             self.model.to("cpu")
-
-            def clean_module_names(all_to_quantized_module_names: list[str]) -> list[str]:
-                cleaned_names = []
-                for name in all_to_quantized_module_names:
-                    module = get_module(self.model, name)
-                    if module is None:
-                        continue
-                    else:
-                        cleaned_names.append(name)
-                return cleaned_names
-
-            all_to_quantized_module_names = clean_module_names(all_to_quantized_module_names)
+            all_to_quantized_module_names = clean_module_names(self.model, all_to_quantized_module_names)
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             cnt = 0

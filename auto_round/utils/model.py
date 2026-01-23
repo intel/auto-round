@@ -1453,3 +1453,14 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return True
         else:
             return False
+
+
+def clean_module_names(model: torch.nn.Module, module_list: list[str]) -> list[str]:
+    cleaned_names = []
+    for name in module_list:
+        module = get_module(model, name)
+        if module is None:
+            continue
+        else:
+            cleaned_names.append(name)
+    return cleaned_names
