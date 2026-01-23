@@ -1451,7 +1451,7 @@ class MemoryMonitor:
     def log_summary(self):
         """Log memory usage summary."""
         summary = self.get_summary()
-        logger.info(f"{summary}")
+        logger.info(summary)
         return summary
 
 
