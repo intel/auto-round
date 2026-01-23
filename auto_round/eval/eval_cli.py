@@ -478,7 +478,8 @@ def parse_vllm_args(vllm_args_str):
                 else:
                     custom_vllm_kwargs[key] = value
                 logger.info(
-                    f"  Parsed vllm arg: {key}={custom_vllm_kwargs[key]} (type: {type(custom_vllm_kwargs[key]).__name__})"
+                    f"  Parsed vllm arg: {key}={custom_vllm_kwargs[key]}"
+                    + f" (type: {type(custom_vllm_kwargs[key]).__name__})"
                 )
             except Exception as e:
                 logger.warning(f"  Failed to parse vllm arg '{key}={value}': {e}, keeping as string")

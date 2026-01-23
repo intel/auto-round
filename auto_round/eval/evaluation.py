@@ -15,13 +15,9 @@
 import os
 from typing import Optional, Union
 
-from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
-
 from auto_round.logger import logger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
 
 
 def simple_evaluate_user_model(
@@ -35,6 +31,9 @@ def simple_evaluate_user_model(
     mllm: bool = False,
     **kwargs,
 ):
+    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
+
     if mllm:
         from lm_eval.models.hf_vlms import HFMultimodalLM  # pylint: disable=E0401
 
@@ -72,6 +71,8 @@ def simple_evaluate(
     device: Optional[str] = None,
     **kwargs,
 ):
+    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+
     return lm_simple_evaluate(
         model=model,
         model_args=model_args,
@@ -244,7 +245,7 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
     """
     import time
 
-    from lm_eval.utils import make_table
+    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     from auto_round.eval.eval_cli import eval_task_by_task
     from auto_round.utils import get_model_dtype, logger
@@ -300,7 +301,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
     """
     import time
 
-    from lm_eval.utils import make_table
+    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     from auto_round.eval.eval_cli import _eval_init, eval_task_by_task
     from auto_round.utils import get_model_dtype, logger
