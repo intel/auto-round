@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import functools
 import gc
 import os
 import re
+from contextlib import contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
@@ -1460,9 +1462,6 @@ class MemoryMonitor:
 # Global singleton instance
 memory_monitor = MemoryMonitor()
 
-# Define a context manager to dump the memory usage summary before and after a code block
-from contextlib import contextmanager
-
 
 @contextmanager
 def dump_memory_usage_ctx(msg: str = "", log_level: str = "info"):
@@ -1477,10 +1476,6 @@ def dump_memory_usage_ctx(msg: str = "", log_level: str = "info"):
         logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
 
 
-import functools
-
-
-# Define a decorator to dump the memory usage summary before and after a code block
 def dump_mem_usage(msg: str = "", log_level: str = "info"):
     """Decorator to dump memory usage before and after a function call."""
 
