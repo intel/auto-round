@@ -1448,10 +1448,10 @@ class MemoryMonitor:
                 summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
-    def log_summary(self):
+    def log_summary(self, msg: str = ""):
         """Log memory usage summary."""
         summary = self.get_summary()
-        logger.info(summary)
+        logger.info(f"{msg} {summary}")
 
         return summary
 
