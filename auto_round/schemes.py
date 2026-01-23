@@ -325,13 +325,13 @@ def _handle_special_schemes(
 
         lm_head_name = get_lm_head_name(model)
         if supported_types is None:
-            from auto_round.util import SUPPORTED_DTYPES
+            from auto_round.utils import SUPPORTED_DTYPES
 
             supported_types = SUPPORTED_DTYPES
         if inner_supported_types is None:
-            from auto_round.util import INNER_SUPPORTED_DTYPES
+            from auto_round.utils import INNER_SUPPORTED_LAYER_TYPES
 
-            inner_supported_types = INNER_SUPPORTED_DTYPES
+            inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         for n, m in model.named_modules():
             if n in layer_config:
                 continue
