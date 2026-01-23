@@ -211,6 +211,7 @@ def eval_with_vllm(args):
         "add_bos_token": args.add_bos_token,
         "device": device_str,
         "batch_size": batch_size,
+        "allow_deprecated_quantization": True,  # for vLLM==0.14.0
     }
 
     # Override with custom vllm_args if provided

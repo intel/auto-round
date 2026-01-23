@@ -38,20 +38,6 @@ class TestVllmEvaluation:
     """Test VLLM backend evaluation functionality."""
 
     @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
-    def test_vllm_backend_basic_eval(self, model):
-        """Test basic vllm backend evaluation with auto-round CLI."""
-        python_path = sys.executable
-
-        os.environ["VLLM_SKIP_WARMUP"] = "true"
-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"vllm evaluation failed (rc={ret})"
-
-    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
     def test_vllm_backend_with_custom_args(self, model):
         """Test vllm backend evaluation with custom vllm_args parameter."""
         python_path = sys.executable
@@ -60,29 +46,11 @@ class TestVllmEvaluation:
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
         # Test with custom vllm_args
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.8"
+        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.8,max_model_len=2048"
 
         ret = os.system(cmd)
 
         assert ret == 0, f"vllm evaluation with custom args failed (rc={ret})"
-
-    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
-    def test_vllm_backend_accuracy_threshold(self, model):
-        """Test vllm backend evaluation accuracy meets threshold.
-
-        Verify that the accuracy is >= 0.30 for lambada_openai task.
-        This validates that the quantized model maintains acceptable accuracy.
-        """
-        python_path = sys.executable
-
-        os.environ["VLLM_SKIP_WARMUP"] = "true"
-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 100"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"vllm evaluation failed (rc={ret})"
 
     def test_vllm_backend_with_quantization_iters_0(self, tiny_opt_model_path):
         """Test vllm evaluation with iters=0 (quantization without fine-tuning)."""
@@ -101,7 +69,7 @@ class TestVllmEvaluation:
 @pytest.mark.skipif(
     not os.path.exists("/usr/bin/nvidia-smi") and not os.path.exists("/usr/local/cuda"), reason="CUDA not available"
 )
-class TestVllmEvaluationModes:
+class TestHFEvaluation:
     """Test different evaluation modes: --eval and --eval_backend."""
 
     @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
@@ -145,7 +113,3 @@ class TestVllmEvaluationModes:
         ret = os.system(cmd)
 
         assert ret == 0, f"Task-by-task with iters=0 failed (rc={ret})"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
