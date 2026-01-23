@@ -1285,11 +1285,11 @@ class BaseCompressor(object):
         else:
             use_blockwise_quantization = False
             tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
-            if isinstance(tied_weights_keys,dict):
+            if isinstance(tied_weights_keys, dict):
                 tied_weights_values = list(tied_weights_keys.values())
             else:
                 tied_weights_values = list(tied_weights_keys)
-            tied_weights_layers= ['.'.join(val.split(".")[:-1]) for val in tied_weights_values] # rm weight/bias
+            tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
             # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
             if hasattr(self, "formats") and self.formats[0].is_gguf():
                 lm_head_name = get_lm_head_name(self.model)
