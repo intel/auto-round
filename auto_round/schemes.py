@@ -285,6 +285,7 @@ PRESET_SCHEMES = {
     "W2A16G32": W2A16G32,
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
+    "W4A16_MIXED": W4A16,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
@@ -311,6 +312,15 @@ def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.n
                 layer_config[n] = "GGUF:Q8_0"
             elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_experts" in n) and n != "lm_head":
                 layer_config[n] = "GGUF:Q4_K_S"
+    if scheme_name.lower() == "w4a16_mixed":
+        for n, m in model.named_modules():
+            if n in layer_config:
+                continue
+            if isinstance(m, torch.nn.Linear):
+                if "expert" in n and "shared_experts" not in n:
+                    layer_config[n] = {"bits": 4}
+                elif n != "lm_head":
+                    layer_config[n] = {"bits": 8}
     return layer_config
 
 
