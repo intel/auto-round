@@ -1222,7 +1222,8 @@ class BaseCompressor(object):
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         self.all_to_quantized_module_names = all_to_quantized_module_names
         if is_nv_fp(self.data_type):
-            # FIXME: (yiliu30) change it block-wise after we refactor the quantization code
+            # FIXME: (yiliu30) change it to block-wise after we refactor the quantization code and
+            # https://github.com/intel/auto-round/issues/1331
             materialize_model_(self.model)
             self.model.to("cpu")
             from auto_round.data_type.nvfp import calculate_gparam
