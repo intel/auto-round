@@ -1,42 +1,34 @@
 ## Description
 
-<!-- Please provide a clear and concise description of what this PR does -->
+Please briefly describe your main changes, the motivation.
+
+---
 
 ## Type of Change
 
-<!-- Please check the relevant option(s) -->
-
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
+- [ ] Bug fix
+- [ ] New feature
 - [ ] Documentation update
 - [ ] Performance improvement
 - [ ] Code refactoring
-- [ ] Other (please describe):
+- [ ] Other (please specify):
+
+---
 
 ## Related Issues
 
 <!-- Link to related issues using #issue_number -->
 
-Fixes #
-Relates to #
+Fixes or relates to #
 
-## Changes Made
-
-<!-- Please describe the changes made in detail -->
-
--
--
--
+---
 
 ## Checklist Before Submitting
-
-<!-- Please check all applicable items -->
 
 - [ ] My code has been tested locally.
 - [ ] Documentation has been updated as needed.
 - [ ] New or updated tests are included where applicable.
 
+---
 
-## Additional Context
-
-<!-- Add any other context, screenshots, or information about the PR here -->
+<!-- Optional: Tag reviewers or add extra notes below -->
