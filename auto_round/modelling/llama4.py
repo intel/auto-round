@@ -37,10 +37,6 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
                 down = original.down_proj[i]
                 gate_proj = gate_up[:, :intermediate_size]
                 up_proj = gate_up[:, intermediate_size:]
-
-                # self[i].gate_proj.weight.data.copy_(gate_proj.t())
-                # self[i].up_proj.weight.data.copy_(up_proj.t())
-                # self[i].down_proj.weight.data.copy_(down.t())
                 _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
                 _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
