@@ -26,7 +26,7 @@ from packaging import version
 
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
-
+from dataclasses import dataclass
 
 def compare_versions(v1, v2):
     return version.parse(v1) >= version.parse(v2)
@@ -376,3 +376,9 @@ def get_reciprocal(tensor):
     recip[mask] = 0.0
 
     return recip
+
+@dataclass
+class GlobalState:
+    replaced_module_count = 0
+
+global_state = GlobalState()

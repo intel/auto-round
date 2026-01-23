@@ -100,6 +100,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupported_meta_device,
+    global_state,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -1287,7 +1288,8 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            use_blockwise_quantization = False
+            # By default, we go with layer-wise way if no replacement happened
+            use_blockwise_quantization = global_state.replaced_module_count > 0
             tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
             tied_weight_values = list(tied_weight_keys.values())
             # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it

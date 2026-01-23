@@ -20,7 +20,7 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, logger, memory_monitor
+from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, logger, global_state
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
@@ -263,6 +263,7 @@ def apply_replacements(
 
     # Log what was replaced
     if replaced:
+        global_state.replaced_module_count = len(replaced)
         logger.info(f"Replaced {len(replaced)} modules")
 
     return model
