@@ -1309,6 +1309,7 @@ class BaseCompressor(object):
                     for block_name in block_names:
                         pbar.set_description(f"Quantizing {block_name}")
                         block = get_module(self.model, block_name)
+                        materialize_model_(block)
                         for name, m in block.named_modules():
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
