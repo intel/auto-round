@@ -9,7 +9,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Customized Dataset](#customized-dataset)
   + [Dataset operations](#dataset-operations)
 * [3 Quantization](#3-quantization)
-  + [Supported Quantization Configurations](#supported-quantization-configurations)
+  + [Supported Quantization Schemes](#supported-quantization-schemes)
   + [Supported Export Formats](#supported-export-formats)
   + [Hardware Compatibility](#hardware-compatibility)
   + [Environment Configuration](#environment-configuration)
@@ -39,8 +39,9 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Specify Inference Backend](#specify-inference-backend)
   + [Convert GPTQ/AWQ to AutoRound](#convert-gptq-awq-to-autoround)
 * [5 Evaluation](#5-evaluation)
-  + [Combine evaluation with tuning](#combine-evaluation-with-tuning)
-  + [Eval the Quantized model](#eval-the-quantized-model)
+  + [Single GPU Evaluation](#single-gpu-evaluation)
+  + [Multi-GPU Evaluation](#multi-gpu-evaluation)
+  + [Important Notes](#important-notes)
 * [6 Known Issues](#6-known-issues)
 
 ## 1 Prerequisite
@@ -129,7 +130,7 @@ AutoRound supports several Schemes:
 
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
 
-### Supported export Formats
+### Supported Export Formats
 You can use command `auto_round list format` to show all supported formats with support scheme.
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
@@ -751,10 +752,15 @@ auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --ta
 
 **HF Backend:**
 ```bash
-auto-round --model="your_model_path" --eval --device 0,1 --tasks lambada_openai --eval_bs 16
+auto-round --model="your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_bs 16
 ```
 
-**vLLM Backend:**
+**vLLM Backend (Option 1 - using --device_map):**
+```bash
+auto-round "your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_backend vllm
+```
+
+**vLLM Backend (Option 2 - manual configuration):**
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_openai --eval_backend vllm --vllm_args="tensor_parallel_size=2,gpu_memory_utilization=0.8"
 ```
@@ -764,6 +770,7 @@ CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_ope
 - Use the `--eval` flag to evaluate models directly. This supports both original and quantized models.
 - The `--eval_task_by_task` option helps handle task failures by evaluating tasks sequentially. This only applies to the HF backend.
 - When multiple formats are exported, the last format in the list will be used for evaluation.
+- For vLLM backend, you can use `--device 0,1,2` to specify GPU devices. This will automatically set `CUDA_VISIBLE_DEVICES` and configure `tensor_parallel_size` based on the number of devices. Alternatively, you can manually set these via environment variables and `--vllm_args`.
 
 
 ## 6 Known Issues
