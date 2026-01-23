@@ -6,7 +6,7 @@ import pytest
 import requests
 from PIL import Image
 
-from auto_round import AutoRoundConfig  # # must import for auto-round format
+from transformers import AutoRoundConfig  # # must import for auto-round format
 from auto_round.testing_utils import require_gptqmodel, require_package_version_ut, require_vlm_env
 
 AUTO_ROUND_PATH = __file__.split("/")

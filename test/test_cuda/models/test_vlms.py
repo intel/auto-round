@@ -7,7 +7,7 @@ import pytest
 import requests
 from PIL import Image
 
-from auto_round import AutoRoundConfig
+from transformers import AutoRoundConfig
 from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
 
 
@@ -23,7 +23,7 @@ class TestAutoRound:
 
     # def test_vision_generation(self):
     #     quantized_model_path = "OPEA/Phi-3.5-vision-instruct-qvision-int4-sym-inc"
-    #     from auto_round import AutoRoundConfig
+    #     from transformers import AutoRoundConfig
     #     device = "auto"  ##cpu, hpu, cuda
     #     quantization_config = AutoRoundConfig(
     #         backend=device
