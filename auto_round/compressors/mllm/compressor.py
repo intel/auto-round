@@ -184,13 +184,16 @@ class MLLMCompressor(BaseCompressor):
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         if quant_nontext_module:
-            from transformers.utils.versions import require_version
+            import importlib.util
 
+            missing_libs = []
             for require_lib in ["pillow", "torchvision"]:
-                require_version(
-                    f"{require_lib}",
-                    "pillow and torchvision are required for quantizing non-text modules,"
-                    " please install them with `pip install pillow torchvision`",
+                if importlib.util.find_spec(require_lib) is None:
+                    missing_libs.append(require_lib)
+            if len(missing_libs) > 0:
+                raise ImportError(
+                    f"{', '.join(missing_libs)} are required for quantizing non-text modules,"
+                    f" please install them with `pip install {' '.join(missing_libs)}`",
                 )
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
