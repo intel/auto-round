@@ -1285,6 +1285,8 @@ class BaseCompressor(object):
         else:
             use_blockwise_quantization = False
             tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
+            if tied_weights_keys is None:
+                tied_weights_keys = []
             if isinstance(tied_weights_keys, dict):
                 tied_weights_values = list(tied_weights_keys.values())
             else:
