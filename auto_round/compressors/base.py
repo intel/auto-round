@@ -50,6 +50,7 @@ from auto_round.compressors.utils import (
     reset_params,
     set_layer_config,
 )
+from auto_round.compressors.utils import DDPIndexSampler
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
@@ -142,7 +143,51 @@ SERIALIZATION_KEYS = (
     "to_quant_block_names",
 )
 
+import torch.distributed as dist
+def rank_log(msg: str) -> None:
+    """Log message with rank information in distributed setting."""
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    logger.info(f"[Rank {rank}] {msg}")
 
+
+# Source - https://stackoverflow.com/a
+# Posted by Romuald Brunet, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-01-24, License - CC BY-SA 3.0
+
+import sys
+import pdb
+
+class ForkedPdb(pdb.Pdb):
+    """A Pdb subclass that may be used
+    from a forked multiprocessing child
+
+    """
+    def interaction(self, *args, **kwargs):
+        _stdin = sys.stdin
+        try:
+            sys.stdin = open('/dev/stdin')
+            pdb.Pdb.interaction(self, *args, **kwargs)
+        finally:
+            sys.stdin = _stdin
+
+
+def check_grad(block, msg):
+    the_first_param_with_grad = None
+    for name, param in block.named_parameters():
+        if param.grad is not None:
+            the_first_param_with_grad = (name, param)
+            break
+    if the_first_param_with_grad is None:
+        rank_log(f"{msg} No grad found in block.")
+    else:
+        name, param = the_first_param_with_grad
+        rank_log(f"{msg} Grad found in block. Param name: {name}, Grad norm: {param.grad.norm().item()}. grad: {param.grad}") 
+
+
+def is_ddp():
+    return dist.is_initialized() and dist.get_world_size() > 1
+
+from torch.nn.parallel import DistributedDataParallel as DDP
 class BaseCompressor(object):
     """Base compressor for LLM quantization
 
@@ -2874,9 +2919,24 @@ class BaseCompressor(object):
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
-        index_sampler = IndexSampler(nsamples, global_batch_size)
+        if is_ddp():
+            index_sampler = DDPIndexSampler(nsamples, global_batch_size, iters=self.iters)
+        else:
+            index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        rank_log(f"DDP rank {rank} is quantizing the block")
+        # ForkedPdb().set_trace()
+        rank_log(f"device info: deivce: {device}, loss_device: {loss_device}, block's device {next(block.parameters()).device}")
+        block = DDP(block, device_ids=[rank], find_unused_parameters=True)
+        dist.barrier()
+        logger.warning_once(
+            "DistributedDataParallel (DDP) is used for block quantization. "
+            f"block: {block}"
+        )
+        
         for i in range(self.iters):
+            rank_log(f"starts iteration {i} for block quantization")
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
@@ -2886,6 +2946,7 @@ class BaseCompressor(object):
                 num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
+                rank_log(f"iteration {i} tmp_step {tmp_step} start")
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 current_output = self._get_current_output(output, indices)
                 current_output = to_device(current_output, loss_device)
@@ -2897,9 +2958,9 @@ class BaseCompressor(object):
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.5, device_list=self.device_list)
-
+                # rank_log(f"iteration {i} tmp_step {tmp_step} loss: {loss.item()}, loss device {loss.device}, starting backward")
                 self._scale_loss_and_backward(scaler, loss)
-
+                # check_grad(block, msg=f"block quantization iter {i} tmp_step {tmp_step}")
                 if self.low_gpu_mem_usage and card_0_in_high_risk:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.8, device_list=self.device_list)
@@ -2921,6 +2982,9 @@ class BaseCompressor(object):
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
             self._step(scaler, optimizer, lr_schedule)
+            
+            rank_log(f"ends iteration {i} for block quantization")
+            # dist.barrier()
 
         last_loss = total_loss
         best_iter = self.iters
