@@ -16,10 +16,13 @@ import json
 import os
 import re
 from collections import UserDict
+from contextlib import ContextDecorator, contextmanager
 from dataclasses import asdict, fields
+from functools import wraps
 from pathlib import Path
 from typing import Union
 
+import psutil
 import torch
 import transformers
 
@@ -906,16 +909,65 @@ def pad_block_fp8_weight_naive(
     return weight, orig_M, orig_N
 
 
-def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
+class with_thread_limits(ContextDecorator):
+    """
+    Context manager and decorator to temporarily set AR_OMP_NUM_THREADS and PyTorch threads.
+    Inspired by vLLM's thread limit decorator.
+    https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
+    """
+
+    def __init__(self, div=1):
+        self.div = div
+        self.old_omp = None
+        self.old_torch = None
+
+    def __enter__(self):
+        # Save original settings
+        self.old_omp = envs.AR_OMP_NUM_THREADS
+        self.old_torch = torch.get_num_threads()
+
+        try:
+            if psutil is not None:
+                num_cores = len(psutil.Process().cpu_affinity() or [])
+                if num_cores == 0:
+                    num_cores = os.cpu_count() or 1
+            else:
+                num_cores = os.cpu_count() or 1
+
+            # Set new limits
+            new_threads = max(1, num_cores // self.div)
+            os.environ["AR_OMP_NUM_THREADS"] = str(new_threads)
+            torch.set_num_threads(new_threads)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore original settings
+        if self.old_omp is None:
+            os.environ.pop("AR_OMP_NUM_THREADS", None)
+        else:
+            os.environ["AR_OMP_NUM_THREADS"] = self.old_omp
+        torch.set_num_threads(self.old_torch)
+
+
+@with_thread_limits()
+def dequant_block_fp8_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+) -> torch.Tensor:
+    """Core dequantization logic for block-wise FP8 weights."""
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
     assert len(block_size) == 2
 
+    # If weight is stored as uint8, view it as float8_e4m3fn
+    if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
+        weight = weight.view(torch.float8_e4m3fn)
+
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
     weight_shape_len = len(weight.shape)
-
     block_size_m, block_size_n = block_size
 
     # mul scale
@@ -1010,12 +1062,17 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
+    from auto_round.utils.device import is_gaudi2
+
+    if is_gaudi2():
+        device = "cpu"
     layer = layer.to(device)
     if layer.__class__.__name__ == "CompressedLinear":
         dq_weight = layer.compressor.decompress_module(layer)
     else:
         weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+        data_type = getattr(layer, "data_type", None)
+        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 
