@@ -4,9 +4,9 @@ import shutil
 import pytest
 import torch
 import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
-from auto_round import AutoRound, AutoRoundConfig
+from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import (
     require_autogptq,
