@@ -911,7 +911,7 @@ def pad_block_fp8_weight_naive(
 
 class with_thread_limits(ContextDecorator):
     """
-    Context manager and decorator to temporarily set OMP_NUM_THREADS and PyTorch threads.
+    Context manager and decorator to temporarily set AR_OMP_NUM_THREADS and PyTorch threads.
     Inspired by vLLM's thread limit decorator.
     https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
     """
@@ -923,7 +923,7 @@ class with_thread_limits(ContextDecorator):
 
     def __enter__(self):
         # Save original settings
-        self.old_omp = envs.OMP_NUM_THREADS
+        self.old_omp = envs.AR_OMP_NUM_THREADS
         self.old_torch = torch.get_num_threads()
 
         try:
@@ -936,7 +936,7 @@ class with_thread_limits(ContextDecorator):
 
             # Set new limits
             new_threads = max(1, num_cores // self.div)
-            os.environ["OMP_NUM_THREADS"] = str(new_threads)
+            os.environ["AR_OMP_NUM_THREADS"] = str(new_threads)
             torch.set_num_threads(new_threads)
         except Exception:
             pass
@@ -945,9 +945,9 @@ class with_thread_limits(ContextDecorator):
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Restore original settings
         if self.old_omp is None:
-            os.environ.pop("OMP_NUM_THREADS", None)
+            os.environ.pop("AR_OMP_NUM_THREADS", None)
         else:
-            os.environ["OMP_NUM_THREADS"] = self.old_omp
+            os.environ["AR_OMP_NUM_THREADS"] = self.old_omp
         torch.set_num_threads(self.old_torch)
 
 
