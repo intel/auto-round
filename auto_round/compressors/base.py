@@ -55,7 +55,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modelling.replace_modules import materialize_model_
+from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -1072,6 +1072,7 @@ class BaseCompressor(object):
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
+            safe_to_cpu_(model)
             clear_memory(device_list=self.device_list)
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         except torch.OutOfMemoryError:
@@ -1083,6 +1084,7 @@ class BaseCompressor(object):
                     "Fallback to CPU. "
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
+                safe_to_cpu_(model)
                 clear_memory(device_list=self.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate

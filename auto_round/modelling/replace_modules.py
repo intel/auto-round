@@ -85,9 +85,14 @@ def _has_meta_params_or_buffers(model: PreTrainedModel) -> bool:
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
-    if _has_meta_params_or_buffers(model):
-        materialize_model_(model)
-    model.to("cpu")
+    # If no replacement happened, move model to CPU directly
+    if global_state.replaced_module_count == 0:
+        model.to("cpu")
+        return
+    else:
+        # TODO: (yiliu30) there might be some edge cases where some modules are replaced
+        # and we need to move them to CPU safely.
+        pass
 
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
