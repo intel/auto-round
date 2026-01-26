@@ -23,7 +23,7 @@
 
 ## 🚀 AutoRound 是什么？
 
-AutoRound 是一套面向**大语言模型（LLMs）和视觉-语言模型（VLMs）的高级量化工具包。它通过引入符号梯度下降方法（sign-gradient descent method）** ，只需进行极少的调参，就能在 **超低精度（2–4 bits）** 下保持较高的模型准确率，同时也具备较好的硬件兼容性。更多细节请参考论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用说明请参阅 [用户指南](./docs/step_by_step.md).
+AutoRound 是面向**大语言模型（LLMs）和视觉-语言模型（VLMs）的高级量化工具。它通过引入符号梯度下降方法（sign-gradient descent）** ，只需进行极少的调参，就能在 **极低精度（2–4 bits）** 下保持较高的准确率，同时也具备较好的硬件兼容性。更多细节请参考论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用说明请参阅 [用户指南](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -32,19 +32,19 @@ AutoRound 是一套面向**大语言模型（LLMs）和视觉-语言模型（VLM
 
 ## 🆕 最新进展
 
-* [2025/12] **SignRoundV2** 论文已发布。开启 `enable_alg_ext` 并使用 **AutoScheme** API 进行混合精度量化即可复现论文实验结果。详见：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评测说明*](./docs/alg_202508.md)。
+* [2025/12] **SignRoundV2** 论文已发布。开启 `enable_alg_ext` 并使用 **AutoScheme** API 进行混合精度量化即可复现论文实验结果。详见：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
 
-* [2025/11] AutoRound 已接入 **LLM-Compressor**。详见：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
+* [2025/11]  **LLM-Compressor** 已支持AutoRound算法。详见：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
 
-* [2025/11] 通过 `--enable_alg_ext` 提供了 **增强版 GGUF** 量化算法。详见：[*准确度*](./docs/gguf_alg_ext_acc.md)。
+* [2025/11] 提供了 **增强版 GGUF** 量化算法，开启 `--enable_alg_ext`即可 。[*准确度*](./docs/gguf_alg_ext_acc.md)提供了少量准确率数据。
 
 * [2025/10] AutoRound 已集成至 **SGLang**。详见：[*使用方法*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round)，[*LMSYS 博客*](https://lmsys.org/blog/2025-11-13-AutoRound/)，[*X 推文*](https://x.com/lmsysorg/status/1991977019220148650?s=20)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196)，[*LinkedIn*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472)。
 
-* [2025/10] 提供 **混合精度** 算法，可在几分钟内自动生成量化方案。详见：[*使用方法*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)，[*准确度*](./docs/auto_scheme_acc.md)。
+* [2025/10] 提供 **混合精度** 算法，可在几分钟内自动生成混合bit方案。详见：[*使用方法*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)，[*准确度*](./docs/auto_scheme_acc.md)。
 
 * [2025/09] 支持 **MXFP4** 和 **NVFP4** 数据类型。详见：[*准确度*](./docs/mxnv_acc.md)。
 
-* [2025/08] 通过 `--enable_alg_ext` 提供 **改进版 INT2** 算法。详见：[*准确度*](./docs/alg_202508.md)。
+* [2025/08] ` 提供 **改进版 INT2** 算法, 请开启 `--enable_alg_ext。详见：[*准确度*](./docs/alg_202508.md)。
 
 * [2025/07] 支持 **GGUF** 格式。详见：[*使用方法*](./docs/step_by_step.md#gguf-format)。
 
@@ -58,13 +58,13 @@ AutoRound 是一套面向**大语言模型（LLMs）和视觉-语言模型（VLM
 ## ✨ 核心特性
 
 
-✅ **高准确度** 在 2–3 bit 下也能保持较强的性能（[示例模型](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b)）， 4 bit 量化在多项[基准](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)上保持领先水平。
+✅ **高准确度** 在 2–3 bit 下也能保持较强的性能（[示例模型](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b)）， 4 bit 量化在[基准](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)上保持领先水平。
 
-✅ **生态集成** 可无缝衔接 **Transformers、vLLM、SGLang** 等。
+✅ **良好的生态继承** 量化模型已被多个知名库支持，如 **Transformers、vLLM、SGLang** 等。
 
-✅ **多格式导出** 支持导出 ​**AutoRound、AutoAWQ、AutoGPTQ、GGUF**​ 格式，以兼容不同的推理后端。详见：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
+✅ **多格式导出** 可以导出到​**AutoRound、AutoAWQ、AutoGPTQ、GGUF**​ 格式，。详见：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
-✅ **快速混合位宽/数据类型方案生成** 可在几分钟内自动完成配置，仅需模型在 BF16 精度下内存占用量的1.1–1.5倍作为额外开销。详见：[准确度结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
+✅ **自动混合精度** 可在几分钟内自动生成混合bit策略，但需要模型在 BF16下内存占用量的1.1–1.5倍作为额外开销。详见：[准确度结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
 
 ✅ **优化的就近取整（RTN）模式** 使用 `--iters 0`​ 可快速完成量化（但在 4 bit 下准确度会有一定降低）。详见：[opt_rtn 模式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
 
