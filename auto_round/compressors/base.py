@@ -284,7 +284,7 @@ class BaseCompressor(object):
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
-        self.orig_scheme = scheme
+        self.orig_scheme = copy.deepcopy(scheme)
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
