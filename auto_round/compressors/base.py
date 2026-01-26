@@ -2944,7 +2944,7 @@ class BaseCompressor(object):
         batch_size = self.batch_size
 
         for i in range(self.iters):
-            rank_log(f"starts iteration {i} for block quantization")
+            rank_log(f"starts iteration {i} for block quantization, best loss so far {best_loss}")
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
@@ -2954,7 +2954,7 @@ class BaseCompressor(object):
                 num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
             for tmp_step in range(self.gradient_accumulate_steps):
-                rank_log(f"iteration {i} tmp_step {tmp_step} start")
+                # rank_log(f"iteration {i} tmp_step {tmp_step} start")
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 current_output = self._get_current_output(output, indices)
                 current_output = to_device(current_output, loss_device)
