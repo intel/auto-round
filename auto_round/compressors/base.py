@@ -1505,7 +1505,11 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
-        is_gguf_format = self.formats is not None and len(self.formats)>0 and self.formats[0].is_gguf()
+        is_gguf_format = (
+                (f := getattr(self, "formats", None)) is not None
+                and len(f) > 0
+                and f[0].is_gguf()
+        )
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model)
             if predefined_ignore_layers:
