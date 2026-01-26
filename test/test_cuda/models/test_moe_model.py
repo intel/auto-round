@@ -128,7 +128,7 @@ def test_llama4(setup_llama4):
 
 class NewQwen3MLP(ReplacementModuleBase):
     def __init__(self, original: Qwen3MLP, config: Qwen3Config):
-        super().__init__()
+        super().__init__(original)
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size

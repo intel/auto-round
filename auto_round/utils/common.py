@@ -17,6 +17,7 @@ import importlib
 import os
 import re
 import sys
+from dataclasses import dataclass
 from functools import lru_cache, wraps
 from typing import Any
 
@@ -376,3 +377,11 @@ def get_reciprocal(tensor):
     recip[mask] = 0.0
 
     return recip
+
+
+@dataclass
+class GlobalState:
+    replaced_module_count = 0
+
+
+global_state = GlobalState()
