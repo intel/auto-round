@@ -1459,6 +1459,18 @@ class MemoryMonitor:
         return summary
 
 
+def get_device_str():
+    """Get a string representation of the automatically detected device."""
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.xpu.is_available():  # pragma: no cover
+        return "xpu"
+    elif is_hpex_available():  # pragma: no cover
+        return "hpu"
+    else:  # pragma: no cover
+        return "cpu"
+
+
 # Global singleton instance
 memory_monitor = MemoryMonitor()
 

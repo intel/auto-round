@@ -6,9 +6,9 @@ import pytest
 import torch
 import transformers
 from lm_eval.utils import make_table  # pylint: disable=E0401
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
-from auto_round import AutoRound, AutoRoundConfig
+from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
 from auto_round.testing_utils import require_autogptq, require_greater_than_050, require_greater_than_051
 
