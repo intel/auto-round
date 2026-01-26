@@ -382,24 +382,7 @@ class BaseCompressor(object):
         if enable_opt_rtn:
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
-
-        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
-            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
-            disable_opt_rtn = True
-        if (
-            self.bits >= 8
-            and self.act_bits >= 16
-            and self.iters == 0
-            and self.data_type == "int"
-            and disable_opt_rtn is None
-        ):
-            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
-            disable_opt_rtn = True
-        if disable_opt_rtn is None and self.iters == 0:
-            logger.info(
-                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
-            )
-            disable_opt_rtn = False
+        self.disable_opt_rtn = disable_opt_rtn
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -410,7 +393,6 @@ class BaseCompressor(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
-        self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
         self.is_immediate_packing = False
@@ -427,17 +409,7 @@ class BaseCompressor(object):
             logger.warning("The static attention dtype is experimental and currently has limited support.")
 
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        if self.act_bits <= 8 and self.amp_dtype == torch.float16:
-            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
-            self.amp_dtype = torch.bfloat16
-            if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
-                self.model = self.model.to(torch.bfloat16)
-        else:
-            logger.info(f"using {self.model.dtype} for quantization tuning")
 
-        # Some helpers
-        if "hpu" in str(self.device):
-            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
@@ -447,22 +419,7 @@ class BaseCompressor(object):
         self.attention_mask = []
         self.wrapper_block = wrapper_block
 
-        self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
-
-        if is_hpex_available():
-            logger.info("habana_frameworks is available, import htcore explicitly.")
-            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
-
-        if self.enable_alg_ext:
-            try:
-                logger.warning_once("using algorithm extension for quantization.")
-                from auto_round.alg_ext import wrapper_autoround
-
-                wrapper_autoround(self)
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
 
         self._post_inited = False
 
@@ -495,15 +452,60 @@ class BaseCompressor(object):
         set_non_auto_device_map(self.model, self.device_map)
         self.device_list = parse_available_devices(self.device_map)
 
+        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
+            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
+            self.disable_opt_rtn = True
+        if (
+            self.bits >= 8
+            and self.act_bits >= 16
+            and self.iters == 0
+            and self.data_type == "int"
+            and self.disable_opt_rtn is None
+        ):
+            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
+            self.disable_opt_rtn = True
+        if self.disable_opt_rtn is None and self.iters == 0:
+            logger.info(
+                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+            )
+            self.disable_opt_rtn = False
+
         set_seed(self.seed)
         self._set_amp_dtype()
         self._adjust_torch_compile(self.enable_torch_compile)
         if self.enable_torch_compile:
             self.block_forward = compile_func(self.block_forward, self.device)
 
+        if self.act_bits <= 8 and self.amp_dtype == torch.float16:
+            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
+            self.amp_dtype = torch.bfloat16
+            if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
+                self.model = self.model.to(torch.bfloat16)
+        else:
+            logger.info(f"using {self.model.dtype} for quantization tuning")
+
+        # Some helpers
+        if "hpu" in str(self.device):
+            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
+
+        self._check_configs()
+
         if isinstance(self.scheme, AutoScheme):
             self.layer_config = self._gen_auto_scheme(self.model, self.scheme, self.dataset, self.device_map)
 
+        if is_hpex_available():
+            logger.info("habana_frameworks is available, import htcore explicitly.")
+            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
+        if self.enable_alg_ext:
+            try:
+                logger.warning_once("using algorithm extension for quantization.")
+                from auto_round.alg_ext import wrapper_autoround
+
+                wrapper_autoround(self)
+            except (ImportError, ModuleNotFoundError):
+                logger.error("algorithm extension import error, fallback to default mode")
         self._post_inited = True
 
     def _gen_auto_scheme(
@@ -882,6 +884,31 @@ class BaseCompressor(object):
         # post init
         self._post_init()
 
+        model_name = self.model.name_or_path.rstrip("/")
+        if model_name.split("/")[-1].strip(".") == "" and "gguf" not in format:
+            if self.group_size <= 0:
+                if "fp" in self.act_data_type:
+                    suffix = f"afp{self.act_bits}"
+                else:
+                    suffix = f"a{self.act_bits}"
+            else:
+                suffix = f"g{self.group_size}"
+            export_dir = os.path.join(output_dir, f"w{self.bits}{suffix}")
+        elif model_name.split("/")[-1].strip(".") == "" and "gguf" in format:
+            export_dir = output_dir
+        elif model_name.split("/")[-1].strip(".") != "" and "gguf" in format:
+            export_dir = os.path.join(output_dir, model_name.split("/")[-1] + "-gguf")
+        else:
+            if self.group_size <= 0:
+                if "fp" in self.act_data_type:
+                    suffix = f"afp{self.act_bits}"
+                else:
+                    suffix = f"a{self.act_bits}"
+            else:
+                suffix = f"g{self.group_size}"
+            export_dir = os.path.join(output_dir, model_name.split("/")[-1] + f"-w{self.bits}{suffix}")
+
+        output_dir = export_dir
         # Validate and process the specified formats
         self.orig_output_dir = output_dir
 
