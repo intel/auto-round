@@ -64,7 +64,6 @@ def check_meta_module(model):
 
 
 from torch._inductor.decomposition import decomps_to_exclude
-import torch
 from torch.utils._debug_mode import DebugMode
 
 
