@@ -23,7 +23,7 @@
 
 ## 🚀 AutoRound 是什么？
 
-AutoRound 是一套专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的高级量化工具包。它通过引入**符号梯度下降（sign-gradient descent）** 的方法，只需进行极少的调参，就能在 **超低精度（2–4 bits）** 下保持较高的模型精度。同时它具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
+AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的高级量化工具包。它通过引入**符号梯度下降（sign-gradient descent）** 的方法，只需进行极少的调参，就能在 **极低比特（2–4 bits）** 下保持较高的模型精度。同时它具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -32,25 +32,25 @@ AutoRound 是一套专为大语言模型（LLMs）和视觉-语言模型（VLMs�
 
 ## 🆕 最新进展
 
-* [2025/12] 发布 **SignRoundV2** 论文。启用 `enable_alg_ext` 同时利用 **AutoScheme** API 对模型进行混合精度量化即可复现论文结果。详见：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评测说明*](./docs/alg_202508.md)。
+* [2025/12] 发布了 **SignRoundV2** 论文。启用 `enable_alg_ext` 的同时，利用 **AutoScheme** API 对模型进行混合精度量化即可复现论文结果。详见：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
 
-* [2025/11] AutoRound 已集成至 **LLM-Compressor**。详见：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
+* [2025/11] **LLM-Compressor** 现已支持 AutoRound 算法。详见：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
 
-* [2025/11] 通过 `--enable_alg_ext` 引入 **增强版 GGUF** 量化算法。详见：[*Accuracy*](./docs/gguf_alg_ext_acc.md)。
+* [2025/11] 提供了 **增强版 GGUF** 量化算法，开启 `--enable_alg_ext` 即可。[*Accuracy*](./docs/gguf_alg_ext_acc.md)。
 
-* [2025/10] AutoRound 已集成至 **SGLang**。详见：[*使用方法*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round)，[*LMSYS 博客*](https://lmsys.org/blog/2025-11-13-AutoRound/)，[*X 推文*](https://x.com/lmsysorg/status/1991977019220148650?s=20)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196)，[*LinkedIn*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472)。
+* [2025/10] **SGLang** 现已集成 AutoRound。详见：[*使用方法*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round)，[*LMSYS 博客*](https://lmsys.org/blog/2025-11-13-AutoRound/)，[*X 推文*](https://x.com/lmsysorg/status/1991977019220148650?s=20)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196)，[*LinkedIn*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472)。
 
 * [2025/10] 提供 **混合精度** 算法，可在几分钟内自动生成量化方案。详见：[*使用方法*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)，[*Accuracy*](./docs/auto_scheme_acc.md)。
 
 * [2025/09] 新增 **MXFP4** 和 **NVFP4** 数据支持类型。详见：[*Accuracy*](./docs/mxnv_acc.md)。
 
-* [2025/08] 通过 `--enable_alg_ext` 引入 **改进的 INT2** 算法。详见：[*Accuracy*](./docs/alg_202508.md)。
+* [2025/08] 提供 **改进版 INT2** 算法，开启 `--enable_alg_ext` 即可。详见：[*Accuracy*](./docs/alg_202508.md)。
 
-* [2025/07] 新增 **GGUF** 格式。详见：[*使用方法*](./docs/step_by_step.md#gguf-format)。
+* [2025/07] 新增导出格式 **GGUF** 。详见：[*使用方法*](./docs/step_by_step.md#gguf-format)。
 
-* [2025/05] AutoRound 已集成至 **vLLM**。详见：[*使用方法*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/)，[*Medium 博客*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e)，[*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=)。
+* [2025/05]  **vLLM** 现已集成 AutoRound。详见：[*使用方法*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/)，[*Medium 博客*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e)，[*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=)。
 
-* [2025/05] AutoRound 已集成至 **Transformers**。详见：[*博客*](https://huggingface.co/blog/autoround)。
+* [2025/05] **Transformers** 现已集成 AutoRound。详见：[*博客*](https://huggingface.co/blog/autoround)。
 
 * [2025/03] 约 200GB 大小的 **DeepSeek-R1** 模型在量化后（INT2-mixed）仍保持了 97.9% 的精度。详见：[*模型*](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc)。
 
@@ -58,23 +58,23 @@ AutoRound 是一套专为大语言模型（LLMs）和视觉-语言模型（VLMs�
 ## ✨ 核心特性
 
 
-✅ **精度表现卓越** 在 2–3 bit 的超低精度下也能保持较强的性能（[示例模型](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b)）， 4 bit 量化在多项[基准测试](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)中都达到领先水平。
+✅ **精度表现卓越** 模型在 2–3 bit 的极低精度下也能保持较强的性能（[示例模型](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b)）， 4 bit 量化在[基准测试](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)上达到领先水平。
 
-✅ **生态集成度好** 无缝对接 **Transformers、vLLM、SGLang** 等主流框架。
+✅ **生态集成度好** 可与 **Transformers、vLLM、SGLang** 等主流框架无缝衔接。
 
-✅ **导出格式丰富** 支持导出 ​**AutoRound、AutoAWQ、AutoGPTQ、GGUF**​ 格式，兼容性更强。详见：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
+✅ **导出格式丰富** 可以导出到 ​**AutoRound、AutoAWQ、AutoGPTQ、GGUF**​ 格式，兼容性更强。详见：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
-✅ **快速生成混合位宽及数据类型的量化方案** 可在几分钟内自动完成配置（额外的内存开销约为模型 BF16 的 1.1-1.5 倍）。详见：Accuracy[结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
+✅ **自动混合精度** 可在几分钟内自动生成混合 bit 策略（但需要额外占用模型在 BF16 下的内存占用量的 1.1-1.5 倍）。详见：Accuracy[结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
 
 ✅ **优化的 Round-to-Nearst（RTN）模式** 使用 `--iters 0`​ 可快速完成量化（但在 4 bit 下准确度会有一定降低）。详见：[opt_rtn 模式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
 
-✅ **量化成本低** 在单卡 GPU 上量化 7B 模型只需 10 分钟。详见：[量化成本](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
+✅ **可接受的量化成本** 在单卡 GPU 上量化一个 7B 的模型只需 10 分钟。详见：[量化成本](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
-✅ **支持 10 余款 VLM**  十余款 VLM 模型上手即用。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
+✅ **支持十余种视觉语言模型**  十余款 VLM 模型上手即用。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
-✅ **多种量化方案可选**  根据需求可以选择 `auto-round-best`​、`auto-round`​、`auto-round-light`​ 等多种不同的方案。详见：[量化Recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+✅ **多种量化方案可选**  `auto-round-best`​、`auto-round`​、`auto-round-light`​ 等多种方案可选。详见：[量化Recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
-✅ **高级拓展工具集** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)、[多校准数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)以及[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
+✅ **实用额外特性** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)、[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)以及[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
 ✅ **不局限于权重量化** 正在积极扩展 **MXFP、NVFP、W8A8** 等更多数据类型的支持。
 
@@ -108,7 +108,7 @@ pip install auto-round-lib
 
 ### CLI 用法
 
-终端运行 `auto-round -h` 可查看完整的参数列表。
+终端运行 `auto-round -h` 可以查看 auto-round 完整的参数列表。
 
 > **支持通过 ModelScope 下载模型（只需设置** ​**​`AR_USE_MODELSCOPE=1`​** ）。
 
@@ -120,14 +120,14 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-此外，我们还提供另外两种量化方案`auto-round-best`​和 `auto-round-light`，分别侧重更高的模型精度和更快的量化速度。具体内容如下：
+另外，我们还提供`auto-round-best`​ 和 `auto-round-light`两种方案，分别侧重更高的模型精度和更快的量化速度。具体内容如下：
 
 
 <details>
   <summary>其他 Recipes</summary>
 
   ```bash
-# 最佳准确度，速度慢 3 倍，low_gpu_mem_usage 可节省 ~20G 显存，但会慢 ~30%
+# 最佳精度，速度慢 3 倍，low_gpu_mem_usage 可节省 ~20G 显存，但会慢 ~30%
 auto-round-best \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" \
@@ -151,7 +151,7 @@ auto-round-fast \
 
 </details>
 
-小结：在 ​**W4A16 场景下，我们建议使用标准的 auto-round；而 W2A16 场景我们则推荐使用 auto-round-best ，同时开启 ​`enable_alg_ext`​​** 。当然您也可以根据自身需求和手头计算资源来自行调整配置。
+小结：在 ​**W4A16 场景下，我们建议使用默认的 auto-round；而 W2A16 场景我们则推荐使用开启 ​`enable_alg_ext`​​** 的 auto-round-best。当然您也可以根据自身需求和手头计算资源来自行调整配置。
 
 ### API 用法
 
@@ -181,43 +181,46 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### 量化方案 & 配置
 
-- ​**​`scheme`​**​（str | dict | AutoScheme）：预先定义的量化配置，如 `W4A16`​、`MXFP4`​、`NVFP4`​、`GGUF:Q4_K_M`。对于 MXFP4/NVFP4，推荐导出为 LLM-Compressor 格式。
-- ​**​`bits`​**​（int）：量化位宽（默认 `None`），若不为 `None` （非空）将会覆盖 scheme 中的位宽设置。
+- ​**​`scheme`​**​（str | dict | AutoScheme）：预定义的如 `W4A16`​、`MXFP4`​、`NVFP4`​、`GGUF:Q4_K_M`等量化配置标识。其中对于 MXFP4/NVFP4，我们推荐导出为 LLM-Compressor 格式。
+- ​**​`bits`​**​（int）：量化精度（默认 `None`），若不为 `None` （非空）将会覆盖 scheme 中的设置。
 - ​**​`group_size`​**​（int）：量化分组大小（默认 `None`），非空时会覆盖 scheme 设置。
 - ​**​`sym`​**​（bool）：是否使用对称量化（默认 `None`），非空时会覆盖 scheme 设置。
-- ​**​`layer_config`​**​（dict）：用于逐层量化配置的参数（默认 `None`），主要用于自定义混合量化方案。
+- ​**​`layer_config`​**​（dict）：主要用于自定义混合量化方案，可以对每一层设置自定义的量化参数（默认 `None`）。
 
 ##### 算法相关设置
 
 - ​**​`enable_alg_ext`​**​（bool）：[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
-- ​**​`disable_opt_rtn`​**​（bool | None）：对特定 scheme（如 GGUF 和 WOQ）使用纯 RTN 模式。默认 `None`​。若为 None，通常默认为 `False`​ 以提升准确度，但在已知问题下可能设为 `True`。
+- ​**​`disable_opt_rtn`​**​（bool | None）：在 RTN（iters=0）模式下，我们会对部分 scheme 启用特殊的算法优化。这些优化需要标定数据和更多计算资源，但能提升精度。若不希望启用，可通过该参数关闭。 默认值为 `None`：通常会自动设为 `False` 以提升精度，但在已知存在问题的场景下会设为 `True`。
 
-##### 调优过程参数
 
-- ​**​`iters`​**​（int）：调参迭代次数（默认 `200`​）。常用取值：0（RTN 模式）、50（推荐搭配 `lr=5e-3`）、1000（更高精度但量化速度慢）。也就是说迭代次数越多，准确度越高，但速度越慢。
-- ​**​`lr`​**​（float）：rounding 参数的学习率（默认 `None`​）。若为 None，则自动设为 `1.0/iters`。
+
+##### 训练参数
+
+- ​**​`iters`​**​（int）：训练迭代次数（默认 `200`​）。常用取值：0（RTN 模式）、50（推荐搭配 `lr=5e-3`）、1000（更高精度但量化速度慢）。也就是说迭代次数越多，准确度越高，但速度越慢。
+- ​**​`lr`​**​（float）：rounding 参数的学习率（默认 `None`​）。当为 None 时，将自动设为 `1.0/iters`。
 - ​**​`batch_size`​**​（int）：训练批大小（batch size）。默认 `8`​，也常用 `4`。
-- ​**​`enable_deterministic_algorithms`​**​（bool）：是否启用确定性算法以保证结果可复现（默认 `False`）。
+- ​**​`enable_deterministic_algorithms`​**​（bool）：若要保证让结果可以复现，可以设为 `True` 来启用确定性算法（默认 `False`）。
 
-##### 校准数据集
+##### 标定数据集
 
-- ​**​`dataset`​**​（str | list | tuple | DataLoader）：用于调参的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
-- ​**​`nsamples`​**​（int）：调参样本数（默认 `128`）。
-- ​**​`seqlen`​**​（int）：调参序列长度（默认 `2048`）。
+- ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
+- ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
+- ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
 
 ##### 设备 / 速度配置
 
-- ​**​`enable_torch_compile`​**（bool）：在不触发异常的情况下，通常建议设为 `True` 来提升量化速度、降低资源消耗。
-- ​**​`low_gpu_mem_usage`​**​（bool）：是否将中间特征卸载到 CPU，以约 20% 的时间代价节省显存（默认 `False`）。
-- ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 是否启用即时保存来减少内存占用（默认 `False`）。
-- ​**​`device_map`​**​（str | dict | int）：调参使用的设备，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
+- ​**​`enable_torch_compile`​**（bool）：通常建议设为 `True` 来提升量化速度、降低资源消耗，但是有极小概率会触发异常，建议使用最新的 tiron 版本。
+- ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 20% 的时间（默认 `False`）。
+- ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `False`）。
+- ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
 
 </details>
 
 ### 支持的量化方案
 <details>
 <summary>详细说明</summary>
-灰色表示缺少对应内核或仅提供效率较低的参考内核。BF16 主要用于 AutoScheme。
+灰色的 schemes 则表示缺少对应内核或仅提供效率较低的参考内核。
+BF16 主要用于 AutoScheme。
 
 |格式|支持的方案|
 | ------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -231,7 +234,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ### 自适应量化方案（AutoScheme）（实验性功能）
 
-AutoScheme 提供了一种自动化算法，可用于生成 **自适应的混合位宽/数据类型** 的量化方案（mixed bits/data type quantization recipes）。关于 AutoScheme 的更多细节可参考[用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)。
+AutoScheme 提供了一种可自动生成 **自适应的混合精度/数据类型** 的量化方案（mixed bits/data type quantization recipes）的算法。关于 AutoScheme 的更多细节可参考[用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)。
 
 ```python
 from auto_round import AutoRound, AutoScheme
@@ -251,17 +254,17 @@ ar.quantize_and_save()
 
 ##### AutoScheme 超参数
 
-- ​**​`avg_bits`​**​  **(float)** ：整个模型的目标平均位宽（平均位宽的计算仅包含被量化的层）。
+- ​**​`avg_bits`​**​  **(float)** ：整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。
 - ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：选候量化方案集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
-- ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均位宽时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
+- ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 - ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
-- ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景，可设为 `1` 以降低显存占用，但会增加调参时间。
+- ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。
 
 </details>
 
 ### 视觉语言模型（VLM）的 API 调用方法
 
-如果在量化过程中遇到问题，可以尝试将 `iters` 设置为 `0`（以启用 RTN 模式）、将 `group_size` 设为 `32` 来改善情况。
+如果在量化过程中遇到问题，可尝试将 `iters` 设置为 `0`（以启用 RTN 模式）、将 `group_size` 设为 `32` 并且打开 `disable_opt_rtn` 来改善当前的情况。
 
 
 <details>
@@ -269,7 +272,7 @@ ar.quantize_and_save()
 
 **该功能为实验性功能，后续版本中可能有变动。**
 
-默认情况下，AutoRound 仅对 VLM 的文本模块进行量化，且采用 `NeelNanda/pile-10k`​ 作为校准数据集。如果要量化整个模型，则需设置 `quant_nontext_module = True` （但目前为止该功能的支持范围较为有限）。更多信息请参考 [readme] (https://github.com/intel/auto-round/blob/main/auto_round/mllm/README%7Creadme%5D%5D%E3%80%82)
+默认情况下，AutoRound 仅对 VLM 的文本模块进行量化。默认采用 `NeelNanda/pile-10k`​ 作为标定数据集。如果要量化整个模型，则需设置 `quant_nontext_module = True` （但目前为止该功能的适用范围仍较为有限）。更多信息请参考 [readme] (https://github.com/intel/auto-round/blob/main/auto_round/mllm/README%7Creadme%5D%5D%E3%80%82)
 
 ```python
 from auto_round import AutoRound
@@ -310,7 +313,7 @@ for output in outputs:
 
 ### SGLang（Intel GPU / CUDA）
 
-**注意：当前对混合专家模型（MoE）模型和视觉语言（VLM）模型的支持范围仍然有限。**
+**注意：目前对混合专家模型（MoE）模型和视觉语言（VLM）模型的支持范围仍然有限。**
 
 ```python
 import sglang as sgl
@@ -328,7 +331,7 @@ for prompt, output in zip(prompts, outputs):
 
 ### Transformers（CPU / Intel GPU / Gaudi / CUDA）
 
-AutoRound 支持十余种推理后端，并会根据已安装的依赖库自动选择当前可用的最优后端；若检测到存在更优后端但缺少相关依赖时，也会提示用户安装。
+AutoRound 支持十余种推理后端，并会根据已安装的依赖库自动选择当前可用的最优后端；如果检测到系统中存在更优后端但缺少相关依赖的时候，也会主动提示用户安装。
 
 ​**推理过程中，请避免手动将量化后的模型迁移到其他设备**​（例如执行 `model.to('cpu')`），否则可能引发未知异常。
 
@@ -359,7 +362,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ## 致谢
 
-特别感谢 AutoGPTQ、AutoAWQ、GPTQModel、Triton、Marlin、ExLLaMAV2 等开源低精度库提供低精度 CUDA 内核（low-precision CUDA kernel）。正因为这些成果 AutoRound 才得以实现。
+特别感谢 AutoGPTQ、AutoAWQ、GPTQModel、Triton、Marlin、ExLLaMAV2 等开源低精度库提供低精度 CUDA 内核（low-precision CUDA kernal）。正因为这些成果 AutoRound 才得以实现。
 
 ## 🌟 支持我们
 
