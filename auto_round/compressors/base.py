@@ -435,6 +435,8 @@ class BaseCompressor(object):
         if self.scale_dtype is None:
             gguf_scheme_name = get_gguf_scheme(self.scheme)
             scale_dtype = "fp32" if gguf_scheme_name else "fp16"
+        else:
+            scale_dtype = self.scale_dtype
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
 
         predefined_ignore_layers = get_predefined_ignore_layers(self.model)
