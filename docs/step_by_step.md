@@ -274,6 +274,17 @@ ar.quantize_and_save(output_dir, format="auto_round")
 In conclusion, we recommend using **auto-round for W4A16 and auto-round-best for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
+<details>
+  <summary>Recipe Configuration Details</summary>
+
+| Recipe  | batch_size | iters | seqlen | nsamples | lr    |
+|---------|------------|-------|--------|----------|-------|
+| default | 8          | 200   | 2048   | 128      | None  |
+| best    | 8          | 1000  | 2048   | 512      | None  |
+| light   | 8          | 50    | 2048   | 128      | 5e-3  |
+
+</details>
+
 W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version
 of PyTorch 2.6.0 with enable_torch_compile):
 
