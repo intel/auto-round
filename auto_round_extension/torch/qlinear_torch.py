@@ -82,7 +82,7 @@ class QuantLinear(nn.Module):
                 ],
                 dtype=torch.int32,
             ).reshape(1, 3, 12)
-        self.register_buffer('wf', wf)
+        self.register_buffer("wf", wf)
         self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
 
     def post_init(self):
