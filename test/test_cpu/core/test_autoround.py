@@ -47,7 +47,7 @@ class TestAutoRound:
             amp=False,
         )
         autoround.quantize_and_save(self.save_folder, inplace=False, format="fake")
-        shutil.rmtree(self.save_folder)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_remove_whole_block(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -386,7 +386,7 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        shutil.rmtree(self.save_folder)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_embed_quant(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
@@ -627,21 +627,69 @@ class TestAutoRound:
     def test_dequant_fp8_weight(self):
         from auto_round.utils import dequant_block_fp8_weight
 
-        # test pad and unpad
+        # test high precision weight (should skip LUT and not crash)
         weight = torch.randn(587, 7168)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
         dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
+        # test low precision weight (should use LUT)
+        weight = torch.randint(0, 255, (587, 7168), dtype=torch.uint8)
+        weight_scale = torch.randn(5, 56)
+        block_size = [128, 128]
+        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        assert dequant_weight.shape.numel() == 4207616
+
         # test experts are stacked.
-        weight = torch.randn([32, 5760, 1440])
+        weight = torch.randint(0, 255, [32, 5760, 1440], dtype=torch.uint8)
         weight_scale = torch.randn([32, 5760, 90])
         block_size = [1, 16]
         dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
         assert len(dequant_weight.shape) == 3
         assert dequant_weight.shape[0] == 32
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
+
+    def test_dequant_g2_fp8_weight(self):
+        """Test Gaudi2-specific dequantization redirection logic in convert_fp8_layer_to_linear."""
+        from unittest.mock import MagicMock, patch
+
+        from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
+
+        # Test 1: Verify Standard e4m3fn native dequantization result
+        weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)
+        weight_scale = torch.ones(1, 1, dtype=torch.bfloat16)
+        block_size = [1, 2]
+
+        dq_weight = dequant_block_fp8_weight(weight_uint8, weight_scale, block_size)
+        assert dq_weight.dtype == torch.bfloat16
+        assert abs(dq_weight[0, 0].item() - 448.0) < 1e-3
+
+        # Test 2: Verify Gaudi2 redirection in convert_fp8_layer_to_linear
+        mock_layer = MagicMock()
+        mock_layer.in_features = 2
+        mock_layer.out_features = 1
+        mock_layer.bias = None
+        mock_layer.weight = weight_uint8
+        mock_layer.weight_scale = weight_scale
+        mock_layer.block_size = block_size
+        mock_layer.data_type = "fp8_e4m3fn"
+        mock_layer.__class__.__name__ = "FP8Linear"
+
+        # mock_layer.to should return a mock layer that we can check
+        mock_layer.to.return_value = mock_layer
+
+        with patch("auto_round.utils.device.is_gaudi2", return_value=True):
+            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            # Verify it was moved to CPU
+            mock_layer.to.assert_called_with("cpu")
+
+        with patch("auto_round.utils.device.is_gaudi2", return_value=False):
+            # Reset mock
+            mock_layer.to.reset_mock()
+            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            # Verify it was moved to HPU (as requested in device arg)
+            mock_layer.to.assert_called_with("hpu")
 
     def test_mixed_bit_setting(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path

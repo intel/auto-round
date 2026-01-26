@@ -13,7 +13,7 @@ pr:
       - setup.py
       - requirements.txt
       - requirements-cpu.txt
-      - requirements-lib.txt
+      - requirements-hpu.txt
       - .azure-pipelines/code-scan.yml
       - .azure-pipelines/scripts/codeScan
 

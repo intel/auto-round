@@ -11,11 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
 import torch
 
 import auto_round.modelling as auto_round_modelling
 from auto_round.formats import OutputFormat
-from auto_round.modelling.replace_modules import apply_replacements
+from auto_round.modelling.replace_modules import apply_replacements, materialize_model_, release_original_module_
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
@@ -52,11 +56,18 @@ def _handle_special_model(model):
     return model
 
 
-def update_module(model, formats: list[OutputFormat] = None):
+def update_module(
+    model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
+):
     if formats is not None and any([format_.is_gguf() for format_ in formats]):
         return model
 
-    return apply_replacements(model)
+    model = apply_replacements(model)
+
+    if cleanup_original:
+        release_original_module_(model)
+
+    return model
 
 
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
@@ -124,3 +135,119 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
             )
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
+
+
+class ModelNameMatcher:
+    """model.config.name_or_path"""
+
+    def __init__(self, pattern: str, mode="in"):
+        self.pattern = pattern
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        name = getattr(model.config, "name_or_path", "")
+        if self.mode == "full":
+            return name == self.pattern
+        elif self.mode == "in":
+            return self.pattern in name
+        elif self.mode == "regex":
+            return re.search(self.pattern, name) is not None
+        else:
+            raise ValueError("unsupported mode {self.mode}")
+
+    """Matches config.architectures."""
+
+
+class ArchitectureMatcher:
+    """match config.architectures"""
+
+    def __init__(self, arch: str, mode="in"):
+        self.arch = arch
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        archs = getattr(model.config, "architectures", [])
+        archs_str = ",".join(archs) if isinstance(archs, list) else str(archs)
+
+        if self.mode == "full":
+            return archs_str == self.arch
+        elif self.mode == "in":
+            return self.arch in archs_str
+        elif self.mode == "regex":
+            return re.search(self.arch, archs_str) is not None
+        else:
+            raise ValueError(f"unsupported mode {self.mode}")
+
+
+@dataclass
+class PreDefinedIgnoreLayers:
+    matchers: list[Callable[[Any], bool]]
+    ignore_layers: list[str] = field(default_factory=list)
+
+
+_PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
+
+
+def register_ignore_layers(
+    matchers: list[Callable[[Any], bool]], ignore_layers: list[str | Callable[[torch.nn.Module], str | list[str]]]
+):
+    rule = PreDefinedIgnoreLayers(matchers, ignore_layers)
+    _PRE_DEFINED_IGNORE_LAYERS.append(rule)
+
+
+# Qwen3MOE
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
+    ],
+    ignore_layers=[
+        "mlp.gate",  # vllm inference issue
+    ],
+)
+
+# longcat
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Longcat", mode="in"),
+    ],
+    ignore_layers=[
+        "classifier",  # transforms directly call the weights of this layer
+    ],
+)
+
+
+def get_glm_flash_ignore_layers(model) -> list[str]:
+    num_dense_layer = 1
+    if hasattr(model, "config") and hasattr(model.config, "first_k_dense_replace"):
+        num_dense_layer = model.config.first_k_dense_replace
+    ignore_layers = [f"layers.{i}.mlp" for i in range(num_dense_layer)]
+    return ignore_layers
+
+
+# glmflash
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Glm4MoeLite", mode="in"),
+    ],
+    ignore_layers=[
+        get_glm_flash_ignore_layers,  # vllm issue
+    ],
+)
+
+
+def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
+    layers = []
+    for rule in _PRE_DEFINED_IGNORE_LAYERS:
+        if all(m(model) for m in rule.matchers):
+            for ignore_layer in rule.ignore_layers:
+                if isinstance(ignore_layer, str):
+                    layers.append(ignore_layer)
+                else:
+                    res = ignore_layer(model)
+                    if isinstance(res, str):
+                        layers.append(res)
+                    else:
+                        layers.extend(res)
+            break
+
+    return list(dict.fromkeys(layers))

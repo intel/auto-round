@@ -59,7 +59,7 @@ class TestAutoRound:
 
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
@@ -175,6 +175,7 @@ class TestAutoRound:
             nsamples=32,
             iters=0,
             disable_opt_rtn=True,
+            quant_nontext_module=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
