@@ -72,9 +72,9 @@ class QuantLinear(nn.Module):
 
         # is performed by unpacking the weights and using torch.matmul
         if self.bits in [2, 4, 8]:
-            self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32).unsqueeze(0)
+            wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32).unsqueeze(0)
         elif self.bits == 3:
-            self.wf = torch.tensor(
+            wf = torch.tensor(
                 [
                     [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 0],
                     [0, 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31],
@@ -82,7 +82,7 @@ class QuantLinear(nn.Module):
                 ],
                 dtype=torch.int32,
             ).reshape(1, 3, 12)
-
+        self.register_buffer('wf', wf)
         self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
 
     def post_init(self):
