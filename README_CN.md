@@ -199,7 +199,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - ​**​`iters`​**​（int）：训练迭代次数（默认 `200`​）。常用取值：0（RTN 模式）、50（推荐搭配 `lr=5e-3`）、1000（更高精度但量化速度慢）。也就是说迭代次数越多，准确度越高，但速度越慢。
 - ​**​`lr`​**​（float）：rounding 参数的学习率（默认 `None`​）。当为 None 时，将自动设为 `1.0/iters`。
 - ​**​`batch_size`​**​（int）：训练批大小（batch size）。默认 `8`​，也常用 `4`。
-- ​**​`enable_deterministic_algorithms`​**​（bool）：若要保证让结果可以复现，可以设为 `True` 来启用确定性算法（默认 `False`）。
+- ​**​`enable_deterministic_algorithms`​**​（bool）：若想保证结果可以复现，可以设为 `True` 来启用确定性算法（默认 `False`）。
 
 ##### 标定数据集
 
@@ -272,7 +272,7 @@ ar.quantize_and_save()
 
 **该功能为实验性功能，后续版本中可能有变动。**
 
-默认情况下，AutoRound 仅对 VLM 的文本模块进行量化。默认采用 `NeelNanda/pile-10k`​ 作为标定数据集。如果要量化整个模型，则需设置 `quant_nontext_module = True` （但目前为止该功能的适用范围仍较为有限）。更多信息请参考 [readme] (https://github.com/intel/auto-round/blob/main/auto_round/mllm/README%7Creadme%5D%5D%E3%80%82)
+默认情况下，AutoRound 仅对 VLM 的文本模块进行量化。默认采用 `NeelNanda/pile-10k`​ 作为标定数据集。如果要量化整个模型，则需设置 `quant_nontext_module = True` （但目前为止该功能的适用范围仍较为有限）。更多信息请参考 [readme](./auto_round/mllm/README.md)
 
 ```python
 from auto_round import AutoRound
