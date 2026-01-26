@@ -464,8 +464,6 @@ class BaseCompressor(object):
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
-
-
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -1505,7 +1503,7 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
-        from auto_round.special_model_handler import get_predefined_ignore_layers
+
         is_gguf_format = False
         if self.formats is not None and self.formats[0].is_gguf():
             is_gguf_format = True
@@ -1627,7 +1625,6 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = True
         else:
             enable_gguf_official_mixed = False
-
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
