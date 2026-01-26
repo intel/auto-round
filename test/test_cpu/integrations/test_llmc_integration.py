@@ -44,7 +44,8 @@ recipe_modifier_full = AutoRoundModifier(
 
 @pytest.mark.skipif(
     transformers_version >= version.parse("5.0.0"),
-    reason="transformers 5.0 use_auth_token is deprecated and llmcompressor oneshot has not been updated yet",
+    reason="transformers 5.0 use_auth_token is deprecated and llmcompressor oneshot has not been updated yet, \
+        https://github.com/vllm-project/llm-compressor/issues/2289",
 )
 @pytest.mark.parametrize(
     "recipe",
