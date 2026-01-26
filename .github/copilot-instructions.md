@@ -1,0 +1,1 @@
+When performing a code review, check if the changes in README.md and README_CN.md are consistent.
