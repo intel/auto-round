@@ -64,7 +64,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ✅ **导出格式丰富** 可以导出到 ​**AutoRound、AutoAWQ、AutoGPTQ、GGUF**​ 格式，兼容性更强。详见：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
-✅ **自动混合精度** 可在几分钟内自动生成混合 bit 策略（但需要额外占用模型在 BF16 下的内存占用量的 1.1-1.5 倍）。详见：Accuracy[结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
+✅ **自动混合精度** 可在几分钟内自动生成混合 bit 策略（但需要额外占用模型在 BF16 下的内存占用量的 1.1-1.5 倍）。详见：Accuracy [结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc.md) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
 
 ✅ **优化的 Round-to-Nearst（RTN）模式** 使用 `--iters 0`​ 可快速完成量化（但在 4 bit 下准确度会有一定降低）。详见：[opt_rtn 模式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
 
