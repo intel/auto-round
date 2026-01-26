@@ -19,7 +19,7 @@ import torch
 
 import auto_round.modelling as auto_round_modelling
 from auto_round.formats import OutputFormat
-from auto_round.modelling.replace_modules import apply_replacements
+from auto_round.modelling.replace_modules import apply_replacements, materialize_model_, release_original_module_
 from auto_round.utils import LazyImport, logger, unsupported_meta_device
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
@@ -56,11 +56,18 @@ def _handle_special_model(model):
     return model
 
 
-def update_module(model, formats: list[OutputFormat] = None, trust_remote_code: bool = True):
+def update_module(
+    model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
+):
     if formats is not None and any([format_.is_gguf() for format_ in formats]):
         return model
 
-    return apply_replacements(model)
+    model = apply_replacements(model)
+
+    if cleanup_original:
+        release_original_module_(model)
+
+    return model
 
 
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):

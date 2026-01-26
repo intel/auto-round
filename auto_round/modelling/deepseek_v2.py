@@ -144,7 +144,7 @@ def attn_forward(
 
 class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
     def __init__(self, original, config):
-        super().__init__()
+        super().__init__(original)
 
     @classmethod
     def original_module_class(cls) -> str:
@@ -174,10 +174,13 @@ class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
             and inspect.getfile(original.__class__) == inspect.getfile(eager_attention_forward)
         )
 
+    def release_original_module(self) -> None:
+        pass
+
 
 class DeepseekV2Attention(ReplacementModuleBase):
     def __init__(self, original, config):
-        super().__init__()
+        super().__init__(original)
 
     @classmethod
     def original_module_class(cls) -> str:
@@ -206,3 +209,6 @@ class DeepseekV2Attention(ReplacementModuleBase):
             and is_hpex_available()
             and inspect.getfile(original.__class__) == inspect.getfile(eager_attention_forward)
         )
+
+    def release_original_module(self) -> None:
+        pass
