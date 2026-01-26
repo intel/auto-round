@@ -182,6 +182,7 @@ class VllmCompressor(BaseCompressor):
             **kwargs,
         )
 
+
     @torch.inference_mode()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
@@ -202,8 +203,7 @@ class VllmCompressor(BaseCompressor):
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
                 if is_fp8_linear(m):
-                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
-                    set_module(self.model, name, m)
+                    convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
@@ -231,6 +231,13 @@ class VllmCompressor(BaseCompressor):
             self.calib(self.nsamples, self.batch_size)
             for handle in hook_handles:
                 handle.remove()
+            if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
+                # enable moe experts act_max automatic generation for Linear
+                set_amax_for_all_moe_layers(self.model, attr_name="act_max")
+            for name, m in self.model.named_modules():
+                if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                    self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                    all_to_quantized_module_names.remove(m.global_name)
         else:
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
@@ -343,6 +350,13 @@ class VllmCompressor(BaseCompressor):
                 dtype = torch.float32
             self._quantize_layer_via_rtn(name, dtype=dtype)
             # clear_memory(device_list=self.device_list)
+
+    def _postprocess_shard_module(self, module_id, new_mod):
+        """Replace shared module to quantized module."""
+        for n, m in self.model.named_modules():
+            if id(m) == module_id and check_to_quantized(m):
+                print("!!!!!", n)
+                set_module(self.model, n, new_mod)
 
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.

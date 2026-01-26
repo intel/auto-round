@@ -547,6 +547,10 @@ def vllm_load_model(
     from transformers import AutoTokenizer
 
     if isinstance(pretrained_model_name_or_path, str):
+        import os
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
+
         llm = LLM(pretrained_model_name_or_path, enforce_eager=True, cpu_offload_gb=1024, gpu_memory_utilization=0.5)
         model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     elif isinstance(pretrained_model_name_or_path, LLM):
@@ -649,12 +653,16 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
 def is_vllm_model(model_or_path: Union[str, object]) -> bool:
     if not isinstance(model_or_path, torch.nn.Module) and "vllm" in str(type(model_or_path)):
         check_vllm_installed()
-        # llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
 
-        attr = get_nested_attr(model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model")
+        attr = get_nested_attr(
+            model_or_path,
+            "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
+        )
         if attr is None:
-            logger.info("Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model")
-        return attr is not None
+            raise ValueError(
+                "Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model"
+            )
+        return True
     else:
         return False
 
