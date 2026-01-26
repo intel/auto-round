@@ -282,6 +282,8 @@ class BaseCompressor(object):
         self.layer_config = layer_config
 
         # should be set after loading model and set layer_config, cause some special scheme need these.
+        # Preserve the original, unparsed scheme for later use in auto scheme generation
+        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
         self.orig_scheme = scheme
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
