@@ -31,7 +31,7 @@ BackendInfos = {}
 import cpuinfo
 
 if TYPE_CHECKING:
-    from auto_quantizer import AutoRoundConfig
+    from transformers import AutoRoundConfig
 
 
 def get_cpu_manufacturer():

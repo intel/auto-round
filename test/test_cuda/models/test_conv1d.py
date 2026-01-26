@@ -36,7 +36,7 @@ class TestQuantizationConv1d:
         model = get_tiny_model(model_name)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         autoround = AutoRound(
             model,
