@@ -1509,7 +1509,7 @@ class BaseCompressor(object):
         is_gguf_format = False
         if self.formats is not None and self.formats[0].is_gguf():
             is_gguf_format = True
-        if is_gguf_format:
+        if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model)
 
             if predefined_ignore_layers:
