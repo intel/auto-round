@@ -16,8 +16,9 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 @pytest.mark.skipif(
-    transformers_version >= version.parse("5.0.0"), reason="GGUF format saving and loading failed in transformers v5, \
-        https://github.com/huggingface/transformers/issues/43482"
+    transformers_version >= version.parse("5.0.0"),
+    reason="GGUF format saving and loading failed in transformers v5, \
+        https://github.com/huggingface/transformers/issues/43482",
 )
 class TestGGUF:
 
