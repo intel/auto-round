@@ -616,8 +616,6 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "DeepseekV3MoE".lower(),
             "Qwen2MoeSparseMoeBlock".lower(),
             "Qwen3MoeSparseMoeBlock".lower(),
-            "Qwen3NextSparseMoeBlock".lower(),
-            "Qwen3VLMoeTextSparseMoeBlock".lower(),
         ]
     )
 
@@ -731,8 +729,6 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         [
             "Qwen2MoeSparseMoeBlock",
             "Qwen3MoeSparseMoeBlock",
-            "Qwen3NextSparseMoeBlock",
-            "Qwen3VLMoeTextSparseMoeBlock",
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",

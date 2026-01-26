@@ -240,9 +240,20 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
         dev_idx = device_list[0] if device_list else None
         device = "auto"
     if device is None or device == "auto":
-        device_str = get_device_str()
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            # logger.info("Using GPU device")
+        elif is_hpex_available():  # pragma: no cover
+            device = torch.device("hpu")
+            # logger.info("Using HPU device")
+        elif torch.xpu.is_available():  # pragma: no cover
+            device = torch.device("xpu")
+        # Use CPU as a fallback
+        else:
+            device = torch.device("cpu")
+            # logger.info("Using CPU device")
         if dev_idx is not None and str(device) != "cpu":
-            device = device_str + f":{dev_idx}"
+            device = str(device) + f":{dev_idx}"
         return str(device)
     elif isinstance(device, torch.device):
         device = str(device)
@@ -1448,10 +1459,6 @@ class MemoryMonitor:
         return summary
 
 
-# Global singleton instance
-memory_monitor = MemoryMonitor()
-
-
 def get_device_str():
     """Get a string representation of the automatically detected device."""
     if torch.cuda.is_available():
@@ -1462,6 +1469,10 @@ def get_device_str():
         return "hpu"
     else:  # pragma: no cover
         return "cpu"
+
+
+# Global singleton instance
+memory_monitor = MemoryMonitor()
 
 
 @contextmanager
