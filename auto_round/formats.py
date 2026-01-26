@@ -218,8 +218,12 @@ class OutputFormat(ABC):
         if isinstance(scheme, str) and scheme.upper() in cls.support_schemes:
             return True
         if isinstance(scheme, QuantizationScheme):
-            return True
+            return cls.check_scheme_args(scheme)
         return False
+
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        return True
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
         if self.backend is not None:
@@ -355,6 +359,26 @@ class LLMCompressorFormat(OutputFormat):
             self.output_format = f"llm_compressor:{format}"
             self.backend = None
 
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits not in [4, 8, 16]:
+            error_logs.append(f"bits={scheme.bits}")
+        if not re.search("mxfp|fp|nvfp", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.data_type == "fp" and scheme.bits != 8:
+            error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"LLMCompressor format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
+
     def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
@@ -450,6 +474,24 @@ class AutoGPTQFormat(OutputFormat):
             _check_divisible_by_32(ar)
         return super().check_and_reset_format(ar)
 
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits not in [2, 3, 4, 8, 16]:
+            error_logs.append(f"bits={scheme.bits}")
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
+
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.output_format.startswith("auto_round"):
             from auto_round.export.export_to_autoround.export import pack_layer
@@ -497,6 +539,24 @@ class AutoGPTQFormat(OutputFormat):
 class AutoAWQFormat(OutputFormat):
     support_schemes = ["W4A16"]
     format_name = "auto_awq"
+
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits != 4:
+            error_logs.append(f"bits={scheme.bits}")
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
 
     @staticmethod
     def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
@@ -637,6 +697,18 @@ class GGUFFormat(OutputFormat):
             self.output_format = gguf_format
             self.backend = None
         self.mllm = ar.mllm
+
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if error_logs:
+            raise ValueError(
+                f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
 
     def check_and_reset_format(self, ar):
         if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
