@@ -19,8 +19,8 @@ import time
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
-    clear_memory,
     get_device_and_parallelism,
+    get_device_str,
     get_model_dtype,
     set_cuda_visible_devices,
 )
@@ -52,10 +52,9 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--devices",
             default="0",
             type=str,
-            help="the device to be used for tuning. "
-            "Currently, device settings support CPU, GPU, and HPU."
-            "The default is set to cuda:0,"
-            "allowing for automatic detection and switch to HPU or CPU."
+            help="the device to be used for evaluation. "
+            "The default is set to 0,"
+            "allowing for automatic detection and switch to any devices."
             "set --device 0,1,2 to use multiple cards.",
         )
 
@@ -223,22 +222,32 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
+    device = get_device_str()
+    # For XPU, using ONEAPI_DEVICE_SELECTOR=level_zero:0,1
+    environ_mapping = {
+        "cuda": "CUDA_VISIBLE_DEVICES",
+        "xpu": "ONEAPI_DEVICE_SELECTOR",
+        "hpu": "HABANA_VISIBLE_MODULES",
+    }
     if "tensor_parallel_size" not in vllm_kwargs:
         # Parse device_map to determine tensor_parallel_size and set CUDA_VISIBLE_DEVICES
         # Only accept formats like "0" or "0,1,2"
+        assert device in environ_mapping, f"Device {device} not supported for vllm tensor parallelism."
+        environ_name = environ_mapping[device]
         device_map = args.device_map
-        if device_map and device_map not in ("cpu", "hpu"):
-            device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
-            if device_ids:
-                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(device_ids)
-                tensor_parallel_size = len(device_ids)
-                vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
-                from auto_round.logger import logger
+        device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
+        if device_ids:
+            device_id_str = ",".join(device_ids)
+            if device == "xpu":
+                device_id_str = "level_zero:" + device_id_str
+            os.environ[environ_name] = device_id_str
+            tensor_parallel_size = len(device_ids)
+            vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
+            from auto_round.logger import logger
 
-                logger.info(
-                    f"Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}, "
-                    f"tensor_parallel_size={tensor_parallel_size}"
-                )
+            logger.info(
+                f"Set {environ_name}={os.environ[environ_name]}, " f"tensor_parallel_size={tensor_parallel_size}"
+            )
 
     vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(
