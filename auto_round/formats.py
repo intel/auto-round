@@ -362,7 +362,7 @@ class LLMCompressorFormat(OutputFormat):
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
         error_logs = []
-        if scheme.bits not in [4, 8]:
+        if scheme.bits not in [4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
         if not re.search("mxfp|fp|nvfp", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
@@ -484,7 +484,7 @@ class AutoGPTQFormat(OutputFormat):
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
         if scheme.super_group_size:
-            error_logs.append(f"super_group_size={scheme.super_bits}")
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
         if error_logs:
             raise ValueError(
                 f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
@@ -550,7 +550,7 @@ class AutoAWQFormat(OutputFormat):
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
         if scheme.super_group_size:
-            error_logs.append(f"super_group_size={scheme.super_bits}")
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
         if error_logs:
             raise ValueError(
                 f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
