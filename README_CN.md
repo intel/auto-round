@@ -60,7 +60,7 @@ AutoRound 是面向**大语言模型（LLMs）和视觉-语言模型（VLMs）�
 
 ✅ **高准确度** 在 2–3 bit 下也能保持较强的性能（[示例模型](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b)）， 4 bit 量化在[基准](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)上保持领先水平。
 
-✅ **良好的生态继承** 量化模型已被多个知名库支持，如 **Transformers、vLLM、SGLang** 等。
+✅ **良好的生态集成** 量化模型已被多个知名库支持，如 **Transformers、vLLM、SGLang** 等。
 
 ✅ **多格式导出** 可以导出到​**AutoRound、AutoAWQ、AutoGPTQ、GGUF**​ 格式，。详见：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
@@ -74,7 +74,7 @@ AutoRound 是面向**大语言模型（LLMs）和视觉-语言模型（VLMs）�
 
 ✅ **多种量化 Recipes** 可选 `auto-round-best`​、`auto-round`​、`auto-round-light`​ 以满足不同需求。详见：[量化Recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
-✅ **高级工具集** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)、[多校准数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)以及[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
+✅ **高级工具集** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)、[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)以及[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
 ✅ **不止于单一权重量化** 正在积极扩展更多数据类型的支持，包括 **MXFP、NVFP、W8A8** 等。
 
@@ -191,14 +191,14 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - ​**​`enable_alg_ext`​**​（bool）：[实验性功能] 仅在 `iters > 0`​ 时生效。为特定 scheme（如 MXFP4 / W2A16）启用算法扩展，可能显著提升效果。默认 `False`。
 - ​**​`disable_opt_rtn`​**​（bool | None）：对特定 scheme（如 GGUF 和 WOQ）使用纯 RTN 模式。默认 `None`​。若为 None，通常默认为 `False`​ 以提升准确度，但在已知问题下可能设为 `True`。
 
-##### 调优过程参数
+##### 训练参数
 
 - ​**​`iters`​**​（int）：调参迭代次数（默认 `200`​）。常用取值：0（RTN 模式）、50（推荐 `lr=5e-3`）、1000。迭代次数越多，准确度越高，但速度越慢。
 - ​**​`lr`​**​（float）：舍入值学习率（默认 `None`​）。若为 None，则自动设为 `1.0/iters`。
 - ​**​`batch_size`​**​（int）：训练 batch size（默认 `8`​），也常用 `4`。
 - ​**​`enable_deterministic_algorithms`​**​（bool）：是否启用确定性算法以保证可复现性（默认 `False`）。
 
-##### 校准数据集
+##### 标定数据集
 
 - ​**​`dataset`​**​（str | list | tuple | DataLoader）：用于调参的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
 - ​**​`nsamples`​**​（int）：调参样本数（默认 `128`）。
