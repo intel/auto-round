@@ -17,7 +17,7 @@ import re
 import sys
 from dataclasses import asdict, fields
 from enum import Enum
-from typing import  Callable, Union
+from typing import Callable, Union
 
 import torch
 import transformers
@@ -26,7 +26,6 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-
 from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model
 
 
@@ -260,8 +259,6 @@ def set_layer_config(
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
-
-
 
     # 1. ignore_layers -> force 16
     for name in get_fp_layer_names(model, ignore_layers):
