@@ -407,3 +407,38 @@ class TestAutoRound:
         assert format_list[0].get_backend_name() == "auto_round:auto_awq"
         assert format_list[1].output_format == "auto_gptq"
         assert format_list[1].get_backend_name() == "auto_gptq"
+
+    def test_export_format_with_scheme(self, tiny_qwen_model_path):
+        from auto_round.formats import get_formats
+
+        ar = AutoRound(
+            model=tiny_qwen_model_path,
+            scheme="W4A16",
+            bits=2,
+            group_size=32,
+            sym=True,
+        )
+        with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
+            get_formats("auto_round:auto_awq", ar)
+
+        with pytest.raises(ValueError, match="but got bits=2, data_type=int"):
+            get_formats("auto_round:llm_compressor", ar)
+
+        ar = AutoRound(
+            model=tiny_qwen_model_path,
+            scheme="FP8_STATIC",
+            bits=4,
+            group_size=32,
+            sym=True,
+        )
+        with pytest.raises(ValueError, match="but got data_type=fp, bits=4"):
+            get_formats("auto_round:llm_compressor", ar)
+
+        ar = AutoRound(
+            model=tiny_qwen_model_path,
+            scheme="w2a16",
+            bits=4,
+            group_size=256,
+            sym=True,
+        )
+        get_formats("auto_round:auto_awq", ar)
