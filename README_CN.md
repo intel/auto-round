@@ -7,7 +7,7 @@
 </p>
 
 
-<h3> 面向 LLM 的高级量化算法</h3>
+<h3> 面向 LLM 的先进量化算法</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.9.5-green)](https://github.com/intel/auto-round)
@@ -16,14 +16,14 @@
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
 
-[English](README.md) | 简体中文
+[English](README.md) | 简体中文 | [用户指南](./docs/step_by_step.md)
 
 ---
 <div align="left">
 
 ## 🚀 AutoRound 是什么？
 
-AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的高级量化工具包。它能在 **极低比特（2–4 bits）** 下实现较高的模型精度，所需调参极少。其核心是 **符号梯度下降（sign-gradient descent）法**。此外，该工具还具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
+AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的先进量化工具包。它能在 **极低比特（2–4 bits）** 下实现较高的模型精度，所需调参极少。其核心是采用**符号梯度下降法（sign-gradient descent）**。此外，该工具还具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -32,7 +32,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
-* [2025/12] 发布 **SignRoundV2** 论文。要复现论文成果，可启用 `enable_alg_ext`，并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
+* [2025/12] 发布 **SignRoundV2** 论文。如果要复现论文成果，可启用 `enable_alg_ext`，并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
 
 * [2025/11] **LLM-Compressor** 已支持 AutoRound 算法。相关链接：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
 
@@ -40,7 +40,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 * [2025/10] **SGLang** 已集成 AutoRound。相关链接：[*使用方法*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round)，[*LMSYS 博客*](https://lmsys.org/blog/2025-11-13-AutoRound/)，[*X 推文*](https://x.com/lmsysorg/status/1991977019220148650?s=20)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196)，[*LinkedIn*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472)。
 
-* [2025/10] 推出 **混合精度** 算法，可在几分钟内自动生成量化方案。相关链接：[*使用方法*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)，[*Accuracy*](./docs/auto_scheme_acc.md)。
+* [2025/10] 推出 **混合精度** 算法，可在几分钟内自动生成混合精度方案。相关链接：[*使用方法*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)，[*Accuracy*](./docs/auto_scheme_acc.md)。
 
 * [2025/09] 新增对 **MXFP4** 和 **NVFP4** 数据类型的支持。相关链接：[*Accuracy*](./docs/mxnv_acc.md)。
 
@@ -62,7 +62,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ✅ **生态集成度好** 与 **Transformers、vLLM、SGLang** 等主流框架无缝衔接。
 
-✅ **导出格式丰富** 支持导出为 ​**AutoRound、AutoAWQ、AutoGPTQ** 及 **GGUF**​ 格式，具备出色的兼容性。相关链接：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
+✅ **导出格式丰富** 支持导出为 ​**AutoRound、AutoAWQ、AutoGPTQ** 及 **GGUF**​ 格式。相关链接：[导出格式](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
 ✅ **自动混合精度** 可在几分钟内自动生成混合 bit 策略（但需要额外占用模型在 BF16 格式下内存占用量的 1.1-1.5 倍）。详见：Accuracy [结果](https://github.com/intel/auto-round/blob/main/docs/auto_scheme_acc.md) 和 [用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)
 
@@ -70,7 +70,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ✅ **可接受的量化成本** 在单张 GPU 上量化一个 7B 的模型只需约十分钟。详见：[量化成本](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
-✅ **支持十余种 VLM 模型**  对十余种视觉语言模型的支持，让用户有“开盖即食”般的量化体验。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
+✅ **支持十余种 VLM 模型**  已支持十余种视觉语言模型，让用户有“开盖即食”般的量化体验。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
 ✅ **多种量化方案可选**  提供`auto-round-best`​、`auto-round`​、`auto-round-light`​ 等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
@@ -255,7 +255,7 @@ ar.quantize_and_save()
 ##### AutoScheme 超参数
 
 - ​**​`avg_bits`​**​  **(float)** ：整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。
-- ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：选候量化方案集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
+- ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化方配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
 - ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 - ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
 - ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。
@@ -264,13 +264,13 @@ ar.quantize_and_save()
 
 ### 视觉语言模型（VLM）的 API 调用方法
 
-如果在量化过程中遇到问题，可尝试将 `iters` 设置为 `0`（RTN 模式）、将 `group_size` 设为 `32` 并且打开 `disable_opt_rtn` ，通常会有帮助。
+如果在量化过程中遇到问题可尝试启动RTN 模式，具体是指将 `iters` 设置为 `0`并打开 `disable_opt_rtn`。另外可以将 `group_size` 设为 `32` 可以提升RTN模型的精度，副作用是有一定的性能下降。
 
 
 <details>
   <summary>点击展开</summary>
 
-**该功能仍在实验阶段，因此后续版本中可能有变动。**
+**该功能仍在实验阶段**
 
 默认情况下，AutoRound 只会量化 VLM 的文本模块，并默认采用 `NeelNanda/pile-10k`​ 作为标定数据集。若需量化整个模型，可设置 `quant_nontext_module = True` （但目前为止该功能的适用范围仍较为有限）。更多信息请参考 [readme](./auto_round/mllm/README.md)
 
