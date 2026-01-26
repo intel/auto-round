@@ -15,6 +15,9 @@
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+
+English | [User Guide](./docs/step_by_step.md) | [简体中文](README_CN.md)
+
 ---
 <div align="left">
 
