@@ -32,7 +32,13 @@ def test_auto_round(model):
     sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
     # Create an LLM.
     QUANTIZATION = "auto-round"
-    llm = LLM(model=model, quantization=QUANTIZATION, trust_remote_code=True, tensor_parallel_size=1)
+    llm = LLM(
+        model=model,
+        quantization=QUANTIZATION,
+        trust_remote_code=True,
+        tensor_parallel_size=1,
+        allow_deprecated_quantization=True,
+    )
     # Generate texts from the prompts.
     # The output is a list of RequestOutput objects
     # that contain the prompt, generated text, and other information.
