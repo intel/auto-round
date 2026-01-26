@@ -1644,6 +1644,8 @@ class BaseCompressor(object):
         Returns:
         The quantized model and layer configurations.
         """
+        # post init
+        self._post_init()
 
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
@@ -3162,8 +3164,6 @@ class BaseCompressor(object):
         Returns:
             object: The compressed model object.
         """
-        # post init
-        self._post_init()
 
         self.orig_output_dir = output_dir
         if isinstance(format, str) and getattr(self, "formats", None) is None:
