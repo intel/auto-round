@@ -1442,7 +1442,7 @@ def mv_module_from_gpu(module):
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
-    if hasattr(model, "config"):
+    if hasattr(model, "config") and hasattr(model.config, "to_dict"):
         for key in model.config.to_dict().keys():
             if "moe" in key or "expert" in key:
                 return True
