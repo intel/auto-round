@@ -2928,19 +2928,20 @@ class BaseCompressor(object):
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
         if is_ddp():
-            index_sampler = DDPIndexSampler(nsamples, global_batch_size, iters=self.iters)
+            # index_sampler = DDPIndexSampler(nsamples, global_batch_size, iters=self.iters)
+            index_sampler = IndexSampler(nsamples, global_batch_size)
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            rank_log(f"DDP rank {rank} is quantizing the block")
+            # ForkedPdb().set_trace()
+            rank_log(
+                f"device info: device: {device}, loss_device: {loss_device}, block's device {next(block.parameters()).device}"
+            )
+            block = DDP(block, device_ids=[rank], find_unused_parameters=True)
+            dist.barrier()
+            logger.warning_once("DistributedDataParallel (DDP) is used for block quantization. " f"block: {block}")
         else:
             index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        rank_log(f"DDP rank {rank} is quantizing the block")
-        # ForkedPdb().set_trace()
-        rank_log(
-            f"device info: device: {device}, loss_device: {loss_device}, block's device {next(block.parameters()).device}"
-        )
-        block = DDP(block, device_ids=[rank], find_unused_parameters=True)
-        dist.barrier()
-        logger.warning_once("DistributedDataParallel (DDP) is used for block quantization. " f"block: {block}")
 
         for i in range(self.iters):
             rank_log(f"starts iteration {i} for block quantization")

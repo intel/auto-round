@@ -52,6 +52,8 @@ model_name = "/storage/jenkins/huggingface/Llama-4-Scout-17B-16E-Instruct"
 model_name = "/storage/yiliu7/Qwen/Qwen3-VL-30B-A3B-Instruct"
 model_name = "/storage/yiliu7/Qwen/Qwen3-8B/"
 model_name = "/data5/yiliu4/Qwen/Qwen2-0.5B"
+model_name = "Qwen/Qwen2-0.5B"
+model_name = "Qwen/Qwen3-8B"
 # from transformers import Qwen2VLForConditionalGeneration
 # tokenizer = AutoTokenizer.from_pretrained(model_name,trust_remote_code=True)
 # model = AutoModelForCausalLM.from_pretrained(model_name,device_map="cpu", torch_dtype="auto",trust_remote_code=True)
@@ -218,7 +220,7 @@ def main_torchrun(model_name, scheme, iters, nsamples):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AutoRound Quantization with DDP support")
-    parser.add_argument("--model_name", type=str, default="/data5/yiliu4/Qwen/Qwen2-0.5B", help="Model name or path")
+    parser.add_argument("--model_name", type=str, default=model_name, help="Model name or path")
     parser.add_argument(
         "--scheme", type=str, default="FP8_STATIC", help="Quantization scheme (FP8_STATIC, MXFP8, MXFP4, etc.)"
     )
