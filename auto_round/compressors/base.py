@@ -884,29 +884,24 @@ class BaseCompressor(object):
         # post init
         self._post_init()
 
-        model_name = self.model.name_or_path.rstrip("/")
-        if model_name.split("/")[-1].strip(".") == "" and "gguf" not in format:
+        name_or_path = self.model.name_or_path.rstrip("/")
+        model_name = name_or_path.split("/")[-1]
+        if model_name.strip(".") == "" and "gguf" not in format:
             if self.group_size <= 0:
-                if "fp" in self.act_data_type:
-                    suffix = f"afp{self.act_bits}"
-                else:
-                    suffix = f"a{self.act_bits}"
+                suffix = f"afp{self.act_bits}" if "fp" in self.act_data_type else f"a{self.act_bits}"
             else:
                 suffix = f"g{self.group_size}"
             export_dir = os.path.join(output_dir, f"w{self.bits}{suffix}")
-        elif model_name.split("/")[-1].strip(".") == "" and "gguf" in format:
+        elif model_name.strip(".") == "" and "gguf" in format:
             export_dir = output_dir
-        elif model_name.split("/")[-1].strip(".") != "" and "gguf" in format:
-            export_dir = os.path.join(output_dir, model_name.split("/")[-1] + "-gguf")
+        elif model_name.strip(".") != "" and "gguf" in format:
+            export_dir = os.path.join(output_dir, model_name + "-gguf")
         else:
             if self.group_size <= 0:
-                if "fp" in self.act_data_type:
-                    suffix = f"afp{self.act_bits}"
-                else:
-                    suffix = f"a{self.act_bits}"
+                suffix = f"afp{self.act_bits}" if "fp" in self.act_data_type else f"a{self.act_bits}"
             else:
                 suffix = f"g{self.group_size}"
-            export_dir = os.path.join(output_dir, model_name.split("/")[-1] + f"-w{self.bits}{suffix}")
+            export_dir = os.path.join(output_dir, model_name + f"-w{self.bits}{suffix}")
 
         output_dir = export_dir
         # Validate and process the specified formats
