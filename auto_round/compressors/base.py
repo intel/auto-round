@@ -282,6 +282,9 @@ class BaseCompressor(object):
         self.layer_config = layer_config
 
         # should be set after loading model and set layer_config, cause some special scheme need these.
+        # Preserve the original, unparsed scheme for later use in auto scheme generation
+        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        self.orig_scheme = copy.deepcopy(scheme)
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
@@ -316,15 +319,6 @@ class BaseCompressor(object):
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
-        predefined_ignore_layers = get_predefined_ignore_layers(self.model)
-
-        if predefined_ignore_layers:
-            logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
-            tmp_str = ",".join(predefined_ignore_layers)
-            if self.ignore_layers == "":
-                self.ignore_layers = tmp_str
-            else:
-                self.ignore_layers += "," + tmp_str
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
@@ -471,9 +465,6 @@ class BaseCompressor(object):
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
-
-        if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
@@ -1514,6 +1505,20 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
+        if not is_gguf_format:
+            predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+            if predefined_ignore_layers:
+                logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+                tmp_str = ",".join(predefined_ignore_layers)
+                if self.ignore_layers == "":
+                    self.ignore_layers = tmp_str
+                else:
+                    self.ignore_layers += "," + tmp_str
+
+        if self.is_auto_scheme:
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False
