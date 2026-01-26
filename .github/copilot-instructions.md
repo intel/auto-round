@@ -1,1 +1,1 @@
-When performing a code review, check if the changes in README.md and README_CN.md are consistent.
+When performing a code review, verify that any changes in README.md have corresponding updates in README_CN.md, maintaining equivalent content and structure between the two files.
