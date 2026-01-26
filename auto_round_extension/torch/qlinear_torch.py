@@ -82,7 +82,6 @@ class QuantLinear(nn.Module):
                 ],
                 dtype=torch.int32,
             ).reshape(1, 3, 12)
-
         self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
 
     def post_init(self):
@@ -335,7 +334,7 @@ class QuantLinear(nn.Module):
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)
         out = out.reshape(out_shape)
-        out = out + self.bias if self.bias is not None else out
+        out = (out + self.bias).to(x_dtype) if self.bias is not None else out
         return out
 
 

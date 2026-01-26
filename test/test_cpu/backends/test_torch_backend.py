@@ -53,10 +53,10 @@ class TestAutoRoundTorchBackend:
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, dtype=torch.float32, device_map="cpu", quantization_config=quantization_config
+            self.save_folder, dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder, torch_dtype=torch.bfloat16)
+        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
