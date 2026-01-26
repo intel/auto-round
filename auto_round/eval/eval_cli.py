@@ -223,10 +223,9 @@ def eval_with_vllm(args):
         vllm_kwargs.update(custom_vllm_kwargs)
 
     device = get_device_str()
-    # For XPU, using ONEAPI_DEVICE_SELECTOR=level_zero:0,1
     environ_mapping = {
         "cuda": "CUDA_VISIBLE_DEVICES",
-        "xpu": "ONEAPI_DEVICE_SELECTOR",
+        "xpu": "ZE_AFFINITY_MASK",
         "hpu": "HABANA_VISIBLE_MODULES",
     }
     if "tensor_parallel_size" not in vllm_kwargs:
@@ -238,8 +237,6 @@ def eval_with_vllm(args):
         device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
         if device_ids:
             device_id_str = ",".join(device_ids)
-            if device == "xpu":
-                device_id_str = "level_zero:" + device_id_str
             os.environ[environ_name] = device_id_str
             tensor_parallel_size = len(device_ids)
             vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
