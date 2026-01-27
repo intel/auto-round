@@ -8,4 +8,4 @@ pandas
 pillow
 torchvision
 numba
-vllm>=0.8.5.post1
+vllm -f https://wheels.vllm.ai/nightly
