@@ -960,17 +960,26 @@ class with_thread_limits(ContextDecorator):
 
 @with_thread_limits()
 def dequant_block_fp8_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list = None, data_type: str = None
 ) -> torch.Tensor:
     """Core dequantization logic for block-wise FP8 weights."""
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
-    assert len(block_size) == 2
 
     # If weight is stored as uint8, view it as float8_e4m3fn
     if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
         weight = weight.view(torch.float8_e4m3fn)
+
+    if block_size is None:
+        if weight_scale.numel() > 1 and weight_scale.shape != weight.shape:
+            if weight_scale.numel() == weight.shape[0]:
+                weight_scale = weight_scale.view(-1, 1)
+            elif weight_scale.numel() == weight.shape[-1]:
+                weight_scale = weight_scale.view(1, -1)
+        return weight.to(dtype) * weight_scale.to(dtype)
+
+    assert len(block_size) == 2
 
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
@@ -1076,6 +1085,20 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     layer = layer.to(device)
     if layer.__class__.__name__ == "CompressedLinear":
         dq_weight = layer.compressor.decompress_module(layer)
+    elif not hasattr(layer, "block_size"):
+        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+        # If weight is stored as uint8, view it as float8_e4m3fn
+        dq_weight = layer.weight
+        if dq_weight.element_size() == 1 and dq_weight.dtype != torch.float8_e4m3fn:
+            dq_weight = dq_weight.view(torch.float8_e4m3fn)
+        dq_weight = dq_weight.to(dtype)
+        if weight_scale is not None:
+            if weight_scale.numel() > 1 and weight_scale.shape != dq_weight.shape:
+                if weight_scale.numel() == dq_weight.shape[0]:
+                    weight_scale = weight_scale.view(-1, 1)
+                elif weight_scale.numel() == dq_weight.shape[-1]:
+                    weight_scale = weight_scale.view(1, -1)
+            dq_weight = dq_weight * weight_scale.to(dtype)
     else:
         weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
         data_type = getattr(layer, "data_type", None)
