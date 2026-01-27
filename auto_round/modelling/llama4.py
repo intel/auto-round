@@ -36,8 +36,6 @@ except ImportError:
                 time and memory usage compared to environments where the genuine
                 `no_init_weights` context manager is available.
                 """
-            def no_init_weights():
-                yield
 
 
 from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
