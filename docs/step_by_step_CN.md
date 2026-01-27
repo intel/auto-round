@@ -417,7 +417,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
     scheme="W4A16",
-    iters=0,  # 设置为0开启OPT RTN模式
+    iters=0,  
 )
 
 output_dir = "./tmp_autoround"
@@ -425,9 +425,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 ### GGUF 格式量化
-目前仍在实验阶段。该格式适用 CPU 设备，在社区应用广泛。
+实验性功能。该格式适用 CPU 设备，在社区应用广泛。
 
-除 3-bits 外的各精度均建议使用优化版 RTN 模式（开启 `--iters 0`）。
+除 3-bits 外的各精度均建议使用优化版 RTN 模式（开启 `--iters 0` ）。
 
 ```python
 from auto_round import AutoRound
@@ -479,7 +479,6 @@ ar = AutoRound(
 
 命令行示例：
 ~~~bash
-# 指定可见GPU为0、1、2、3，并设置device_map为自动分配
 CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --device_map "auto"
 ~~~
 
@@ -493,7 +492,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 #### 手动配置设备映射
 <details>
 <summary>自定义设备映射（device_map）</summary>
-若 `device_map=auto` 无法正确分配，还可以通过 AutoRound API 的 `device_map` 参数，将同一 bolck 内的不同层映射到不同设备。这里我们提供一个参考示例：如何在 5 张 80GB GPU 上量化 DeepSeekV3-BF16（1.4T）模型。
+若 `device_map=auto` 未能正确分配，还可以通过 AutoRound API 的 `device_map` ，将同一 bolck 内的不同层映射到不同设备。这里我们提供一个参考示例：如何在 5 张 80GB GPU 上量化 DeepSeekV3-BF16（1.4T）模型。
 
 ```python
 import torch
@@ -587,7 +586,7 @@ AutoRound 支持十余种推理后端，并会根据已安装的库自动选择�
 ​**请勿在推理过程中手动将量化后的模型迁移到其他设备**​（例如执行 `model.to('cpu')`），否则可能导致意外错误。
 
 ### CPU
-支持 2、4、8 bits 模型，其中 **4-bits 推理推荐搭配 intel-extension-for-pytorch（IPEX）**，使用示例：
+支持 2、4、8 bits 模型，其中 **4-bits 推理推荐搭配 intel-extension-for-pytorch（IPEX）** 使用，示例：
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -601,7 +600,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 
 ### 英特尔 GPU
-**仅支持 4-bits 模型**，推荐搭配 intel-extension-for-pytorch（IPEX），使用示例：
+**仅支持 4-bits 模型**，推荐搭配 **IPEX** 使用，示例：
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -646,13 +645,13 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 
 ### 指定推理后端
-AutoRound 会根据兼容性为每个层自动选择推理后端，默认优先级大致为：Marlin > ExLLaMAV2 > Triton。最终选择会受 **group size、bit width、packing format、hardware device**等因素的影响。
+AutoRound 会根据兼容性为每个层自动选择推理后端，默认优先级大致为：Marlin > ExLLaMAV2 > Triton。最终选择会受 **group size、bit width、packing format、hardware device** 等因素的影响。
 
 默认选择的后端并非在所有设备上都是最优的，你可根据需求或硬件兼容性手动指定后端：
 - CPU/英特尔 GPU：推荐`ipex`
 - CUDA：可指定`marlin`/`exllamav2`/`triton`
 
-**注意**：手动指定后端可能要安装相关依赖。
+**注意**：手动指定后端的话，可能要安装相关依赖。
 
 指定后端的使用示例：
 ```python
@@ -687,7 +686,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | torch                   | xpu/cpu/cuda   | 2、3、4、8     | BF16/FP16    | 0      | gptq/gptq_zp+-1 | auto-round                     |
 
 ### 将 GPTQ 或 AWQ 模型转换为 AutoRound 格式
-为实现更好兼容（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型经过序列化处理，其量化配置可能会发生变更。
+为了提升兼容性（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型经过序列化处理，其量化配置可能会发生变更。
 
 转换并推理的示例：
 ```python
@@ -712,13 +711,13 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 # 5 效果评估
 ### 训练与评估一体化
-AutoRound 借助 `lm-eval-harness` 评估。若没有指定评估任务（`--task`），会使用默认的任务集（十余个常用评测任务）。
+AutoRound 借助 `lm-eval-harness` 评估。如果没有指定评估任务（`--task`），会使用默认的任务集（十余个常用评测任务）。
 
 **命令行示例**：
 ~~~bash
 auto-round --model Qwen/Qwen3-0.6B  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
 ~~~
-> 若导出了多种量化格式，会**采用最后一种格式**的模型评估
+> 若导出了多种量化格式，会自动采用**最后一种格式**的模型评估
 
 ### 单独评估
 #### AutoRound 原生格式模型
@@ -735,13 +734,13 @@ auto-round --model="你的模型保存路径" --eval  --device 0,1 --tasks lamba
 ~~~
 
 ##### 基于其他评估框架
-若评估框架支持加载 Hugging Face 标准模型，则无需修改框架代码，**在评估脚本开头添加以下 import **即可支持 AutoRound 格式模型：
+若评估框架支持加载 Hugging Face 标准模型，则无需修改框架代码，**在评估脚本开头添加以下语句**即可支持 AutoRound 格式模型：
 ~~~python
 from auto_round import AutoRoundConfig
 ~~~  
 
 #### AutoGPTQ/AutoAWQ 格式模型
-使用时请参照对应的官方仓库，确认评估框架与该格式的兼容性。基于 `lm-eval-harness` 的评估示例如下：
+为保证评估框架与该格式的兼容，使用时请参照对应的官方仓库。基于 `lm-eval-harness` 的评估示例如下：
 
 **单 GPU 评估**：
 ~~~bash
@@ -756,7 +755,7 @@ CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="你的模�
 
 
 # 6 已知问题
-1. 量化过程存在的随机性可能会影响到部分模型的训练结果。若要保证实验结果可复现，可开启确定性算法 `enable_deterministic_algorithms=True`。
+1. 量化过程存在的随机性可能会影响到部分模型的训练效果。若要保证实验结果可复现，可开启确定性算法（ `enable_deterministic_algorithms=True` ）。
 
 2. 部分视觉语言模型（VLM）需要手动适配。
 
