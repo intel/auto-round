@@ -1,6 +1,7 @@
 import os
 import shutil
 
+import datasets
 import pytest
 import torch
 import transformers
@@ -20,6 +21,15 @@ from .helpers import (
     qwen_vl_name_or_path,
     save_tiny_model,
 )
+
+datasets.original_load_dataset = datasets.load_dataset
+datasets.load_dataset = lambda *args, **kwargs: patch_load_dataset(*args, **kwargs)
+
+
+def patch_load_dataset(dataset_name, *args, **kwargs):
+    if "openbookqa" in dataset_name:
+        dataset_name = "allenai/openbookqa"
+    return datasets.original_load_dataset(dataset_name, *args, **kwargs)
 
 
 # Create tiny model path fixtures for testing
