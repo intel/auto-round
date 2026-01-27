@@ -1,9 +1,7 @@
 import psutil
 import torch
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils.import_utils import clear_import_cache
-
 
 # clear cache to reload modified code
 clear_import_cache()
@@ -15,6 +13,7 @@ model_name = "/mnt/disk6/yiliu4/deepseek-ai/DeepSeek-R1-0528"
 model_name = "/mnt/disk8/Qwen/Qwen3-8B"
 model_name = "/mnt/disk8/Qwen/Qwen3-8B-FP8"
 model_name = "/mnt/disk8/Qwen/Qwen3-30B-A3B"
+model_name = "/storage/yiliu7/Qwen/Qwen3-30B-A3B"
 # model_name = "/mnt/disk8/deepseek-ai/DeepSeek-V2-Lite-Chat"
 device = "cpu"
 from loguru import logger
@@ -36,7 +35,8 @@ def fixed_seed(seed: int):
     random.seed(seed)
     import numpy as np
 
-    np.random.seed(seed)
+    # np.random.seed(seed)
+    np.random.Generator(seed)
 
 
 def disable_concat_experts():
@@ -46,8 +46,11 @@ def disable_concat_experts():
     register_checkpoint_conversion_mapping("qwen3_moe", [], overwrite=True)
 
 
-from torch.utils._debug_mode import DebugMode
-from fp8_quantizer_patch import *
+try:
+    from torch.utils._debug_mode import DebugMode
+except ImportError:
+    pass
+# from fp8_quantizer_patch import *
 from transformers.initialization import no_init_weights
 
 
