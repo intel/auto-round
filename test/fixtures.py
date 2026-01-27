@@ -25,10 +25,16 @@ from .helpers import (
 datasets.original_load_dataset = datasets.load_dataset
 
 
-def patch_load_dataset(dataset_name, *args, **kwargs):
-    if "openbookqa" in dataset_name:
-        dataset_name = "allenai/openbookqa"
-    return datasets.original_load_dataset(dataset_name, *args, **kwargs)
+def patch_load_dataset(*args, **kwargs):
+    if len(args) > 0 and "openbookqa" in args[0]:
+        args = ("allenai/openbookqa",) + args[1:]
+    if "path" in kwargs:
+        if "openbookqa" in kwargs["path"] and "allenai/openbookqa" not in kwargs["path"]:
+            kwargs["path"] = kwargs["path"].replace("openbookqa", "allenai/openbookqa")
+    if "name" in kwargs:
+        if "openbookqa" in kwargs["name"] and "allenai/openbookqa" not in kwargs["name"]:
+            kwargs["name"] = kwargs["name"].replace("openbookqa", "allenai/openbookqa")
+    return datasets.original_load_dataset(*args, **kwargs)
 
 
 datasets.load_dataset = patch_load_dataset
