@@ -100,11 +100,6 @@ def mllm_eval(
     mode: str = "all",
     ignore: bool = False,
 ):
-    try:
-        from transformers import AutoRoundConfig
-    except:
-        from auto_round.inference.auto_quantizer import AutoHfQuantizer
-
     model = None
     if data_store_dir is not None:
         if not os.path.exists(data_store_dir):

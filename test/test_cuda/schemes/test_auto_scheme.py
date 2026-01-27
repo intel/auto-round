@@ -4,8 +4,9 @@ import shutil
 
 import pytest
 import transformers
+from transformers import AutoRoundConfig
 
-from auto_round import AutoRound, AutoRoundConfig, AutoScheme
+from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import multi_card
