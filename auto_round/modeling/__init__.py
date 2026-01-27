@@ -24,12 +24,12 @@ MODEL_CONFIG = {
         "block_patch": [
             (
                 "transformers.models.qwen3_moe.modeling_qwen3_moe.Qwen3MoeSparseMoeBlock",
-                "auto_round.modeling.qwen3_moe.Qwen3MoeSparseMoeBlock"
+                "auto_round.modeling.qwen3_moe.Qwen3MoeSparseMoeBlock",
             )
-        ]
+        ],
     },
-
 }
+
 
 def get_checkpoint_conversion_mapping_ar(model_type):
     from transformers import conversion_mapping
@@ -42,7 +42,9 @@ def get_checkpoint_conversion_mapping_ar(model_type):
         return cfg.get("checkpoint_mapping", [])
 
     from transformers import conversion_mapping
+
     return conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
+
 
 def apply_model_patches(model_type):
     if model_type not in MODEL_CONFIG:
@@ -73,13 +75,16 @@ def apply_model_patches(model_type):
             from transformers import conversion_mapping
 
             if not hasattr(conversion_mapping, "orig_get_checkpoint_conversion_mapping"):
-                conversion_mapping.orig_get_checkpoint_conversion_mapping = conversion_mapping.get_checkpoint_conversion_mapping
+                conversion_mapping.orig_get_checkpoint_conversion_mapping = (
+                    conversion_mapping.get_checkpoint_conversion_mapping
+                )
 
             conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
             transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
 
         except Exception as e:
             logger.info(f"[WARN] Failed to patch {orig_path}: {e}")
+
 
 for key in MODEL_CONFIG.keys():
     apply_model_patches(key)
