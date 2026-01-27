@@ -36,7 +36,7 @@ def fixed_seed(seed: int):
     import numpy as np
 
     # np.random.seed(seed)
-    np.random.Generator(seed)
+    # np.random.Generator(np.random.PCG64(seed))
 
 
 def disable_concat_experts():
