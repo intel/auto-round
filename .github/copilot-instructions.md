@@ -1,1 +1,1 @@
-When performing a code review, verify that any changes in README.md have corresponding updates in README_CN.md, maintaining equivalent content and structure between the two files.
+When performing a code review, verify that any changes to markdown files (*.md) have corresponding updates in their Chinese translation files (those with _CN suffix, e.g., README.md → README_CN.md, GUIDE.md → GUIDE_CN.md). Ensure equivalent content and structure are maintained between the original and Chinese translation files.
