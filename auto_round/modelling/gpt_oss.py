@@ -16,18 +16,18 @@
 import torch
 from torch import nn
 try:
-    from transformers.modeling_utils import no_init_weights
+    from transformers.modeling_utils import no_init_weights as skip_weights_initialize
 except ImportError:
     try:
-        from transformers.utils import no_init_weights
+        from transformers.utils import no_init_weights as skip_weights_initialize
     except ImportError:
         try:
-            from transformers.initialization import no_init_weights
+            from transformers.initialization import no_init_weights as skip_weights_initialize
         except ImportError:
             from contextlib import contextmanager
 
             @contextmanager
-            def no_init_weights():
+            def skip_weights_initialize():
                 yield
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
