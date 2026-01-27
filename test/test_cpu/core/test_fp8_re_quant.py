@@ -1,8 +1,11 @@
+import unittest
+
 import torch
 import torch.nn as nn
-from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
-import unittest
 from transformers import AutoConfig
+
+from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
+
 
 class MockFP8Layer:
     def __init__(self, in_features, out_features, has_block_size=False):
@@ -22,16 +25,17 @@ class MockFP8Layer:
         self.bias.data = self.bias.data.to(device)
         return self
 
+
 class TestFP8ReQuant(unittest.TestCase):
     def test_per_tensor_dequant(self):
         """Test basic per-tensor dequantization logic."""
         in_features, out_features = 128, 64
         layer = MockFP8Layer(in_features, out_features)
-        
+
         dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale, block_size=None)
         self.assertEqual(dq_weight.shape, (out_features, in_features))
         self.assertEqual(dq_weight.dtype, torch.bfloat16)
-        
+
         expected = layer.weight.to(torch.bfloat16) * layer.weight_scale.to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
@@ -39,7 +43,7 @@ class TestFP8ReQuant(unittest.TestCase):
         """Test per-channel (vector) dequantization logic."""
         in_features, out_features = 128, 64
         weight = torch.randn(out_features, in_features).to(torch.float8_e4m3fn)
-        
+
         # Per-channel scale (out_features)
         scale = torch.randn(out_features)
         dq_weight = dequant_block_fp8_weight(weight, scale, block_size=None)
@@ -65,8 +69,8 @@ class TestFP8ReQuant(unittest.TestCase):
             out_features = config.intermediate_size
         except Exception as e:
             print(f"Skipping remote config fetch due to: {e}. Using hardcoded fallback.")
-            in_features, out_features = 12288, 28672 # Devstral 2 parameters
-        
+            in_features, out_features = 12288, 28672  # Devstral 2 parameters
+
         class DevstralLayerMock(nn.Module):
             def __init__(self, in_f, out_f):
                 super().__init__()
@@ -79,15 +83,15 @@ class TestFP8ReQuant(unittest.TestCase):
                 self.data_type = "fp8"
 
         mock_layer = DevstralLayerMock(in_features, out_features)
-        
+
         # This should now pass without AttributeError for 'block_size'
         new_layer = convert_fp8_layer_to_linear(mock_layer, dtype=torch.bfloat16)
-        
+
         self.assertIsInstance(new_layer, nn.Linear)
         self.assertEqual(new_layer.in_features, in_features)
         self.assertEqual(new_layer.out_features, out_features)
         self.assertEqual(new_layer.weight.dtype, torch.bfloat16)
-        
+
         expected = mock_layer.weight.to(torch.bfloat16) * mock_layer.weight_scale.to(torch.bfloat16)
         torch.testing.assert_close(new_layer.weight, expected)
         print("Devstral layer conversion successful!")
