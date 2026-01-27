@@ -456,6 +456,7 @@ def get_new_chinese_title_dataset(
 
 
 @register_dataset("mbpp")
+@register_dataset("google-research-datasets/mbpp")
 def get_mbpp_dataset(
     tokenizer,
     seqlen,
@@ -479,6 +480,8 @@ def get_mbpp_dataset(
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
     from datasets import load_dataset
+
+    dataset_name = "google-research-datasets/mbpp"
 
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
