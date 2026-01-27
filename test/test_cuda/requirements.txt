@@ -1,4 +1,5 @@
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+--extra-index-url https://wheels.vllm.ai/nightly
 auto-gptq
 einops
 # pip install -v git+https://github.com/ModelCloud/GPTQModel.git --no-build-isolation
@@ -8,4 +9,4 @@ pandas
 pillow
 torchvision
 numba
-vllm -f https://wheels.vllm.ai/nightly
+vllm
