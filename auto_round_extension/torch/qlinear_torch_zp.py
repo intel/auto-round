@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-
+from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
 from auto_round.utils import get_packing_device
 
 logger = getLogger(__name__)
@@ -72,16 +72,9 @@ class QuantLinear(nn.Module):
 
         # is performed by unpacking the weights and using torch.matmul
         if self.bits in [2, 4, 8]:
-            self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32).unsqueeze(0)
+            self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qweight.device).unsqueeze(0)
         else:  ## bits == 3
-            self.wf = torch.tensor(
-                [
-                    [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 0],
-                    [0, 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31],
-                    [0, 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 0],
-                ],
-                dtype=torch.int32,
-            ).reshape(1, 3, 12)
+            self.wf = get_wf_3bits_tensor(device=self.qweight.device)
 
         self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
 
@@ -276,7 +269,7 @@ class QuantLinear(nn.Module):
 
         if self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
-                self.wf = self.wf.to(self.qzeros.device)
+                self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qzeros.device).unsqueeze(0)
             zeros = torch.bitwise_right_shift(
                 torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
                 self.wf.unsqueeze(0),
@@ -292,7 +285,7 @@ class QuantLinear(nn.Module):
             )
         elif self.bits == 3:
             if self.wf.device != self.qzeros.device:
-                self.wf = self.wf.to(self.qzeros.device)
+                self.wf = get_wf_3bits_tensor(device=self.qzeros.device)
             zeros = self.qzeros.reshape(self.qzeros.shape[0], self.qzeros.shape[1] // 3, 3, 1).expand(-1, -1, -1, 12)
             zeros = zeros >> self.wf.unsqueeze(0)
             zeros[:, :, 0, 10] = (zeros[:, :, 0, 10] & 0x3) | ((zeros[:, :, 1, 0] << 2) & 0x4)
@@ -340,3 +333,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+
