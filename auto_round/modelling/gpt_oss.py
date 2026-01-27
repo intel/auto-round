@@ -27,7 +27,7 @@ except ImportError:
         except ImportError:
             from contextlib import contextmanager
 
-            def no_init_weights():
+            def skip_weights_initialize():
                 """Fallback no-op context manager used when ``transformers.no_init_weights`` is unavailable.
 
                 Unlike the real helper provided by some versions of ``transformers``, this implementation
@@ -36,8 +36,6 @@ except ImportError:
                 that code can safely use ``with no_init_weights():`` even when running with older or
                 minimal ``transformers`` installations that do not expose the helper.
                 """
-
-            def skip_weights_initialize():
                 yield
 
 
