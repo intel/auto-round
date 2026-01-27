@@ -261,7 +261,7 @@ def save_quantized_as_autogptq(
 
     # --- Block-wise quantization verification ---
     for n, m in model.named_modules():
-        m.tmp_name = n
+        m.global_name = n
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
@@ -269,9 +269,9 @@ def save_quantized_as_autogptq(
     for block_names in all_blocks:
         first_block = get_module(model, block_names[0])
         for n, m in first_block.named_modules():
-            if m.tmp_name not in layer_config:
+            if m.global_name not in layer_config:
                 continue
-            if not check_to_quantized(layer_config[m.tmp_name]):
+            if not check_to_quantized(layer_config[m.global_name]):
                 all_to_quantized = False
             else:
                 modules_in_block_to_quantize.append(n)
@@ -281,7 +281,7 @@ def save_quantized_as_autogptq(
         modules_in_block_to_quantize = None
 
     for _, m in model.named_modules():
-        delattr(m, "tmp_name")
+        delattr(m, "global_name")
 
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))

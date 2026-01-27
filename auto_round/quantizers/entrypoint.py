@@ -23,7 +23,7 @@ from auto_round.quantizers.algs.rtn import OptRTNQuantizer, RTNQuantizer
 class AutoRoundQuantizer:
     def __new__(cls, compressor: "BaseCompressor", dynamic_quantizers: dict = None):
         assert dynamic_quantizers is not None, "Please provide dynamic_quantizers dict."
-        quantizer_cls = type("AutoRoundQuantizer", (dynamic_quantizers["data_type"], dynamic_quantizers["algs"]), {})
+        quantizer_cls = type("AutoRoundQuantizer", (dynamic_quantizers["algs"],), {})
         return quantizer_cls(compressor)
 
 

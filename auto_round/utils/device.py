@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import functools
 import gc
 import os
 import re
+from contextlib import contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
@@ -463,16 +465,29 @@ def _clear_memory_for_cpu_and_cuda(
         torch.xpu.empty_cache()
 
 
-@torch._dynamo.disable()
-def clear_memory(tensor: torch.Tensor | None | list[torch.Tensor] = None, device_list: list | tuple | None = None):
-    from auto_round.utils.device import is_hpex_available
+class ClearMemory:
+    def __init__(self, device_list: list | tuple | None = None):
+        self.device_list = device_list
 
-    memory_monitor.update(device_list=device_list)
-    if is_hpex_available():
-        # hpu does not have empty_cache
-        return
-    else:
-        _clear_memory_for_cpu_and_cuda(tensor, device_list)
+    def __call__(
+        self,
+        tensor: torch.Tensor | None | list[torch.Tensor | dict] = None,
+        device_list: list | tuple | None = None,
+    ):
+        from auto_round.utils.device import is_hpex_available
+
+        if is_hpex_available():
+            memory_monitor.update_cpu()
+            return
+        else:
+            if device_list is not None:
+                self.device_list = device_list
+            final_device_list = self.device_list
+            memory_monitor.update(final_device_list)
+            _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
+
+
+clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
 
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
@@ -1435,13 +1450,58 @@ class MemoryMonitor:
                 summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
-    def log_summary(self):
+    def log_summary(self, msg: str = "", level: str = "info"):
         """Log memory usage summary."""
         summary = self.get_summary()
-        logger.info(summary)
+        logger_method = getattr(logger, level.lower(), logger.info)
+        logger_method(f"{msg} {summary}")
 
         return summary
 
 
+def get_device_str():
+    """Get a string representation of the automatically detected device."""
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.xpu.is_available():  # pragma: no cover
+        return "xpu"
+    elif is_hpex_available():  # pragma: no cover
+        return "hpu"
+    else:  # pragma: no cover
+        return "cpu"
+
+
 # Global singleton instance
 memory_monitor = MemoryMonitor()
+
+
+@contextmanager
+def dump_memory_usage_ctx(msg: str = "", log_level: str = "info"):
+    """Context manager to dump memory usage before and after a code block."""
+    memory_monitor.update_cpu()
+    logger_method = getattr(logger, log_level.lower(), logger.info)
+    logger_method(f"[Memory Monitor] Before {msg}: {memory_monitor.get_summary()}")
+    try:
+        yield
+    finally:
+        memory_monitor.update_cpu()
+        logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
+
+
+def dump_mem_usage(msg: str = "", log_level: str = "info"):
+    """Decorator to dump memory usage before and after a function call."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            memory_monitor.update_cpu()
+            logger_method = getattr(logger, log_level.lower(), logger.info)
+            logger_method(f"[Memory Monitor] Before {msg}: {memory_monitor.get_summary()}")
+            result = func(*args, **kwargs)
+            memory_monitor.update_cpu()
+            logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
+            return result
+
+        return wrapper
+
+    return decorator

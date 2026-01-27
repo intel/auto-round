@@ -124,7 +124,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", trust_remote_code=True, quantization_config=AutoRoundConfig()
@@ -219,7 +219,7 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved/test_export"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", quantization_config=AutoRoundConfig()
@@ -256,7 +256,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:gptqmodel")
 
         device = "auto"  ##cpu, hpu, cuda
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -282,7 +282,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
         device = "auto"  ##cpu, hpu, cuda
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         quantization_config = AutoRoundConfig(backend=device)
         model = AutoModelForCausalLM.from_pretrained(

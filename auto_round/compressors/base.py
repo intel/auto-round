@@ -14,7 +14,6 @@
 
 import copy
 import os
-import re
 import sys
 import time
 import traceback
@@ -34,6 +33,7 @@ from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -41,12 +41,10 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    immediate_saving,
     infer_bits_by_data_type,
     init_cache,
     is_mx_fp,
     is_nv_fp,
-    is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
@@ -56,6 +54,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
+from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -63,7 +62,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import update_module
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -77,14 +76,15 @@ from auto_round.utils import (
     compile_func,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
-    convert_fp8_model_to_16b_model,
-    copy_python_files_from_model_cache,
+    convert_fp8_module_to_16b,
     detect_device,
     find_matching_blocks,
     flatten_list,
     get_block_names,
     get_layer_names_in_block,
+    get_lm_head_name,
     get_module,
+    global_state,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -190,7 +190,7 @@ class BaseCompressor(object):
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
-        low_cpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = True,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -231,7 +231,7 @@ class BaseCompressor(object):
                 - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
                   super_group_size, super_bits, scale_dtype ("fp16" etc.),
                   nblocks, to_quant_block_names,
-                  enable_norm_bias_tuning, enable_quanted_input,
+                  enable_norm_bias_tuning, enable_quanted_input, enable_opt_rtn,
                   disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms,momentum
         Raises:
             ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
@@ -255,6 +255,7 @@ class BaseCompressor(object):
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
+        self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.enable_adam = kwargs.pop("enable_adam") if "enable_adam" in kwargs else False
         self.quantized = False
@@ -264,6 +265,7 @@ class BaseCompressor(object):
                 platform=platform,
                 device="cpu",  # always load cpu first
                 model_dtype=model_dtype,
+                trust_remote_code=self.trust_remote_code,
             )
         elif tokenizer is None and not self.diffusion and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
@@ -280,6 +282,9 @@ class BaseCompressor(object):
         self.layer_config = layer_config
 
         # should be set after loading model and set layer_config, cause some special scheme need these.
+        # Preserve the original, unparsed scheme for later use in auto scheme generation
+        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        self.orig_scheme = copy.deepcopy(scheme)
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
@@ -306,6 +311,7 @@ class BaseCompressor(object):
         self.momentum = kwargs.pop("momentum", 0.0)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         static_attention_dtype = kwargs.pop("static_attention_dtype", None)
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         device = kwargs.pop("device", None)
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
@@ -387,7 +393,12 @@ class BaseCompressor(object):
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
+        if enable_opt_rtn and disable_opt_rtn:
+            raise ValueError("`enable_opt_rtn` and `disable_opt_rtn` are mutually exclusive; " "only one can be set.")
+        if enable_opt_rtn:
+            disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
+
         if self.iters != 0 and self.orig_disable_opt_rtn is not None:
             logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
             disable_opt_rtn = True
@@ -417,8 +428,8 @@ class BaseCompressor(object):
         self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
-        self.immediate_packing = False
-        self.immediate_saving = False
+        self.is_immediate_packing = False
+        self.is_immediate_saving = False
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -453,9 +464,6 @@ class BaseCompressor(object):
         self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
-
-        if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
@@ -874,7 +882,9 @@ class BaseCompressor(object):
         else:
             model, _ = self.quantize()
         # Save the quantized model in the specified format_list
-        model, folders = self.save_quantized(output_dir, format=format, inplace=inplace, return_folders=True, **kwargs)
+        model, folders = self.save_quantized(
+            output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs
+        )
         memory_monitor.log_summary()
 
         return model, folders
@@ -902,21 +912,32 @@ class BaseCompressor(object):
         return self.orig_output_dir
 
     def _immediate_pack(self, name: str):
-        if not self.immediate_packing:
+        if not self.is_immediate_packing:
             return
         self.formats[0].immediate_pack(
             name=name,
             model=self.model,
             device=self.device,
             output_dir=self._get_save_folder_name(self.formats[0]),
-            mllm=self.mllm,
             layer_config=self.layer_config,
             tokenizer=self.tokenizer,
-            processor=self.processor if hasattr(self, "processor") else None,
-            image_processor=self.image_processor if hasattr(self, "image_processor") else None,
         )
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
+        if not is_gguf_format:
+            predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+            if predefined_ignore_layers:
+                logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+                tmp_str = ",".join(predefined_ignore_layers)
+                if self.ignore_layers == "":
+                    self.ignore_layers = tmp_str
+                else:
+                    self.ignore_layers += "," + tmp_str
+
+        if self.is_auto_scheme:
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False
@@ -935,6 +956,69 @@ class BaseCompressor(object):
             fill_default_value=fill_default_value,
         )
 
+    def _adjust_immediate_packing_and_saving(self):
+        formats = getattr(self, "formats", [])
+        if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
+            self.is_immediate_packing = True
+
+        if self.has_qlayer_outside_block and self.iters != 0:
+            self.is_immediate_packing = False
+
+        if not ("causallm" in self.model.__class__.__name__.lower() and not self.mllm):
+            # TODO For tied keys, there may some issues, we haven't not verified this
+            tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
+            if len(tied_weight_keys) > 1:
+                self.is_immediate_saving = False
+                if self.low_cpu_mem_usage:
+                    logger.warning("reset low_cpu_mem_usage to False due to tied weights")
+                return
+            if len(tied_weight_keys) == 1:
+                key = tied_weight_keys.keys[0]
+                if "lm_head" not in key:
+                    self.is_immediate_saving = False
+                    if self.low_cpu_mem_usage:
+                        logger.warning("reset low_cpu_mem_usage to False due to tied weights")
+                    return
+
+        if self.low_cpu_mem_usage and self.is_immediate_packing:
+            self.is_immediate_saving = True
+
+        if self.low_cpu_mem_usage and not self.is_immediate_packing:
+            logger.warning(
+                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
+                "Setting `low_cpu_mem_usage` to False."
+            )
+            self.low_cpu_mem_usage = False
+            self.is_immediate_saving = False
+
+        if self.low_cpu_mem_usage and self.is_immediate_packing:
+            if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported "
+                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                    "Setting `low_cpu_mem_usage` to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+            elif self.has_qlayer_outside_block and self.iters > 0:
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported "
+                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                    "Setting low_cpu_mem_usage to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+            elif formats[0].is_gguf():
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported for gguf format" "Setting `low_cpu_mem_usage `to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+
+        if self.is_immediate_saving and "int" not in self.data_type:
+            logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.is_immediate_saving = False
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
@@ -945,12 +1029,14 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(self.model, formats=formats)
+        self.model = update_module(
+            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+        )
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
         for n, m in self.model.named_modules():
-            m.tmp_name = n
+            m.global_name = n
 
         if not self.is_auto_scheme:
             enable_gguf_official_mixed = True
@@ -958,15 +1044,19 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = False
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
+
+        def _should_disable_inplace_due_to_layers_outside_block() -> bool:
+            return self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn))
+
+        # Disable inplace mode when there are quantized layers outside blocks
+        # under specific iteration/optimization settings.
+        if _should_disable_inplace_due_to_layers_outside_block():
+            self.inplace = False
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
             # Determine if immediate packing is required
-            formats = self.formats
-            if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
-                self.immediate_packing = True
-                if not formats[0].is_gguf() and self.low_cpu_mem_usage:
-                    self.immediate_saving = True
+            self._adjust_immediate_packing_and_saving()
 
         if self.immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
@@ -1044,7 +1134,7 @@ class BaseCompressor(object):
                 The capture hook look like:
 
                     def input_capture_hook(module, *args, **kwargs):
-                        _all_module_input[module._tmp_name].append((args, kwargs))
+                        _all_module_input[module._global_name].append((args, kwargs))
         """
         first_block_name = self.quant_block_list[0][0]
 
@@ -1280,6 +1370,7 @@ class BaseCompressor(object):
                                 )
 
                             try:
+                                materialize_model_(self.model)
                                 self.model = dispatch_model(self.model, device_map=device_map)
                             except ValueError as e:
                                 if "offload_dir" in e.__str__():
@@ -1641,7 +1732,7 @@ class BaseCompressor(object):
             object: The compressed model object.
         """
         self.orig_output_dir = output_dir
-        if isinstance(format, str):
+        if isinstance(format, str) and getattr(self, "formats", None) is None:
             formats = get_formats(format, self)
             if not hasattr(self, "formats"):
                 self.formats = formats
@@ -1650,7 +1741,7 @@ class BaseCompressor(object):
             logger.warning("please run autoround.quantize first")
             return
         folders = []
-        for format in formats:
+        for format in self.formats:
             save_folder = self._get_save_folder_name(format)
             if self.act_bits <= 8 and format.is_fake():
                 logger.warning(

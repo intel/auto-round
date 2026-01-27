@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
@@ -20,13 +21,14 @@ import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from tqdm import tqdm
 
+from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
     check_need_act_calibration,
-    immediate_saving,
     is_nv_fp,
     is_static_wfp8afp8,
 )
 from auto_round.logger import logger
+from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.quantizers.algs.base import AlgsBaseQuantizer
 from auto_round.quantizers.utils import (
     get_quantized_layer_names_outside_blocks,
@@ -40,7 +42,9 @@ from auto_round.utils import (
     convert_fp8_model_to_16b_model,
     flatten_list,
     get_block_names,
+    get_lm_head_name,
     get_module,
+    global_state,
     is_auto_device_mapping,
     is_fp8_linear,
     is_fp8_model,
@@ -77,6 +81,10 @@ class RTNQuantizer(AlgsBaseQuantizer):
             self.compressor.model.to(self.compressor.amp_dtype)
 
         if is_nv_fp(self.compressor.data_type):
+            # FIXME: (yiliu30) change it to block-wise after we refactor the quantization code and
+            # https://github.com/intel/auto-round/issues/1331
+            materialize_model_(self.model)
+            self.compressor.model.to("cpu")
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
 
@@ -118,7 +126,6 @@ class RTNQuantizer(AlgsBaseQuantizer):
                 device_list=self.compressor.device_list,
             )  # leave to gguf itself to handle
 
-        self.compressor.model.to("cpu")
         # Release memory
         clear_memory(device_list=self.compressor.device_list)
 
@@ -152,23 +159,81 @@ class RTNQuantizer(AlgsBaseQuantizer):
             for handle in hook_handles:
                 handle.remove()
         else:
-            block_names_cnt = len(flatten_list(get_block_names(self.compressor.model, True)))
-            clear_mem_freq = len(self.all_to_quantized_module_names) // block_names_cnt
-            if clear_mem_freq == 0:
-                clear_mem_freq = 1
-            pbar = tqdm(self.all_to_quantized_module_names)
-            cnt = 1
-            for name in pbar:
-                pbar.set_description(f"Quantizing {name}")
-                self._quantize_layer_via_rtn(name)
-                if cnt % clear_mem_freq == 0:
-                    clear_memory(device_list=self.compressor.device_list)
-                    memory_monitor.log_summary()
-                    cnt = 1
-                cnt += 1
+            # By default, we go with layer-wise way if no replacement happened
+            use_blockwise_quantization = global_state.replaced_module_count > 0
+            tied_weights_keys = getattr(self.compressor.model, "_tied_weights_keys", [])
+            if tied_weights_keys is None:
+                tied_weights_keys = []
+            if isinstance(tied_weights_keys, dict):
+                tied_weights_values = list(tied_weights_keys.values())
+            else:
+                tied_weights_values = list(tied_weights_keys)
+            tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
+            # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
+            if hasattr(self.compressor, "formats") and self.compressor.formats[0].is_gguf():
+                lm_head_name = get_lm_head_name(self.model)
+                if lm_head_name is not None:
+                    tied_weights_layers.append(lm_head_name)
+
+            if use_blockwise_quantization:  # The ram usage is a little higher
+                all_to_quantized_module_names = list(set(self.all_to_quantized_module_names))
+                all_blocks = (
+                    self.compressor.quant_block_list
+                    if self.compressor.quant_block_list
+                    else get_block_names(self.model)
+                )
+                pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+                for block_names in all_blocks:
+                    for block_name in block_names:
+                        pbar.set_description(f"Quantizing {block_name}")
+                        block = get_module(self.compressor.model, block_name)
+                        materialize_model_(block)
+                        for name, m in block.named_modules():
+                            if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                                self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                                all_to_quantized_module_names.remove(m.global_name)
+                            elif (
+                                not any(m.children())
+                                and len(m.state_dict()) > 0
+                                and m.global_name not in tied_weights_layers
+                            ):
+                                set_module(self.compressor.model, m.global_name, copy.deepcopy(m))
+                                if self.is_immediate_saving:
+                                    shard_writer(self, name=m.global_name)
+                                m.to("meta")
+                        clear_memory(device_list=self.device_list)
+                        memory_monitor.log_summary()
+                        pbar.update(1)
+                cnt = 1
+                for name in all_to_quantized_module_names:
+                    logger.info(f"Quantizing remaining layer {name} on CPU.")
+                    self._quantize_layer_via_rtn(name, to_cpu=True)
+                    cnt += 1
+                    if cnt % 10 == 0:
+                        clear_memory(device_list=self.device_list)
+                        memory_monitor.log_summary()
+            else:
+                materialize_model_(self.model)
+                self.compressor.model.to("cpu")
+                block_names_cnt = len(flatten_list(get_block_names(self.compressor.model, True)))
+                clear_mem_freq = len(self.all_to_quantized_module_names) // block_names_cnt
+                if clear_mem_freq == 0:
+                    clear_mem_freq = 1
+                pbar = tqdm(self.all_to_quantized_module_names)
+                cnt = 1
+                for name in pbar:
+                    pbar.set_description(f"Quantizing {name}")
+                    self._quantize_layer_via_rtn(name)
+                    if cnt % clear_mem_freq == 0:
+                        clear_memory(device_list=self.compressor.device_list)
+                        memory_monitor.log_summary()
+                        cnt = 1
+                    cnt += 1
         # Convert remaining fp8
         if is_fp8_model(self.compressor.model):
             convert_fp8_model_to_16b_model(self.compressor.model, self.compressor.amp_dtype, self.compressor.device)
+        if self.is_immediate_saving:
+            shard_writer(self, is_finalize=True)
         self.compressor.quantized = True
         return self.compressor.model, self.compressor.layer_config
 
@@ -242,6 +307,8 @@ class RTNQuantizer(AlgsBaseQuantizer):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.compressor.model, block_name)
+                materialize_model_(block)
+                block.to("cpu")
                 if is_fp8_model(self.compressor.model):
                     convert_fp8_model_to_16b_model(
                         block, dtype=self.compressor.amp_dtype, device=self.compressor.device
@@ -289,10 +356,10 @@ class RTNQuantizer(AlgsBaseQuantizer):
                     clear_memory(device_list=self.compressor.device_list)
 
                 for _, m in block.named_modules():
-                    if hasattr(m, "tmp_name") and m.tmp_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.tmp_name, to_cpu=self.compressor.low_gpu_mem_usage)
-                        all_to_quantized_module_names.remove(m.tmp_name)
-                if not self.compressor.immediate_saving:
+                    if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                        self._quantize_layer_via_rtn(m.global_name, to_cpu=self.compressor.low_gpu_mem_usage)
+                        all_to_quantized_module_names.remove(m.global_name)
+                if not self.compressor.is_immediate_saving:
                     mv_module_from_gpu(block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.compressor.device_list)
@@ -365,7 +432,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
                 raise
 
         # Step 2: Optional immediate packing/export
-        if self.compressor.immediate_packing:  # For gguf, packing conducts on block level
+        if self.compressor.is_immediate_packing:  # For gguf, packing conducts on block level
             self.compressor._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
@@ -375,7 +442,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
             if to_cpu:
                 m = m.to("cpu")
             set_module(self.compressor.model, name, m)
-        if self.compressor.immediate_saving:
+        if self.compressor.is_immediate_saving:
             if hasattr(self.compressor, "all_to_quantized_module_names"):
                 all_to_quantized_module_names = self.compressor.all_to_quantized_module_names
             else:
@@ -384,7 +451,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
                 ]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.compressor.model, name)
-            immediate_saving(self.compressor, m, name, last_module)
+            shard_writer(self.compressor, m, name, last_module)
 
 
 class OptRTNQuantizer(RTNQuantizer):
@@ -549,7 +616,7 @@ class OptRTNQuantizer(RTNQuantizer):
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.compressor.device
         # Step 1: Try quantization on GPU first, fall back to CPU if OOM
         if (
-            self.compressor.immediate_packing
+            self.compressor.is_immediate_packing
             and self.compressor.iters == 0
             and self.compressor.formats[0].is_gguf()
             and not self.compressor.disable_opt_rtn
@@ -563,8 +630,8 @@ class OptRTNQuantizer(RTNQuantizer):
                 if (
                     self.compressor.orig_disable_opt_rtn is None
                     and self.compressor.is_moe_model
-                    and "expert" in m.tmp_name
-                    and "shared_expert" not in m.tmp_name
+                    and "expert" in m.global_name
+                    and "shared_expert" not in m.global_name
                     and self.compressor.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
                 ):
                     disable_opt_rtn = True
@@ -602,7 +669,7 @@ class OptRTNQuantizer(RTNQuantizer):
                     raise
 
         # Step 2: Optional immediate packing/export
-        if self.compressor.immediate_packing:  # For gguf, packing conducts on block level
+        if self.compressor.is_immediate_packing:  # For gguf, packing conducts on block level
             self.compressor._immediate_pack(name)
             if to_cpu:
                 m = m.to("cpu")
@@ -612,7 +679,7 @@ class OptRTNQuantizer(RTNQuantizer):
             if to_cpu:
                 m = m.to("cpu")
             set_module(self.compressor.model, name, m)
-        if self.compressor.immediate_saving:
+        if self.compressor.is_immediate_saving:
             if hasattr(self.compressor, "all_to_quantized_module_names"):
                 all_to_quantized_module_names = self.compressor.all_to_quantized_module_names
             else:
@@ -621,4 +688,4 @@ class OptRTNQuantizer(RTNQuantizer):
                 ]
             last_module = (len(all_to_quantized_module_names) == 0) or (name == all_to_quantized_module_names[-1])
             m = get_module(self.compressor.model, name)
-            immediate_saving(self.compressor, m, name, last_module)
+            shard_writer(self.compressor, m, name, last_module)

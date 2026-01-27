@@ -23,14 +23,15 @@ from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from torch import autocast
 from tqdm import tqdm
 
+from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
     IndexSampler,
     check_need_act_calibration,
     collect_best_params,
-    immediate_saving,
     is_nv_fp,
 )
 from auto_round.logger import logger
+from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.quantizers.algs.base import AlgsBaseQuantizer
 from auto_round.quantizers.utils import (
     get_non_zero_cnt,
@@ -169,7 +170,7 @@ class ARQuantizer(AlgsBaseQuantizer):
                 device=self.compressor.device,
                 pbar=pbar,
             )
-            if self.compressor.immediate_packing and len(self.compressor.formats) != 1:
+            if self.compressor.is_immediate_packing and len(self.compressor.formats) != 1:
                 raise ValueError(
                     f"Expected exactly one packing format when 'immediate_packing' is True, "
                     f"but got {len(self.compressor.formats)} formats."
@@ -278,7 +279,7 @@ class ARQuantizer(AlgsBaseQuantizer):
 
         if hasattr(self.compressor, "formats"):
             has_gguf = any(format_.is_gguf() for format_ in self.compressor.formats)
-        if has_gguf and self.compressor.immediate_packing:
+        if has_gguf and self.compressor.is_immediate_packing:
             enable_quanted_input = False
 
         if (
@@ -298,7 +299,7 @@ class ARQuantizer(AlgsBaseQuantizer):
                 accelerate.hooks.remove_hook_from_submodules(
                     self.compressor.model
                 )  # self.compressor.model.hf_device_map has not been changed
-        if not self.compressor.immediate_saving:
+        if not self.compressor.is_immediate_saving:
             self.compressor.model = mv_module_from_gpu(self.compressor.model)
         clear_memory(device_list=self.compressor.device_list)
         for layer_name in layer_names:
@@ -307,12 +308,12 @@ class ARQuantizer(AlgsBaseQuantizer):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compressor.cache_device)
             self.quantize_layer(layer_name, layer_input, q_layer_input, device=self.compressor.device)
-            if self.compressor.immediate_packing:
+            if self.compressor.is_immediate_packing:
                 self.compressor._immediate_pack(layer_name)
 
-            if self.compressor.immediate_saving:
+            if self.compressor.is_immediate_saving:
                 m = get_module(self.compressor.model, layer_name)
-                immediate_saving(self.compressor, m, name=layer_name, last_group=True)
+                shard_writer(self.compressor, m, name=layer_name, last_group=True)
             del layer_input
             clear_memory(q_layer_input, device_list=self.compressor.device_list)
             memory_monitor.log_summary()
@@ -373,10 +374,20 @@ class ARQuantizer(AlgsBaseQuantizer):
             q_input, input_ids = self.quantize_block(
                 m, input_ids, input_others, q_input=q_input, device=device, last_group=(i + nblocks) >= len(block_names)
             )
+            if hasattr(model, "config"):
+                del m.config
+            if self.compressor.is_immediate_packing:
+                for n, tmp_m in m.named_modules():
+                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
+                        continue
+                    self.compressor._immediate_pack(tmp_m.global_name)
+
+            if self.compressor.is_immediate_saving:
+                shard_writer(self.compressor, m, is_finalize=False)
         if pbar is not None:
             pbar.update(1)
 
-        if not self.compressor.immediate_saving:
+        if not self.compressor.is_immediate_saving:
             self.compressor.model = mv_module_from_gpu(self.compressor.model)
         for n, m in self.compressor.model.named_modules():
             if hasattr(m, "name"):
@@ -590,6 +601,7 @@ class ARQuantizer(AlgsBaseQuantizer):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        materialize_model_(block)
         if is_fp8_model(self.compressor.model):
             for n, m in block.named_modules():
                 if is_fp8_linear(m):
@@ -888,14 +900,14 @@ class ARQuantizer(AlgsBaseQuantizer):
         """
         if hasattr(block, "config"):
             del block.config
-        if self.compressor.immediate_packing:
+        if self.compressor.is_immediate_packing:
             for _, tmp_m in block.named_modules():
                 if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                     continue
-                self.compressor._immediate_pack(tmp_m.tmp_name)
+                self.compressor._immediate_pack(tmp_m.global_name)
 
-        if self.compressor.immediate_saving:
-            immediate_saving(self.compressor, block, last_group=last_group)
+        if self.compressor.is_immediate_saving:
+            shard_writer(self.compressor, block, last_group=last_group)
 
     @staticmethod
     def _get_current_output(
