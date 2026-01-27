@@ -9,7 +9,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Customized Dataset](#customized-dataset)
   + [Dataset operations](#dataset-operations)
 * [3 Quantization](#3-quantization)
-  + [Supported Quantization Configurations](#supported-quantization-configurations)
+  + [Supported Quantization Schemes](#supported-quantization-schemes)
   + [Supported Export Formats](#supported-export-formats)
   + [Hardware Compatibility](#hardware-compatibility)
   + [Environment Configuration](#environment-configuration)
@@ -39,8 +39,9 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Specify Inference Backend](#specify-inference-backend)
   + [Convert GPTQ/AWQ to AutoRound](#convert-gptq-awq-to-autoround)
 * [5 Evaluation](#5-evaluation)
-  + [Combine evaluation with tuning](#combine-evaluation-with-tuning)
-  + [Eval the Quantized model](#eval-the-quantized-model)
+  + [Single GPU Evaluation](#single-gpu-evaluation)
+  + [Multi-GPU Evaluation](#multi-gpu-evaluation)
+  + [Important Notes](#important-notes)
 * [6 Known Issues](#6-known-issues)
 
 ## 1 Prerequisite
@@ -129,7 +130,7 @@ AutoRound supports several Schemes:
 
 Besides, you could modify the `group_size`, `bits`, `sym` and many other configs you want, though there are maybe no real kernels.
 
-### Supported export Formats
+### Supported Export Formats
 You can use command `auto_round list format` to show all supported formats with support scheme.
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
@@ -273,6 +274,17 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 In conclusion, we recommend using **auto-round for W4A16 and auto-round-best for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
+
+<details>
+  <summary>Recipe Configuration Details</summary>
+
+| Recipe  | batch_size | iters | seqlen | nsamples | lr    |
+|---------|------------|-------|--------|----------|-------|
+| default | 8          | 200   | 2048   | 128      | None  |
+| best    | 8          | 1000  | 2048   | 512      | None  |
+| light   | 8          | 50    | 2048   | 128      | 5e-3  |
+
+</details>
 
 W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version
 of PyTorch 2.6.0 with enable_torch_compile):
@@ -702,7 +714,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
 |--------------------------------------|----------|---------|-----------|----------|-----------------|-------------------------------|
 | ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
-| itrex                                | cpu      | 2,4,8   | BF16/FP16 | 1        | gptq_zp+-1/awq  | <br/>intel-extension-for-transformers |
 | marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
 | exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
 | exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
@@ -734,47 +745,43 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ## 5 Evaluation
 
-### Combine evaluation with tuning
+AutoRound leverages [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness) for evaluation. If `--tasks` is not specified, a set of default tasks (typically 10+ common benchmarks) will be automatically used.
 
-- We leverage lm-eval-harnessing for the evaluation. 
-If not explicitly specify '--task', the default value will be used (typically covering 10+ common tasks).
-  ~~~bash
-   auto-round --model Qwen/Qwen3-0.6B  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
-  ~~~
-  The last format will be used in evaluation if multiple formats have been exported.
+### Single GPU Evaluation
 
+**HF Backend (default):**
+```bash
+auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
+```
 
-###  Eval the Quantized model
+**vLLM Backend:**
+```bash
+auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --tasks mmlu --eval_backend vllm
+```
 
-- AutoRound format
-  For lm-eval-harness, you could just call
-  ~~~bash
-  auto-round --model="your_model_path" --eval  --tasks lambada_openai --eval_bs 16
-  ~~~
-  > Note: To use the vllm backend, add `--eval_backend vllm` to the command above. Common vllm parameters are already supported, such as `--tensor_parallel_size`.
+### Multi-GPU Evaluation
 
-  Multiple gpu evaluation
-  ~~~bash
-  auto-round --model="your_model_path" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
-  ~~~
-  For other evaluation framework, if the framework could support Huggingface models, typically it could support
-  AutoRound format, only you need to do is import the following in the beginning of your code
-  ~~~python
-  from auto_round import AutoRoundConfig
-  ~~~  
+**HF Backend:**
+```bash
+auto-round --model="your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_bs 16
+```
 
-- AutoGPTQ/AutoAWQ format
+**vLLM Backend (Option 1 - using --device_map):**
+```bash
+auto-round "your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_backend vllm
+```
 
-  Please refer to their repo and check the evaluation framework's compatibility.
-  For lm-eval-harness, you could just call
-  ~~~bash
-  lm_eval --model hf --model_args pretrained="your_model_path" --device cuda:0 --tasks lambada_openai --batch_size 16
-  ~~~
-  Multiple gpu evaluation
-  ~~~bash
-  CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
-  ~~~
+**vLLM Backend (Option 2 - manual configuration):**
+```bash
+CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_openai --eval_backend vllm --vllm_args="tensor_parallel_size=2,gpu_memory_utilization=0.8"
+```
 
+### Important Notes
+
+- Use the `--eval` flag to evaluate models directly. This supports both original and quantized models.
+- The `--eval_task_by_task` option helps handle task failures by evaluating tasks sequentially. This only applies to the HF backend.
+- When multiple formats are exported, the last format in the list will be used for evaluation.
+- For vLLM backend, you can use `--device 0,1,2` to specify GPU devices. This will automatically set `CUDA_VISIBLE_DEVICES` and configure `tensor_parallel_size` based on the number of devices. Alternatively, you can manually set these via environment variables and `--vllm_args`.
 
 
 ## 6 Known Issues

@@ -86,7 +86,7 @@ class AutoRound:
         extra_config: ExtraConfig = None,
         enable_alg_ext: bool = None,
         disable_opt_rtn: bool | None = None,
-        low_cpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = True,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -186,7 +186,7 @@ class AutoRound:
             logger.warning_once(
                 "'fp_layers' is deprecated, please use 'ignore_layers' to set layers not to be quantized."
             )
-            kwargs["ignore"] = kwargs.pop("fp_layers")
+            kwargs["ignore_layers"] = kwargs.pop("fp_layers")
         ar = dynamic_compressor(
             model=model,
             tokenizer=tokenizer,

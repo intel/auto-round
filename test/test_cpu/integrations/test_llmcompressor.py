@@ -22,22 +22,23 @@ class TestLLMC:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_llmcompressor_w8a8(self):
-        bits, group_size, sym, act_bits = 8, -1, True, 8
-        ## quantize the model
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            act_bits=act_bits,
-            seqlen=8,
-            nsamples=2,
-            iters=0,
-        )
-        autoround.quantize()
-        autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
+    # remove since w8a8 not in llmcompressor format supported schemes
+    # def test_llmcompressor_w8a8(self):
+    #     bits, group_size, sym, act_bits = 8, -1, True, 8
+    #     ## quantize the model
+    #     autoround = AutoRound(
+    #         self.model,
+    #         self.tokenizer,
+    #         bits=bits,
+    #         group_size=group_size,
+    #         sym=sym,
+    #         act_bits=act_bits,
+    #         seqlen=8,
+    #         nsamples=2,
+    #         iters=0,
+    #     )
+    #     autoround.quantize()
+    #     autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
 
     def test_llmcompressor_fp8(self):
         ## quantize the model

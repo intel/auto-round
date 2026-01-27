@@ -10,11 +10,14 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.9.4-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.9.6-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+
+English | [User Guide](./docs/step_by_step.md) | [简体中文](README_CN.md)
+
 ---
 <div align="left">
 
@@ -96,7 +99,7 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 pip install auto-round
 
 # HPU
-pip install auto-round-lib
+pip install auto-round-hpu
 ```
 
 <details>
@@ -107,7 +110,7 @@ pip install auto-round-lib
   pip install .
 
   # HPU
-  python setup.py install lib
+  python setup.py install hpu
   ```
 
 </details>
@@ -212,7 +215,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### Device/Speed Configuration
 - **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
-- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `False`).
+- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `True`).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
 
 </details>
@@ -355,13 +358,13 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 
 ## Publications & Events
-[SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (202512 paper)
+[SignRoundV2: Closing the Performance Gap in Extremely Low-Bit Post-Training Quantization for LLMs](https://arxiv.org/abs/2512.04746) (2025.12 paper)
 
-[Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (202309 paper)
+[Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLM](https://aclanthology.org/2024.findings-emnlp.662/) (2023.09 paper)
 
-[TEQ: Trainable Equivalent Transformation for Quantization of LLMs](https://arxiv.org/abs/2310.10944) (202310 paper)
+[TEQ: Trainable Equivalent Transformation for Quantization of LLMs](https://arxiv.org/abs/2310.10944) (2023.10 paper)
 
-[Effective Post-Training Quantization for Large Language Models](https://medium.com/intel-analytics-software/effective-post-training-quantization-for-large-language-models-with-enhanced-smoothquant-approach-93e9d104fb98) (202304 blog)
+[Effective Post-Training Quantization for Large Language Models](https://medium.com/intel-analytics-software/effective-post-training-quantization-for-large-language-models-with-enhanced-smoothquant-approach-93e9d104fb98) (2023.04 blog)
 
 Check out [Full Publication List](./docs/publication_list.md).
 

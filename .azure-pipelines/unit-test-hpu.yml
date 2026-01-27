@@ -12,7 +12,7 @@ pr:
       - auto_round_extension
       - test/test_hpu
       - setup.py
-      - requirements-lib.txt
+      - requirements-hpu.txt
       - .azure-pipelines/scripts/ut
       - .azure-pipelines/template/docker-template.yml
       - .azure-pipelines/template/ut-template.yml

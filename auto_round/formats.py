@@ -43,6 +43,8 @@ from auto_round.utils import (
     SUPPORTED_FORMATS,
     check_to_quantized,
     copy_python_files_from_model_cache,
+    find_matching_blocks,
+    get_block_names,
     get_module,
     logger,
 )
@@ -146,7 +148,7 @@ def _check_divisible_by_32(ar):
                         continue
                     ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
+                    logger.warning_once("some layers are skipped quantization (shape not divisible by 32).")
 
 
 class OutputFormat(ABC):
@@ -216,8 +218,12 @@ class OutputFormat(ABC):
         if isinstance(scheme, str) and scheme.upper() in cls.support_schemes:
             return True
         if isinstance(scheme, QuantizationScheme):
-            return True
+            return cls.check_scheme_args(scheme)
         return False
+
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        return True
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
         if self.backend is not None:
@@ -353,7 +359,27 @@ class LLMCompressorFormat(OutputFormat):
             self.output_format = f"llm_compressor:{format}"
             self.backend = None
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str:
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits not in [4, 8, 16]:
+            error_logs.append(f"bits={scheme.bits}")
+        if not re.search("mxfp|fp|nvfp", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.data_type == "fp" and scheme.bits != 8:
+            error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"LLMCompressor format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
+
+    def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -448,6 +474,24 @@ class AutoGPTQFormat(OutputFormat):
             _check_divisible_by_32(ar)
         return super().check_and_reset_format(ar)
 
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits not in [2, 3, 4, 8, 16]:
+            error_logs.append(f"bits={scheme.bits}")
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
+
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.output_format.startswith("auto_round"):
             from auto_round.export.export_to_autoround.export import pack_layer
@@ -495,6 +539,24 @@ class AutoGPTQFormat(OutputFormat):
 class AutoAWQFormat(OutputFormat):
     support_schemes = ["W4A16"]
     format_name = "auto_awq"
+
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits != 4:
+            error_logs.append(f"bits={scheme.bits}")
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
 
     @staticmethod
     def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
@@ -591,48 +653,6 @@ class AutoAWQFormat(OutputFormat):
         )
 
 
-@OutputFormat.register("itrex")
-@OutputFormat.register("itrex_xpu")
-class ITREXFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32"]
-    format_name = "itrex"
-
-    def pack_layer(self, *args, **kwargs):
-        pass
-
-    def save_quantized(
-        self,
-        output_dir: str,
-        model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
-        inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
-        **kwargs,
-    ) -> torch.nn.Module:
-        backend = self.get_backend_name()
-        if backend == "itrex":
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex
-
-            export_func = save_quantized_as_itrex
-        else:
-            from auto_round.export.export_to_itrex.export import save_quantized_as_itrex_xpu
-
-            export_func = save_quantized_as_itrex_xpu
-        return export_func(
-            output_dir=output_dir,
-            model=model,
-            tokenizer=tokenizer,
-            layer_config=layer_config,
-            inplace=inplace,
-            device=device,
-            backend=backend,
-            serialization_dict=serialization_dict,
-            **kwargs,
-        )
-
-
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
     support_schemes = [
@@ -678,6 +698,18 @@ class GGUFFormat(OutputFormat):
             self.backend = None
         self.mllm = ar.mllm
 
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if error_logs:
+            raise ValueError(
+                f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
+
     def check_and_reset_format(self, ar):
         if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
             logger.warning_once(
@@ -689,6 +721,10 @@ class GGUFFormat(OutputFormat):
         elif ar.bits >= 8 and ar.iters != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
+        if getattr(ar, "quant_nontext_module", False):
+            # for gguf export, leave vl model for gguf itself
+            all_blocks = get_block_names(ar.model, False)
+            ar.quant_block_list = find_matching_blocks(ar.model, all_blocks, None)
         return super().check_and_reset_format(ar)
 
     def pack_layer(
@@ -703,6 +739,7 @@ class GGUFFormat(OutputFormat):
         image_processor=None,
         model_type=ModelType.TEXT,
         device="cpu",
+        quant_nontext_module=False,
     ):
         from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
@@ -717,6 +754,7 @@ class GGUFFormat(OutputFormat):
             image_processor,
             model_type,
             device,
+            quant_nontext_module,
         )
 
     def save_quantized(
@@ -868,6 +906,7 @@ class GGUFFormat(OutputFormat):
         tokenizer=None,
         processor=None,
         image_processor=None,
+        quant_nontext_module: bool = False,
         **kwargs,
     ):
         m = get_module(model, name)
@@ -885,6 +924,7 @@ class GGUFFormat(OutputFormat):
             image_processor=image_processor,
             model_type=model_type,
             device=device,
+            quant_nontext_module=quant_nontext_module,
         )
 
 
