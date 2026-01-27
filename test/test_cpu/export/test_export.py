@@ -4,10 +4,11 @@ import shutil
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
+from packaging import version
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, opt_name_or_path
+from ...helpers import get_model_path, opt_name_or_path, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -325,6 +326,10 @@ class TestAutoRound:
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-2")
@@ -351,6 +356,10 @@ class TestAutoRound:
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
