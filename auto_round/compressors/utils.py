@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-import os
 import random
 import re
 import sys
 from dataclasses import asdict, fields
 from enum import Enum
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Callable, Union
 
 import torch
 import transformers
@@ -27,7 +26,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, copy_python_files_from_model_cache, is_fp8_linear, is_fp8_model
+from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model
 
 
 class BackendDataType(str, Enum):

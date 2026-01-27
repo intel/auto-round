@@ -1,8 +1,9 @@
 import shutil
 
 import pytest
+from transformers import AutoRoundConfig
 
-from auto_round import AutoRound, AutoRoundConfig, AutoScheme
+from auto_round import AutoRound, AutoScheme
 
 
 class TestAutoScheme:
