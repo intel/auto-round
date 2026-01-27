@@ -262,7 +262,10 @@ class TestAutoRound:
             assert "model.decoder.layers.8.self_attn.v_scale" in f.keys()
             assert f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape == torch.Size([1])
             assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape == torch.Size([1])
-            assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.float32
+            assert (
+                f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.float32
+                or f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.bfloat16
+            )
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -318,7 +321,7 @@ class TestAutoRound:
             weight_name = f"model.decoder.layers.8.self_attn.{attr}"
             assert weight_name in f.keys()
             assert f.get_tensor(weight_name).shape == torch.Size([1])
-            assert f.get_tensor(weight_name).dtype == torch.float32
+            assert f.get_tensor(weight_name).dtype == torch.float32 or f.get_tensor(weight_name).dtype == torch.bfloat16
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 

@@ -4,8 +4,11 @@ import os
 import pytest
 import torch
 import transformers
+from packaging import version
 
 from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
+
+transformers_version = version.parse(transformers.__version__)
 
 
 # Automatic choose local path or model name.
