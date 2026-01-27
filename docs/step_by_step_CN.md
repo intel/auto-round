@@ -1,9 +1,9 @@
-# 操作指南
+操作指南
 ============
 
-[English](./docs/step_by_step.md) | 简体中文
+[English](./step_by_step.md) | 简体中文
 
-本文档介绍了自动化量化（auto-round LLM 量化）的方法。如需对视觉大语言模型（VLM）进行量化，可参考[视觉大语言模型用户指南](../auto_round/compressors/mllm/README.md)；如需对扩散模型进行量化，可参考[扩散模型用户指南](../auto_round/compressors/diffusion/README.md)。
+本文档介绍了如何用 auto-round 量化大语言模型（LLM）。如需对视觉大语言模型（VLM）进行量化，请参阅[视觉大语言模型用户指南](../auto_round/compressors/mllm/README.md)；如需对扩散模型进行量化，请参阅[扩散模型用户指南](../auto_round/compressors/diffusion/README.md)。
 
 * [1 前提条件](#1-前提条件)
 * [2 准备标定数据集](#2-准备标定数据集)
@@ -47,7 +47,7 @@
 
 ## 1 前提条件
 
-pip 安装或从源码编译安装 AutoRound 库
+pip 安装 AutoRound 库（或从源码编译安装）
 
 ```bash
 pip install auto-round
@@ -57,7 +57,7 @@ pip install auto-round
 
 ### 默认数据集
 
-默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会从 Dataset Hub自动下载。同时也支持以下数据集：
+默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会从 Dataset Hub 自动下载。同时也支持以下数据集：
 - ModelScope 中的 `swift/pile-val-backup`：用于解决 HF 访问问题
 - `BAAI/CCI3-HQ`：用于中文场景
 - `codeparrot/github-code-clean`：用于代码场景
@@ -70,7 +70,7 @@ pip install auto-round
 
 可通过以下方式指定：
 - 法一：向 `dataset` 参数传入本地 JSON 文件路径
-- 法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集名称和拆分参数初始化 AutoRound 对象。示例：autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)
+- 法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集名称和拆分参数初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
 - 法三：向 `dataset` 参数传入字符串列表或者 input_ids 列表
 
     ~~~python
@@ -92,11 +92,11 @@ pip install auto-round
 
 ### 数据集操作
 
-**数据集组合**：可使用`--dataset` 参数组合不同数据集并设置其他的参数。示例代码 `--dataset ./tmp.json,NeelNanda/pile-10k:num=256,mbpp:num=128`。此参数同时支持本地标定文件和 Hugging Face 数据集，同时还可用 `split = split1+split2` 指定某个数据集的多个拆分子集。
+**数据集组合**：可使用 `--dataset` 参数组合不同数据集并设置其他的参数。示例代码 `--dataset ./tmp.json,NeelNanda/pile-10k:num=256,mbpp:num=128`。此参数同时支持本地标定文件和 Hugging Face 数据集，同时还可用 `split = split1+split2` 指定某个数据集的多个拆分子集。
 
-**样本拼接**：可使用`--dataset NeelNanda/pile-10k:concat=True`拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。
+**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。
 
-**启用对话模板**：可使用`--dataset NeelNanda/pile-10k:apply_chat_template`在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
+**启用对话模板**：可使用 `--dataset NeelNanda/pile-10k:apply_chat_template` 在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
 
 注意：如果没有开启拼接选项，长度小于 args.seqlen 的样本会被舍弃。
 
@@ -130,11 +130,11 @@ AutoRound 支持多种量化配置：
 
 **AutoRound 原生格式**：适用于 CPU、英特尔 GPU、CUDA、HPU 等设备，支持2位宽及混合精度推理，**兼容 [2、3、4、8] bits**。使用时需设置 `--format auto_round`。
 
-**GGUF 格式**：实验性功能，适用于 CPU 设备，是社区主流格式之一，支持 `q*_k`、`q*_0`、`q*_1` 系列的量化。需设置`--format gguf:q4_k_m`、`--format gguf:q2_k_s`等具体格式。
+**GGUF 格式**：实验性功能，适用于 CPU 设备，是社区主流格式之一，支持 `q*_k`、`q*_0`、`q*_1` 系列的量化。需设置 `--format gguf:q4_k_m`、`--format gguf:q2_k_s`等具体格式。
 
-**AutoGPTQ 格式**：适用于 CUDA 设备的对称量化，在社区中广泛应用，**兼容 [2、3、4、8] 位宽**（但其**非对称推理核存在问题**，可能导致模型的精度大幅下降，尤其是在 2-bits 量化和小模型的场景；另外近期 Transformers 框架中 3-bits 量化也存在类似问题）。配置时需设置 `--format auto_gptq`。
+**AutoGPTQ 格式**：适用于 CUDA 设备的对称量化，在社区中广泛应用，**兼容 [2、3、4、8] bits **（但其**非对称推理核存在问题**，可能导致模型的精度大幅下降，尤其是在 2-bit 量化和小模型的场景；近期 Transformers 框架中 3-bits 量化也存在类似问题）。配置时需设置 `--format auto_gptq`。
 
-**AutoAWQ 格式**：适用于 CUDA 设备的4位非对称量化，在社区中也广泛应用，**仅支持 4-bits 量化**。需设置 `--format auto_awq`。
+**AutoAWQ 格式**：适用于 CUDA 设备的 4 位非对称量化，在社区中也广泛应用。**仅支持 4-bit 量化**。需设置 `--format auto_awq`。
 
 **LLM-Compressor 格式**：**支持 NVFP4、MXFP4（内核开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
 
@@ -172,7 +172,7 @@ AutoRound 支持多种量化配置：
 
 - **AutoRoundBest 高精度方案**：
   
-  绝大多数场景下，该方案能实现最好的模型精度，缺点是训练耗时是基础方案的 4~5 倍；**特别适合 2-bits 量化**，若算力充足，可作为首选。
+  绝大多数场景下，该方案能实现最好的模型精度，缺点是训练耗时是基础方案的 4~5 倍；**特别适合 2-bit 量化**，若算力充足，可作为首选。
   
   ```bash
   auto-round-best --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
@@ -180,7 +180,7 @@ AutoRound 支持多种量化配置：
 
 - **AutoRoundLight 高速方案**：
   
-  该方案训练速度最快（比基础方案快 2~3 倍），但小模型和 2-bits 量化下可能导致模型精度显著下降。所以**推荐在 4-bits 量化或参数量大于 3B 的模型的场景下使用**。
+  该方案训练速度最快（比基础方案快 2~3 倍），但小模型和 2-bit 量化下可能导致模型精度显著下降。所以**推荐在 4-bit 量化或参数量大于 3B 的模型的场景下使用**。
   
   ```bash
   auto-round-light --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
@@ -210,7 +210,7 @@ ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 
 Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果不熟悉具体细节，建议**使用 AutoRound 原生格式**。
 
-由于 vLLM 和 SGLang 框架会对 MoE 层、QKV 层进行融合以加速推理，所以**不建议给这些层设置不同的 bits **。
+由于 vLLM 和 SGLang 框架会对 MoE 层、QKV 层进行融合以加速推理，所以**不建议给这些层设置不同的 bit **。
 
 ```python
 from auto_round import AutoRound
@@ -232,7 +232,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 #### AutoRoundBest 高精度配置用法
-绝大多数场景下，该方案能实现最好的模型精度，缺点是训练耗时是基础方案的 4~5 倍；**特别适合 2-bits 量化**，若算力充足，可作为首选。
+绝大多数场景下，该方案能实现最好的模型精度，缺点是训练耗时是基础方案的 4~5 倍；**特别适合 2-bit 量化**，若算力充足，可作为首选。
 
 ```python
 from auto_round import AutoRound
@@ -245,7 +245,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
 #### AutoRoundLight 高速度配置用法
-该方案训练速度最快（比基础方案快 2~3 倍），但小模型和 2-bits 量化下可能导致模型精度显著下降。所以**推荐在 4-bits 量化或参数量大于 3B 的模型的场景下使用**。
+该方案训练速度最快（比基础方案快 2~3 倍），但小模型和 2-bit 量化下可能导致模型精度显著下降。所以**推荐在 4-bit 量化或参数量大于 3B 的模型的场景下使用**。
 
 ```python
 from auto_round import AutoRound
@@ -343,7 +343,7 @@ ar.quantize_and_save()
 
 `low_gpu_mem_usage(bool=True)`：开启后可减少 GPU 显存占用，但会增加训练时间。默认开启。
 
-在部分推理框架中，为加速推理，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers`参数用于简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
+为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
 
 示例代码如下：
 ```python
