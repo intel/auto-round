@@ -7,6 +7,7 @@ from transformers.utils.import_utils import clear_import_cache
 clear_import_cache()
 model_name = "/storage/yiliu7/deepseek-ai/DeepSeek-V3.2/"
 model_name = "/storage/yiliu7/DeepSeek-V3.2-4layers/"
+model_name = "/mnt/disk8/Qwen/Qwen3-8B-FP8"
 device = "cpu"
 
 from ds_v47 import *
@@ -60,7 +61,7 @@ def check_meta_module(model):
                 raise RuntimeError(
                     f"The model contains some parameters on the meta device (found in module {name}, parameter {name}). "
                 )
-
+from torch.utils._debug_mode import DebugMode
 
 def main(args):
     model_name = args.model_name
@@ -79,9 +80,29 @@ def main(args):
         model.eval()
         print(model)
         inputs = tokenizer(msg, return_tensors="pt").to(device)
+        if args.debug:
+            with (
+                DebugMode(
+                    record_stack_trace=args.record_stack_trace,
+                    record_ids=True,
+                ) as dm,
+                DebugMode.log_tensor_hashes(
+                    hash_inputs=True,
+                ),
+            ):
+                # outputs = model.generate(**inputs, max_new_tokens=32)
+                print(f"Inputs: {inputs['input_ids']}")
+                res = model(inputs["input_ids"])
+
+            print(dm.debug_string(show_stack_trace=True))
+            print(res)
+            exit(0)
+        
+        inputs = tokenizer(msg, return_tensors="pt").to(device)
         outputs = model.generate(**inputs, max_new_tokens=32)
 
         print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+        exit(0)
         output_dir = (
             args.output_dir
             if args.output_dir is not None
@@ -97,5 +118,8 @@ if __name__ == "__main__":
     # input model path
     parser.add_argument("--model_name", type=str, default=model_name, help="Path to the pretrained model")
     parser.add_argument("--output_dir", type=str, default=None, help="Path to save the quantized model")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--record_stack_trace", "--stack", action="store_true", help="Enable debug mode")
+
     args = parser.parse_args()
     main(args)
