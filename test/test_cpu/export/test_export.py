@@ -3,8 +3,8 @@ import shutil
 
 import pytest
 import torch
-from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from packaging import version
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
