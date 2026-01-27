@@ -2,10 +2,11 @@ import shutil
 
 import pytest
 from diffusers import AutoPipelineForText2Image
+from packaging import version
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path
+from ...helpers import get_model_path, transformers_version
 
 flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
 
@@ -19,6 +20,10 @@ def setup_flux():
     return pipe, output_dir
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
+)
 def test_flux(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(
