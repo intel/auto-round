@@ -87,6 +87,7 @@ class AutoRound:
         enable_alg_ext: bool = None,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
+        transform_config: dict = {},
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -114,6 +115,7 @@ class AutoRound:
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
                                               with lower accuracy. Defaults to None.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
+            transform_config (dict, optional): transform matirx config like hadamard, like {"transform_class": "hadamard"}.
 
             bits (int, optional): Weight quantization bits. Defaults to 4.
             group_size (int, optional): Weight quantization group size. Defaults to 128.
@@ -204,6 +206,7 @@ class AutoRound:
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
+            transform_config=transform_config,
             **kwargs,
         )
         return ar

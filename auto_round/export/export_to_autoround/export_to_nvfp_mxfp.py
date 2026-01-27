@@ -113,6 +113,11 @@ def pack_layer(name, model, backend, device=None):
     ## no zeros to handle, as mxfp/nvfp do not support asym quantization
     # zero = layer.zp
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
+
+    transform_matrix = getattr(layer, "forward_hadamard_matrix", None)
+    if transform_matrix is not None:
+        qlayer.register_buffer("forward_hadamard_matrix", transform_matrix)
+
     qlayer.to(orig_device)
     set_module(model, name, qlayer)
     # Note: release weight and bias explicitly, in case they are referenced elsewhere

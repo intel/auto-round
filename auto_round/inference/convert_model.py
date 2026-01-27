@@ -209,6 +209,8 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
+    transform_config = getattr(quantization_config, "transform_config", None)
+
     default_quant_scheme = QuantizationScheme(
         bits=bits,
         group_size=group_size,
@@ -219,6 +221,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
+        transform_config=transform_config,
     )
 
     # Determine the quantization block list
