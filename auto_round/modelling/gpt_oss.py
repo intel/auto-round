@@ -36,6 +36,7 @@ except ImportError:
                 that code can safely use ``with no_init_weights():`` even when running with older or
                 minimal ``transformers`` installations that do not expose the helper.
                 """
+
             def skip_weights_initialize():
                 yield
 
