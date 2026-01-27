@@ -281,6 +281,7 @@ class BaseCompressor(object):
 
         self.layer_config = layer_config
         self.scheme = scheme
+        self.orig_scheme = copy.deepcopy(scheme)
         self.is_auto_scheme = True if isinstance(scheme, AutoScheme) else False
         self.scale_dtype = kwargs.pop("scale_dtype", None)
 
@@ -430,6 +431,8 @@ class BaseCompressor(object):
             return
 
         # should be set after loading model and set layer_config, cause some special scheme need these.
+        # Preserve the original, unparsed scheme for later use in auto scheme generation
+        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(self.scheme, {})
 
         # GGUF uses fp32 scale dtype as default
@@ -1556,6 +1559,20 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
+        if not is_gguf_format:
+            predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+            if predefined_ignore_layers:
+                logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+                tmp_str = ",".join(predefined_ignore_layers)
+                if self.ignore_layers == "":
+                    self.ignore_layers = tmp_str
+                else:
+                    self.ignore_layers += "," + tmp_str
+
+        if self.is_auto_scheme:
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False

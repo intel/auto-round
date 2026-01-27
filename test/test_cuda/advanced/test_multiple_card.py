@@ -297,7 +297,7 @@ class TestAutoRound:
         device_map1["model.norm"] = "cuda"
         device_map1["model.rotary_emb"] = "cuda"
         device_map1["model.embed_tokens"] = "cuda"
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
 
