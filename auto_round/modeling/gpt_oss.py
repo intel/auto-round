@@ -19,8 +19,8 @@ from transformers.modeling_utils import no_init_weights as skip_weights_initiali
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.modelling.utils import _update_parameter
+from auto_round.modeling.replace_modules import ReplacementModuleBase
+from auto_round.modeling.utils import _update_parameter
 from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
 
 

@@ -55,7 +55,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
