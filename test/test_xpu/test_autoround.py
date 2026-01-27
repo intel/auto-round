@@ -42,7 +42,8 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
+        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="auto")
 
@@ -74,7 +75,10 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
+        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="auto")
         # device_map="auto" doesn't work, must use "xpu"

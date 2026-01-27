@@ -47,7 +47,10 @@ class TestAutoRound:
         model_name = get_model_path("facebook/opt-125m")
         autoround = AutoRound(model_name, bits=3)
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )  ##will convert to gptq model
+        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
@@ -65,8 +68,9 @@ class TestAutoRound:
         model_name = get_model_path("facebook/opt-125m")
         bits, sym = 3, False
         autoround = AutoRound(model_name, bits=bits, sym=sym)
-        autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
+        _, quantized_model_path = autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
+        quantized_model_path = quantized_model_path[0]
+        model_args = f"pretrained={quantized_model_path}"
         res = simple_evaluate(
             model="hf",
             model_args=model_args,

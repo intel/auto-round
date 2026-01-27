@@ -50,7 +50,8 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save("./saved", format="llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save("./saved", format="llm_compressor")
+        quantized_model_path = quantized_model_path[0]
         # from vllm import LLM
         # model = LLM("./saved")
         # result = model.generate("Hello my name is")
@@ -58,7 +59,7 @@ class TestLLMC:
 
         import json
 
-        config = json.load(open("./saved/config.json"))
+        config = json.load(open(f"{quantized_model_path}/config.json"))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
@@ -75,11 +76,12 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save("./saved", format="auto_round:llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save("./saved", format="auto_round:llm_compressor")
+        quantized_model_path = quantized_model_path[0]
 
         import json
 
-        config = json.load(open("./saved/config.json"))
+        config = json.load(open(f"{quantized_model_path}/config.json"))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"

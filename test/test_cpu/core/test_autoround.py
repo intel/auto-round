@@ -377,16 +377,17 @@ class TestAutoRound:
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1)
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        quantized_model_path = quantized_model_path[0]
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
+            quantized_model_path,
             torch_dtype=torch.float16,
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_embed_quant(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
@@ -432,7 +433,10 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_folder
 
-        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        _, quantized_model_path = autoround.save_quantized(
+            output_dir=quantized_model_path, format="auto_round", inplace=True
+        )
+        quantized_model_path = quantized_model_path[0]
         quantization_config = AutoRoundConfig(backend="ipex")
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -442,7 +446,7 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=1)[0])
-        shutil.rmtree(self.save_folder, ignore_errors=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_not_convert_modules(self):
         import requests

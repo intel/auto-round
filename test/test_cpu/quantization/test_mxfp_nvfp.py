@@ -77,7 +77,10 @@ class TestAutoRoundFP:
             dataset=dataloader,
             layer_config=layer_config,
         )
-        compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=self.save_dir, inplace=True, format="auto_round"
+        )
+        quantized_model_path = quantized_model_path[0]
         lm_head = compressed_model.lm_head
         assert (
             hasattr(lm_head, "weight_scale")
@@ -86,7 +89,6 @@ class TestAutoRoundFP:
             and lm_head.weight_packed.dtype is torch.uint8
             and lm_head.weight_scale.dtype is torch.float8_e4m3fn
         ), "Illegal NVFP4 packing for lm_head layer"
-        quantized_model_path = self.save_dir
         assert is_model_outputs_similar(model_name, quantized_model_path)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -211,7 +213,10 @@ class TestAutoRoundFP:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="llm_compressor"
+        )
+        quantized_model_path = quantized_model_path[0]
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -248,7 +253,10 @@ class TestAutoRoundFP:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="llm_compressor"
+        )
+        quantized_model_path = quantized_model_path[0]
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -285,7 +293,10 @@ class TestAutoRoundFP:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )
+        quantized_model_path = quantized_model_path[0]
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")

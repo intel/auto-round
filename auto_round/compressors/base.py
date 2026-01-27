@@ -281,6 +281,7 @@ class BaseCompressor(object):
 
         self.layer_config = layer_config
         self.scheme = scheme
+        self.is_auto_scheme = True if isinstance(scheme, AutoScheme) else False
         self.scale_dtype = kwargs.pop("scale_dtype", None)
 
         # Extra/legacy kwargs for backward compatibility

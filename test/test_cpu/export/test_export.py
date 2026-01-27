@@ -49,7 +49,8 @@ class TestAutoRound:
             )
 
             quantized_model_path = "./saved"
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+            quantized_model_path = quantized_model_path[0]
 
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
@@ -78,7 +79,8 @@ class TestAutoRound:
                 dataset=dataloader,
             )
             quantized_model_path = "./saved"
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+            quantized_model_path = quantized_model_path[0]
 
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
@@ -105,7 +107,10 @@ class TestAutoRound:
             )
             quantized_model_path = "./saved"
 
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+            _, quantized_model_path = autoround.quantize_and_save(
+                output_dir=quantized_model_path, format="auto_round:auto_awq"
+            )
+            quantized_model_path = quantized_model_path[0]
 
             # quantization_config = AutoRoundConfig(
             #     backend="cpu"
@@ -223,7 +228,8 @@ class TestAutoRound:
             static_kv_dtype=static_kv_dtype,
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        quantized_model_path = quantized_model_path[0]
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
         assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
@@ -281,7 +287,8 @@ class TestAutoRound:
             act_group_size=0,
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        quantized_model_path = quantized_model_path[0]
 
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
@@ -341,7 +348,10 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_awq"
+        )
+        quantized_model_path = quantized_model_path[0]
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
@@ -368,7 +378,10 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_gptq"
+        )
+        quantized_model_path = quantized_model_path[0]
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()

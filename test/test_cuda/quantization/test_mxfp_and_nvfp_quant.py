@@ -52,7 +52,8 @@ def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):
 
         # Quantize and save the model to the temporary directory
         quantized_model_path = f"{temp_dir}/tmp_autoround_{scheme}"
-        autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
+        quantized_model_path = quantized_model_path[0]
 
         # Perform inference with the quantized model
         model = AutoModelForCausalLM.from_pretrained(
