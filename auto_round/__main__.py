@@ -15,6 +15,9 @@ import argparse
 import os
 import sys
 
+import transformers
+from packaging.version import Version
+
 from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
@@ -25,6 +28,25 @@ from auto_round.utils import (
     get_device_and_parallelism,
     get_model_dtype,
 )
+
+# tmp batch for transformers v5.0
+if Version(transformers.__version__) >= Version("5.0.0"):
+    import datasets
+
+    datasets.original_load_dataset = datasets.load_dataset
+
+    def patch_load_dataset(*args, **kwargs):
+        if len(args) > 0 and "openbookqa" in args[0]:
+            args = ("allenai/openbookqa",) + args[1:]
+        if "path" in kwargs:
+            if "openbookqa" in kwargs["path"] and "allenai/openbookqa" not in kwargs["path"]:
+                kwargs["path"] = kwargs["path"].replace("openbookqa", "allenai/openbookqa")
+        if "name" in kwargs:
+            if "openbookqa" in kwargs["name"] and "allenai/openbookqa" not in kwargs["name"]:
+                kwargs["name"] = kwargs["name"].replace("openbookqa", "allenai/openbookqa")
+        return datasets.original_load_dataset(*args, **kwargs)
+
+    datasets.load_dataset = patch_load_dataset
 
 RECIPES = {
     "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None},
