@@ -457,7 +457,13 @@ def get_new_chinese_title_dataset(
 
 @register_dataset("mbpp")
 def get_mbpp_dataset(
-    tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, apply_chat_template=False, system_prompt=None
+    tokenizer,
+    seqlen,
+    dataset_name="google-research-datasets/mbpp",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
 ):
     """Returns a dataloader for the specified dataset and split.
 
