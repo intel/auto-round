@@ -18,6 +18,8 @@ from typing import Optional, Union
 
 import torch
 
+from auto_round.logger import logger
+
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
 
@@ -321,6 +323,7 @@ def _handle_special_schemes(
             elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_experts" in n) and n != "lm_head":
                 layer_config[n] = "GGUF:Q4_K_S"
     if scheme_name.lower() == "w4a16_mixed":
+        logger.warning("W4A16_MIXED is experimental and the recipe may change in the future.")
         from auto_round.utils import get_lm_head_name
 
         lm_head_name = get_lm_head_name(model)
