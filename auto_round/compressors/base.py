@@ -497,7 +497,7 @@ class BaseCompressor(object):
         self._check_configs()
 
         if isinstance(self.scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(self.model, self.scheme, self.dataset, self.device_map)
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
@@ -1569,9 +1569,6 @@ class BaseCompressor(object):
                     self.ignore_layers = tmp_str
                 else:
                     self.ignore_layers += "," + tmp_str
-
-        if self.is_auto_scheme:
-            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
 
         fill_default_value = True
         if self.is_auto_scheme:
