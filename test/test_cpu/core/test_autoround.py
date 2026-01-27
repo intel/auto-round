@@ -73,6 +73,10 @@ class TestAutoRound:
         )
         autoround.quantize()
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"), 
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453"
+    )
     def test_consecutive_quant(self, tiny_opt_model_path, tiny_phi2_model_path, dataloader):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
