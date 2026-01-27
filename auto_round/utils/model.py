@@ -1030,7 +1030,15 @@ def dequant_fp8_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
         if hasattr(layer, "weight_scale") 
         else layer.weight_scale_inv
     )
-    return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+    data_type = getattr(layer, "data_type", None)
+    # Pass data_type if dequant_block_fp8_weight supports it
+    # Check if function accepts data_type parameter
+    import inspect
+    sig = inspect.signature(dequant_block_fp8_weight)
+    if "data_type" in sig.parameters:
+        return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
+    else:
+        return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
 
 
 def check_to_quantized(config):
@@ -1120,10 +1128,15 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     
     # Copy quantization scheme attributes
     scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
+    keys = tuple(scheme_keys) + ("global_name", "scale_dtype")
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
 
+    # Handle Gaudi2 device compatibility
+    from auto_round.utils.device import is_gaudi2
+    if is_gaudi2():
+        device = "cpu"
+    
     # Use registry-based dequantization
     dq_weight = dequant_fp8_layer(layer, dtype=dtype, device=device)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
