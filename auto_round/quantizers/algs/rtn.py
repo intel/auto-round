@@ -39,7 +39,7 @@ from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     convert_fp8_layer_to_linear,
-    convert_fp8_model_to_16b_model,
+    convert_fp8_module_to_16b,
     flatten_list,
     get_block_names,
     get_lm_head_name,
@@ -190,7 +190,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
                         materialize_model_(block)
                         for name, m in block.named_modules():
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
-                                self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                                self._quantize_layer_via_rtn(m.global_name, to_cpu=self.compressor.low_gpu_mem_usage)
                                 all_to_quantized_module_names.remove(m.global_name)
                             elif (
                                 not any(m.children())
@@ -198,10 +198,10 @@ class RTNQuantizer(AlgsBaseQuantizer):
                                 and m.global_name not in tied_weights_layers
                             ):
                                 set_module(self.compressor.model, m.global_name, copy.deepcopy(m))
-                                if self.is_immediate_saving:
+                                if self.compressor.is_immediate_saving:
                                     shard_writer(self, name=m.global_name)
                                 m.to("meta")
-                        clear_memory(device_list=self.device_list)
+                        clear_memory(device_list=self.compressor.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
                 cnt = 1
@@ -210,7 +210,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
                     self._quantize_layer_via_rtn(name, to_cpu=True)
                     cnt += 1
                     if cnt % 10 == 0:
-                        clear_memory(device_list=self.device_list)
+                        clear_memory(device_list=self.compressor.device_list)
                         memory_monitor.log_summary()
             else:
                 materialize_model_(self.model)
@@ -231,8 +231,8 @@ class RTNQuantizer(AlgsBaseQuantizer):
                     cnt += 1
         # Convert remaining fp8
         if is_fp8_model(self.compressor.model):
-            convert_fp8_model_to_16b_model(self.compressor.model, self.compressor.amp_dtype, self.compressor.device)
-        if self.is_immediate_saving:
+            convert_fp8_module_to_16b(self.compressor.model, self.compressor.amp_dtype, self.compressor.device)
+        if self.compressor.is_immediate_saving:
             shard_writer(self, is_finalize=True)
         self.compressor.quantized = True
         return self.compressor.model, self.compressor.layer_config
@@ -310,9 +310,7 @@ class RTNQuantizer(AlgsBaseQuantizer):
                 materialize_model_(block)
                 block.to("cpu")
                 if is_fp8_model(self.compressor.model):
-                    convert_fp8_model_to_16b_model(
-                        block, dtype=self.compressor.amp_dtype, device=self.compressor.device
-                    )
+                    convert_fp8_module_to_16b(block, dtype=self.compressor.amp_dtype, device=self.compressor.device)
 
                 if is_auto_device_mapping(self.compressor.device_map) and len(self.compressor.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -494,7 +492,7 @@ class OptRTNQuantizer(RTNQuantizer):
             self._quant_rtn_with_imatrix(self.all_to_quantized_module_names)
             # Convert remaining fp8
             if is_fp8_model(self.compressor.model):
-                convert_fp8_model_to_16b_model(self.compressor.model, self.compressor.amp_dtype, self.compressor.device)
+                convert_fp8_module_to_16b(self.compressor.model, self.compressor.amp_dtype, self.compressor.device)
             self.compressor.quantized = True
             return self.compressor.model, self.compressor.layer_config
         else:
