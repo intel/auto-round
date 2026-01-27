@@ -18,8 +18,8 @@ from auto_round.logger import logger
 
 MODEL_CONFIG = {
     "qwen3_moe": {
-        "min_tf_version": "5.0.0",
-        "max_tf_version": None,
+        "min_transformers_version": "5.0.0",
+        "max_transformers_version": None,
         "checkpoint_mapping": [],
         "block_patch": [
             (
@@ -51,8 +51,8 @@ def apply_model_patches(model_type):
     cfg = MODEL_CONFIG[model_type]
 
     # 版本检查
-    min_ver = cfg.get("min_tf_version")
-    max_ver = cfg.get("max_tf_version")
+    min_ver = cfg.get("min_transformers_version")
+    max_ver = cfg.get("max_transformers_version")
     tf_ver = version.parse(transformers.__version__)
     if min_ver and tf_ver < version.parse(min_ver):
         return
@@ -79,7 +79,8 @@ def apply_model_patches(model_type):
             transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
 
         except Exception as e:
-            logger.info(f"[WARN] Failed to patch {orig_path}: {e}")
+            logger.warning(f"Failed to patch {orig_path}: {e}")
 
+#TODO change on demand
 for key in MODEL_CONFIG.keys():
     apply_model_patches(key)
