@@ -1,6 +1,8 @@
 Step-by-Step
 ============
 
+English | [简体中文](./docs/step_by_step_CN.md)
+
 This document presents step-by-step instructions for auto-round llm quantization. You can refer to [vlms user guide](../auto_round/compressors/mllm/README.md) for vlms quantization and [diffusions user guide](../auto_round/compressors/diffusion/README.md) for diffusions quantization.
 
 * [1 Prerequisite](#1-prerequisite)
@@ -9,7 +11,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Customized Dataset](#customized-dataset)
   + [Dataset operations](#dataset-operations)
 * [3 Quantization](#3-quantization)
-  + [Supported Quantization Configurations](#supported-quantization-configurations)
+  + [Supported Quantization Configurations](#supported-quantization-schemes)
   + [Supported Export Formats](#supported-export-formats)
   + [Hardware Compatibility](#hardware-compatibility)
   + [Environment Configuration](#environment-configuration)
@@ -28,8 +30,8 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#device-multi-gpu-setting-in-quantization)
-    - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm-head-quantization)
-    - [Enable multiple gpus tuning for extremely large model](#enable-multiple-gpus-tuning-for-extremely-large-model)
+    - [Enable multiple gpus calibration in lm_head quantization](#Enable-multiple-gpus-calibration-in-lm_head-quantization)
+    - [Manually set the device_map](#Manually-set-the-device_map)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
@@ -216,7 +218,7 @@ ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
 #### Mixed Bits Usage
-AutoRound(>0.8) offers auto-scheme to generate mixed bits recipe autocially, please refer to [AutoScheme](#autoscheme) section for more details.
+AutoRound(>0.8) offers auto-scheme to generate mixed bits recipe automatically, please refer to [AutoScheme](#autoscheme) section for more details.
 
 Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. If you're unsure about the details, we recommend using the AutoRound format.
 
@@ -482,7 +484,7 @@ AutoRound tunes the model in a block-by-block manner. Although the block size is
 For strategies to reduce GPU memory usage, please refer to the [Reduced GPU Memory Usage](###Adjust Hyperparameters)
 section below, where you  can adjust hyperparameters to optimize memory consumption.
 
-If adjusting hyperparameters does not resolve the issue a, a simple solution is just adding more devices in device_map, for example, 
+If adjusting hyperparameters does not resolve the issue, a simple solution is just adding more devices in device_map, for example, 
 ~~~python
 from auto_round import AutoRound
 
@@ -500,7 +502,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 ~~~
 
 
-There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
+There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantifying extremely large models (e.g., models larger than 100 GB).
 
 #### Enable multiple gpus calibration in lm_head quantization
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
