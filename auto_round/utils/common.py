@@ -114,7 +114,7 @@ def monkey_patch_transformers():
         transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(dtype="torch_dtype")(
             transformers.AutoModelForCausalLM.from_pretrained
         )
-    import auto_round.modelling # patch some moe models
+    import auto_round.modelling  # patch some moe models
 
 
 @lru_cache(None)
