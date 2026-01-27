@@ -161,6 +161,7 @@ class MXQuantLinearBase(QModuleBase):
 
         if self.enable_transform:
             from ..triton.mxfp4 import mxfp4_forward_kernel_wrapper
+
             orig_shape = input.shape
             x_flat = input.contiguous().flatten(end_dim=-2)
             qdq_input, _ = mxfp4_forward_kernel_wrapper(

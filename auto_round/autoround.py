@@ -115,7 +115,7 @@ class AutoRound:
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
                                               with lower accuracy. Defaults to None.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
-            transform_config (dict, optional): transform matirx config like hadamard, like {"transform_class": "hadamard"}.
+            transform_config (dict, optional): transform matrix config like hadamard, like {"transform_class": "hadamard"}.
 
             bits (int, optional): Weight quantization bits. Defaults to 4.
             group_size (int, optional): Weight quantization group size. Defaults to 128.

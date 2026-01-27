@@ -145,6 +145,7 @@ class WrapperLinear(torch.nn.Module):
         self.enable_transform = False
         if transform_config:
             from .transforms.transforms import build_transform
+
             self.in_transform = build_transform(**transform_config)
             self.enable_transform = True
             self.transform_config = transform_config
@@ -526,6 +527,7 @@ class WrapperWALayer(torch.nn.Module):
         self.enable_transform = False
         if getattr(self.orig_layer, "transform_config", False):
             from .transforms.transforms import build_transform
+
             self.in_transform = build_transform(**self.orig_layer.transform_config)
             self.enable_transform = True
 
