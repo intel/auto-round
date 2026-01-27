@@ -27,7 +27,15 @@ except ImportError:
         except ImportError:
             from contextlib import contextmanager
 
-            @contextmanager
+            def no_init_weights():
+                """Fallback no-op context manager used when ``transformers.no_init_weights`` is unavailable.
+
+                Unlike the real helper provided by some versions of ``transformers``, this implementation
+                does not alter parameter initialization in any way: model weights will be initialized
+                as usual inside the context. It exists solely to provide a compatible API surface so
+                that code can safely use ``with no_init_weights():`` even when running with older or
+                minimal ``transformers`` installations that do not expose the helper.
+                """
             def skip_weights_initialize():
                 yield
 
