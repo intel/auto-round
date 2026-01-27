@@ -19,8 +19,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+
 from auto_round.utils import get_packing_device
+from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
 
 logger = getLogger(__name__)
 
@@ -72,7 +73,9 @@ class QuantLinear(nn.Module):
 
         # is performed by unpacking the weights and using torch.matmul
         if self.bits in [2, 4, 8]:
-            self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qweight.device).unsqueeze(0)
+            self.wf = torch.tensor(
+                list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qweight.device
+            ).unsqueeze(0)
         else:  ## bits == 3
             self.wf = get_wf_3bits_tensor(device=self.qweight.device)
 
@@ -269,7 +272,9 @@ class QuantLinear(nn.Module):
 
         if self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
-                self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qzeros.device).unsqueeze(0)
+                self.wf = torch.tensor(
+                    list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qzeros.device
+                ).unsqueeze(0)
             zeros = torch.bitwise_right_shift(
                 torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
                 self.wf.unsqueeze(0),
@@ -333,4 +338,3 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
-
