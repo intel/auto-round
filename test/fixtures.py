@@ -23,13 +23,15 @@ from .helpers import (
 )
 
 datasets.original_load_dataset = datasets.load_dataset
-datasets.load_dataset = lambda *args, **kwargs: patch_load_dataset(*args, **kwargs)
 
 
 def patch_load_dataset(dataset_name, *args, **kwargs):
     if "openbookqa" in dataset_name:
         dataset_name = "allenai/openbookqa"
     return datasets.original_load_dataset(dataset_name, *args, **kwargs)
+
+
+datasets.load_dataset = patch_load_dataset
 
 
 # Create tiny model path fixtures for testing
