@@ -61,7 +61,10 @@ def check_meta_module(model):
                 raise RuntimeError(
                     f"The model contains some parameters on the meta device (found in module {name}, parameter {name}). "
                 )
+
+
 from torch.utils._debug_mode import DebugMode
+
 
 def main(args):
     model_name = args.model_name
@@ -97,7 +100,7 @@ def main(args):
             print(dm.debug_string(show_stack_trace=True))
             print(res)
             exit(0)
-        
+
         inputs = tokenizer(msg, return_tensors="pt").to(device)
         outputs = model.generate(**inputs, max_new_tokens=32)
 
