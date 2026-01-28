@@ -279,11 +279,7 @@ def eval_task_by_task(
     device_str, parallelism = get_device_and_parallelism(device)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
-    import traceback
-
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
     from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from auto_round.utils import logger
 
@@ -402,7 +398,7 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
     import time
     import traceback
 
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    import lm_eval  # pylint: disable=E0401
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
     from auto_round.utils import logger
@@ -418,7 +414,7 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
         current_retry_times = retry_times
         while current_retry_times:
             try:
-                res = lm_simple_evaluate(
+                res = lm_eval.simple_evaluate(
                     model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit
                 )
                 break
@@ -430,7 +426,7 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
                         for k, v in hflm.batch_sizes.items():
                             hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
-                        res = lm_simple_evaluate(
+                        res = lm_eval.simple_evaluate(
                             model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1, limit=limit
                         )
                         hflm.batch_sizes = ori_batch_sizes
