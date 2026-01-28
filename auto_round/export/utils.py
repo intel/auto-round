@@ -52,7 +52,7 @@ def save_model(
             This is needed for models with unfused MOE experts (linear_loop implementation).
     """
     os.makedirs(save_dir, exist_ok=True)
-    
+
     # If not explicitly set, try to detect unfused MOE experts
     if not disable_conversion_mapping:
         # Detect unfused MOE experts (nn.ModuleList structure) that need conversion mapping bypass
@@ -115,30 +115,28 @@ def _save_model_without_conversion(
     safe_serialization: bool = True,
 ):
     """Save model without HuggingFace's checkpoint conversion mapping.
-    
+
     This is needed for models with unfused MOE experts where the conversion
     mapping would incorrectly try to fuse the weights back.
     """
     # Save config and generation_config
     if hasattr(model, "config") and model.config is not None:
         model.config.save_pretrained(save_dir)
-    
+
     if hasattr(model, "generation_config") and model.generation_config is not None:
         try:
             model.generation_config.save_pretrained(save_dir)
         except Exception:
             pass
-    
+
     # Get state dict directly without conversion
     state_dict = model.state_dict()
-    
+
     # Try to use transformers' split_torch_state_dict_into_shards
     try:
         from huggingface_hub import split_torch_state_dict_into_shards
-        
-        state_dict_split = split_torch_state_dict_into_shards(
-            state_dict, max_shard_size=max_shard_size
-        )
+
+        state_dict_split = split_torch_state_dict_into_shards(state_dict, max_shard_size=max_shard_size)
         shards = state_dict_split.filename_to_tensors
         index = None
         if state_dict_split.is_sharded:
@@ -150,7 +148,7 @@ def _save_model_without_conversion(
         # Fallback: save as single file
         shards = {"model.safetensors" if safe_serialization else "pytorch_model.bin": state_dict}
         index = None
-    
+
     # Save each shard
     for shard_file, shard_tensors in shards.items():
         shard_path = os.path.join(save_dir, shard_file)
@@ -159,16 +157,17 @@ def _save_model_without_conversion(
             shard = {k: state_dict[k] for k in shard_tensors}
         else:
             shard = shard_tensors
-        
+
         if safe_serialization:
             # Use safetensors
             from safetensors.torch import save_file
+
             # safetensors requires all tensors to be contiguous
             shard = {k: v.contiguous() if not v.is_contiguous() else v for k, v in shard.items()}
             save_file(shard, shard_path)
         else:
             torch.save(shard, shard_path)
-    
+
     # Save the index if sharded
     if index is not None:
         index_file = "model.safetensors.index.json" if safe_serialization else "pytorch_model.bin.index.json"

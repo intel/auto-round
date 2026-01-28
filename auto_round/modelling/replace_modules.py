@@ -45,10 +45,7 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     )
 
     if not is_linear_loop_available():
-        logger.warning(
-            "MOE handling requires transformers 5.0+. "
-            "MOE modules will not be handled."
-        )
+        logger.warning("MOE handling requires transformers 5.0+. " "MOE modules will not be handled.")
         return []
 
     # Use transformers' experts interface
@@ -296,9 +293,7 @@ def apply_replacements(
             continue
         class_name = module.__class__.__name__
         if class_name in BUILTIN_MODULES and _should_skip_moe_replacement(module, model):
-            logger.debug(
-                f"Skipping replacement for {name}: linear_loop experts already unfused"
-            )
+            logger.debug(f"Skipping replacement for {name}: linear_loop experts already unfused")
             continue
         if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
             class_name

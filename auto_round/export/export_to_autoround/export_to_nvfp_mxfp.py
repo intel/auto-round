@@ -229,7 +229,7 @@ def save_quantized_as_fp(
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
-    
+
     # Detect unfused MOE experts before packing (structure will be modified during packing)
     has_unfused_moe = False
     for _, module in model.named_modules():
@@ -247,7 +247,7 @@ def save_quantized_as_fp(
             if isinstance(gate_up, nn.ModuleList) and isinstance(down, nn.ModuleList):
                 has_unfused_moe = True
                 break
-    
+
     names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
@@ -284,6 +284,12 @@ def save_quantized_as_fp(
         image_processor.save_pretrained(output_dir)
 
     dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, disable_conversion_mapping=has_unfused_moe)
+    save_model(
+        model,
+        output_dir,
+        safe_serialization=safe_serialization,
+        dtype=dtype,
+        disable_conversion_mapping=has_unfused_moe,
+    )
 
     return model
