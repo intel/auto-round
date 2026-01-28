@@ -15,3 +15,26 @@
 from auto_round.utils.device import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *
+
+import transformers
+from packaging.version import Version
+
+# tmp batch for transformers v5.0
+if Version(transformers.__version__) >= Version("5.0.0"):
+    import datasets
+
+    datasets.original_load_dataset = datasets.load_dataset
+
+    def patch_load_dataset(*args, **kwargs):
+        for dataset_name, replace_name in [("openbookqa", "allenai/openbookqa")]:
+            if len(args) > 0 and dataset_name in args[0]:
+                args = (replace_name,) + args[1:]
+            if "path" in kwargs and kwargs["path"] is not None:
+                if dataset_name in kwargs["path"] and replace_name not in kwargs["path"]:
+                    kwargs["path"] = kwargs["path"].replace(dataset_name, replace_name)
+            if "name" in kwargs and kwargs["name"] is not None:
+                if dataset_name in kwargs["name"] and replace_name not in kwargs["name"]:
+                    kwargs["name"] = kwargs["name"].replace(dataset_name, replace_name)
+            return datasets.original_load_dataset(*args, **kwargs)
+
+    datasets.load_dataset = patch_load_dataset
