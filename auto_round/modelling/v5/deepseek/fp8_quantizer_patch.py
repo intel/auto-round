@@ -25,11 +25,6 @@ import transformers.quantizers.quantizer_finegrained_fp8 as qf8
 
 # from transformers.utils.import_utils import is_grouped_mm_available
 from transformers import PreTrainedModel
-
-# from transformers.models.deepseek_v2.modeling_deepseek_v2 import ACT2FN
-# from transformers.models.deepseek_v2.modular_deepseek_v2 import  DeepseekV2Config, DeepseekV2DecoderLayer, DeepseekV2Attention, DeepseekV2PreTrainedModel
-from transformers.modeling_utils import PreTrainedModel
-from transformers.quantizers import quantizer_finegrained_fp8
 from transformers.quantizers.quantizers_utils import get_module_from_name
 from transformers.utils import auto_docstring
 
