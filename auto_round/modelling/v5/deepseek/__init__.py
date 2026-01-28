@@ -27,5 +27,5 @@ def apply_all_ds_patches():
     disable_concat_experts()
     apply_transformer_patches()
     from fp8_quantizer_patch import patch_fp8_quantizer
-    patch_fp8_quantizer()
 
+    patch_fp8_quantizer()

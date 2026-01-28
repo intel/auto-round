@@ -233,7 +233,6 @@ class OOTFineGrainedFP8HfQuantizer(qf8.FineGrainedFP8HfQuantizer):
         return False
 
 
-
 class FP8Linear(nn.Linear):
     dtype = torch.float8_e4m3fn
 
@@ -290,4 +289,3 @@ def patch_fp8_quantizer():
         qz.FineGrainedFP8HfQuantizer = OOTFineGrainedFP8HfQuantizer
     # Ensure Auto dispatcher uses our override
     qa.AUTO_QUANTIZER_MAPPING["fp8"] = OOTFineGrainedFP8HfQuantizer
-
