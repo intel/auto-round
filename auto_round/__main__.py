@@ -371,7 +371,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="LM-Evaluation-Harness tasks to run. "
             "Specify specific tasks like 'mmlu,wikitext' for custom evaluation.",
         )
-        eval_args.add_argument("--eval_bs", default=64, type=int, help="Batch size for evaluation.")
+        eval_args.add_argument("--eval_bs", default=None, type=int, help="Batch size for evaluation.")
         eval_args.add_argument(
             "--limit",
             type=float,

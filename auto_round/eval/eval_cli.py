@@ -74,7 +74,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         )
         self.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         self.add_argument(
-            "--eval_bs", "--bs", "--batch_size", default=64, type=int, help="The batch size for evaluation"
+            "--eval_bs", "--bs", "--batch_size", default=None, type=int, help="The batch size for evaluation"
         )
         self.add_argument(
             "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "
@@ -422,6 +422,8 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
                 cuda_error_msg = traceback.format_exc()
                 try:
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
+                    if not hflm.batch_sizes:
+                        hflm.batch_sizes = ori_batch_sizes.copy()
                     try:
                         for k, v in hflm.batch_sizes.items():
                             hflm.batch_sizes[k] = max(v // 2, 1)
