@@ -11,3 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from auto_round.modelling.replace_modules import (
+    ReplacementModuleBase,
+    apply_replacements,
+    materialize_model_,
+    release_original_module_,
+)
+from auto_round.modelling.moe_experts_impl import (
+    linear_loop_experts_forward,
+    register_linear_loop_experts,
+    prepare_model_for_moe_quantization,
+    is_linear_loop_available,
+)
+
+__all__ = [
+    "ReplacementModuleBase",
+    "apply_replacements",
+    "materialize_model_",
+    "release_original_module_",
+    # Transformers-native MOE integration (transformers 5.0+)
+    "linear_loop_experts_forward",
+    "register_linear_loop_experts",
+    "prepare_model_for_moe_quantization",
+    "is_linear_loop_available",
+]
