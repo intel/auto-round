@@ -35,6 +35,6 @@ if Version(transformers.__version__) >= Version("5.0.0"):
             if "name" in kwargs and kwargs["name"] is not None:
                 if dataset_name in kwargs["name"] and replace_name not in kwargs["name"]:
                     kwargs["name"] = kwargs["name"].replace(dataset_name, replace_name)
-            return datasets.original_load_dataset(*args, **kwargs)
+        return datasets.original_load_dataset(*args, **kwargs)
 
     datasets.load_dataset = patch_load_dataset
