@@ -6,5 +6,5 @@ numpy
 tqdm
 packaging
 pillow
-transformers
+transformers<5.0
 threadpoolctl
