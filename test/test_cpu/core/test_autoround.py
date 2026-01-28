@@ -14,6 +14,7 @@ from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_
 
 
 class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         model_name = opt_name_or_path
@@ -383,7 +384,6 @@ class TestAutoRound:
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1)
         quantized_model_path = self.save_folder
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        quantized_model_path = quantized_model_path[0]
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
             torch_dtype=torch.float16,
@@ -441,7 +441,7 @@ class TestAutoRound:
         _, quantized_model_path = autoround.save_quantized(
             output_dir=quantized_model_path, format="auto_round", inplace=True
         )
-        quantized_model_path = quantized_model_path[0]
+
         quantization_config = AutoRoundConfig(backend="ipex")
 
         model = AutoModelForCausalLM.from_pretrained(

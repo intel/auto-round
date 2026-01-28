@@ -67,7 +67,7 @@ class TestGGUF:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=False, format="gguf:q4_0"
         )
-        quantized_model_path = quantized_model_path[0]
+
         gguf_file = os.listdir(quantized_model_path)[0]
 
         # TODO: fix the issue of gguf loading error in transformers v5
@@ -95,7 +95,7 @@ class TestGGUF:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=False, format="gguf:q*_1"
         )
-        quantized_model_path = quantized_model_path[0]
+
         assert autoround.group_size == 32
         assert not autoround.sym
         gguf_file = os.listdir(quantized_model_path)[0]
@@ -126,7 +126,7 @@ class TestGGUF:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=False, format="fake"
         )
-        quantized_model_path = quantized_model_path[0]
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
@@ -164,7 +164,7 @@ class TestGGUF:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="gguf:q4_k_m,fake"
         )
-        quantized_model_path = quantized_model_path[0]
+
         assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"] == 16
         assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"] == "int_sym_dq"
         assert autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"] == "int_asym_dq"
@@ -183,7 +183,7 @@ class TestGGUF:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="gguf:q4_k_m,fake"
         )
-        quantized_model_path = quantized_model_path[0]
+
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_all_format(self, tiny_qwen_model_path):
@@ -232,7 +232,7 @@ class TestGGUF:
         )
         quantized_model_path = "./saved"
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        quantized_model_path = quantized_model_path[0]
+
         assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
@@ -259,7 +259,7 @@ class TestGGUF:
         )
         quantized_model_path = "./saved"
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        quantized_model_path = quantized_model_path[0]
+
         assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
@@ -358,7 +358,7 @@ class TestGGUF:
         )
         quantized_model_path = "./saved"
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
-        quantized_model_path = quantized_model_path[0]
+
         gguf_file = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
         assert abs(file_size - 1362) < 5.0

@@ -201,7 +201,7 @@ class TestAutoRound:
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         with tempfile.TemporaryDirectory() as tmpdirname:
             _, quantized_model_path = autoround.quantize_and_save(output_dir=tmpdirname)
-            quantized_model_path = quantized_model_path[0]
+
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path, torch_dtype=torch.float16, device_map="cuda"
             )

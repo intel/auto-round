@@ -3164,7 +3164,7 @@ class BaseCompressor(object):
         output_dir: str = None,
         format: Union[str, list[OutputFormat]] = "auto_round",
         inplace: bool = True,
-        return_folders=False,
+        return_folders=True,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
@@ -3218,7 +3218,7 @@ class BaseCompressor(object):
             folders.append(save_folder)
 
         if return_folders:
-            return compressed_model, folders
+            return compressed_model, folders[0] if len(folders) == 1 else folders
         else:
             return compressed_model
 

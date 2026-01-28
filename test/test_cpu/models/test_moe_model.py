@@ -70,7 +70,7 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
         ignore_layers="self_attn,router,lm_head,mlp.gate",
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
-    return quantized_model, save_folder[0]
+    return quantized_model, save_folder
 
 
 def count_modules_by_type(model, target_module_name_or_class):

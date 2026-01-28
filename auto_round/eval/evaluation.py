@@ -380,7 +380,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         return
 
     # Check if evaluation is needed for language models
-    eval_folder = folders[-1] if folders else None
+    eval_folder = folders[-1] if folders and isinstance(folders, list) else folders
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
 

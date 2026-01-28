@@ -117,7 +117,6 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved"
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
-        quantized_model_path = quantized_model_path[0]
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -220,7 +219,7 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved/test_export"
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
-        quantized_model_path = quantized_model_path[0]
+
         from auto_round import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -319,7 +318,7 @@ class TestAutoRound:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_awq"
         )
-        quantized_model_path = quantized_model_path[0]
+
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
@@ -349,7 +348,7 @@ class TestAutoRound:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_gptq"
         )
-        quantized_model_path = quantized_model_path[0]
+
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()

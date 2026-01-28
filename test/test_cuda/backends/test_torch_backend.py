@@ -47,7 +47,6 @@ class TestAutoRoundTorchBackend:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round:gptqmodel"
         )
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
@@ -92,7 +91,6 @@ class TestAutoRoundTorchBackend:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round"
         )  ##will convert to gptq model
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(

@@ -9,6 +9,7 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class FakeDataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
@@ -26,6 +27,7 @@ class FakeDataLoader:
 
 
 class TestAutoRoundMLLM:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
@@ -221,7 +223,6 @@ class TestAutoRoundMLLM:
             image_processor=image_processor,
         )
         _, quantized_model_path = autoround.quantize_and_save("./saved/", format="auto_round")
-        quantized_model_path = quantized_model_path[0]
 
         import requests
         from PIL import Image

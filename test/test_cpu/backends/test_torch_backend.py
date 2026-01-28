@@ -41,14 +41,13 @@ class TestAutoRoundTorchBackend:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round:gptqmodel"
         )
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
@@ -85,7 +84,6 @@ class TestAutoRoundTorchBackend:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round"
         )  ##will convert to gptq model
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(

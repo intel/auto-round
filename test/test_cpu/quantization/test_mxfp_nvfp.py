@@ -23,6 +23,7 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRoundFP:
+
     @classmethod
     def setup_class(self):
         self.save_dir = "./saved"
@@ -87,7 +88,7 @@ class TestAutoRoundFP:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir, inplace=True, format="auto_round"
         )
-        quantized_model_path = quantized_model_path[0]
+
         lm_head = compressed_model.lm_head
         assert (
             hasattr(lm_head, "weight_scale")
@@ -146,7 +147,7 @@ class TestAutoRoundFP:
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
-        compressed_model = autoround.save_quantized(
+        compressed_model, _ = autoround.save_quantized(
             output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
@@ -186,7 +187,7 @@ class TestAutoRoundFP:
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
-        compressed_model = autoround.save_quantized(
+        compressed_model, _ = autoround.save_quantized(
             output_dir=quantized_model_path, inplace=True, format="llm_compressor"
         )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
@@ -226,7 +227,7 @@ class TestAutoRoundFP:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="llm_compressor"
         )
-        quantized_model_path = quantized_model_path[0]
+
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -266,7 +267,7 @@ class TestAutoRoundFP:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="llm_compressor"
         )
-        quantized_model_path = quantized_model_path[0]
+
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -306,7 +307,7 @@ class TestAutoRoundFP:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round"
         )
-        quantized_model_path = quantized_model_path[0]
+
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")

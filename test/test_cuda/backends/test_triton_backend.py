@@ -12,6 +12,7 @@ from ...helpers import model_infer
 
 
 class TestAutoRoundTritonBackend:
+
     @classmethod
     def setup_class(self):
         self.model_name = "/models/opt-125m"
@@ -41,7 +42,6 @@ class TestAutoRoundTritonBackend:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round:gptqmodel"
         )
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
@@ -75,7 +75,6 @@ class TestAutoRoundTritonBackend:
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
         quantized_model_path = self.save_folder
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
@@ -118,7 +117,6 @@ class TestAutoRoundTritonBackend:
         )
         quantized_model_path = self.save_folder
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
@@ -153,7 +151,6 @@ class TestAutoRoundTritonBackend:
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, nsamples=1, iters=1)
         quantized_model_path = self.save_folder
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
@@ -193,7 +190,6 @@ class TestAutoRoundTritonBackend:
         )
         quantized_model_path = self.save_folder
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(

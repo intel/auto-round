@@ -43,7 +43,6 @@ class TestAutoRoundARKBackend:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format=format
         )  ##will convert to gptq model
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(

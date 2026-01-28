@@ -121,7 +121,7 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved"
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
-        quantized_model_path = quantized_model_path[0]
+
         gguf_file = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
         assert abs(file_size - 1236) < 5.0

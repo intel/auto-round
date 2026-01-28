@@ -53,7 +53,6 @@ class TestAutoRound:
             quantized_model_path = self.save_dir
 
             _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-            quantized_model_path = quantized_model_path[0]
 
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path, device_map="cuda:0", trust_remote_code=True
@@ -81,7 +80,7 @@ class TestAutoRound:
         autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        quantized_model_path = quantized_model_path[0]
+
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
@@ -110,7 +109,6 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round:auto_awq"
         )
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
@@ -160,7 +158,6 @@ class TestAutoRound:
         quantized_model_path = "./saved"
 
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
-        quantized_model_path = quantized_model_path[0]
 
         from transformers import AutoRoundConfig
 
@@ -215,7 +212,6 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round:auto_awq"
         )
-        quantized_model_path = quantized_model_path[0]
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -253,7 +249,6 @@ class TestAutoRound:
             quantized_model_path = "./saved"
 
             _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-            quantized_model_path = quantized_model_path[0]
 
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path, device_map="auto", trust_remote_code=True

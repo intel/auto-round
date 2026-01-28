@@ -11,6 +11,7 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class TestLLMC:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("stas/tiny-random-llama-2")
@@ -51,7 +52,7 @@ class TestLLMC:
             iters=0,
         )
         _, quantized_model_path = autoround.quantize_and_save("./saved", format="llm_compressor")
-        quantized_model_path = quantized_model_path[0]
+
         # from vllm import LLM
         # model = LLM("./saved")
         # result = model.generate("Hello my name is")
@@ -77,7 +78,6 @@ class TestLLMC:
             iters=0,
         )
         _, quantized_model_path = autoround.quantize_and_save("./saved", format="auto_round:llm_compressor")
-        quantized_model_path = quantized_model_path[0]
 
         import json
 

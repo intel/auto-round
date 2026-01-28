@@ -11,6 +11,7 @@ from ...helpers import opt_name_or_path
 
 
 class TestAutoRoundFormatGeneration:
+
     @classmethod
     def setup_class(self):
         self.model_name = opt_name_or_path
@@ -42,7 +43,6 @@ class TestAutoRoundFormatGeneration:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="auto_round", inplace=False
         )
-        quantized_model_path = quantized_model_path[0]
 
         quantization_config = AutoRoundConfig(backend="ipex")
         model = AutoModelForCausalLM.from_pretrained(
@@ -83,7 +83,6 @@ class TestAutoRoundFormatGeneration:
             quantized_model_path = "./saved"
 
             _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-            quantized_model_path = quantized_model_path[0]
 
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path, device_map="auto", trust_remote_code=True

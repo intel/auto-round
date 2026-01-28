@@ -67,7 +67,7 @@ class TestAutoRound:
         compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, format="llm_compressor"
         )
-        quantized_model_path = quantized_model_path[0]
+
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -156,7 +156,7 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=False, format="auto_round"
         )
-        quantized_model_path = quantized_model_path[0]
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from auto_round.eval.evaluation import simple_evaluate_user_model
