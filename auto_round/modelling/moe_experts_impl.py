@@ -160,6 +160,9 @@ def _unfuse_experts_weights_inplace(module: nn.Module) -> bool:
     Returns:
         True if unfusing was successful, False if module doesn't match pattern
     """
+    # Only unfuse experts classes decorated with use_experts_implementation
+    if not (hasattr(module, "has_bias") and hasattr(module, "is_transposed")):
+        return False
     # Check if this is a fused experts module
     if not hasattr(module, 'gate_up_proj') or not isinstance(module.gate_up_proj, nn.Parameter):
         return False
@@ -244,10 +247,7 @@ def _unfuse_experts_weights_inplace(module: nn.Module) -> bool:
     # First, remove the old parameters
     del module.gate_up_proj
     del module.down_proj
-    if hasattr(module, 'gate_up_proj_bias'):
-        del module.gate_up_proj_bias
-    if hasattr(module, 'down_proj_bias'):
-        del module.down_proj_bias
+    # Keep bias tensors (if present) for compatibility with HF weight init/loading.
 
     # Set the new ModuleLists
     module.gate_up_proj = gate_up_linears

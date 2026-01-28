@@ -89,6 +89,16 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
+    @property
+    def weight(self):
+        """Exposes the weight of the wrapped layer for external access."""
+        return self.orig_layer.weight
+
+    @property
+    def bias(self):
+        """Exposes the bias of the wrapped layer for external access."""
+        return self.orig_layer.bias
+
     def __init__(
         self,
         orig_layer,
@@ -501,6 +511,16 @@ class WrapperWALayer(torch.nn.Module):
         if self.enable_torch_compile:
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
+
+    @property
+    def weight(self):
+        """Exposes the weight of the wrapped layer for external access."""
+        return self.orig_layer.weight
+
+    @property
+    def bias(self):
+        """Exposes the bias of the wrapped layer for external access."""
+        return self.orig_layer.bias
 
     def forward(self, x):
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None

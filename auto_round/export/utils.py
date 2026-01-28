@@ -14,6 +14,7 @@
 import json
 import os
 
+import torch
 import torch.nn as nn
 
 from auto_round.utils import copy_python_files_from_model_cache, logger, unsupported_meta_device
@@ -26,6 +27,7 @@ def save_model(
     safe_serialization: bool = True,
     dtype=None,
     config_file="quantization_config.json",
+    disable_conversion_mapping: bool = False,
 ):
     """Save model state dict and configs.
 
@@ -45,14 +47,41 @@ def save_model(
             </Tip>
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+        disable_conversion_mapping (`bool`, defaults to `False`):
+            Whether to disable HuggingFace's checkpoint conversion mapping during save.
+            This is needed for models with unfused MOE experts (linear_loop implementation).
     """
     os.makedirs(save_dir, exist_ok=True)
+    
+    # If not explicitly set, try to detect unfused MOE experts
+    if not disable_conversion_mapping:
+        # Detect unfused MOE experts (nn.ModuleList structure) that need conversion mapping bypass
+        # This can happen with linear_loop implementation or other unfusing mechanisms
+        for _, module in model.named_modules():
+            # Check if this module itself has unfused gate_up_proj/down_proj (experts module)
+            gate_up = getattr(module, "gate_up_proj", None)
+            down = getattr(module, "down_proj", None)
+            if isinstance(gate_up, nn.ModuleList) and isinstance(down, nn.ModuleList):
+                disable_conversion_mapping = True
+                break
+            # Also check if this module has an 'experts' submodule with unfused structure
+            experts = getattr(module, "experts", None)
+            if experts is not None:
+                gate_up = getattr(experts, "gate_up_proj", None)
+                down = getattr(experts, "down_proj", None)
+                if isinstance(gate_up, nn.ModuleList) and isinstance(down, nn.ModuleList):
+                    disable_conversion_mapping = True
+                    break
+
     if unsupported_meta_device(model):
         if hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(save_dir)
 
         if hasattr(model, "generation_config") and model.generation_config is not None:
             model.generation_config.save_pretrained(save_dir)
+    elif disable_conversion_mapping:
+        # For unfused MOE models, save state_dict directly to avoid HF's conversion mapping
+        _save_model_without_conversion(model, save_dir, max_shard_size, safe_serialization)
     else:
         try:
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
@@ -77,6 +106,74 @@ def save_model(
         copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+
+def _save_model_without_conversion(
+    model: nn.Module,
+    save_dir: str,
+    max_shard_size: str = "5GB",
+    safe_serialization: bool = True,
+):
+    """Save model without HuggingFace's checkpoint conversion mapping.
+    
+    This is needed for models with unfused MOE experts where the conversion
+    mapping would incorrectly try to fuse the weights back.
+    """
+    # Save config and generation_config
+    if hasattr(model, "config") and model.config is not None:
+        model.config.save_pretrained(save_dir)
+    
+    if hasattr(model, "generation_config") and model.generation_config is not None:
+        try:
+            model.generation_config.save_pretrained(save_dir)
+        except Exception:
+            pass
+    
+    # Get state dict directly without conversion
+    state_dict = model.state_dict()
+    
+    # Try to use transformers' split_torch_state_dict_into_shards
+    try:
+        from huggingface_hub import split_torch_state_dict_into_shards
+        
+        state_dict_split = split_torch_state_dict_into_shards(
+            state_dict, max_shard_size=max_shard_size
+        )
+        shards = state_dict_split.filename_to_tensors
+        index = None
+        if state_dict_split.is_sharded:
+            index = {
+                "metadata": state_dict_split.metadata,
+                "weight_map": state_dict_split.tensor_to_filename,
+            }
+    except ImportError:
+        # Fallback: save as single file
+        shards = {"model.safetensors" if safe_serialization else "pytorch_model.bin": state_dict}
+        index = None
+    
+    # Save each shard
+    for shard_file, shard_tensors in shards.items():
+        shard_path = os.path.join(save_dir, shard_file)
+        # Get the actual tensors from state_dict
+        if isinstance(shard_tensors, (list, set)):
+            shard = {k: state_dict[k] for k in shard_tensors}
+        else:
+            shard = shard_tensors
+        
+        if safe_serialization:
+            # Use safetensors
+            from safetensors.torch import save_file
+            # safetensors requires all tensors to be contiguous
+            shard = {k: v.contiguous() if not v.is_contiguous() else v for k, v in shard.items()}
+            save_file(shard, shard_path)
+        else:
+            torch.save(shard, shard_path)
+    
+    # Save the index if sharded
+    if index is not None:
+        index_file = "model.safetensors.index.json" if safe_serialization else "pytorch_model.bin.index.json"
+        with open(os.path.join(save_dir, index_file), "w") as f:
+            json.dump(index, f, indent=2)
 
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):

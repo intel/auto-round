@@ -45,6 +45,8 @@ def setup_qwen3_vl_moe():
     model_name = "/models/Qwen3-VL-30B-A3B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
+    if getattr(config.text_config, "pad_token_id", None) is None:
+        config.text_config.pad_token_id = getattr(tokenizer, "pad_token_id", None) or config.text_config.eos_token_id
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing

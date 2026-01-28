@@ -72,6 +72,20 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             logger.debug(f"Loaded replacement module for {class_name}")
 
 
+def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module) -> bool:
+    """Skip MOE replacement if linear_loop experts are already unfused."""
+    if not hasattr(model, "config"):
+        return False
+    if getattr(model.config, "_experts_implementation", None) != "linear_loop":
+        return False
+    experts = getattr(module, "experts", None)
+    if experts is None:
+        return False
+    gate_up = getattr(experts, "gate_up_proj", None)
+    down = getattr(experts, "down_proj", None)
+    return isinstance(gate_up, torch.nn.ModuleList) and isinstance(down, torch.nn.ModuleList)
+
+
 @dump_mem_usage("Materializing model", log_level="debug")
 def materialize_model_(model: torch.nn.Module) -> None:
     def _materialize_module(module: torch.nn.Module) -> None:
@@ -281,6 +295,11 @@ def apply_replacements(
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
+        if class_name in BUILTIN_MODULES and _should_skip_moe_replacement(module, model):
+            logger.debug(
+                f"Skipping replacement for {name}: linear_loop experts already unfused"
+            )
+            continue
         if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
             class_name
         ).is_to_be_replaced(module):

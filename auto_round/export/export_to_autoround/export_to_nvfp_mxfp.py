@@ -74,7 +74,9 @@ def pack_layer(name, model, backend, device=None):
 
     if is_nv_fp(act_data_type) and act_bits <= 8:
         if not getattr(layer, "input_global_scale", None):
-            assert hasattr(layer, "act_max")
+            if not hasattr(layer, "act_max"):
+                logger.warning(f"Layer {name} missing act_max, skipping input_global_scale calculation")
+                return
             from auto_round.data_type.nvfp import calculate_gparam
 
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")
@@ -175,12 +177,17 @@ def save_quantized_as_fp(
                 set_module(model, n, orig_layer)
 
     if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
+        # For MOE models, ensure all experts have act_max (some may not be activated during calibration)
+        set_amax_for_all_moe_layers(model, attr_name="act_max")
+
         # generate static input_global_scale
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
                 if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
-                    assert hasattr(layer, "act_max")
+                    if not hasattr(layer, "act_max"):
+                        logger.warning(f"Layer {n} missing act_max, skipping input_global_scale calculation")
+                        continue
                     from auto_round.data_type.nvfp import calculate_gparam
 
                     input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
@@ -222,6 +229,25 @@ def save_quantized_as_fp(
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
+    
+    # Detect unfused MOE experts before packing (structure will be modified during packing)
+    has_unfused_moe = False
+    for _, module in model.named_modules():
+        # Check if this module itself has unfused gate_up_proj/down_proj
+        gate_up = getattr(module, "gate_up_proj", None)
+        down = getattr(module, "down_proj", None)
+        if isinstance(gate_up, nn.ModuleList) and isinstance(down, nn.ModuleList):
+            has_unfused_moe = True
+            break
+        # Also check if this module has an 'experts' submodule with unfused structure
+        experts = getattr(module, "experts", None)
+        if experts is not None:
+            gate_up = getattr(experts, "gate_up_proj", None)
+            down = getattr(experts, "down_proj", None)
+            if isinstance(gate_up, nn.ModuleList) and isinstance(down, nn.ModuleList):
+                has_unfused_moe = True
+                break
+    
     names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
@@ -258,6 +284,6 @@ def save_quantized_as_fp(
         image_processor.save_pretrained(output_dir)
 
     dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, disable_conversion_mapping=has_unfused_moe)
 
     return model
