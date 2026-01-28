@@ -1,5 +1,6 @@
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
 --extra-index-url https://wheels.vllm.ai/nightly
+auto-gptq
 einops
 # pip install -v git+https://github.com/ModelCloud/GPTQModel.git --no-build-isolation
 lm_eval >= 0.4.10  # for transformers >= 5.0.0
