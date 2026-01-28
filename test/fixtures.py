@@ -1,6 +1,7 @@
 import os
 import shutil
 
+import datasets
 import pytest
 import torch
 import transformers
