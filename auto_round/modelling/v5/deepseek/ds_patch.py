@@ -1,10 +1,25 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# from loguru import logger
+import logging
+
 import torch
+import torch.nn.functional as F
 from torch import nn
 from transformers.models.deepseek_v3.modeling_deepseek_v3 import ACT2FN
 
-import torch.nn.functional as F
-# from loguru import logger
-import logging
 logger = logging.getLogger(__name__)
 
 
@@ -126,8 +141,6 @@ class OoTDeepseekV3MoE(nn.Module):
         hidden_states = self.moe(hidden_states, topk_indices, topk_weights).view(*orig_shape)
         hidden_states = hidden_states + self.shared_experts(residuals)
         return hidden_states
-
-
 
 
 def apply_transformer_patches():

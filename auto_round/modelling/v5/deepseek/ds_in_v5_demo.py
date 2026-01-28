@@ -1,9 +1,21 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import psutil
 import torch
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils.import_utils import clear_import_cache
-
 
 # clear cache to reload modified code
 clear_import_cache()
@@ -48,6 +60,7 @@ def disable_concat_experts():
     register_checkpoint_conversion_mapping("deepseek_v3", [], overwrite=True)
     register_checkpoint_conversion_mapping("qwen3_moe", [], overwrite=True)
 
+
 try:
     from torch.utils._debug_mode import DebugMode
 except ImportError:
@@ -61,6 +74,7 @@ def main(args):
     fixed_seed(42)
 
     from ds_patch import apply_transformer_patches
+
     # from qwen_v5_patch import apply_transformer_patches_qwen
 
     disable_concat_experts()
