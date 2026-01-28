@@ -27,7 +27,7 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
-    uv pip install torch==2.9.1 torchvision
+    uv pip install torch==2.10.0 torchvision
     uv pip install -r requirements.txt
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
@@ -103,6 +103,7 @@ function run_unit_test() {
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -r test_cuda/requirements_sglang.txt
     uv pip install transformers==5.0.0
+    uv pip install torch==2.10.0 torchvision
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
