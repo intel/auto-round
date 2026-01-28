@@ -30,6 +30,7 @@ def test_linear_loop_registration():
     from auto_round.modelling.moe_experts_interface import (
         register_linear_loop_experts,
         is_linear_loop_available,
+        register_linear_loop_experts,
     )
 
     if not is_linear_loop_available():
@@ -39,6 +40,7 @@ def test_linear_loop_registration():
     assert success, "Failed to register linear_loop"
 
     from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS
+
     assert "linear_loop" in ALL_EXPERTS_FUNCTIONS._global_mapping
     print("✓ linear_loop registered with transformers")
 
@@ -56,13 +58,9 @@ def test_unfuse_experts_weights():
         def __init__(self):
             super().__init__()
             # Not transposed: (num_experts, 2*intermediate, hidden)
-            self.gate_up_proj = nn.Parameter(
-                torch.randn(num_experts, 2 * intermediate_dim, hidden_dim)
-            )
+            self.gate_up_proj = nn.Parameter(torch.randn(num_experts, 2 * intermediate_dim, hidden_dim))
             # (num_experts, hidden, intermediate)
-            self.down_proj = nn.Parameter(
-                torch.randn(num_experts, hidden_dim, intermediate_dim)
-            )
+            self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
 
@@ -86,16 +84,12 @@ def test_unfuse_experts_weights():
     for i in range(num_experts):
         # gate_up: original (2*intermediate, hidden), linear.weight should be same
         assert torch.allclose(
-            module.gate_up_proj[i].weight.data,
-            original_gate_up[i],
-            atol=1e-6
+            module.gate_up_proj[i].weight.data, original_gate_up[i], atol=1e-6
         ), f"gate_up weight mismatch for expert {i}"
 
         # down: original (hidden, intermediate), linear.weight should be same
         assert torch.allclose(
-            module.down_proj[i].weight.data,
-            original_down[i],
-            atol=1e-6
+            module.down_proj[i].weight.data, original_down[i], atol=1e-6
         ), f"down weight mismatch for expert {i}"
 
     print("✓ Unfused weights correctly (Mixtral style)")
@@ -113,13 +107,9 @@ def test_unfuse_experts_weights_transposed():
         def __init__(self):
             super().__init__()
             # Transposed: (num_experts, hidden, 2*intermediate)
-            self.gate_up_proj = nn.Parameter(
-                torch.randn(num_experts, hidden_dim, 2 * intermediate_dim)
-            )
+            self.gate_up_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, 2 * intermediate_dim))
             # Transposed: (num_experts, intermediate, hidden)
-            self.down_proj = nn.Parameter(
-                torch.randn(num_experts, intermediate_dim, hidden_dim)
-            )
+            self.down_proj = nn.Parameter(torch.randn(num_experts, intermediate_dim, hidden_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
             self.is_transposed = True
@@ -142,16 +132,12 @@ def test_unfuse_experts_weights_transposed():
     for i in range(num_experts):
         # gate_up: original (hidden, 2*intermediate), should be transposed to (2*intermediate, hidden)
         assert torch.allclose(
-            module.gate_up_proj[i].weight.data,
-            original_gate_up[i].t(),
-            atol=1e-6
+            module.gate_up_proj[i].weight.data, original_gate_up[i].t(), atol=1e-6
         ), f"gate_up weight mismatch for expert {i}"
-        
+
         # down: original (intermediate, hidden), should be transposed to (hidden, intermediate)
         assert torch.allclose(
-            module.down_proj[i].weight.data,
-            original_down[i].t(),
-            atol=1e-6
+            module.down_proj[i].weight.data, original_down[i].t(), atol=1e-6
         ), f"down weight mismatch for expert {i}"
 
     print("✓ Unfused weights correctly (transposed style)")
@@ -162,6 +148,7 @@ def test_linear_loop_forward():
     from auto_round.modelling.moe_experts_interface import (
         linear_loop_experts_forward,
         _unfuse_experts_weights_inplace,
+        linear_loop_experts_forward,
     )
 
     num_experts = 4
@@ -174,12 +161,8 @@ def test_linear_loop_forward():
     class MockExperts(nn.Module):
         def __init__(self):
             super().__init__()
-            self.gate_up_proj = nn.Parameter(
-                torch.randn(num_experts, 2 * intermediate_dim, hidden_dim)
-            )
-            self.down_proj = nn.Parameter(
-                torch.randn(num_experts, hidden_dim, intermediate_dim)
-            )
+            self.gate_up_proj = nn.Parameter(torch.randn(num_experts, 2 * intermediate_dim, hidden_dim))
+            self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
 
@@ -210,6 +193,7 @@ def test_prepare_model_for_moe_quantization():
     from auto_round.modelling.moe_experts_interface import (
         prepare_model_for_moe_quantization,
         is_linear_loop_available,
+        prepare_model_for_moe_quantization,
     )
 
     if not is_linear_loop_available():
@@ -228,12 +212,8 @@ def test_prepare_model_for_moe_quantization():
     class MockExpertsModule(nn.Module):
         def __init__(self):
             super().__init__()
-            self.gate_up_proj = nn.Parameter(
-                torch.randn(num_experts, 2 * intermediate_dim, hidden_dim)
-            )
-            self.down_proj = nn.Parameter(
-                torch.randn(num_experts, hidden_dim, intermediate_dim)
-            )
+            self.gate_up_proj = nn.Parameter(torch.randn(num_experts, 2 * intermediate_dim, hidden_dim))
+            self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
 
@@ -241,9 +221,7 @@ def test_prepare_model_for_moe_quantization():
         def __init__(self):
             super().__init__()
             self.config = MockConfig()
-            self.layer = nn.ModuleDict({
-                'experts': MockExpertsModule()
-            })
+            self.layer = nn.ModuleDict({"experts": MockExpertsModule()})
 
     model = MockModel()
 
@@ -253,7 +231,7 @@ def test_prepare_model_for_moe_quantization():
     # Verify
     assert model.config._experts_implementation == "linear_loop"
     assert len(unfused) == 1
-    assert isinstance(model.layer['experts'].gate_up_proj, nn.ModuleList)
+    assert isinstance(model.layer["experts"].gate_up_proj, nn.ModuleList)
 
     print("✓ prepare_model_for_moe_quantization works correctly")
 
@@ -272,9 +250,10 @@ if __name__ == "__main__":
 
 # --- Real model tests (require fixtures) ---
 
+
 def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
     """Test linear_loop backend with real DeepSeek V2 model.
-    
+
     This test verifies:
     1. Model loads correctly
     2. linear_loop backend unfuses expert weights
@@ -282,23 +261,24 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
     4. Quantization works correctly
     """
     import shutil
+
     from auto_round import AutoRound
     from auto_round.modelling.moe_experts_interface import is_linear_loop_available
     
     if not is_linear_loop_available():
         print("SKIP: transformers MOE integration not available")
         return
-    
+
     model_name = tiny_deepseek_v2_model_path
     save_dir = "./saved_linear_loop_test"
-    
+
     layer_config = {
         "self_attn": {"bits": 16, "act_bits": 16},
         "mlp.shared_experts": {"bits": 16, "act_bits": 16},
         "experts.*2": {"bits": 16, "act_bits": 16},
         "experts.*5": {"bits": 16, "act_bits": 16},
     }
-    
+
     # Use linear_loop backend
     autoround = AutoRound(
         model_name,
@@ -312,22 +292,25 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
 
     # Run quantization (this triggers update_module which prepares MOE for quantization)
     compressed_model, _ = autoround.quantize()
-    
+
     # Check that model was prepared with linear_loop
     model = autoround.model
     assert hasattr(model, "config")
     assert model.config._experts_implementation == "linear_loop"
-    
+
     # Check that experts are unfused (ModuleList instead of 3D Parameter)
     experts_module = model.model.layers[1].mlp.experts
-    assert isinstance(experts_module.gate_up_proj, nn.ModuleList), \
-        f"gate_up_proj should be ModuleList, got {type(experts_module.gate_up_proj)}"
-    assert isinstance(experts_module.down_proj, nn.ModuleList), \
-        f"down_proj should be ModuleList, got {type(experts_module.down_proj)}"
-    
+    assert isinstance(
+        experts_module.gate_up_proj, nn.ModuleList
+    ), f"gate_up_proj should be ModuleList, got {type(experts_module.gate_up_proj)}"
+    assert isinstance(
+        experts_module.down_proj, nn.ModuleList
+    ), f"down_proj should be ModuleList, got {type(experts_module.down_proj)}"
+
     # Verify quantization worked
-    assert hasattr(compressed_model.model.layers[1].mlp.experts.gate_up_proj[0], "orig_layer") or \
-           hasattr(compressed_model.model.layers[1].mlp.experts.gate_up_proj[0], "weight")
-    
+    assert hasattr(compressed_model.model.layers[1].mlp.experts.gate_up_proj[0], "orig_layer") or hasattr(
+        compressed_model.model.layers[1].mlp.experts.gate_up_proj[0], "weight"
+    )
+
     print("✓ DeepSeek V2 with linear_loop backend works correctly")
     shutil.rmtree(save_dir, ignore_errors=True)

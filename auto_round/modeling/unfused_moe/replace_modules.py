@@ -45,10 +45,7 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     )
 
     if not is_linear_loop_available():
-        logger.warning(
-            "MOE handling requires transformers 5.0+. "
-            "MOE modules will not be handled."
-        )
+        logger.warning("MOE handling requires transformers 5.0+. " "MOE modules will not be handled.")
         return []
 
     # Use transformers' experts interface
