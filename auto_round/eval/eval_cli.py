@@ -74,7 +74,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         )
         self.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         self.add_argument(
-            "--eval_bs", "--bs", "--batch_size", default=None, type=int, help="The batch size for evaluation"
+            "--eval_bs", "--bs", "--batch_size", default=64, type=int, help="The batch size for evaluation"
         )
         self.add_argument(
             "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "
