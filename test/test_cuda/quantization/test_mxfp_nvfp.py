@@ -5,13 +5,12 @@ from unittest.mock import patch
 import pytest
 import torch
 import transformers
-from packaging import version
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum
 
-from ...helpers import get_model_path, save_tiny_model, transformers_version
+from ...helpers import get_model_path, save_tiny_model
 
 
 # Mock torch.cuda.get_device_capability to always return (9, 0) like H100
@@ -118,10 +117,6 @@ class TestAutoRound:
         #     if "France" in prompt:
         #         assert "Paris" in generated_text
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0"),
-        reason="https://github.com/intel/auto-round/issues/1345",
-    )
     def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
         # model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
         scheme = "nvfp4"
@@ -137,10 +132,6 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0"),
-        reason="https://github.com/intel/auto-round/issues/1345",
-    )
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -155,10 +146,6 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0"),
-        reason="https://github.com/intel/auto-round/issues/1345",
-    )
     def test_qwen_moe_quant_infer(self, dataloader):
         model_name = get_model_path("qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
