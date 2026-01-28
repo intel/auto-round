@@ -3,13 +3,14 @@ import shutil
 
 import pytest
 import torch
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path
+from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path, transformers_version
 
 
 class TestAutoRound:
@@ -72,6 +73,10 @@ class TestAutoRound:
         )
         autoround.quantize()
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_consecutive_quant(self, tiny_opt_model_path, tiny_phi2_model_path, dataloader):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
@@ -456,8 +461,12 @@ class TestAutoRound:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
         )
-        assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-        assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
+        if transformers_version < version.parse("5.0.0"):
+            assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+            assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
+        else:
+            assert isinstance(model.model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+            assert not isinstance(model.model.visual.merger.mlp[0], QuantLinear)
         if hasattr(model.model, "language_model"):
             assert isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear)
         else:
