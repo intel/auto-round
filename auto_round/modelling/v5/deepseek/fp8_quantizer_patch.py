@@ -273,14 +273,12 @@ class FP8Linear(nn.Linear):
             self.register_parameter("bias", None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        # breakpoint()
         dequant_weight = dequant_block_fp8_weight(
             self.weight,
             self.weight_scale_inv,
             block_size=self.block_size,
         )
         dequant_weight = dequant_weight.to(input.dtype)
-        # input = self.qdq_input(input)
         out = torch.nn.functional.linear(input, dequant_weight, self.bias)
         return out.to(input.dtype)
 
