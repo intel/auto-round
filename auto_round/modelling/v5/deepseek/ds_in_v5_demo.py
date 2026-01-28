@@ -65,9 +65,9 @@ try:
     from torch.utils._debug_mode import DebugMode
 except ImportError:
     pass
-from fp8_quantizer_patch import *
+from fp8_quantizer_patch import patch_fp8_quantizer
 from transformers.initialization import no_init_weights
-
+patch_fp8_quantizer()
 
 def main(args):
     model_name = args.model_name

@@ -24,6 +24,8 @@ def apply_all_ds_patches():
     from ds_patch import apply_transformer_patches
 
     # from qwen_v5_patch import apply_transformer_patches_qwen
-
     disable_concat_experts()
     apply_transformer_patches()
+    from fp8_quantizer_patch import patch_fp8_quantizer
+    patch_fp8_quantizer()
+
