@@ -630,7 +630,7 @@ class BaseCompressor(object):
         """Parse and set the quantization scheme."""
 
         def _parse_and_set(scheme):
-            if self.data_type and self.data_type.endswith("_dq") and not scheme.startswith("gguf"):
+            if getattr(self, "data_type", None) and self.data_type.endswith("_dq") and not scheme.startswith("gguf"):
                 if not hasattr(self, "bits") or self.bits is None:
                     raise KeyError(
                         f"please set bits when setting data_type={self.data_type}, or using scheme as an alternative."
