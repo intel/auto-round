@@ -64,7 +64,7 @@ def tiny_phi2_model_path():
 def tiny_deepseek_v2_model_path():
     model_name_or_path = deepseek_v2_name_or_path
     tiny_model_path = "./tmp/tiny_deepseek_v2_model_path"
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, trust_remote_code=False)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
