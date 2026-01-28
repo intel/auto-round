@@ -4,8 +4,11 @@ import os
 import pytest
 import torch
 import transformers
+from packaging import version
 
 from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
+
+transformers_version = version.parse(transformers.__version__)
 
 
 # Automatic choose local path or model name.
@@ -98,14 +101,14 @@ def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=F
             for key in model._tied_weights_keys:
                 weight = get_attr(model, key)
                 set_attr(model, key, copy.deepcopy(weight))
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, **kwargs)
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
     model.save_pretrained(tiny_model_path)
     tokenizer.save_pretrained(tiny_model_path)
     if is_mllm:
-        processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
-        image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
+        processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, **kwargs)
+        image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, **kwargs)
         processor.save_pretrained(tiny_model_path)
         image_processor.save_pretrained(tiny_model_path)
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")

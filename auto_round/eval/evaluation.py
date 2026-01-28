@@ -31,7 +31,7 @@ def simple_evaluate_user_model(
     mllm: bool = False,
     **kwargs,
 ):
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    import lm_eval  # pylint: disable=E0401
     from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
 
     if mllm:
@@ -57,7 +57,7 @@ def simple_evaluate_user_model(
             dtype=eval_model_dtype,
             add_bos_token=add_bos_token,
         )
-    return lm_simple_evaluate(
+    return lm_eval.simple_evaluate(
         model=hflm, model_args=None, batch_size=batch_size, max_batch_size=max_batch_size, limit=limit, **kwargs
     )
 
@@ -71,9 +71,9 @@ def simple_evaluate(
     device: Optional[str] = None,
     **kwargs,
 ):
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    import lm_eval  # pylint: disable=E0401
 
-    return lm_simple_evaluate(
+    return lm_eval.simple_evaluate(
         model=model,
         model_args=model_args,
         batch_size=batch_size,
