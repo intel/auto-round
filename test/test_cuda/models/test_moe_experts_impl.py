@@ -309,6 +309,9 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
         dataset=dataloader,
         layer_config=layer_config,
     )
+
+    # Run quantization (this triggers update_module which prepares MOE for quantization)
+    compressed_model, _ = autoround.quantize()
     
     # Check that model was prepared with linear_loop
     model = autoround.model
@@ -321,9 +324,6 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
         f"gate_up_proj should be ModuleList, got {type(experts_module.gate_up_proj)}"
     assert isinstance(experts_module.down_proj, nn.ModuleList), \
         f"down_proj should be ModuleList, got {type(experts_module.down_proj)}"
-    
-    # Run quantization
-    compressed_model, _ = autoround.quantize()
     
     # Verify quantization worked
     assert hasattr(compressed_model.model.layers[1].mlp.experts.gate_up_proj[0], "orig_layer") or \

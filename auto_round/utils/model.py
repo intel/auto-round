@@ -1386,6 +1386,28 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                         f"to be updated for this model architecture. "
                         f"Original error: {e}"
                     ) from e
+            elif (
+                hasattr(sub_module.experts, "gate_up_proj")
+                and hasattr(sub_module.experts, "down_proj")
+                and isinstance(sub_module.experts.gate_up_proj, torch.nn.ModuleList)
+                and isinstance(sub_module.experts.down_proj, torch.nn.ModuleList)
+            ):
+                if linear_name in ("gate_proj", "up_proj", "gate_up_proj"):
+                    expert_linears = list(sub_module.experts.gate_up_proj)
+                elif linear_name == "down_proj":
+                    expert_linears = list(sub_module.experts.down_proj)
+                else:
+                    raise NotImplementedError(
+                        f"Unsupported expert linear name '{linear_name}' for experts type "
+                        f"'{type(sub_module.experts).__name__}'."
+                    )
+
+                unify_scale = linear_name in expert_input_proj_names and envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
+                set_amax_for_uncalibrated_experts(
+                    expert_linears,
+                    attr_name=attr_name,
+                    unify_all=unify_scale,
+                )
             else:
                 # Unsupported MoE model structure
                 raise NotImplementedError(
