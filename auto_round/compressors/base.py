@@ -287,6 +287,11 @@ class BaseCompressor(object):
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        for key in scheme_keys:
+            if key in kwargs and kwargs[key] is not None:
+                setattr(self, key, kwargs.pop(key))
+
         amp = kwargs.pop("amp", True)
         lr = kwargs.pop("lr", None)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
@@ -433,7 +438,7 @@ class BaseCompressor(object):
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
-        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(self.scheme, {})
+        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(self.scheme)
 
         # GGUF uses fp32 scale dtype as default
         if self.scale_dtype is None:
@@ -619,18 +624,18 @@ class BaseCompressor(object):
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
     def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme], kwargs
+        self,
+        scheme: Union[str, dict, QuantizationScheme],
     ) -> tuple[QuantizationScheme, bool]:
         """Parse and set the quantization scheme."""
 
-        def _parse_and_set(scheme, kwargs):
-            if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
-                if "bits" not in kwargs:
-                    data_type = kwargs["data_type"]
+        def _parse_and_set(scheme):
+            if self.data_type and self.data_type.endswith("_dq") and not scheme.startswith("gguf"):
+                if not hasattr(self, "bits") or self.bits is None:
                     raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
+                        f"please set bits when setting data_type={self.data_type}, or using scheme as an alternative."
                     )
-                bits = kwargs["bits"]
+                bits = self.bits
                 scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
             res = None
             if isinstance(scheme, QuantizationScheme):
@@ -648,11 +653,10 @@ class BaseCompressor(object):
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
-                if key in kwargs and kwargs[key] is not None:
-                    setattr(self, key, kwargs[key])
+                if hasattr(self, key) and getattr(self, key) is not None:
+                    continue
                 else:
                     setattr(self, key, scheme.get(key, None))
-                # kwargs.pop(key, None)
             if self.act_dynamic is None:
                 self.act_dynamic = True
 
@@ -708,7 +712,7 @@ class BaseCompressor(object):
                 raise ValueError("options of AutoScheme must not be empty")
             options = []
             for option in scheme.options:
-                new_option = _parse_and_set(option, kwargs)
+                new_option = _parse_and_set(option)
                 options.append(new_option)
             scheme.options = options
             for opt in options:
@@ -720,15 +724,13 @@ class BaseCompressor(object):
                 self.scheme = opt  # Choose the first one that not 16 bits
                 break
             # apply scheme to set default bits
-            scheme = _parse_and_set(self.scheme, kwargs)
+            scheme = _parse_and_set(self.scheme)
             is_auto_scheme = True
         else:
-            scheme = _parse_and_set(scheme, kwargs)
+            scheme = _parse_and_set(scheme)
             is_auto_scheme = False
 
         scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key in scheme_keys:
-            kwargs.pop(key, None)
 
         return scheme, is_auto_scheme
 
