@@ -3,6 +3,7 @@ import shutil
 import pytest
 import torch
 import torch.nn as nn
+from packaging import version
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3ForCausalLM, Qwen3MLP
@@ -10,7 +11,8 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeFor
 
 from auto_round import AutoRound
 from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
+
+from ...helpers import transformers_version
 
 
 @pytest.fixture
@@ -31,7 +33,10 @@ def setup_llama4():
     model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    config.pad_token_id = None  # TODO: https://github.com/huggingface/transformers/issues/43525
+
+    # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
+    config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
     model = Llama4ForConditionalGeneration(config)
@@ -45,6 +50,10 @@ def setup_qwen3_vl_moe():
     model_name = "/models/Qwen3-VL-30B-A3B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
+
+    # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
+    config.text_config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -69,6 +78,10 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
     return quantized_model
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0"),
+    reason="https://github.com/intel/auto-round/issues/1345",
+)
 def test_gptoss(setup_gpt_oss):
     model, tokenizer, output_dir, config = setup_gpt_oss
 
@@ -168,6 +181,10 @@ def setup_qwen3():
     return model, tokenizer, output_dir, config
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0"),
+    reason="https://github.com/intel/auto-round/issues/1345",
+)
 def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     model, tokenizer, processor, output_dir, config = setup_qwen3_vl_moe
     autoround = AutoRound(
