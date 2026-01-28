@@ -19,8 +19,9 @@ from auto_round.utils.model import *
 import transformers
 from packaging.version import Version
 
+DATASET_PATCHED = False
 # tmp batch for transformers v5.0
-if Version(transformers.__version__) >= Version("5.0.0"):
+if Version(transformers.__version__) >= Version("5.0.0") and not DATASET_PATCHED:
     import datasets
 
     datasets.original_load_dataset = datasets.load_dataset
@@ -38,3 +39,4 @@ if Version(transformers.__version__) >= Version("5.0.0"):
         return datasets.original_load_dataset(*args, **kwargs)
 
     datasets.load_dataset = patch_load_dataset
+    DATASET_PATCHED = True

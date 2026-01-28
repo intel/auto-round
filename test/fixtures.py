@@ -22,23 +22,6 @@ from .helpers import (
     save_tiny_model,
 )
 
-datasets.original_load_dataset = datasets.load_dataset
-
-
-def patch_load_dataset(*args, **kwargs):
-    if len(args) > 0 and "openbookqa" in args[0]:
-        args = ("allenai/openbookqa",) + args[1:]
-    if "path" in kwargs:
-        if "openbookqa" in kwargs["path"] and "allenai/openbookqa" not in kwargs["path"]:
-            kwargs["path"] = kwargs["path"].replace("openbookqa", "allenai/openbookqa")
-    if "name" in kwargs:
-        if "openbookqa" in kwargs["name"] and "allenai/openbookqa" not in kwargs["name"]:
-            kwargs["name"] = kwargs["name"].replace("openbookqa", "allenai/openbookqa")
-    return datasets.original_load_dataset(*args, **kwargs)
-
-
-datasets.load_dataset = patch_load_dataset
-
 
 # Create tiny model path fixtures for testing
 @pytest.fixture(scope="session")
