@@ -6,6 +6,6 @@ torchvision
 pillow
 numba
 llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
-lm_eval
+lm_eval @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@main
 diffusers
 protobuf

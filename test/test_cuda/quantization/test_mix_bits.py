@@ -270,7 +270,13 @@ class TestAutoRound:
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
         # Create an LLM.
         QUANTIZATION = "auto-round"  # quantized_model_path
-        llm = LLM(model=quantized_model_path, quantization=QUANTIZATION, trust_remote_code=True, tensor_parallel_size=1)
+        llm = LLM(
+            model=quantized_model_path,
+            quantization=QUANTIZATION,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+        )
         outputs = llm.generate(prompts, sampling_params)
         # Print the outputs.
         for output in outputs:
@@ -310,8 +316,12 @@ class TestAutoRound:
         # Create a sampling params object.
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
         # Create an LLM.
-        QUANTIZATION = "auto-round"  # quantized_model_path
-        llm = LLM(model=quantized_model_path, trust_remote_code=True, tensor_parallel_size=1)
+        llm = LLM(
+            model=quantized_model_path,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+        )
         outputs = llm.generate(prompts, sampling_params)
         # Print the outputs.
         for output in outputs:

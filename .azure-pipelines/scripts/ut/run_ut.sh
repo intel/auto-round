@@ -9,11 +9,11 @@ export TQDM_MININTERVAL=60
 uv pip install pytest-cov pytest-html
 uv pip install -r /auto-round/test/test_cpu/requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cpu
+uv pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # install latest gguf for ut test
 cd ~ || exit 1
 git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install . sentencepiece
-uv pip install --upgrade transformers
 
 cd /auto-round && uv pip install .
 

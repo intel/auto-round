@@ -4,16 +4,22 @@ import sys
 
 import pytest
 import torch
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, get_tiny_model, save_tiny_model
+from ...helpers import get_model_path, get_tiny_model, save_tiny_model, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="GGUF format saving and loading failed in transformers v5, \
+        https://github.com/huggingface/transformers/issues/43482",
+)
 class TestGGUF:
 
     @classmethod
@@ -63,6 +69,12 @@ class TestGGUF:
         )
         quantized_model_path = quantized_model_path[0]
         gguf_file = os.listdir(quantized_model_path)[0]
+
+        # TODO: fix the issue of gguf loading error in transformers v5
+        # cls = transformers.generation.configuration_utils.GenerationConfig'>, json_file = None
+        #     def _dict_from_json_file(cls, json_file: str | os.PathLike):
+        # >       with open(json_file, "r", encoding="utf-8") as reader:
+        # E       TypeError: expected str, bytes or os.PathLike object, not NoneType
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
