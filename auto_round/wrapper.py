@@ -98,6 +98,7 @@ class WrapperLinear(torch.nn.Module):
         enable_round_tuning=True,
         enable_torch_compile=False,
         disable_opt_rtn=True,
+        transform_config={},
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -140,6 +141,14 @@ class WrapperLinear(torch.nn.Module):
                 self.orig_forward = self.conv1d_forward
         else:
             self.orig_forward = self.linear_forward if type(self.orig_layer) == torch.nn.Linear else self.conv1d_forward
+
+        self.enable_transform = False
+        if transform_config:
+            from .transforms.transforms import build_transform
+
+            self.in_transform = build_transform(**transform_config)
+            self.enable_transform = True
+            self.transform_config = transform_config
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
@@ -235,6 +244,9 @@ class WrapperLinear(torch.nn.Module):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
+        if self.enable_transform:
+            weight = self.in_transform(weight)
+
         weight_q, scale, zp = self.weight_quant_func(
             weight.to(self.device),
             bits=self.orig_layer.bits,
@@ -267,6 +279,9 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             tuple: Quantized activation, scale, and zero point.
         """
+        # apply rotate
+        if self.enable_transform:
+            x = self.in_transform(x)
         act_max_scale.data.clamp_(0, 1.0)
         x, scale, zp = self.act_quant_func(
             x,
@@ -323,6 +338,7 @@ class WrapperLinear(torch.nn.Module):
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
         # if hasattr(self.orig_layer, "imatrix"):
         #     self.orig_layer.imatrix = None
+        orig_dtype = self.orig_layer.weight.dtype
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
@@ -346,6 +362,12 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         else:
             self.orig_layer.scale = scale.view(-1).to("cpu")
+
+        # for saving transform matrix
+        if self.enable_transform:
+            transform_matrix = self.in_transform.get_transform_matrix(self.device, orig_dtype).cpu()
+            self.orig_layer.transform_config = self.transform_config
+            self.orig_layer.forward_hadamard_matrix = transform_matrix
 
         if zp is not None:
             if isinstance(zp, dict):
@@ -502,8 +524,17 @@ class WrapperWALayer(torch.nn.Module):
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
 
+        self.enable_transform = False
+        if getattr(self.orig_layer, "transform_config", False):
+            from .transforms.transforms import build_transform
+
+            self.in_transform = build_transform(**self.orig_layer.transform_config)
+            self.enable_transform = True
+
     def forward(self, x):
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+        if self.enable_transform:
+            x = self.in_transform(x)
         x, _, _ = self.orig_layer.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
