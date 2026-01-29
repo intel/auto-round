@@ -24,7 +24,7 @@ import torch
 MODEL_CONFIG = {
     "qwen3_moe": {
         "min_transformers_version": "5.0.0",
-        "max_transformers_version": None,
+        "max_transformers_version": "6.0.0",
         "checkpoint_mapping": [],
         "block_patch": [
             (
@@ -35,7 +35,7 @@ MODEL_CONFIG = {
     },
     "glm4_moe_lite": {
         "min_transformers_version": "5.0.0",
-        "max_transformers_version": None,
+        "max_transformers_version": "6.0.0",
         "checkpoint_mapping": [],
         "block_patch": [
             (
@@ -47,7 +47,7 @@ MODEL_CONFIG = {
 
     "glm4_moe": {
         "min_transformers_version": "5.0.0",
-        "max_transformers_version": None,
+        "max_transformers_version": "6.0.0",
         "checkpoint_mapping": [],
         "block_patch": [
             (
@@ -58,12 +58,24 @@ MODEL_CONFIG = {
     },
     "qwen3_next": {
         "min_transformers_version": "5.0.0",
-        "max_transformers_version": None,
+        "max_transformers_version": "6.0.0",
         "checkpoint_mapping": [],
         "block_patch": [
             (
                 "transformers.models.qwen3_next.modeling_qwen3_next.Qwen3NextSparseMoeBlock",
                 "auto_round.modeling.unfused_moe.qwen3_next.LinearQwen3NextSparseMoeBlock",
+            )
+        ],
+    },
+
+    "deepseek_v3": {
+        "min_transformers_version": "5.0.0",
+        "max_transformers_version": "6.0.0",
+        "checkpoint_mapping": [],
+        "block_patch": [
+            (
+                "transformers.models.deepseek_v3.modeling_deepseek_v3.DeepseekV3MoE",
+                "auto_round.modeling.unfused_moe.deepseek_v3.LinearDeepseekV3MoE",
             )
         ],
     },

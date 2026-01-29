@@ -9,7 +9,7 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
         from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextTopKRouter, Qwen3NextExperts, \
             Qwen3NextMLP
         self.gate = Qwen3NextTopKRouter(config)
-        self.num_experts = config.num_local_experts
+        self.num_experts = config.num_experts # needed
         self.experts = nn.ModuleList(
             [Qwen3NextMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )

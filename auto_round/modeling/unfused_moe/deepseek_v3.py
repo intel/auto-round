@@ -1,23 +1,21 @@
 import torch
 import torch.nn as nn
 
-
-
-class LinearGlm4MoeMoE(nn.Module):
+class LinearDeepseekV3MoE(nn.Module):
     """
     A mixed expert module containing shared experts.
     """
 
     def __init__(self, config):
         super().__init__()
-        from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMLP, Glm4MoeTopkRouter
         self.config = config
+        from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3TopkRouter,DeepseekV3MLP
         self.num_experts = config.num_local_experts  # needed
         self.experts = nn.ModuleList(
-            [Glm4MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
+            [DeepseekV3MLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
-        self.gate = Glm4MoeTopkRouter(config)
-        self.shared_experts = Glm4MoeMLP(
+        self.gate = DeepseekV3TopkRouter(config)
+        self.shared_experts = DeepseekV3MLP(
             config=config, intermediate_size=config.moe_intermediate_size * config.n_shared_experts
         )
         self.n_routed_experts = config.n_routed_experts
