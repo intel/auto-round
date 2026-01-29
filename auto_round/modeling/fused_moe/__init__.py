@@ -185,7 +185,7 @@ def apply_modeling_patch(model: torch.nn.Module) -> bool:
                     names.append(n)
             for n in names:
                 model.set_submodule(n, custom_class(model.config), True)
-            logger.info(f"Patched module {n} : {orig_path} -> {custom_path}")
+            logger.info(f"Patched module: {orig_path} -> {custom_path}")
             return True
         except Exception as e:
             logger.warning(f"Failed to patch {orig_path}: {e}")
