@@ -50,8 +50,10 @@ def get_checkpoint_conversion_mapping_ar(model_type):
 
     return conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
 
+
 def get_file_path_via_model_name(model_or_path: str, file_name):
     from huggingface_hub import hf_hub_download
+
     # 1) local folder
     if os.path.isdir(model_or_path):
         index_path = os.path.join(model_or_path, file_name)
@@ -65,6 +67,7 @@ def get_file_path_via_model_name(model_or_path: str, file_name):
         )
     elif envs.AR_USE_MODELSCOPE:
         from modelscope import snapshot_download
+
         # ModelSCOPE is different, it returns the folder path
         folder = snapshot_download(model_or_path, allow_patterns=[file_name])
         index_path = os.path.join(folder, file_name)
@@ -73,8 +76,9 @@ def get_file_path_via_model_name(model_or_path: str, file_name):
 
     return index_path
 
-def pre_check_config(model_name:str|torch.nn.Module):
-    if isinstance(model_name,str):
+
+def pre_check_config(model_name: str | torch.nn.Module):
+    if isinstance(model_name, str):
         config = AutoConfig.from_pretrained(model_name)
     elif isinstance(model_name, torch.nn.Module):
         config = getattr(model_name, "config", None)
@@ -95,7 +99,7 @@ def pre_check_config(model_name:str|torch.nn.Module):
     if max_ver and tf_ver > version.parse(max_ver):
         return False
     try:
-        file_path = get_file_path_via_model_name(model_name,"model.safetensors.index.json")
+        file_path = get_file_path_via_model_name(model_name, "model.safetensors.index.json")
         if os.path.exists(file_path):
             import json
 
@@ -109,8 +113,9 @@ def pre_check_config(model_name:str|torch.nn.Module):
         return True
     return True
 
+
 # This is for model checkpoint with linear definition
-def apply_model_monkey_patches(model_name:str) -> bool:
+def apply_model_monkey_patches(model_name: str) -> bool:
     res = pre_check_config(model_name)
     if not res:
         return False
@@ -149,7 +154,7 @@ def apply_model_monkey_patches(model_name:str) -> bool:
 
 
 def apply_modeling_patch(model: torch.nn.Module) -> bool:
-    res=pre_check_config(model)
+    res = pre_check_config(model)
     if not res:
         return False
     model_type = getattr(model.config, "model_type")
