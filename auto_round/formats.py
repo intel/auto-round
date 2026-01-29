@@ -1076,6 +1076,10 @@ class AutoRoundFormat(OutputFormat):
 
             backend = "auto_round"
             export_func = save_quantized_as_autoround
+        elif re.search(f"{AutoRoundExportFormat.FP8_STATIC.value}", backend):
+            from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
+
+            export_func = save_quantized_as_static_fp
         else:
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
 
