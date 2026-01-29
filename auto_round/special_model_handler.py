@@ -177,6 +177,27 @@ class ArchitectureMatcher:
         else:
             raise ValueError(f"unsupported mode {self.mode}")
 
+class ModelTypeMatcher:
+    """match config.architectures"""
+
+    def __init__(self, model_type: str, mode="in"):
+        self.model_type = model_type
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        model_type = getattr(model.config, "model_type", None)
+        if model_type is None:
+            return False
+
+
+        if self.mode == "full":
+            return model_type == self.model_type
+        elif self.mode == "in":
+            return self.model_type in model_type
+        elif self.mode == "regex":
+            return re.search(self.model_type, model_type) is not None
+        else:
+            raise ValueError(f"unsupported mode {self.mode}")
 
 @dataclass
 class PreDefinedIgnoreLayers:
@@ -233,6 +254,15 @@ register_ignore_layers(
     ],
 )
 
+# # qwen3_next
+# register_ignore_layers(
+#     matchers=[
+#         ModelTypeMatcher(r"qwen3_next", mode="full"),
+#     ],
+#     ignore_layers=[
+#         "mlp.gate",  # vllm issue
+#     ],
+# )
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
