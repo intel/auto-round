@@ -741,8 +741,8 @@ class TestAutoRound:
     def test_quant_lm_head(self, tiny_untied_qwen_model_path):
         model_name = tiny_untied_qwen_model_path
         ar = AutoRound(model_name, quant_lm_head=True, iters=0, seqlen=8, nsamples=1, disable_opt_rtn=True)
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
@@ -756,8 +756,8 @@ class TestAutoRound:
             disable_opt_rtn=True,
             layer_config=layer_config,
         )
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
@@ -773,8 +773,8 @@ class TestAutoRound:
             disable_opt_rtn=True,
             layer_config=layer_config,
         )
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
