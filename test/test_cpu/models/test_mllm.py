@@ -9,6 +9,7 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class FakeDataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
@@ -26,6 +27,7 @@ class FakeDataLoader:
 
 
 class TestAutoRoundMLLM:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
@@ -220,15 +222,17 @@ class TestAutoRoundMLLM:
             processor=processor,
             image_processor=image_processor,
         )
-        autoround.quantize_and_save("./saved/", format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save("./saved/", format="auto_round")
 
         import requests
         from PIL import Image
         from transformers import AutoProcessor, AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained("./saved", torch_dtype="auto", device_map="auto")
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            quantized_model_path, torch_dtype="auto", device_map="auto"
+        )
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        processor = AutoProcessor.from_pretrained("./saved")
+        processor = AutoProcessor.from_pretrained(quantized_model_path)
         messages = [
             {
                 "role": "user",

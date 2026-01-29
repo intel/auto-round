@@ -11,6 +11,7 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class TestLLMC:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("stas/tiny-random-llama-2")
@@ -50,7 +51,8 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save("./saved", format="llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save("./saved", format="llm_compressor")
+
         # from vllm import LLM
         # model = LLM("./saved")
         # result = model.generate("Hello my name is")
@@ -58,7 +60,7 @@ class TestLLMC:
 
         import json
 
-        config = json.load(open("./saved/config.json"))
+        config = json.load(open(f"{quantized_model_path}/config.json"))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
@@ -75,11 +77,11 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save("./saved", format="auto_round:llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save("./saved", format="auto_round:llm_compressor")
 
         import json
 
-        config = json.load(open("./saved/config.json"))
+        config = json.load(open(f"{quantized_model_path}/config.json"))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"

@@ -45,17 +45,17 @@ class TestAutoRoundAsym:
             ar = AutoRound(
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1
             )
-            ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
+            _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
             # TODO when ark is ready, uncomment the following lines to do inference test
 
             # model = AutoModelForCausalLM.from_pretrained(
-            #     self.save_dir,
+            #     quantized_model_path,
             #     torch_dtype="auto",
             #     device_map="auto",
             # )
 
-            # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -65,17 +65,17 @@ class TestAutoRoundAsym:
             ar = AutoRound(
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1
             )
-            ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
+            _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
             # TODO when ark is ready, uncomment the following lines to do inference test
 
             # model = AutoModelForCausalLM.from_pretrained(
-            #     self.save_dir,
+            #     quantized_model_path,
             #     torch_dtype="auto",
             #     device_map="auto",
             # )
 
-            # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -87,15 +87,15 @@ class TestAutoRoundAsym:
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1
             )
             # TODO when ark is ready, uncomment the following lines to do inference test
-            ar.quantize_and_save(format=format, output_dir=self.save_dir)
+            _, quantized_model_path = ar.quantize_and_save(format=format, output_dir=self.save_dir)
 
             # model = AutoModelForCausalLM.from_pretrained(
-            #     self.save_dir,
+            #     quantized_model_path,
             #     torch_dtype="auto",
             #     device_map="auto",
             # )
 
-            # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -105,17 +105,17 @@ class TestAutoRoundAsym:
             ar = AutoRound(
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1
             )
-            ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
+            _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
             # TODO when ark is ready, uncomment the following lines to do inference test
 
             # model = AutoModelForCausalLM.from_pretrained(
-            #     self.save_dir,
+            #     quantized_model_path,
             #     torch_dtype="auto",
             #     device_map="auto",
             # )
 
-            # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -125,17 +125,17 @@ class TestAutoRoundAsym:
             ar = AutoRound(
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1
             )
-            ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
+            _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
             # TODO when ark is ready, uncomment the following lines to do inference test
 
             # model = AutoModelForCausalLM.from_pretrained(
-            #     self.save_dir,
+            #     quantized_model_path,
             #     torch_dtype="auto",
             #     device_map="auto",
             # )
 
-            # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -147,14 +147,14 @@ class TestAutoRoundAsym:
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1
             )
             # TODO when ark is ready, uncomment the following lines to do inference test
-            ar.quantize_and_save(format=format, output_dir=self.save_dir)
+            _, quantized_model_path = ar.quantize_and_save(format=format, output_dir=self.save_dir)
 
             # model = AutoModelForCausalLM.from_pretrained(
-            #     self.save_dir,
+            #     quantized_model_path,
             #     torch_dtype="auto",
             #     device_map="auto",
             # )
 
-            # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             # model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)

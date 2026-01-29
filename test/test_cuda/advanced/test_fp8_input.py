@@ -38,8 +38,8 @@ class TestAutoRound:
     def test_small_model_rtn_generation(self):
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
-        ar.quantize_and_save(output_dir=self.save_dir)
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -49,7 +49,7 @@ class TestAutoRound:
     def test_gguf_imatrix(self):
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
-        ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
         # from llama_cpp import Llama
         #
         # gguf_file = os.listdir("saved/Qwen3-0.6B-FP8/-gguf")[0]
@@ -66,8 +66,8 @@ class TestAutoRound:
     def test_small_model_rtn(self):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
-        _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model_args = f"pretrained={quantized_model_path}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > 0.25
@@ -77,8 +77,8 @@ class TestAutoRound:
     def test_small_model_iters1(self):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
-        _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model_args = f"pretrained={quantized_model_path}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > 0.25
@@ -88,8 +88,8 @@ class TestAutoRound:
     def test_medium_model_rtn(self):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
-        _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model_args = f"pretrained={quantized_model_path}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > 0.33
@@ -100,8 +100,8 @@ class TestAutoRound:
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
-        _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model_args = f"pretrained={quantized_model_path}"
         result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > 0.33
@@ -113,8 +113,8 @@ class TestAutoRound:
 
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
-        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
-        for file in os.listdir(self.save_dir):
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
+        for file in os.listdir(quantized_model_path):
             if file.endswith(".gguf"):
                 gguf_file = file
         llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
@@ -124,8 +124,8 @@ class TestAutoRound:
 
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=1)
-        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
-        for file in os.listdir(self.save_dir):
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
+        for file in os.listdir(quantized_model_path):
             if file.endswith(".gguf"):
                 gguf_file = file
         llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
@@ -139,5 +139,5 @@ class TestAutoRound:
             for iters in [0, 1]:
                 print(f"Testing scheme: {scheme}, iters: {iters}")
                 ar = AutoRound(model_name, iters=iters, scheme=scheme)
-                ar.quantize_and_save(output_dir=self.save_dir)
+                _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
                 shutil.rmtree(self.save_dir, ignore_errors=True)
