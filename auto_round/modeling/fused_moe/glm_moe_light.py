@@ -1,5 +1,20 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 import torch.nn as nn
+
 
 class LinearGlm4MoeLiteMoE(nn.Module):
     """
@@ -10,7 +25,8 @@ class LinearGlm4MoeLiteMoE(nn.Module):
         super().__init__()
         self.config = config
         self.num_experts = config.num_local_experts
-        from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteMLP,Glm4MoeLiteTopkRouter
+        from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteMLP, Glm4MoeLiteTopkRouter
+
         self.experts = nn.ModuleList(
             [Glm4MoeLiteMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
@@ -26,9 +42,12 @@ class LinearGlm4MoeLiteMoE(nn.Module):
         self.routed_scaling_factor = config.routed_scaling_factor
         self.top_k = config.num_experts_per_tok
 
-
-    def experts_forward(self, hidden_states: torch.Tensor, top_k_index: torch.Tensor,
-                top_k_weights: torch.Tensor, ) -> torch.Tensor:
+    def experts_forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
         """ """
         final_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
@@ -86,4 +105,3 @@ class LinearGlm4MoeLiteMoE(nn.Module):
         hidden_states = self.experts_forward(hidden_states, topk_indices, topk_weights).view(*orig_shape)
         hidden_states = hidden_states + self.shared_experts(residuals)
         return hidden_states
-
