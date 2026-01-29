@@ -21,10 +21,10 @@ if transformers_version < version.parse("5.0.0"):
     from transformers.modeling_utils import no_init_weights
 else:
     from transformers.initialization import no_init_weights
-from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
+from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP
 
-from auto_round.modeling.replace_modules import ReplacementModuleBase
-from auto_round.modeling.utils import _update_parameter
+from auto_round.modeling.legacy.replace_modules import ReplacementModuleBase
+from auto_round.modeling.legacy.utils import _update_parameter
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 

@@ -29,7 +29,7 @@ from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed
+from transformers import set_seed, AutoConfig
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -52,10 +52,10 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modeling.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.legacy.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -259,7 +259,19 @@ class BaseCompressor(object):
         self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
+        self.is_model_patched = False
         if isinstance(model, str):
+            try:
+                config = AutoConfig.from_pretrained(model)
+                model_type = getattr(config, "model_type")
+                self.is_model_patched = apply_moe_patch(model_type)
+                if (is_moe_model_via_config(config) and self.is_model_patched and
+                        transformers.__version__>=version.parse("5.0.0")):
+                    loggger.warning("The moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                                    "please submit a issue to https://github.com/intel/auto-round/issues")
+
+            except:
+                pass
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,
@@ -469,7 +481,6 @@ class BaseCompressor(object):
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
         self.attention_mask = []
 
