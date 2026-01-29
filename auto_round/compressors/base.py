@@ -730,8 +730,6 @@ class BaseCompressor(object):
             scheme = _parse_and_set(scheme)
             is_auto_scheme = False
 
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-
         return scheme, is_auto_scheme
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
@@ -1571,6 +1569,9 @@ class BaseCompressor(object):
                     self.ignore_layers = tmp_str
                 else:
                     self.ignore_layers += "," + tmp_str
+
+        if self.is_auto_scheme:
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
 
         fill_default_value = True
         if self.is_auto_scheme:
