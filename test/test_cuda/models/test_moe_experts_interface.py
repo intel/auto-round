@@ -271,7 +271,7 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
 
     from auto_round import AutoRound
     from auto_round.modeling.fused_moe.moe_experts_interface import is_linear_loop_available
-    
+
     if not is_linear_loop_available():
         print("SKIP: transformers MOE integration not available")
         return

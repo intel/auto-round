@@ -23,12 +23,8 @@ The implementation integrates with transformers' `use_experts_implementation`
 decorator and `ALL_EXPERTS_FUNCTIONS` registry.
 
 Usage:
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/moe_experts_interface.py
-    from auto_round.modeling.fused_moe.moe_experts_interface import prepare_model_for_moe_quantization
-========
-    from auto_round.modelling.moe_experts_interface import prepare_model_for_moe_quantization
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/moe_experts_interface.py
 
+    from auto_round.modeling.fused_moe.moe_experts_interface import prepare_model_for_moe_quantization
     # Before quantization
     prepare_model_for_moe_quantization(model)
 

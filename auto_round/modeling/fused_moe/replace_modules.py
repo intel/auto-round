@@ -23,17 +23,10 @@ from transformers import PreTrainedModel
 from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
 
 BUILTIN_MODULES = {
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/replace_modules.py
     "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
     "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
     "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
     "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
-========
-    "Llama4TextMoe": LazyImport("auto_round.modeling.unfused_moe.llama4"),
-    "GptOssMLP": LazyImport("auto_round.modeling.unfused_moe.gpt_oss"),
-    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.unfused_moe.qwen3_vl_moe"),
-    "DeepseekV2Attention": LazyImport("auto_round.modeling.unfused_moe.deepseek_v2"),
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/replace_modules.py
 }
 
 
@@ -46,11 +39,7 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     Returns:
         List of module names that were processed
     """
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/replace_modules.py
     from auto_round.modeling.fused_moe.moe_experts_interface import (
-========
-    from auto_round.modelling.moe_experts_interface import (
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/replace_modules.py
         is_linear_loop_available,
         prepare_model_for_moe_quantization,
     )

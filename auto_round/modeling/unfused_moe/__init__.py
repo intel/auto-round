@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 # Copyright (c) 2025 Intel Corporation
-=======
-# Copyright (c) 2026 Intel Corporation
->>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361))
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-<<<<<<< HEAD
 import os
 from auto_round import envs
 import transformers
@@ -240,34 +235,3 @@ def apply_modeling_patch(model: torch.nn.Module) -> bool:
             logger.warning(f"Failed to patch {orig_path}: {e}")
             return False
     return False
-=======
-
-from auto_round.modeling.fused_moe.replace_modules import (
-    ReplacementModuleBase,
-    apply_replacements,
-    materialize_model_,
-    release_original_module_,
-)
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/__init__.py
-from auto_round.modeling.fused_moe.moe_experts_interface import (
-========
-from auto_round.modelling.moe_experts_interface import (
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/__init__.py
-    linear_loop_experts_forward,
-    register_linear_loop_experts,
-    prepare_model_for_moe_quantization,
-    is_linear_loop_available,
-)
-
-__all__ = [
-    "ReplacementModuleBase",
-    "apply_replacements",
-    "materialize_model_",
-    "release_original_module_",
-    # Transformers-native MOE integration (transformers 5.0+)
-    "linear_loop_experts_forward",
-    "register_linear_loop_experts",
-    "prepare_model_for_moe_quantization",
-    "is_linear_loop_available",
-]
->>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361))
