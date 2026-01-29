@@ -1,6 +1,8 @@
 Step-by-Step
 ============
 
+English | [简体中文](./step_by_step_CN.md)
+
 This document presents step-by-step instructions for auto-round llm quantization. You can refer to [vlms user guide](../auto_round/compressors/mllm/README.md) for vlms quantization and [diffusions user guide](../auto_round/compressors/diffusion/README.md) for diffusions quantization.
 
 * [1 Prerequisite](#1-prerequisite)
@@ -513,7 +515,7 @@ For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which re
 <summary>Customized device map</summary>
 If device_map=auto does not correctly map the model, we also support mapping different layers within a block to 
 different devices by setting the `device_map` argument in the AutoRound API. For reference, we provide an example of 
-quantizing the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
+quantifying the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
 
 ```python
 import torch

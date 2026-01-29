@@ -16,7 +16,7 @@
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
 
-[English](README.md) | 简体中文 | [用户指南](./docs/step_by_step.md)
+[English](README.md) | 简体中文 | [用户指南](./docs/step_by_step_CN.md)
 
 ---
 <div align="left">
@@ -72,7 +72,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ✅ **支持十余种 VLM 模型**  已支持十余种视觉语言模型，让用户有“开盖即食”般的量化体验。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
-✅ **多种量化方案可选**  提供`auto-round-best`​、`auto-round`​、`auto-round-light`​ 等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+✅ **多种量化方案可选**  提供 `auto-round-best`​、`auto-round`​、`auto-round-light`​ 等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
 ✅ **实用额外特性** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)和[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)，并兼容[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
@@ -120,7 +120,7 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-另外，我们还提供`auto-round-best`​ 和 `auto-round-light`两种方案，前者旨在追求更高的模型精度，后者则专注于提升量化速度。具体细节如下：
+另外，我们还提供 `auto-round-best`​ 和 `auto-round-light` 两种方案，前者旨在追求更高的模型精度，后者则专注于提升量化速度。具体细节如下：
 
 
 <details>
@@ -255,7 +255,7 @@ ar.quantize_and_save()
 ##### AutoScheme 超参数
 
 - ​**​`avg_bits`​**​  **(float)** ：整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。
-- ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化方配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
+- ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
 - ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 - ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
 - ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。
@@ -264,7 +264,7 @@ ar.quantize_and_save()
 
 ### 视觉语言模型（VLM）的 API 调用方法
 
-如果在量化过程中遇到问题可尝试启动RTN 模式，具体是指将 `iters` 设置为 `0`并打开 `disable_opt_rtn`。另外可以将 `group_size` 设为 `32` 可以提升RTN模型的精度，副作用是有一定的性能下降。
+如果在量化过程中遇到问题可尝试启动 RTN 模式，具体是指将 `iters` 设置为 `0` 并打开 `disable_opt_rtn`。另外可以将 `group_size` 设为 `32` 可以提升RTN模型的精度，副作用是有一定的性能下降。
 
 
 <details>
@@ -362,9 +362,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ## 致谢
 
-特别感谢 AutoGPTQ、AutoAWQ、GPTQModel、Triton、Marlin、ExLLaMAV2 等开源低精度库，它们提供的低精度 CUDA 内核（low-precision CUDA kernel）为 AutoRound 的实现提供了重要的支持。
+特别感谢 AutoGPTQ、AutoAWQ、GPTQModel、Triton、Marlin、ExLLaMAV2 等开源低精度库，它们提供的低精度 CUDA 内核（low-precision CUDA kernel）为 AutoRound 的实现提供了重要支持。
 
 ## 🌟 支持我们
 
 如果觉得 AutoRound 对你有帮助，欢迎给 repo 点个 ⭐ 并转发到你的社区~
-
