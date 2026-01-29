@@ -31,6 +31,7 @@ def setup_llama4():
     model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    config.pad_token_id = None  # TODO: https://github.com/huggingface/transformers/issues/43525
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
     model = Llama4ForConditionalGeneration(config)
@@ -128,7 +129,7 @@ def test_llama4(setup_llama4):
 
 class NewQwen3MLP(ReplacementModuleBase):
     def __init__(self, original: Qwen3MLP, config: Qwen3Config):
-        super().__init__()
+        super().__init__(original)
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size

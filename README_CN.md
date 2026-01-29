@@ -362,7 +362,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ## 致谢
 
-特别感谢 AutoGPTQ、AutoAWQ、GPTQModel、Triton、Marlin、ExLLaMAV2 等开源低精度库，它们提供的低精度 CUDA 内核（low-precision CUDA kernel）为 AutoRound 的实现提供了重要支持。
+特别感谢 AutoGPTQ、AutoAWQ、GPTQModel、Triton、Marlin、ExLLaMAV2 等开源低精度库，它们提供的低精度 CUDA 内核（low-precision CUDA kernel）为 AutoRound 提供了重要支持。
 
 ## 🌟 支持我们
 

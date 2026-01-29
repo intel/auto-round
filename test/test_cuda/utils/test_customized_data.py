@@ -5,9 +5,9 @@ import sys
 import unittest
 
 sys.path.insert(0, "../..")
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
-from auto_round import AutoRound, AutoRoundConfig
+from auto_round import AutoRound
 
 
 class TestCustomizedData(unittest.TestCase):

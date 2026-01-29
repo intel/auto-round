@@ -17,7 +17,8 @@ import sys
 
 from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
-from auto_round.eval.eval_cli import EvalArgumentParser, _eval_init, eval, eval_task_by_task
+from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
+from auto_round.eval.evaluation import run_model_evaluation
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
@@ -384,6 +385,20 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching. "
         )
         eval_args.add_argument(
+            "--eval_backend",
+            default="hf",
+            type=str,
+            choices=["hf", "vllm"],
+            help="Backend to use for model evaluation. Use hf backend for evaluation by default.",
+        )
+        eval_args.add_argument(
+            "--vllm_args",
+            default=None,
+            type=str,
+            help="(for vllm) Custom vllm arguments in format: '--arg1=value1,--arg2=value2'. "
+            "Example: '--tensor_parallel_size=2,--gpu_memory_utilization=0.9'",
+        )
+        eval_args.add_argument(
             "--eval_model_dtype",
             default=None,
             type=str,
@@ -703,185 +718,15 @@ def tune(args):
             suffix = f"g{autoround.group_size}"
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
 
+    # ======================= Quantize and save model =======================
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
     model.eval()
     clear_memory()
 
-    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-
-    # diffusion model has different evaluation path
-    if getattr(autoround, "diffusion", False):
-        pipe = autoround.pipe
-        pipe.to(model.dtype)
-        pipe.transformer = model
-        device_str = detect_device(device_str)
-        pipe = pipe.to(device_str)
-        if pipe.dtype != eval_model_dtype and eval_model_dtype != "auto":
-            pipe.to(getattr(torch, eval_model_dtype))
-
-        gen_kwargs = {
-            "guidance_scale": args.guidance_scale,
-            "output_type": "pil",
-            "num_inference_steps": args.num_inference_steps,
-            "generator": (
-                None
-                if args.generator_seed is None
-                else torch.Generator(device=pipe.device).manual_seed(args.generator_seed)
-            ),
-        }
-        if not os.path.exists(args.image_save_dir):
-            os.makedirs(args.image_save_dir)
-
-        if args.prompt is not None:
-            outputs = pipe(prompt=args.prompt, **gen_kwargs)
-            outputs.images[0].save(os.path.join(args.image_save_dir, "img.png"))
-            logger.info(
-                f"Image generated with prompt {args.prompt} is saved as {os.path.join(args.image_save_dir, 'img.png')}"
-            )
-
-        if args.prompt_file is not None:
-            from auto_round.compressors.diffusion import diffusion_eval
-
-            metrics = args.metrics.split(",")
-            diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs)
-        return
-
-    lm_eval_version = get_library_version("lm-eval")
-
-    eval_folder = folders[-1]
-    if args.tasks is None or args.tasks == "" or eval_folder is None:
-        return
-
-    tasks = args.tasks
-    if isinstance(tasks, str):
-        tasks = tasks.split(",")
-
-    from lm_eval.utils import make_table  # pylint: disable=E0401
-
-    logger.info(f"Using lm-eval version {lm_eval_version}")
-    eval_gguf_model = False
-    for file in os.listdir(eval_folder):
-        if file.endswith("gguf"):
-            eval_gguf_model = True
-            break
-
-    import time
-
-    if "llama" in args.model.lower() and not args.add_bos_token:
-        logger.warning("set add_bos_token=True for llama model.")
-        args.add_bos_token = True
-    if (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model:
-        if eval_gguf_model:
-            # for file in os.listdir(eval_folder):
-            #     gguf_file = file
-            gguf_file = None
-            gguf_format = None  # Initialize gguf_format to None
-            # gguf folder only contains one file
-            for format in formats:
-                if format.startswith("gguf"):
-                    gguf_format = format.split(":")[-1].upper()
-            if gguf_format is None:  # Validate gguf_format after the loop
-                logger.error("No valid gguf format found in formats. Please check the input.")
-                sys.exit(-1)
-            for file in os.listdir(eval_folder):
-                if gguf_format in file:
-                    gguf_file = file
-
-            logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
-            if eval_model_dtype == "float32" or eval_model_dtype == "auto":
-                logger.warning(
-                    "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
-                    " but may affect accuracy."
-                )
-            if gguf_file is None:
-                logger.error("Cannot find correct gguf file for evaluation, please check.")
-                sys.exit(-1)
-            model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
-            )
-            model.eval()
-            tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
-        else:
-            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                from accelerate.big_modeling import dispatch_model
-
-                dispatch_model(model, model.hf_device_map)
-            else:
-                device_str = detect_device(device_str)
-                model = model.to(device_str)
-            if model.dtype != eval_model_dtype and eval_model_dtype != "auto":
-                model.to(getattr(torch, eval_model_dtype))
-
-        if args.eval_task_by_task:
-            eval_task_by_task(
-                model,
-                tokenizer=tokenizer,
-                device=device_str,
-                tasks=args.tasks,
-                limit=args.limit,
-                batch_size=args.eval_bs,
-                eval_model_dtype=eval_model_dtype,
-                add_bos_token=args.add_bos_token,
-            )
-        else:
-            if args.eval_bs is None or args.eval_bs == "auto":
-                logger.warning("This API does not support auto currently, reset eval_bs to 16")
-                args.eval_bs = 16
-            from auto_round.eval.evaluation import simple_evaluate_user_model
-
-            st = time.time()
-
-            res = simple_evaluate_user_model(
-                model,
-                tokenizer,
-                tasks=tasks,
-                batch_size=args.eval_bs,
-                limit=args.limit,
-                device=device_str,
-                eval_model_dtype=eval_model_dtype,
-                add_bos_token=args.add_bos_token,
-            )
-            print(make_table(res))
-            print("evaluation running time=%ds" % (time.time() - st))
-    else:
-        if args.eval_task_by_task:
-            eval_task_by_task(
-                eval_folder,
-                device=device_str,
-                tasks=args.tasks,
-                batch_size=args.eval_bs,
-                limit=args.limit,
-                eval_model_dtype=eval_model_dtype,
-                mllm=autoround.mllm,  # pylint: disable=E1101
-                add_bos_token=args.add_bos_token,
-            )
-        else:
-            from auto_round.eval.evaluation import simple_evaluate
-
-            tasks, model_args, device_str = _eval_init(
-                args.tasks, eval_folder, args.device_map, args.disable_trust_remote_code, dtype=eval_model_dtype
-            )
-            st = time.time()
-            model_args += f",add_bos_token={args.add_bos_token}"
-            if autoround.mllm:  # pylint: disable=E1101
-                model_type = "hf-multimodal"
-                if args.eval_bs is None or args.eval_bs == "auto":
-                    logger.warning("hf-multimodal models does not support auto currently, reset eval_bs to 16")
-                    args.eval_bs = 16
-            else:
-                model_type = "hf"
-            res = simple_evaluate(
-                model=model_type,
-                model_args=model_args,
-                tasks=tasks,
-                device=device_str,
-                batch_size=args.eval_bs,
-                limit=args.limit,
-            )
-            print(make_table(res))
-            print("evaluation running time=%ds" % (time.time() - st))
+    # ======================= Model evaluation =======================
+    run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args)
 
 
 def setup_eval_parser():
@@ -909,6 +754,7 @@ def run_eval():
         eval_task_by_task(
             model=args.model,
             device=args.device_map,
+            limit=args.limit,
             tasks=args.tasks,
             batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code,

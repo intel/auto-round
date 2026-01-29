@@ -3,9 +3,9 @@ import sys
 
 import pytest
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
-from auto_round import AutoRound, AutoRoundConfig
+from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 
 from ..helpers import get_model_path, model_infer
