@@ -4,7 +4,6 @@ import shutil
 import pytest
 import torch
 import transformers
-from diffusers import AutoPipelineForText2Image
 from packaging import version
 from transformers import (
     AutoModelForCausalLM,
@@ -194,6 +193,8 @@ class TestAutoRound:
         reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
     )
     def test_flux(self):
+        from diffusers import AutoPipelineForText2Image
+
         model_name = "/dataset/FLUX.1-dev"
         pipe = AutoPipelineForText2Image.from_pretrained(model_name)
         model = pipe.transformer
