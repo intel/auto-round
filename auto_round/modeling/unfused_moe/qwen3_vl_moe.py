@@ -15,16 +15,14 @@
 import torch
 import transformers
 from packaging import version
-from torch import nn
-from transformers.activations import ACT2FN
 
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import clear_memory, logger, unsupported_meta_device
+from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
+from auto_round.utils import clear_memory, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-from auto_round.modelling.utils import _update_parameter
+from auto_round.modeling.unfused_moe.utils import _update_parameter
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
