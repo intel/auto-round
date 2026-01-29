@@ -33,7 +33,7 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
         self.shared_expert = Qwen3NextMLP(config, intermediate_size=config.shared_expert_intermediate_size)
         self.shared_expert_gate = torch.nn.Linear(config.hidden_size, 1, bias=False)
 
-    def expert_forward(
+    def experts_forward(
         self,
         hidden_states: torch.Tensor,
         top_k_index: torch.Tensor,

@@ -77,6 +77,17 @@ MODEL_CONFIG = {
             )
         ],
     },
+    "ernie4_5_moe": {
+        "min_transformers_version": "5.0.0",
+        "max_transformers_version": "6.0.0",
+        "checkpoint_mapping": [],
+        "block_patch": [
+            (
+                "transformers.models.ernie4_5_moe.modeling_ernie4_5_moe.Ernie4_5_MoeSparseMoeBlock",
+                "auto_round.modeling.unfused_moe.ernie4_5_moe.LinearErnie4_5_MoeSparseMoeBlock",
+            )
+        ],
+    },
 }
 
 

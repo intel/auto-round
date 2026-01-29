@@ -41,7 +41,7 @@ class LinearGlm4MoeMoE(nn.Module):
         self.routed_scaling_factor = config.routed_scaling_factor
         self.top_k = config.num_experts_per_tok
 
-    def expert_forward(
+    def experts_forward(
         self,
         hidden_states: torch.Tensor,
         top_k_index: torch.Tensor,
@@ -100,6 +100,6 @@ class LinearGlm4MoeMoE(nn.Module):
         router_logits = self.gate(hidden_states)
         topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-        hidden_states = self.expert_forward(hidden_states, topk_indices, topk_weights).view(*orig_shape)
+        hidden_states = self.experts_forward(hidden_states, topk_indices, topk_weights).view(*orig_shape)
         hidden_states = hidden_states + self.shared_experts(residuals)
         return hidden_states
