@@ -1055,38 +1055,29 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
+
+
+
+
 def get_module(module, key):
-    """Get module from model by key name.
+    """Get module from model by key name using PyTorch native API.
 
     Args:
         module (torch.nn.Module): original model
-        key (str): module name to be replaced
+        key (str): module name
     """
-    name_list = key.split(".")
-    for name in name_list:
-        module = getattr(module, name, None)
-    return module
+    return module.get_submodule(key)
 
 
 def set_module(model, key, new_module):
-    """Set new module into model by key name.
+    """Set new module into model by key name using PyTorch native API.
 
     Args:
         model (torch.nn.Module): original model
-        key (str): module name to be replaced
+        key (str): module name
         new_module (torch.nn.Module): new module to be inserted
     """
-    module = model
-    name_list = key.split(".")
-    for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
-
-
-# For getting and setting attribution, such as 'lm_head.weight'
-get_attr = get_module
-set_attr = set_module
+    model.set_submodule(key, new_module)
 
 
 def get_layer_features(layer):
