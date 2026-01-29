@@ -276,8 +276,8 @@ class BaseCompressor(object):
                     and version.parse(transformers.__version__) >= version.parse("5.0.0")
                 ):
                     logger.warning(
-                        "The moe model is not optimized by AutoRound yet which may cause large ram usage, "
-                        "please submit a issue to https://github.com/intel/auto-round/issues"
+                        "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                        "please submit an issue to https://github.com/intel/auto-round/issues"
                     )
 
             except:

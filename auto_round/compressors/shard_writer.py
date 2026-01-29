@@ -38,7 +38,8 @@ class ShardWriter:
         # - final // 10                       -> apply a safety margin so default shards are
         #                                         smaller than the full model; this intentionally
         #                                         underestimates size before clamping below.
-        model_size = int(total_params * rounder.bits // 1e9 // 8) // 10
+        max_split_num = 10
+        model_size = int(total_params * rounder.bits // 1e9 // 8 +max_split_num-1) / max_split_num
         model_size = max(1, min(int(model_size), 5))
 
         # Configuration
