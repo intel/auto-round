@@ -74,15 +74,16 @@ def apply_model_monkey_patches(model_type:str)->bool:
             custom_class = getattr(custom_module, custom_class_name)
             setattr(orig_module, orig_class_name, custom_class)
 
-            from transformers import conversion_mapping
+            if version.parse(transformers.__version__) >= version.parse("5.0.0"):
+                from transformers import conversion_mapping
 
-            if not hasattr(conversion_mapping, "orig_get_checkpoint_conversion_mapping"):
-                conversion_mapping.orig_get_checkpoint_conversion_mapping = (
-                    conversion_mapping.get_checkpoint_conversion_mapping
-                )
+                if not hasattr(conversion_mapping, "orig_get_checkpoint_conversion_mapping"):
+                    conversion_mapping.orig_get_checkpoint_conversion_mapping = (
+                        conversion_mapping.get_checkpoint_conversion_mapping
+                    )
 
-            conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
-            transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
+                conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
+                transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
             logger.info(f"Patched {orig_path} -> {custom_path}")
             return True
 
