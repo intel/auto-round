@@ -73,10 +73,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         self.shared_expert = getattr(original, "shared_expert", None)
 
         # Number of experts
-        if isinstance(original.experts.gate_up_proj, nn.ModuleList):
-            E = len(original.experts.gate_up_proj)
-        else:
-            E = original.experts.gate_up_proj.shape[0]
+        E = original.experts.gate_up_proj.shape[0]
         self.num_experts = E
 
         # Build per-expert MLPs
@@ -89,30 +86,14 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
     def _materialize_weights(self) -> None:
         original = self._get_original_module()
         if not unsupported_meta_device(original):
-            is_modulelist = isinstance(original.experts.gate_up_proj, nn.ModuleList)
             for i, mlp in enumerate(self.experts):
-                if is_modulelist:
-                    gate_up_linear = original.experts.gate_up_proj[i]
-                    down_linear = original.experts.down_proj[i]
-                    # gate_up weight is (2*intermediate, hidden)
-                    gate_up_weight = gate_up_linear.weight
-                    _update_parameter(mlp.gate_proj, "weight", gate_up_weight[: self.intermediate].contiguous())
-                    _update_parameter(mlp.up_proj, "weight", gate_up_weight[self.intermediate :].contiguous())
-                    _update_parameter(mlp.down_proj, "weight", down_linear.weight.contiguous())
+                _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
+                _update_parameter(mlp.up_proj, "weight", original.experts.gate_up_proj[i, :, 1::2].T)
+                _update_parameter(mlp.down_proj, "weight", original.experts.down_proj[i].T)
 
-                    if gate_up_linear.bias is not None:
-                        _update_parameter(mlp.gate_proj, "bias", gate_up_linear.bias[: self.intermediate].contiguous())
-                        _update_parameter(mlp.up_proj, "bias", gate_up_linear.bias[self.intermediate :].contiguous())
-                    if down_linear.bias is not None:
-                        _update_parameter(mlp.down_proj, "bias", down_linear.bias.contiguous())
-                else:
-                    _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
-                    _update_parameter(mlp.up_proj, "weight", original.experts.gate_up_proj[i, :, 1::2].T)
-                    _update_parameter(mlp.down_proj, "weight", original.experts.down_proj[i].T)
-
-                    _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
-                    _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
-                    _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
+                _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
+                _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
+                _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
             original.experts.to_empty(device="meta")  # release original experts parameters
             clear_memory()
 
@@ -121,14 +102,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         x = hidden_states.reshape(-1, H)
 
         # Use the original router (it returns scores and indices already softmaxed over top-k)
-        router_out = self.router(x)
-        if isinstance(router_out, (tuple, list)):
-            if len(router_out) == 2:
-                router_scores, router_indices = router_out
-            else:
-                router_scores, router_indices = router_out[0], router_out[1]
-        else:
-            raise ValueError("Unexpected router output type for GPT-OSS router")
+        router_scores, router_indices = self.router(x)  # scores: [tokens, E], indices: [tokens, k]
 
         final_hidden_states = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
         num_all_tokens, total_num_experts = x.size(0), self.num_experts
