@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.modeling.replace_modules import (
+from auto_round.modeling.unfused_moe.replace_modules import (
     ReplacementModuleBase,
     apply_replacements,
     materialize_model_,
