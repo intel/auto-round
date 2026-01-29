@@ -29,7 +29,18 @@ MODEL_CONFIG = {
         "block_patch": [
             (
                 "transformers.models.qwen3_moe.modeling_qwen3_moe.Qwen3MoeSparseMoeBlock",
-                "auto_round.modeling.orig_linear_moe.qwen3_moe.LinearQwen3MoeSparseMoeBlock",
+                "auto_round.modeling.fused_moe.qwen3_moe.LinearQwen3MoeSparseMoeBlock",
+            )
+        ],
+    },
+    "glm4_moe_lite": {
+        "min_transformers_version": "5.0.0",
+        "max_transformers_version": None,
+        "checkpoint_mapping": [],
+        "block_patch": [
+            (
+                "transformers.models.glm4_moe_lite.modeling_glm4_moe_lite.Glm4MoeLiteMoE",
+                "auto_round.modeling.fused_moe.glm_moe_light.LinearGlm4MoeLiteMoE",
             )
         ],
     },
