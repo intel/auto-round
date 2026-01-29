@@ -79,8 +79,7 @@ from auto_round.utils import (
     clear_memory,
     compile_func,
     convert_dtype_str2torch,
-    convert_fp8_layer_to_linear,
-    convert_fp8_module_to_16b,
+    convert_model_to_high_precision_if_necessary,
     detect_device,
     find_matching_blocks,
     flatten_list,
@@ -1134,9 +1133,8 @@ class BaseCompressor(object):
         if dtype is not None:
             m = m.to(dtype)
 
-        if is_fp8_linear(m):
-            m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
-            set_module(self.model, name, m)
+        m = convert_model_to_high_precision_if_necessary(m, self.amp_dtype, self.device)
+        set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
         if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
@@ -1243,9 +1241,8 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
-                if is_fp8_linear(m):
-                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
-                    set_module(self.model, name, m)
+                m = convert_model_to_high_precision_if_necessary(m, self.amp_dtype, self.device)
+                set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
@@ -1372,8 +1369,7 @@ class BaseCompressor(object):
                         m.to("meta")
 
         # Convert remaining fp8
-        if is_fp8_model(self.model):
-            convert_fp8_module_to_16b(self.model, self.amp_dtype, self.device)
+        convert_model_to_high_precision_if_necessary(self.model, self.amp_dtype, self.device)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1444,8 +1440,7 @@ class BaseCompressor(object):
                 block = get_module(self.model, block_name)
                 materialize_model_(block)
                 block.to("cpu")
-                if is_fp8_model(self.model):
-                    convert_fp8_module_to_16b(block, dtype=self.amp_dtype, device=self.device)
+                convert_model_to_high_precision_if_necessary(block, dtype=self.amp_dtype, device=self.device)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -1740,11 +1735,7 @@ class BaseCompressor(object):
         pbar.close()
         self._quantize_layers(layer_names, all_inputs)
 
-        if is_fp8_model(self.model):
-            for n, m in self.model.named_modules():
-                if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
-                    set_module(self.model, n, new_layer)
+        convert_model_to_high_precision_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1808,10 +1799,8 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                if is_fp8_linear(layer):
-                    new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype, self.device).to(self.device)
-                    set_module(self.model, layer_name, new_layer)
-                    layer = new_layer
+                layer = convert_model_to_high_precision_if_necessary(layer, self.amp_dtype, self.device)
+                set_module(self.model, layer_name, layer)
 
                 wrapper_layer = WrapperLinear(
                     layer,
@@ -2769,11 +2758,7 @@ class BaseCompressor(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         materialize_model_(block)
-        if is_fp8_model(self.model):
-            for n, m in block.named_modules():
-                if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
-                    set_module(block, n, new_layer)
+        convert_model_to_high_precision_if_necessary(block, self.amp_dtype, device)
 
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights

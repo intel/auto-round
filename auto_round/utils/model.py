@@ -1155,24 +1155,41 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         )
 
 
-def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """Convert an FP8 layer to a standard Linear layer.
+def convert_model_to_high_precision_if_necessary(
+    model_or_layer, dtype=torch.bfloat16, device: str = "cpu", to_cpu: bool = False
+):
+    """Convert FP8 quantized layer(s) to high-precision Linear layer(s) if necessary.
 
-    Uses the FP8 dequantization registry to handle different FP8 layer types.
-    Preserves quantization scheme attributes and other metadata.
+    This function checks if the input is an FP8 layer/model and converts it accordingly.
+    If the input is not FP8, it returns the input unchanged.
 
     Args:
-        layer: The FP8 layer to convert.
-        dtype: Target dtype for the converted layer.
-        device: Target device for the conversion.
+        model_or_layer: Either a single layer, a block, or an entire model.
+        dtype: Target dtype for the converted layer(s). Defaults to torch.bfloat16.
+        device: Target device for the conversion. Defaults to "cpu".
+        to_cpu: If True, move converted layers to CPU. Defaults to False.
 
     Returns:
-        A new torch.nn.Linear layer with dequantized weights.
-
-    Raises:
-        NotImplementedError: If the layer type is not registered in the FP8 registry.
+        If input is a single FP8 layer: A new torch.nn.Linear layer with dequantized weights.
+        If input is a model/block containing FP8 layers: The model with FP8 layers converted.
+        If input has no FP8 layers: Returns the input unchanged.
     """
+    # Check if it's a single FP8 layer
+    if is_fp8_linear(model_or_layer):
+        return _convert_single_layer(model_or_layer, dtype, device, to_cpu)
+
+    # Check if it's a model/block containing FP8 layers
+    if is_fp8_model(model_or_layer):
+        return _convert_model_layers(model_or_layer, dtype, device, to_cpu)
+
+    # No FP8 layers, return unchanged
+    return model_or_layer
+
+
+def _convert_single_layer(layer, dtype, device, to_cpu):
+    """Convert a single FP8 layer to a standard Linear layer."""
     from auto_round.schemes import QuantizationScheme
+    from auto_round.utils.device import is_gaudi2
 
     new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias is not None:
@@ -1180,13 +1197,10 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
 
     # Copy quantization scheme attributes
     scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("global_name", "scale_dtype")
-    for key in keys:
+    for key in tuple(scheme_keys) + ("global_name", "scale_dtype"):
         setattr(new_layer, key, getattr(layer, key, None))
 
     # Handle Gaudi2 device compatibility
-    from auto_round.utils.device import is_gaudi2
-
     if is_gaudi2():
         device = "cpu"
 
@@ -1194,34 +1208,23 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     dq_weight = dequant_fp8_layer(layer, dtype=dtype, device=device)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
 
+    if to_cpu:
+        new_layer = new_layer.to("cpu")
+
     return new_layer
 
 
-def convert_fp8_module_to_16b(model, dtype=torch.bfloat16, device: str = "cpu"):
-    """
-    Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
-    This is useful for compatibility with other frameworks or for further processing.
-
-    Uses `is_fp8_linear` for detection, which supports all registered FP8 layer types
-    via the FP8 dequantization registry.
-
-    Args:
-        model: The model with FP8 layers to convert.
-        dtype: Target dtype for converted layers.
-        device: Target device for conversion.
-
-    Returns:
-        The model with FP8 layers converted to 16-bit Linear layers.
-    """
+def _convert_model_layers(model, dtype, device, to_cpu):
+    """Convert all FP8 layers in a model to high-precision Linear layers."""
     from auto_round.utils.device import clear_memory
 
     cnt = 0
     for n, m in model.named_modules():
-        if is_fp8_linear(m):  # Use registry-based detection
-            new_module = convert_fp8_layer_to_linear(m, dtype=dtype, device=device)
+        if is_fp8_linear(m):
+            new_module = _convert_single_layer(m, dtype, device, to_cpu)
             set_module(model, n, new_module)
             cnt += 1
-            if cnt % 10 == 0:  # Tricky setting
+            if cnt % 10 == 0:
                 clear_memory()
     return model
 
