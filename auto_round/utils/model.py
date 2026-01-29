@@ -1057,57 +1057,6 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
-
-
-
-def get_attr(module, key):
-    """Get attribute from module by key name.
-    
-    This function can access both modules and their attributes (like weight, bias).
-    For accessing only modules, prefer using get_module which uses PyTorch's native API.
-
-    Args:
-        module (torch.nn.Module): original model
-        key (str): attribute name (e.g., "layer.weight", "layer.bias")
-    
-    Raises:
-        AttributeError: If any attribute in the path is missing
-    """
-    name_list = key.split(".")
-    for name in name_list:
-        if not hasattr(module, name):
-            raise AttributeError(
-                f"Attribute '{name}' not found while resolving '{key}'"
-            )
-        module = getattr(module, name)
-    return module
-
-
-def set_attr(model, key, new_attr):
-    """Set attribute into model by key name.
-    
-    This function can set both modules and their attributes (like weight, bias).
-    For setting only modules, prefer using set_module which uses PyTorch's native API.
-
-    Args:
-        model (torch.nn.Module): original model
-        key (str): attribute name (e.g., "layer.weight", "layer.bias")
-        new_attr (object): new attribute to be inserted
-    
-    Raises:
-        AttributeError: If any intermediate attribute in the path is missing
-    """
-    module = model
-    name_list = key.split(".")
-    for name in name_list[:-1]:
-        if not hasattr(module, name):
-            raise AttributeError(
-                f"Attribute '{name}' not found while resolving '{key}'"
-            )
-        module = getattr(module, name)
-    setattr(module, name_list[-1], new_attr)
-
-
 def get_module(module, key):
     """Get module from model by key name using PyTorch native API.
 
@@ -1115,6 +1064,10 @@ def get_module(module, key):
         module (torch.nn.Module): original model
         key (str): module name
     """
+    from auto_round.utils.common import looks_like_regex
+
+    if looks_like_regex(key):
+        return None
     return module.get_submodule(key)
 
 
@@ -1126,6 +1079,10 @@ def set_module(model, key, new_module):
         key (str): module name
         new_module (torch.nn.Module): new module to be inserted
     """
+    from auto_round.utils.common import looks_like_regex
+
+    if looks_like_regex(key):
+        return
     model.set_submodule(key, new_module)
 
 
