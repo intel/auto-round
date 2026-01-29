@@ -86,15 +86,15 @@ def apply_model_monkey_patches(model_type):
 
             conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
             transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
-            return  True
+            return True
 
         except Exception as e:
             logger.warning(f"Failed to patch {orig_path}: {e}")
-            return  False
+            return False
 
 
-def apply_modeling_patch(model:torch.nn.Module):
-    if hasattr(model,"config") and hasattr(model.config,"model_type"):
+def apply_modeling_patch(model: torch.nn.Module):
+    if hasattr(model, "config") and hasattr(model.config, "model_type"):
         model_type = model.config.model_type
     else:
         return False
@@ -122,17 +122,14 @@ def apply_modeling_patch(model:torch.nn.Module):
             custom_module = importlib.import_module(custom_module_path)
             custom_class = getattr(custom_module, custom_class_name)
             orig_class = getattr(orig_module, orig_class_name)
-            names =[]
-            for n,m in model.named_modules():
+            names = []
+            for n, m in model.named_modules():
                 if isinstance(m, orig_class):
                     names.append(n)
             for n in names:
-                model.set_submodule(n,custom_class(model.config),True)
+                model.set_submodule(n, custom_class(model.config), True)
             logger.info(f"Patched module {n} : {orig_path} -> {custom_path}")
             return True
         except Exception as e:
             logger.warning(f"Failed to patch {orig_path}: {e}")
-            return  False
-
-
-
+            return False

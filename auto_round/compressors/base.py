@@ -29,7 +29,7 @@ from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed, AutoConfig
+from transformers import AutoConfig, set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -265,10 +265,15 @@ class BaseCompressor(object):
                 config = AutoConfig.from_pretrained(model)
                 model_type = getattr(config, "model_type")
                 self.is_model_patched = apply_moe_patch(model_type)
-                if (is_moe_model_via_config(config) and self.is_model_patched and
-                        transformers.__version__>=version.parse("5.0.0")):
-                    loggger.warning("The moe model is not optimized by AutoRound yet which may cause large ram usage, "
-                                    "please submit a issue to https://github.com/intel/auto-round/issues")
+                if (
+                    is_moe_model_via_config(config)
+                    and self.is_model_patched
+                    and transformers.__version__ >= version.parse("5.0.0")
+                ):
+                    logger.warning(
+                        "The moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                        "please submit a issue to https://github.com/intel/auto-round/issues"
+                    )
 
             except:
                 pass
