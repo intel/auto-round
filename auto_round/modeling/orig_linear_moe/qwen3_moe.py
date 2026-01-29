@@ -51,7 +51,7 @@ class LinearQwen3MoeSparseMoeBlock(nn.Module):
         )
 
         # One hot encode the selected experts to create an expert mask
-        # this will be used to easily index which expert is going to be sollicitated
+        # this will be used to easily index which expert is going to be solicited
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
         # Loop over all available experts in the model and perform the computation on each expert

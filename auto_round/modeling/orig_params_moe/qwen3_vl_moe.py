@@ -16,13 +16,13 @@ import torch
 import transformers
 from packaging import version
 
-from auto_round.modeling.legacy.replace_modules import ReplacementModuleBase
+from auto_round.modeling.orig_params.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-from auto_round.modeling.legacy.utils import _update_parameter
+from auto_round.modeling.orig_params.utils import _update_parameter
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig

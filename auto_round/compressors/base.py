@@ -57,8 +57,8 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modeling import apply_model_monkey_patches
-from auto_round.modeling.legacy.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.orig_linear_moe import apply_model_monkey_patches
+from auto_round.modeling.orig_params_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -266,19 +266,19 @@ class BaseCompressor(object):
         self.is_model_patched = False
         if isinstance(model, str):
             try:
-                config = AutoConfig.from_pretrained(model)
-                model_type = getattr(config, "model_type")
-                self.is_model_patched = apply_model_monkey_patches(model_type)
+                # config = AutoConfig.from_pretrained(model)
+                self.is_model_patched = apply_model_monkey_patches(monel_name=model)
 
-                if (
-                    not self.is_model_patched
-                    and is_moe_model_via_config(config)
-                    and version.parse(transformers.__version__) >= version.parse("5.0.0")
-                ):
-                    logger.warning(
-                        "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
-                        "please submit an issue to https://github.com/intel/auto-round/issues"
-                    )
+                #TODO excluded  ori_params_moe
+                # if (
+                #     not self.is_model_patched
+                #     and is_moe_model_via_config(config)
+                #     and version.parse(transformers.__version__) >= version.parse("5.0.0")
+                # ):
+                #     logger.warning(
+                #         "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                #         "please submit an issue to https://github.com/intel/auto-round/issues"
+                #     )
 
             except:
                 pass

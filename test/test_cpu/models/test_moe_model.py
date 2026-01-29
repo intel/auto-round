@@ -99,7 +99,7 @@ def test_gptoss(setup_gpt_oss, scheme):
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
-    from auto_round.modeling.legacy.gpt_oss import GPTOssSingleExpert
+    from auto_round.modeling.orig_params.gpt_oss import GPTOssSingleExpert
 
     single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
     quant_linear_cnt = count_modules_by_type(quantized_model, QuantLinear)

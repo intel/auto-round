@@ -27,8 +27,8 @@ else:
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-from auto_round.modeling.legacy.replace_modules import ReplacementModuleBase
-from auto_round.modeling.legacy.utils import _update_parameter
+from auto_round.modeling.orig_params.replace_modules import ReplacementModuleBase
+from auto_round.modeling.orig_params.utils import _update_parameter
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 
