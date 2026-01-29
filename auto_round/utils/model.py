@@ -1244,32 +1244,30 @@ def _to_model_dtype(model, model_dtype):
 
 
 def get_module(module, key):
-    """Get module from model by key name.
+    """Get module from model by key name using PyTorch's get_submodule.
 
     Args:
         module (torch.nn.Module): original model
-        key (str): module name to be replaced
+        key (str): module name to be retrieved
+
+    Returns:
+        torch.nn.Module or None: The requested module, or None if not found
     """
-    name_list = key.split(".")
-    for name in name_list:
-        module = getattr(module, name, None)
-    return module
+    try:
+        return module.get_submodule(key)
+    except AttributeError:
+        return None
 
 
 def set_module(model, key, new_module):
-    """Set new module into model by key name.
+    """Set new module into model by key name using PyTorch's set_submodule.
 
     Args:
         model (torch.nn.Module): original model
         key (str): module name to be replaced
         new_module (torch.nn.Module): new module to be inserted
     """
-    module = model
-    name_list = key.split(".")
-    for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
+    model.set_submodule(key, new_module)
 
 
 # For getting and setting attribution, such as 'lm_head.weight'
