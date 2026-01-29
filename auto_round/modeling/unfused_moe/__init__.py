@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ from auto_round.modelling.replace_modules import (
     materialize_model_,
     release_original_module_,
 )
-from auto_round.modelling.moe_experts_impl import (
+from auto_round.modelling.moe_experts_interface import (
     linear_loop_experts_forward,
     register_linear_loop_experts,
     prepare_model_for_moe_quantization,
