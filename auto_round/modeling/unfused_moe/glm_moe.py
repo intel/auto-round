@@ -1,6 +1,19 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 import torch.nn as nn
-
 
 
 class LinearGlm4MoeMoE(nn.Module):
@@ -10,8 +23,9 @@ class LinearGlm4MoeMoE(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.num_experts = config.num_local_experts # needed
+        self.num_experts = config.num_local_experts  # needed
         from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMLP, Glm4MoeTopkRouter
+
         self.config = config
         self.experts = nn.ModuleList(
             [Glm4MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
@@ -54,7 +68,6 @@ class LinearGlm4MoeMoE(nn.Module):
             final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
 
         return final_hidden_states
-
 
     def route_tokens_to_experts(self, router_logits):
         router_logits = router_logits.sigmoid()

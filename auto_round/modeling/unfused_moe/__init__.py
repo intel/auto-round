@@ -44,7 +44,6 @@ MODEL_CONFIG = {
             )
         ],
     },
-
     "glm4_moe": {
         "min_transformers_version": "5.0.0",
         "max_transformers_version": None,
