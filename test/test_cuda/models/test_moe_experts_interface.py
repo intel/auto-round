@@ -62,6 +62,8 @@ def test_unfuse_experts_weights():
             self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
+            self.has_bias = False
+            self.is_transposed = False
 
     module = MockFusedExperts()
 
@@ -112,6 +114,7 @@ def test_unfuse_experts_weights_transposed():
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
             self.is_transposed = True
+            self.has_bias = False
 
     module = MockFusedExpertsTransposed()
 
@@ -163,6 +166,8 @@ def test_linear_loop_forward():
             self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
+            self.has_bias = False
+            self.is_transposed = False
 
     module = MockExperts()
 
@@ -213,6 +218,8 @@ def test_prepare_model_for_moe_quantization():
             self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
             self.act_fn = nn.SiLU()
             self.num_experts = num_experts
+            self.has_bias = False
+            self.is_transposed = False
 
     class MockModel(nn.Module):
         def __init__(self):
@@ -260,7 +267,7 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
     import shutil
 
     from auto_round import AutoRound
-    from auto_round.modelling.moe_experts_interface import is_linear_loop_available
+    from auto_round.modeling.unfused_moe.moe_experts_interface import is_linear_loop_available
 
     if not is_linear_loop_available():
         print("SKIP: transformers MOE integration not available")
