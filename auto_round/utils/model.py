@@ -1244,35 +1244,40 @@ def _to_model_dtype(model, model_dtype):
 
 
 def get_module(module, key):
-    """Get module from model by key name.
+    """Get module from model by key name using PyTorch's get_submodule.
+
+    This function wraps PyTorch's native get_submodule method and provides
+    backward-compatible error handling by returning None when a module is not found,
+    instead of raising AttributeError.
 
     Args:
         module (torch.nn.Module): original model
-        key (str): module name to be replaced
+        key (str): module name to be retrieved
+
+    Returns:
+        torch.nn.Module or None: The requested module, or None if not found
     """
-    name_list = key.split(".")
-    for name in name_list:
-        module = getattr(module, name, None)
-    return module
+    try:
+        return module.get_submodule(key)
+    except AttributeError:
+        # Returns None if module doesn't exist or get_submodule is not available
+        return None
 
 
 def set_module(model, key, new_module):
-    """Set new module into model by key name.
+    """Set new module into model by key name using PyTorch's set_submodule.
+
+    Note: Requires PyTorch 2.0.0 or later for set_submodule support.
 
     Args:
         model (torch.nn.Module): original model
         key (str): module name to be replaced
         new_module (torch.nn.Module): new module to be inserted
     """
-    module = model
-    name_list = key.split(".")
-    for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
+    model.set_submodule(key, new_module)
 
 
-# For getting and setting attribution, such as 'lm_head.weight'
+# For getting and setting modules, such as 'model.encoder' or 'model.decoder.layer.0'
 get_attr = get_module
 set_attr = set_module
 
