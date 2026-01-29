@@ -77,7 +77,7 @@ def get_file_path_via_model_name(model_or_path: str, file_name):
             repo_type="model",
         )
     elif envs.AR_USE_MODELSCOPE:
-        from modelscope import snapshot_download
+        from modelscope import snapshot_download # pylint: disable=E0401
 
         # ModelSCOPE is different, it returns the folder path
         folder = snapshot_download(model_or_path, allow_patterns=[file_name])
