@@ -25,11 +25,13 @@ from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
+import transformers
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from packaging import version
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed
+from transformers import AutoConfig, set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -52,9 +54,11 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
+from auto_round.modeling.fused_moe import apply_model_monkey_patches
+from auto_round.modeling.unfused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -84,6 +88,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_lm_head_name,
     get_module,
+    global_state,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -91,6 +96,7 @@ from auto_round.utils import (
     is_fp8_model,
     is_hpex_available,
     is_moe_model,
+    is_moe_model_via_config,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -257,7 +263,25 @@ class BaseCompressor(object):
         self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
+        self.is_model_patched = False
         if isinstance(model, str):
+            try:
+                # config = AutoConfig.from_pretrained(model)
+                self.is_model_patched = apply_model_monkey_patches(model_name=model)
+
+                # TODO excluded  ori_params_moe
+                # if (
+                #     not self.is_model_patched
+                #     and is_moe_model_via_config(config)
+                #     and version.parse(transformers.__version__) >= version.parse("5.0.0")
+                # ):
+                #     logger.warning(
+                #         "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                #         "please submit an issue to https://github.com/intel/auto-round/issues"
+                #     )
+
+            except:
+                pass
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,
@@ -280,6 +304,9 @@ class BaseCompressor(object):
         self.layer_config = layer_config
 
         # should be set after loading model and set layer_config, cause some special scheme need these.
+        # Preserve the original, unparsed scheme for later use in auto scheme generation
+        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        self.orig_scheme = copy.deepcopy(scheme)
         self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
@@ -314,15 +341,6 @@ class BaseCompressor(object):
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
-        predefined_ignore_layers = get_predefined_ignore_layers(self.model)
-
-        if predefined_ignore_layers:
-            logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
-            tmp_str = ",".join(predefined_ignore_layers)
-            if self.ignore_layers == "":
-                self.ignore_layers = tmp_str
-            else:
-                self.ignore_layers += "," + tmp_str
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
@@ -470,13 +488,9 @@ class BaseCompressor(object):
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
-        if isinstance(scheme, AutoScheme):
-            self.layer_config = self._gen_auto_scheme(model, scheme, dataset, self.device_map)
-
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
         self.attention_mask = []
 
@@ -1070,7 +1084,7 @@ class BaseCompressor(object):
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
-            model = model.to("cpu")
+            safe_to_cpu_(model)
             clear_memory(device_list=self.device_list)
             self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         except torch.OutOfMemoryError:
@@ -1082,7 +1096,7 @@ class BaseCompressor(object):
                     "Fallback to CPU. "
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
-                model = model.to("cpu")
+                safe_to_cpu_(model)
                 clear_memory(device_list=self.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
@@ -1218,6 +1232,10 @@ class BaseCompressor(object):
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         self.all_to_quantized_module_names = all_to_quantized_module_names
         if is_nv_fp(self.data_type):
+            # FIXME: (yiliu30) change it to block-wise after we refactor the quantization code and
+            # https://github.com/intel/auto-round/issues/1331
+            materialize_model_(self.model)
+            self.model.to("cpu")
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
 
@@ -1239,7 +1257,6 @@ class BaseCompressor(object):
         if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
 
-        self.model.to("cpu")
         # Release memory
         clear_memory(device_list=self.device_list)
 
@@ -1280,14 +1297,21 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            use_blockwise_quantization = False
-            tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
-            tied_weight_values = list(tied_weight_keys.values())
+            # By default, we go with layer-wise way if no replacement happened
+            use_blockwise_quantization = global_state.replaced_module_count > 0
+            tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
+            if tied_weights_keys is None:
+                tied_weights_keys = []
+            if isinstance(tied_weights_keys, dict):
+                tied_weights_values = list(tied_weights_keys.values())
+            else:
+                tied_weights_values = list(tied_weights_keys)
+            tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
             # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
             if hasattr(self, "formats") and self.formats[0].is_gguf():
                 lm_head_name = get_lm_head_name(self.model)
                 if lm_head_name is not None:
-                    tied_weight_values.append(lm_head_name)
+                    tied_weights_layers.append(lm_head_name)
 
             if use_blockwise_quantization:  # The ram usage is a little higher
                 all_to_quantized_module_names = list(set(all_to_quantized_module_names))
@@ -1298,6 +1322,7 @@ class BaseCompressor(object):
                     for block_name in block_names:
                         pbar.set_description(f"Quantizing {block_name}")
                         block = get_module(self.model, block_name)
+                        materialize_model_(block)
                         for name, m in block.named_modules():
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
@@ -1305,7 +1330,7 @@ class BaseCompressor(object):
                             elif (
                                 not any(m.children())
                                 and len(m.state_dict()) > 0
-                                and m.global_name not in tied_weight_values
+                                and m.global_name not in tied_weights_layers
                             ):
                                 set_module(self.model, m.global_name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
@@ -1323,6 +1348,8 @@ class BaseCompressor(object):
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
             else:
+                materialize_model_(self.model)
+                self.model.to("cpu")
                 block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
                 clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
                 cnt = 0
@@ -1338,7 +1365,7 @@ class BaseCompressor(object):
                             clear_memory(device_list=self.device_list)
                             memory_monitor.log_summary()
 
-                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weight_values:
+                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weights_layers:
                         set_module(self.model, n, copy.deepcopy(m))
                         if self.is_immediate_saving:
                             shard_writer(self, name=n)
@@ -1415,6 +1442,8 @@ class BaseCompressor(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
+                materialize_model_(block)
+                block.to("cpu")
                 if is_fp8_model(self.model):
                     convert_fp8_module_to_16b(block, dtype=self.amp_dtype, device=self.device)
 
@@ -1497,6 +1526,20 @@ class BaseCompressor(object):
         return inputs, q_inputs
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
+        is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
+        if not is_gguf_format:
+            predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+            if predefined_ignore_layers:
+                logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+                tmp_str = ",".join(predefined_ignore_layers)
+                if self.ignore_layers == "":
+                    self.ignore_layers = tmp_str
+                else:
+                    self.ignore_layers += "," + tmp_str
+
+        if self.is_auto_scheme:
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False
@@ -1588,7 +1631,9 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(self.model, formats=formats, trust_remote_code=self.trust_remote_code)
+        self.model = update_module(
+            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+        )
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
@@ -2127,6 +2172,7 @@ class BaseCompressor(object):
                                 )
 
                             try:
+                                materialize_model_(self.model)
                                 self.model = dispatch_model(self.model, device_map=device_map)
                             except ValueError as e:
                                 if "offload_dir" in e.__str__():
@@ -2722,6 +2768,7 @@ class BaseCompressor(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        materialize_model_(block)
         if is_fp8_model(self.model):
             for n, m in block.named_modules():
                 if is_fp8_linear(m):

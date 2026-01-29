@@ -18,7 +18,6 @@ from functools import partial
 from typing import Callable, Optional
 
 import torch
-from transformers.cache_utils import Cache
 from transformers.modeling_rope_utils import dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.deepseek_v2.configuration_deepseek_v2 import DeepseekV2Config
@@ -26,7 +25,7 @@ from transformers.models.deepseek_v2.modeling_deepseek_v2 import (
     eager_attention_forward,
 )
 
-from auto_round.modelling.replace_modules import ReplacementModuleBase
+from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
 from auto_round.utils import is_hpex_available
 
 
@@ -144,7 +143,7 @@ def attn_forward(
 
 class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
     def __init__(self, original, config):
-        super().__init__()
+        super().__init__(original)
 
     @classmethod
     def original_module_class(cls) -> str:
@@ -174,10 +173,13 @@ class DeepseekV2RotaryEmbedding(ReplacementModuleBase):
             and inspect.getfile(original.__class__) == inspect.getfile(eager_attention_forward)
         )
 
+    def release_original_module(self) -> None:
+        pass
+
 
 class DeepseekV2Attention(ReplacementModuleBase):
     def __init__(self, original, config):
-        super().__init__()
+        super().__init__(original)
 
     @classmethod
     def original_module_class(cls) -> str:
@@ -206,3 +208,6 @@ class DeepseekV2Attention(ReplacementModuleBase):
             and is_hpex_available()
             and inspect.getfile(original.__class__) == inspect.getfile(eager_attention_forward)
         )
+
+    def release_original_module(self) -> None:
+        pass

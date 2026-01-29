@@ -1,13 +1,14 @@
 import shutil
 
 import pytest
+from packaging import version
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path
+from ...helpers import get_model_path, transformers_version
 
 gpt_oss_name_or_path = get_model_path("unsloth/gpt-oss-20b-BF16")
 llama4_name_or_path = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
@@ -36,6 +37,7 @@ def setup_llama4():
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
+    # config.vision_config.rope_theta = config.vision_config.rope_parameters["rope_theta"] # for transformers >= 5.0
     model = Llama4ForConditionalGeneration(config)
     output_dir = "./tmp/test_quantized_llama4"
     return model, tokenizer, output_dir, config
@@ -97,7 +99,7 @@ def test_gptoss(setup_gpt_oss, scheme):
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
-    from auto_round.modelling.gpt_oss import GPTOssSingleExpert
+    from auto_round.modeling.unfused_moe.gpt_oss import GPTOssSingleExpert
 
     single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
     quant_linear_cnt = count_modules_by_type(quantized_model, QuantLinear)
@@ -121,6 +123,10 @@ def test_gptoss(setup_gpt_oss, scheme):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="transformers v5 'Llama4VisionConfig' object has no attribute 'rope_theta'",
+)
 def test_llama4(setup_llama4):
     model, tokenizer, output_dir, config = setup_llama4
 
