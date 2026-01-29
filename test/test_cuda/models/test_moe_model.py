@@ -9,8 +9,7 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3ForCausal
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
 from auto_round import AutoRound
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
+from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
 
 
 @pytest.fixture
@@ -211,7 +210,7 @@ def has_module(model: torch.nn.Module, module_name: str) -> bool:
 
 
 def test_register_module_out_of_tree_base():
-    from auto_round.modelling.replace_modules import ReplacementModuleBase
+    from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
 
     for name, subclass in ReplacementModuleBase._replacement_registry.items():
         if name == "Qwen3MLP":

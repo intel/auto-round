@@ -1583,6 +1583,14 @@ def is_moe_model(model: torch.nn.Module) -> bool:
     return False
 
 
+def is_moe_model_via_config(config) -> bool:
+    if hasattr(config, "to_dict"):
+        for key in config.to_dict().keys():
+            if "moe" in key or "expert" in key:
+                return True
+    return False
+
+
 def to_dtype(input, dtype=torch.float32):
     """Moves input data to the specified data type.
 
