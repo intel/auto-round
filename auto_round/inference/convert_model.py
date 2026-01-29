@@ -503,9 +503,9 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     # GPTQModel post-init
     if need_gptqmodel_init:
-        from gptqmodel.quantization import METHOD
-        from gptqmodel.utils.importer import hf_select_quant_linear_v2
-        from gptqmodel.utils.model import hf_convert_gptq_v1_to_v2_format
+        from gptqmodel.quantization import METHOD  # pylint: disable=E0401
+        from gptqmodel.utils.importer import hf_select_quant_linear_v2  # pylint: disable=E0401
+        from gptqmodel.utils.model import hf_convert_gptq_v1_to_v2_format  # pylint: disable=E0401
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
 
         quant_linear = hf_select_quant_linear_v2(
