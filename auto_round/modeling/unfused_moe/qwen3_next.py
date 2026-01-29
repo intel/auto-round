@@ -27,7 +27,7 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
         )
 
         self.gate = Qwen3NextTopKRouter(config)
-        self.num_experts = config.num_experts # needed
+        self.num_experts = config.num_experts  # needed
         self.experts = nn.ModuleList(
             [Qwen3NextMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )

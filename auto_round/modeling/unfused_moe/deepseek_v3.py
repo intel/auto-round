@@ -1,5 +1,20 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 import torch.nn as nn
+
 
 class LinearDeepseekV3MoE(nn.Module):
     """
@@ -9,7 +24,8 @@ class LinearDeepseekV3MoE(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3TopkRouter,DeepseekV3MLP
+        from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MLP, DeepseekV3TopkRouter
+
         self.num_experts = config.num_local_experts  # needed
         self.experts = nn.ModuleList(
             [DeepseekV3MLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
@@ -52,7 +68,6 @@ class LinearDeepseekV3MoE(nn.Module):
             final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
 
         return final_hidden_states
-
 
     def route_tokens_to_experts(self, router_logits):
         router_logits = router_logits.sigmoid()
