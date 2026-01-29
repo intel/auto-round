@@ -5,12 +5,6 @@ This test validates the replacement of custom implementations with torch.nn.Modu
 and torch.nn.Module.set_submodule.
 """
 
-try:
-    import pytest
-    HAS_PYTEST = True
-except ImportError:
-    HAS_PYTEST = False
-
 import torch
 import torch.nn as nn
 from auto_round.utils.model import get_module, set_module, get_attr, set_attr
