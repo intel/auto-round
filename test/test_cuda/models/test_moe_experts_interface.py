@@ -46,7 +46,7 @@ def test_linear_loop_registration():
 
 def test_unfuse_experts_weights():
     """Test unfusing fused expert weights to nn.Linear layers."""
-    from auto_round.modelling.moe_experts_interface import _unfuse_experts_weights_inplace
+    from auto_round.modeling.moe_experts_interface import _unfuse_experts_weights_inplace
 
     # Create a mock fused experts module (Mixtral style - not transposed)
     num_experts = 4
@@ -96,7 +96,7 @@ def test_unfuse_experts_weights():
 
 def test_unfuse_experts_weights_transposed():
     """Test unfusing transposed expert weights (Llama4/GptOss style)."""
-    from auto_round.modelling.moe_experts_interface import _unfuse_experts_weights_inplace
+    from auto_round.modeling.moe_experts_interface import _unfuse_experts_weights_inplace
 
     num_experts = 4
     hidden_dim = 64

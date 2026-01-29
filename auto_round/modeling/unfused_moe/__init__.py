@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.modelling.replace_modules import (
+from auto_round.modeling.replace_modules import (
     ReplacementModuleBase,
     apply_replacements,
     materialize_model_,
     release_original_module_,
 )
-from auto_round.modelling.moe_experts_interface import (
+from auto_round.modeling.moe_experts_interface import (
     linear_loop_experts_forward,
     register_linear_loop_experts,
     prepare_model_for_moe_quantization,

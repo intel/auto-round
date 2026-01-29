@@ -23,7 +23,7 @@ The implementation integrates with transformers' `use_experts_implementation`
 decorator and `ALL_EXPERTS_FUNCTIONS` registry.
 
 Usage:
-    from auto_round.modelling.moe_experts_interface import prepare_model_for_moe_quantization
+    from auto_round.modeling.moe_experts_interface import prepare_model_for_moe_quantization
 
     # Before quantization
     prepare_model_for_moe_quantization(model)
