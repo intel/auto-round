@@ -64,11 +64,16 @@ def get_file_path_via_model_name(model_or_path: str, file_name):
             repo_type="model",
         )
     elif envs.AR_USE_MODELSCOPE:
-        index_path = None # TODO
+        from modelscope import snapshot_download
+        # ModelSCOPE is different, it returns the folder path
+        folder = snapshot_download(model_or_path, allow_patterns=[file_name])
+        index_path = os.path.join(folder, file_name)
+    else:
+        index_path = None
 
     return index_path
 
-def pre_check_config(model_name):
+def pre_check_config(model_name:str|torch.nn.Module):
     if isinstance(model_name,str):
         config = AutoConfig.from_pretrained(model_name)
     elif isinstance(model_name, torch.nn.Module):
@@ -89,7 +94,6 @@ def pre_check_config(model_name):
         return False
     if max_ver and tf_ver > version.parse(max_ver):
         return False
-        # Check keys
     try:
         file_path = get_file_path_via_model_name(model_name,"model.safetensors.index.json")
         if os.path.exists(file_path):
@@ -97,11 +101,10 @@ def pre_check_config(model_name):
 
             with open(file_path, "r") as f:
                 index_data = json.load(f)
-            model_keys = set(index_data.get("weight_map", {}).keys())
+            model_keys = list(index_data.get("weight_map", {}).keys())
             for key in model_keys:
                 if "gate_up_proj" in key:
                     return False
-
     except:
         return True
     return True
@@ -146,29 +149,15 @@ def apply_model_monkey_patches(model_name:str) -> bool:
 
 
 def apply_modeling_patch(model: torch.nn.Module) -> bool:
-    if hasattr(model, "config"):
-        model_type = model.config.model_type
-    else:
+    res=pre_check_config(model)
+    if not res:
         return False
-    if model_type not in MODEL_CONFIG:
-        return False
-
+    model_type = getattr(model.config, "model_type")
     cfg = MODEL_CONFIG[model_type]
-
-
-    min_ver = cfg.get("min_transformers_version")
-    max_ver = cfg.get("max_transformers_version")
-    tf_ver = version.parse(transformers.__version__)
-    if min_ver and tf_ver < version.parse(min_ver):
-        return False
-    if max_ver and tf_ver > version.parse(max_ver):
-        return False
-
     # patch blocks
     for orig_path, custom_path in cfg.get("block_patch", []):
         orig_module_path, orig_class_name = orig_path.rsplit(".", 1)
         custom_module_path, custom_class_name = custom_path.rsplit(".", 1)
-
         try:
             orig_module = importlib.import_module(orig_module_path)
             custom_module = importlib.import_module(custom_module_path)
