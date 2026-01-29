@@ -18,7 +18,7 @@ from auto_round.modeling.replace_modules import (
     materialize_model_,
     release_original_module_,
 )
-from auto_round.modeling.moe_experts_interface import (
+from auto_round.modeling.unfused_moe.moe_experts_interface import (
     linear_loop_experts_forward,
     register_linear_loop_experts,
     prepare_model_for_moe_quantization,
