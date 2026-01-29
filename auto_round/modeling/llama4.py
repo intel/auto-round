@@ -13,7 +13,14 @@
 # limitations under the License.
 # Note: adapted from # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
 import torch
-from transformers.modeling_utils import no_init_weights
+import transformers
+from packaging import version
+
+transformers_version = version.parse(transformers.__version__)
+if transformers_version < version.parse("5.0.0"):
+    from transformers.modeling_utils import no_init_weights
+else:
+    from transformers.initialization import no_init_weights
 from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP, Llama4TextMoe
 
 from auto_round.modeling.replace_modules import ReplacementModuleBase
