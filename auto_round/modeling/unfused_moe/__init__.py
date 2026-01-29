@@ -66,7 +66,6 @@ MODEL_CONFIG = {
             )
         ],
     },
-
     "deepseek_v3": {
         "min_transformers_version": "5.0.0",
         "max_transformers_version": "6.0.0",
