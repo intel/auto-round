@@ -28,10 +28,11 @@ import torch
 import transformers
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from packaging import version
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed, AutoConfig
-from packaging import version
+from transformers import AutoConfig, set_seed
+
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import shard_writer
@@ -95,6 +96,7 @@ from auto_round.utils import (
     is_fp8_model,
     is_hpex_available,
     is_moe_model,
+    is_moe_model_via_config,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -102,7 +104,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device, is_moe_model_via_config,
+    unsupported_meta_device,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -268,10 +270,15 @@ class BaseCompressor(object):
                 model_type = getattr(config, "model_type")
                 self.is_model_patched = apply_model_monkey_patches(model_type)
 
-                if ( not self.is_model_patched and is_moe_model_via_config(config) and
-                    version.parse(transformers.__version__)>=version.parse("5.0.0")):
-                    logger.warning("The moe model is not optimized by AutoRound yet which may cause large ram usage, "
-                                    "please submit a issue to https://github.com/intel/auto-round/issues")
+                if (
+                    not self.is_model_patched
+                    and is_moe_model_via_config(config)
+                    and version.parse(transformers.__version__) >= version.parse("5.0.0")
+                ):
+                    logger.warning(
+                        "The moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                        "please submit a issue to https://github.com/intel/auto-round/issues"
+                    )
 
             except:
                 pass
