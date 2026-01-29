@@ -2742,6 +2742,7 @@ class BaseCompressor(object):
         """
 
         # TODO: release below assertion after supporting MLLM and diffusion model quantization with quantize_block
+        self._post_init()
         assert self.__class__.__name__ not in [
             "DiffusionCompressor",
             "MLLMCompressor",

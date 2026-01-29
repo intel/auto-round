@@ -175,7 +175,7 @@ class TestGGUF:
         assert autoround.model.model.layers[12].mlp.gate_proj.bits == 3
         assert autoround.model.model.layers[10].mlp.gate_proj.bits == 8
         assert autoround.layer_config["model.layers.10.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+        shutil.rmtree("./saved", ignore_errors=True)
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(model, tokenizer, iters=0, nsamples=1, seqlen=128, disable_opt_rtn=False)
@@ -184,7 +184,7 @@ class TestGGUF:
             output_dir=quantized_model_path, format="gguf:q4_k_m,fake"
         )
 
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+        shutil.rmtree("./saved", ignore_errors=True)
 
     def test_all_format(self, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
