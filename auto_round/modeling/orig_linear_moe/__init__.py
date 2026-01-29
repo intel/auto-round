@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+from auto_round import envs
 import transformers
 import importlib
 from packaging import version
@@ -48,12 +50,34 @@ def get_checkpoint_conversion_mapping_ar(model_type):
 
     return conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
 
+def get_file_path_via_model_name(model_or_path: str, file_name):
+    from huggingface_hub import hf_hub_download
+    # 1) local folder
+    if os.path.isdir(model_or_path):
+        index_path = os.path.join(model_or_path, file_name)
 
-# This is for model checkpoint with linear definition
-def apply_model_monkey_patches(model_name:str) -> bool:
-    config = AutoConfig.from_pretrained(model_name)
-    model_type = getattr(config, "model_type")
-    if model_type not in MODEL_CONFIG:
+    # 2) HF model name
+    elif not envs.AR_USE_MODELSCOPE:
+        index_path = hf_hub_download(
+            repo_id=model_or_path,
+            filename=file_name,
+            repo_type="model",
+        )
+    elif envs.AR_USE_MODELSCOPE:
+        index_path = None # TODO
+
+    return index_path
+
+def pre_check_config(model_name):
+    if isinstance(model_name,str):
+        config = AutoConfig.from_pretrained(model_name)
+    elif isinstance(model_name, torch.nn.Module):
+        config = getattr(model_name, "config", None)
+        if config is None:
+            return False
+
+    model_type = getattr(config, "model_type", None)
+    if model_type is None or model_type not in MODEL_CONFIG:
         return False
 
     cfg = MODEL_CONFIG[model_type]
@@ -65,8 +89,33 @@ def apply_model_monkey_patches(model_name:str) -> bool:
         return False
     if max_ver and tf_ver > version.parse(max_ver):
         return False
+        # Check keys
+    try:
+        file_path = get_file_path_via_model_name(model_name,"model.safetensors.index.json")
+        if os.path.exists(file_path):
+            import json
 
+            with open(file_path, "r") as f:
+                index_data = json.load(f)
+            model_keys = set(index_data.get("weight_map", {}).keys())
+            for key in model_keys:
+                if "gate_up_proj" in key:
+                    return False
+
+    except:
+        return True
+    return True
+
+# This is for model checkpoint with linear definition
+def apply_model_monkey_patches(model_name:str) -> bool:
+    res = pre_check_config(model_name)
+    if not res:
+        return False
     # patch blocks
+    config = AutoConfig.from_pretrained(model_name)
+    model_type = getattr(config, "model_type")
+
+    cfg = MODEL_CONFIG[model_type]
     for orig_path, custom_path in cfg.get("block_patch", []):
         orig_module_path, orig_class_name = orig_path.rsplit(".", 1)
         custom_module_path, custom_class_name = custom_path.rsplit(".", 1)
@@ -97,7 +146,7 @@ def apply_model_monkey_patches(model_name:str) -> bool:
 
 
 def apply_modeling_patch(model: torch.nn.Module) -> bool:
-    if hasattr(model, "config") and hasattr(model.config, "model_type"):
+    if hasattr(model, "config"):
         model_type = model.config.model_type
     else:
         return False
@@ -105,6 +154,7 @@ def apply_modeling_patch(model: torch.nn.Module) -> bool:
         return False
 
     cfg = MODEL_CONFIG[model_type]
+
 
     min_ver = cfg.get("min_transformers_version")
     max_ver = cfg.get("max_transformers_version")

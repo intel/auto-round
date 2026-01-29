@@ -267,7 +267,7 @@ class BaseCompressor(object):
         if isinstance(model, str):
             try:
                 # config = AutoConfig.from_pretrained(model)
-                self.is_model_patched = apply_model_monkey_patches(monel_name=model)
+                self.is_model_patched = apply_model_monkey_patches(model_name=model)
 
                 #TODO excluded  ori_params_moe
                 # if (
