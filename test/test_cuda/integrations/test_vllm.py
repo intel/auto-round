@@ -7,9 +7,12 @@ Validating the configuration and printing results for manual checking.
 Run `pytest test/test_cuda/test_vllm.py`.
 """
 
+import os
 import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
+
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 MODELS = [
     "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  ##auto_round:auto_gptq
