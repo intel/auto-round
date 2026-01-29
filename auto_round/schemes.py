@@ -18,6 +18,8 @@ from typing import Optional, Union
 
 import torch
 
+from auto_round.logger import logger
+
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
 
@@ -285,6 +287,7 @@ PRESET_SCHEMES = {
     "W2A16G32": W2A16G32,
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
+    "W4A16_MIXED": W4A16,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
@@ -296,7 +299,15 @@ for key, val in GGUF_CONFIG.items():
     PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
 
 
-def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.nn.Module) -> dict:
+def _handle_special_schemes(
+    scheme_name: str,
+    layer_config: dict,
+    model: torch.nn.Module,
+    supported_types=None,
+    inner_supported_types=None,
+    quant_lm_head=False,
+    mllm=False,
+) -> dict:
     """handle special schemes, like GGUF:Q2_K_MIXED.
     Provide some special auto_round recipes.
 
@@ -311,6 +322,31 @@ def _handle_special_schemes(scheme_name: str, layer_config: dict, model: torch.n
                 layer_config[n] = "GGUF:Q8_0"
             elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_experts" in n) and n != "lm_head":
                 layer_config[n] = "GGUF:Q4_K_S"
+    if scheme_name.lower() == "w4a16_mixed":
+        logger.warning("W4A16_MIXED is experimental and the recipe may change in the future.")
+        from auto_round.utils import get_lm_head_name
+
+        lm_head_name = get_lm_head_name(model)
+        if supported_types is None:
+            from auto_round.utils import SUPPORTED_DTYPES
+
+            supported_types = SUPPORTED_DTYPES
+        if inner_supported_types is None:
+            from auto_round.utils import INNER_SUPPORTED_LAYER_TYPES
+
+            inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        for n, m in model.named_modules():
+            if n in layer_config:
+                continue
+            if type(m) in supported_types or type(m) in inner_supported_types:
+                if "expert" in n and "shared" not in n:
+                    layer_config[n] = {"bits": 4}
+                elif n != lm_head_name and mllm:
+                    layer_config[n] = {"bits": 16}
+                elif n != lm_head_name:
+                    layer_config[n] = {"bits": 8}
+                elif n == lm_head_name and quant_lm_head:
+                    layer_config[n] = {"bits": 8}
     return layer_config
 
 
