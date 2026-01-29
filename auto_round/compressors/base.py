@@ -25,12 +25,13 @@ from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
+import transformers
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 from torch import autocast
 from tqdm import tqdm
 from transformers import set_seed, AutoConfig
-
+from packaging import version
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import shard_writer
@@ -55,6 +56,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
+from auto_round.modeling import apply_model_monkey_patches
 from auto_round.modeling.legacy.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.schemes import (
     QuantizationScheme,
@@ -100,7 +102,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device,
+    unsupported_meta_device, is_moe_model_via_config,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -264,10 +266,11 @@ class BaseCompressor(object):
             try:
                 config = AutoConfig.from_pretrained(model)
                 model_type = getattr(config, "model_type")
-                self.is_model_patched = apply_moe_patch(model_type)
+                self.is_model_patched = apply_model_monkey_patches(model_type)
+
                 if (is_moe_model_via_config(config) and self.is_model_patched and
-                        transformers.__version__>=version.parse("5.0.0")):
-                    loggger.warning("The moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                    version.parse(transformers.__version__)>=version.parse("5.0.0")):
+                    logger.warning("The moe model is not optimized by AutoRound yet which may cause large ram usage, "
                                     "please submit a issue to https://github.com/intel/auto-round/issues")
 
             except:
