@@ -21,7 +21,6 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         from transformers.models.qwen3_next.modeling_qwen3_next import (
-            Qwen3NextExperts,
             Qwen3NextMLP,
             Qwen3NextTopKRouter,
         )
@@ -31,7 +30,6 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
         self.experts = nn.ModuleList(
             [Qwen3NextMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
-        self.experts = Qwen3NextExperts(config)
         self.shared_expert = Qwen3NextMLP(config, intermediate_size=config.shared_expert_intermediate_size)
         self.shared_expert_gate = torch.nn.Linear(config.hidden_size, 1, bias=False)
 
