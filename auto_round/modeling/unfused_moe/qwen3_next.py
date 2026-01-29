@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+
 class LinearQwen3NextSparseMoeBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -26,6 +27,7 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
         # gating
         self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
         from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextMLP
+
         self.experts = nn.ModuleList(
             [Qwen3NextMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
