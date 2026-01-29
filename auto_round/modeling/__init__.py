@@ -106,7 +106,7 @@ def apply_modeling_patch(model: torch.nn.Module):
     min_ver = cfg.get("min_transformers_version")
     max_ver = cfg.get("max_transformers_version")
     tf_ver = version.parse(transformers.__version__)
-    if min_ver and tf_ver <= version.parse(min_ver):
+    if min_ver and tf_ver < version.parse(min_ver):
         return False
     if max_ver and tf_ver > version.parse(max_ver):
         return False
