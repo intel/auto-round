@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from auto_round.modeling.fused_moe.utils import _update_parameter
 
+
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
