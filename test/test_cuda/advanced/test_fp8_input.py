@@ -146,7 +146,8 @@ class TestAutoRound:
 
     @pytest.mark.skipif(
         transformers_version >= version.parse("5.0.0"),
-        reason="kwargs['operations'] = [op.reverse_op for op in self.operations[::-1]]",
+        reason="We need this patch for fp8 model loading without dequantization."
+        "https://github.com/intel/auto-round/blob/72e1cecb4a984db101e26700618266115029b9ac/test/test_cuda/quantization/test_mxfp_nvfp.py#L19C5-L19C25",
     )
     def test_diff_datatype(self):
         for scheme in ["NVFP4", "MXFP4"]:
