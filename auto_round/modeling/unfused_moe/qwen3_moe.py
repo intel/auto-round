@@ -72,16 +72,19 @@ from torch.nn import functional as F
 #         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 #         return final_hidden_states
 
+
 class Qwen3MoeSparseMoeBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeMLP
+
         self.num_experts = config.num_experts
         self.experts = nn.ModuleList(
             [Qwen3MoeMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
 
         from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeTopKRouter
+
         self.gate = Qwen3MoeTopKRouter(config)
 
     def experts_forward(
