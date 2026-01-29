@@ -57,13 +57,9 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-<<<<<<< HEAD
+
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
-=======
-from auto_round.modeling.fused_moe import apply_model_monkey_patches
-from auto_round.modeling.unfused_moe.replace_modules import materialize_model_, safe_to_cpu_
->>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361))
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -308,6 +304,10 @@ class BaseCompressor(object):
 
         self.layer_config = layer_config
 
+        self.supported_types = SUPPORTED_LAYER_TYPES
+        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
+
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
@@ -343,7 +343,6 @@ class BaseCompressor(object):
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
-        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
         self.supported_types = SUPPORTED_LAYER_TYPES
@@ -639,7 +638,15 @@ class BaseCompressor(object):
                 scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
-                self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
+                self.layer_config = _handle_special_schemes(
+                    scheme,
+                    self.layer_config,
+                    self.model,
+                    supported_types=self.supported_types,
+                    inner_supported_types=self.inner_supported_types,
+                    quant_lm_head=self.quant_lm_head,
+                    mllm=getattr(self, "mllm", False),
+                )
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:

@@ -18,11 +18,7 @@ from typing import Any, Callable
 import torch
 
 from auto_round.formats import OutputFormat
-<<<<<<< HEAD
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
-=======
-from auto_round.modeling.unfused_moe.replace_modules import apply_replacements, release_original_module_
->>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361))
 from auto_round.utils import logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size

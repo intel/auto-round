@@ -25,11 +25,7 @@ from transformers.models.deepseek_v2.modeling_deepseek_v2 import (
     eager_attention_forward,
 )
 
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/deepseek_v2.py
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-========
-from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/deepseek_v2.py
 from auto_round.utils import is_hpex_available
 
 

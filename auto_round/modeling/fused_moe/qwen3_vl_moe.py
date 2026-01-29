@@ -16,21 +16,15 @@ import torch
 import transformers
 from packaging import version
 
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/qwen3_vl_moe.py
+
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-========
-from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/qwen3_vl_moe.py
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-<<<<<<<< HEAD:auto_round/modeling/fused_moe/qwen3_vl_moe.py
 from auto_round.modeling.fused_moe.utils import _update_parameter
-========
-from auto_round.modeling.unfused_moe.utils import _update_parameter
->>>>>>>> cee9f77d (fix bug of exporting fp8 static (#1361)):auto_round/modeling/unfused_moe/qwen3_vl_moe.py
+
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
