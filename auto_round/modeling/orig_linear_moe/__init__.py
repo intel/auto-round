@@ -29,7 +29,7 @@ MODEL_CONFIG = {
         "block_patch": [
             (
                 "transformers.models.qwen3_moe.modeling_qwen3_moe.Qwen3MoeSparseMoeBlock",
-                "auto_round.modeling.qwen3_moe.LinearQwen3MoeSparseMoeBlock",
+                "auto_round.modeling.orig_linear_moe.qwen3_moe.LinearQwen3MoeSparseMoeBlock",
             )
         ],
     },
