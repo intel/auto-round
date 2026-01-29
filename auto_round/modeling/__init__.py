@@ -49,7 +49,7 @@ def get_checkpoint_conversion_mapping_ar(model_type):
     return conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
 
 
-def apply_model_monkey_patches(model_type):
+def apply_model_monkey_patches(model_type:str)->bool:
     if model_type not in MODEL_CONFIG:
         return False
 
@@ -89,9 +89,10 @@ def apply_model_monkey_patches(model_type):
         except Exception as e:
             logger.warning(f"Failed to patch {orig_path}: {e}")
             return False
+    return  False
 
 
-def apply_modeling_patch(model: torch.nn.Module):
+def apply_modeling_patch(model: torch.nn.Module)->bool:
     if hasattr(model, "config") and hasattr(model.config, "model_type"):
         model_type = model.config.model_type
     else:
@@ -130,3 +131,4 @@ def apply_modeling_patch(model: torch.nn.Module):
         except Exception as e:
             logger.warning(f"Failed to patch {orig_path}: {e}")
             return False
+    return False
