@@ -35,7 +35,10 @@ def setup_llama4():
     model_name = llama4_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    config.pad_token_id = None  # TODO: https://github.com/huggingface/transformers/issues/43525
+
+    # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
+    config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
     # config.vision_config.rope_theta = config.vision_config.rope_parameters["rope_theta"] # for transformers >= 5.0
