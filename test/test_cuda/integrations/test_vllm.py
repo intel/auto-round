@@ -8,6 +8,7 @@ Run `pytest test/test_cuda/test_vllm.py`.
 """
 
 import os
+
 import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
