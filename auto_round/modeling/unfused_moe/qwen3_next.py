@@ -1,3 +1,17 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -6,8 +20,12 @@ from torch.nn import functional as F
 class LinearQwen3NextSparseMoeBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextTopKRouter, Qwen3NextExperts, \
-            Qwen3NextMLP
+        from transformers.models.qwen3_next.modeling_qwen3_next import (
+            Qwen3NextExperts,
+            Qwen3NextMLP,
+            Qwen3NextTopKRouter,
+        )
+
         self.gate = Qwen3NextTopKRouter(config)
         self.num_experts = config.num_experts # needed
         self.experts = nn.ModuleList(
@@ -44,7 +62,6 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
             final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
 
         return final_hidden_states
-
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
