@@ -57,7 +57,6 @@ def apply_model_monkey_patches(model_type):
 
     cfg = MODEL_CONFIG[model_type]
 
-    # 版本检查
     min_ver = cfg.get("min_transformers_version")
     max_ver = cfg.get("max_transformers_version")
     tf_ver = version.parse(transformers.__version__)
@@ -76,7 +75,7 @@ def apply_model_monkey_patches(model_type):
             custom_module = importlib.import_module(custom_module_path)
             custom_class = getattr(custom_module, custom_class_name)
             setattr(orig_module, orig_class_name, custom_class)
-            logger.info(f"Patched {orig_path} -> {custom_path}")
+
             from transformers import conversion_mapping
 
             if not hasattr(conversion_mapping, "orig_get_checkpoint_conversion_mapping"):
@@ -86,6 +85,7 @@ def apply_model_monkey_patches(model_type):
 
             conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
             transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
+            logger.info(f"Patched {orig_path} -> {custom_path}")
             return  True
 
         except Exception as e:
@@ -103,11 +103,11 @@ def apply_modeling_patch(model:torch.nn.Module):
 
     cfg = MODEL_CONFIG[model_type]
 
-    # 版本检查
+
     min_ver = cfg.get("min_transformers_version")
     max_ver = cfg.get("max_transformers_version")
     tf_ver = version.parse(transformers.__version__)
-    if min_ver and tf_ver < version.parse(min_ver):
+    if min_ver and tf_ver <= version.parse(min_ver):
         return False
     if max_ver and tf_ver > version.parse(max_ver):
         return False

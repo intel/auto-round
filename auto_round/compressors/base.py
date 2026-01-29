@@ -268,7 +268,7 @@ class BaseCompressor(object):
                 model_type = getattr(config, "model_type")
                 self.is_model_patched = apply_model_monkey_patches(model_type)
 
-                if (is_moe_model_via_config(config) and self.is_model_patched and
+                if ( not self.is_model_patched and is_moe_model_via_config(config) and
                     version.parse(transformers.__version__)>=version.parse("5.0.0")):
                     logger.warning("The moe model is not optimized by AutoRound yet which may cause large ram usage, "
                                     "please submit a issue to https://github.com/intel/auto-round/issues")
