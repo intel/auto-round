@@ -3,7 +3,7 @@
 auto-gptq
 einops
 # pip install -v git+https://github.com/ModelCloud/GPTQModel.git --no-build-isolation
-lm_eval @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@main
+lm_eval >= 0.4.10  # for transformers >= 5.0.0
 optimum
 pandas
 pillow

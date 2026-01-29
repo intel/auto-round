@@ -106,6 +106,11 @@ def monkey_patch_transformers():
             exc,
         )
         return
+
+    if parsed_version >= version.parse("5.0.0"):
+        from transformers.initialization import no_init_weights
+
+        setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
     if parsed_version >= version.parse("4.56.0"):
         transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(torch_dtype="dtype")(
             transformers.AutoModelForCausalLM.from_pretrained

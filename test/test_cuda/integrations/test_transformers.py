@@ -50,6 +50,10 @@ class TestAutoRound:
     EXPECTED_OUTPUTS.add(
         "There is a girl who likes adventure, and she has been exploring the world for many years. She has visited every country in Europe and has even traveled to some of the most remote parts of Africa. She enjoys hiking through the mountains and discovering"
     )
+    # transformers 5.0.0
+    EXPECTED_OUTPUTS.add(
+        "There is a girl who likes adventure, and she has been exploring the world for many years. She has visited every country in Europe and has even traveled to some of the most remote parts of Africa. She has also climbed mountains, swum"
+    )
 
     device_map = "cuda"
 
@@ -98,7 +102,8 @@ class TestAutoRound:
         )
 
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
-        assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
+        output_sentence = self.tokenizer.decode(output[0], skip_special_tokens=True)
+        assert output_sentence in self.EXPECTED_OUTPUTS
 
     @require_intel_extension_for_pytorch
     def test_quantized_model_on_cpu(self):
