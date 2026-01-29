@@ -269,7 +269,7 @@ class BaseCompressor(object):
                 # config = AutoConfig.from_pretrained(model)
                 self.is_model_patched = apply_model_monkey_patches(monel_name=model)
 
-                #TODO excluded  ori_params_moe
+                # TODO excluded  ori_params_moe
                 # if (
                 #     not self.is_model_patched
                 #     and is_moe_model_via_config(config)

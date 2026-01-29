@@ -50,7 +50,7 @@ def get_checkpoint_conversion_mapping_ar(model_type):
 
 
 # This is for model checkpoint with linear definition
-def apply_model_monkey_patches(model_name:str) -> bool:
+def apply_model_monkey_patches(model_name: str) -> bool:
     config = AutoConfig.from_pretrained(model_name)
     model_type = getattr(config, "model_type")
     if model_type not in MODEL_CONFIG:
