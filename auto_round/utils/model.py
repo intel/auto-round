@@ -1055,10 +1055,6 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
-
-
-
-
 def get_module(module, key):
     """Get module from model by key name using PyTorch native API.
 
