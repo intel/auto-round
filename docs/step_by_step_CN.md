@@ -417,7 +417,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model=model_name_or_path,
     scheme="W4A16",
-    iters=0,  
+    iters=0,
 )
 
 output_dir = "./tmp_autoround"
@@ -539,10 +539,10 @@ autoround = AutoRound(
     model=model,
     tokenizer=tokenizer,
     device_map=device_map,
-    nsamples=512,  
-    batch_size=4,  
-    low_gpu_mem_usage=True,  
-    seqlen=2048,  
+    nsamples=512,
+    batch_size=4,
+    low_gpu_mem_usage=True,
+    seqlen=2048,
 )
 autoround.quantize()
 autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
@@ -660,10 +660,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 quantization_config = AutoRoundConfig(backend="ipex")
 model = AutoModelForCausalLM.from_pretrained(
-    model_name, 
-    device_map="cpu", 
-    quantization_config=quantization_config, 
-    torch_dtype="auto"
+    model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -695,10 +692,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
 model = AutoModelForCausalLM.from_pretrained(
-    model_name, 
-    device_map="cpu", 
-    quantization_config=quantization_config, 
-    torch_dtype="auto"
+    model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
