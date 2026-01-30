@@ -302,7 +302,7 @@ class BaseCompressor(object):
         self.shared_cache_keys = get_shared_keys(self.model)
 
         self.layer_config = layer_config
-        
+
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
@@ -340,7 +340,7 @@ class BaseCompressor(object):
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
-        
+
         self.ignore_layers = kwargs.pop("ignore_layers", "")
 
         self.low_cpu_mem_usage = low_cpu_mem_usage
