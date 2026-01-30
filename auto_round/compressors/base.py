@@ -256,6 +256,14 @@ class BaseCompressor(object):
             ...     # ...
             ... }
         """
+        scheme_fields = [f.name for f in fields(QuantizationScheme)]
+
+        # 1. Pre-extract user-specified overrides from kwargs
+        # This ensures we know exactly what the user wants to "force"
+        self.user_scheme_overrides = {
+            k: kwargs.pop(k) for k in scheme_fields
+            if k in kwargs and kwargs[k] is not None
+        }
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -311,7 +319,7 @@ class BaseCompressor(object):
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
         self.orig_scheme = copy.deepcopy(scheme)
-        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
+        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, self.user_scheme_overrides)
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -611,14 +619,16 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
+
+
     def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme], kwargs
+        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any]
     ) -> tuple[QuantizationScheme, bool]:
         """Parse and set the quantization scheme."""
 
         def _parse_and_set(scheme, kwargs):
             if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
-                if "bits" not in kwargs:
+                if "bits" not in user_scheme_overrides:
                     data_type = kwargs["data_type"]
                     raise KeyError(
                         f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
@@ -637,15 +647,7 @@ class BaseCompressor(object):
                 scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
-                self.layer_config = _handle_special_schemes(
-                    scheme,
-                    self.layer_config,
-                    self.model,
-                    supported_types=self.supported_types,
-                    inner_supported_types=self.inner_supported_types,
-                    quant_lm_head=self.quant_lm_head,
-                    mllm=getattr(self, "mllm", False),
-                )
+
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
@@ -709,7 +711,7 @@ class BaseCompressor(object):
                 raise ValueError("options of AutoScheme must not be empty")
             options = []
             for option in scheme.options:
-                new_option = _parse_and_set(option, kwargs)
+                new_option = _parse_and_set(option, user_scheme_overrides)
                 options.append(new_option)
             scheme.options = options
             for opt in options:
@@ -721,15 +723,11 @@ class BaseCompressor(object):
                 self.scheme = opt  # Choose the first one that not 16 bits
                 break
             # apply scheme to set default bits
-            scheme = _parse_and_set(self.scheme, kwargs)
+            scheme = _parse_and_set(self.scheme, user_scheme_overrides)
             is_auto_scheme = True
         else:
-            scheme = _parse_and_set(scheme, kwargs)
+            scheme = _parse_and_set(scheme, user_scheme_overrides)
             is_auto_scheme = False
-
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key in scheme_keys:
-            kwargs.pop(key, None)
 
         return scheme, is_auto_scheme
 
@@ -1550,7 +1548,16 @@ class BaseCompressor(object):
 
         if self.is_auto_scheme:
             self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
-
+        else:
+            self.layer_config = _handle_special_schemes(
+                self.orig_scheme,
+                self.layer_config,
+                self.model,
+                supported_types=self.supported_types,
+                inner_supported_types=self.inner_supported_types,
+                quant_lm_head=self.quant_lm_head,
+                mllm=getattr(self, "mllm", False),
+            )
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False
