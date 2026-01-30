@@ -257,7 +257,10 @@ class BaseCompressor(object):
 
         # 1. Pre-extract user-specified overrides from kwargs
         # This ensures we know exactly what the user wants to "force"
-        self.user_scheme_overrides = {k: kwargs.pop(k) for k in scheme_fields if k in kwargs and kwargs[k] is not None}
+        self.user_scheme_overrides = {
+            k: kwargs.pop(k) for k in scheme_fields
+            if k in kwargs and kwargs[k] is not None
+        }
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -312,8 +315,9 @@ class BaseCompressor(object):
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        default_scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, self.user_scheme_overrides)
         self.orig_scheme = copy.deepcopy(scheme)
-        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, self.user_scheme_overrides)
+        self.scheme = default_scheme
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -631,7 +635,8 @@ class BaseCompressor(object):
             # Check for conflict between user-specified bits and inferred bits
             if inferred_bits != config.get(bits_key):
                 logger.warning(
-                    f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}."
+                    f"'{dt_key}' does not match '{bits_key}'. "
+                    f"Resetting '{bits_key}' to {inferred_bits}."
                 )
                 config[bits_key] = inferred_bits
 
@@ -642,7 +647,9 @@ class BaseCompressor(object):
                     break
 
     def _override_scheme_with_user_specify(
-        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any]
+            self,
+            scheme: Union[str, dict, QuantizationScheme],
+            user_scheme_overrides: dict[str, Any]
     ) -> Union[str, QuantizationScheme]:
         """
         Updates a base quantization scheme with user-provided overrides.
@@ -681,15 +688,13 @@ class BaseCompressor(object):
         self._reconcile_bits_and_dtype(scheme_dict)
 
         # 5. Fallback logic: Inherit activation settings from weight settings
-        scheme_dict["act_group_size"] = (
-            scheme_dict.get("act_group_size")
-            if scheme_dict.get("act_group_size") is not None
-            else scheme_dict.get("group_size")
-        )
+        scheme_dict["act_group_size"] = (scheme_dict.get("act_group_size")
+                                         if scheme_dict.get("act_group_size") is not None
+                                         else scheme_dict.get("group_size"))
         scheme_dict["act_bits"] = scheme_dict.get("act_bits") or 16
-        scheme_dict["act_sym"] = (
-            scheme_dict.get("act_sym") if scheme_dict.get("act_sym") is not None else scheme_dict.get("sym")
-        )
+        scheme_dict["act_sym"] = (scheme_dict.get("act_sym")
+                                  if scheme_dict.get("act_sym") is not None
+                                  else scheme_dict.get("sym"))
 
         # 6. Activation data_type logic
         if scheme_dict.get("act_data_type") is None:
@@ -706,7 +711,9 @@ class BaseCompressor(object):
         return QuantizationScheme.from_dict(scheme_dict)
 
     def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme, AutoScheme], user_scheme_overrides: dict[str, Any]
+            self,
+            scheme: Union[str, dict, QuantizationScheme, AutoScheme],
+            user_scheme_overrides: dict[str, Any]
     ) -> tuple[Union[str, QuantizationScheme], bool]:
         """
         Parses the final scheme and binds all resulting attributes to 'self'.
@@ -717,10 +724,16 @@ class BaseCompressor(object):
         if is_auto_scheme:
             if not scheme.options:
                 raise ValueError("AutoScheme options cannot be empty")
+            else:
+                for option in scheme.options:
+                    if isinstance(option, str):
+                        if "mixed" in str:
+                            raise ValueError("Mixed option {option} is not supported")
 
             # Map user overrides across all auto-scheme options
             scheme.options = [
-                self._override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options
+                self._override_scheme_with_user_specify(opt, user_scheme_overrides)
+                for opt in scheme.options
             ]
 
             # Select the primary scheme for attribute binding (skipping BF16)
@@ -746,123 +759,6 @@ class BaseCompressor(object):
             setattr(self, key, value)
 
         return default_scheme, is_auto_scheme
-
-    # def _override_scheme_with_user_specify(self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides:dict[str, Any]):
-    #     if (user_scheme_overrides.get("data_type", None) and
-    #             user_scheme_overrides["data_type"].endswith("_dq") and
-    #             isinstance(scheme,str) and not scheme.startswith("gguf")):
-    #         if "bits" not in user_scheme_overrides:
-    #             data_type = user_scheme_overrides["data_type"]
-    #             raise KeyError(
-    #                 f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
-    #             )
-    #         bits = user_scheme_overrides["bits"]
-    #         scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
-    #
-    #     if isinstance(scheme, QuantizationScheme):
-    #         scheme = asdict(scheme)
-    #     elif isinstance(scheme, str):
-    #         # We’d better keep the string scheme instead of the dict config,
-    #         # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
-    #         # even though they share the same scheme dict.
-    #         scheme = scheme.strip("'\" ")
-    #         scheme = scheme.upper()
-    #
-    #     if len(user_scheme_overrides) > 0: # apply user overrides
-    #         if isinstance(scheme, str):
-    #             scheme = asdict(preset_name_to_scheme(scheme))
-    #         # all has been dict
-    #         for key, value in user_scheme_overrides.items():
-    #             scheme[key] = value
-    #         if scheme["act_dynamic"] is None:
-    #             scheme["act_dynamic"] = True
-    #
-    #         tmp_bits = infer_bits_by_data_type(scheme["data_type"])
-    #         if tmp_bits is not None and tmp_bits < 16 and tmp_bits != scheme["bits"]:
-    #             logger.warning(
-    #                 f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
-    #             )
-    #             scheme["bits"] = tmp_bits
-    #         if tmp_bits is not None and tmp_bits < 16:
-    #             for supported_dtype in SUPPORTED_DTYPES:
-    #                 # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-    #                 if scheme["data_type"].startswith(supported_dtype):
-    #                     if supported_dtype + str(tmp_bits) == scheme["data_type"]:  # could not replace FP8_e4m3
-    #                         scheme["data_type"] = supported_dtype
-    #                     break
-    #
-    #
-    #         scheme["act_group_size"] = scheme["act_group_size"] if scheme["act_group_size"] is not None else scheme["group_size"]
-    #         scheme["act_bits"] = scheme["act_bits"] if scheme["act_bits"] is not None else 16
-    #         scheme["act_sym"] = scheme["act_sym"] if scheme["act_sym"] is not None else scheme["sym"]
-    #
-    #         if scheme["act_data_type"] is None:
-    #             if scheme["data_type"] in SUPPORTED_DTYPES and scheme["act_bits"] < 16:
-    #                 scheme["act_data_type"] = scheme["data_type"]
-    #                 logger.info(f"activation adopts {scheme["data_type"]}")
-    #             else:
-    #                 scheme["act_data_type"] = "float"
-    #         tmp_act_bits = infer_bits_by_data_type(scheme["act_data_type"])
-    #         if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != scheme["act_bits"]:
-    #             scheme["act_bits"] = tmp_act_bits
-    #             logger.warning(
-    #                 f"`act_data_type` do not"
-    #                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
-    #             )
-    #         if tmp_act_bits is not None and tmp_act_bits < 16:
-    #             for (
-    #                     supported_dtype
-    #             ) in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-    #                 if scheme["act_data_type"].startswith(supported_dtype):
-    #                     if supported_dtype + str(tmp_act_bits) == scheme["act_data_type"]:  # Could not replace FP8_e4m3
-    #                         scheme["act_data_type"] = supported_dtype
-    #                     break
-    #
-    #     if not isinstance(scheme, str):
-    #         return QuantizationScheme.from_dict(scheme)
-    #     else:
-    #         return scheme
-    #
-    #
-    #
-    # def _parse_and_set_scheme(
-    #     self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any]
-    # ) -> tuple[QuantizationScheme, bool]:
-    #     """Parse and set the quantization scheme."""
-    #
-    #     default_scheme = scheme
-    #     if isinstance(scheme, AutoScheme):
-    #         if len(scheme.options) <= 0:
-    #             raise ValueError("options of AutoScheme must not be empty")
-    #         options = []
-    #         for option in scheme.options:
-    #             new_option = self._override_scheme_with_user_specify(option, user_scheme_overrides)
-    #             options.append(new_option)
-    #         scheme.options = options
-    #         for opt in options:
-    #             if isinstance(opt, str) and opt == "BF16":
-    #                 continue
-    #             if isinstance(opt, QuantizationScheme):
-    #                 if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
-    #                     continue
-    #                 default_scheme =opt
-    #             break
-    #
-    #         is_auto_scheme = True
-    #     else:
-    #         default_scheme = self._override_scheme_with_user_specify(scheme, user_scheme_overrides)
-    #         is_auto_scheme = False
-    #
-    #     # set self attributes for easy access
-    #     scheme_dict = {}
-    #     if isinstance(default_scheme,str):
-    #         scheme_dict = asdict(preset_name_to_scheme(default_scheme))
-    #     elif isinstance(default_scheme, QuantizationScheme):
-    #         scheme_dict = asdict(default_scheme)
-    #     for key,value in scheme_dict.items():
-    #         setattr(self, key, value)
-    #
-    #     return default_scheme, is_auto_scheme
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
