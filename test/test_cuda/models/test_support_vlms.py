@@ -180,7 +180,6 @@ class TestSupportVLMS:
         print(response)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @require_package_version_ut("transformers", "<4.57.0")
     @pytest.mark.skipif(
         transformers_version >= version.parse("4.57.0"),
         reason="transformers api changed",
