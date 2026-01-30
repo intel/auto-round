@@ -660,10 +660,10 @@ class TestAutoRound:
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
 
     def test_dequant_g2_fp8_weight(self):
-        """Test Gaudi2-specific dequantization redirection logic in convert_model_to_high_precision_if_necessary."""
+        """Test Gaudi2-specific dequantization redirection logic in convert_module_to_hp_if_necessary."""
         from unittest.mock import MagicMock, patch
 
-        from auto_round.utils.model import convert_model_to_high_precision_if_necessary, dequant_block_fp8_weight
+        from auto_round.utils.model import convert_module_to_hp_if_necessary, dequant_block_fp8_weight
 
         # Test 1: Verify Standard e4m3fn native dequantization result
         weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)
@@ -674,7 +674,7 @@ class TestAutoRound:
         assert dq_weight.dtype == torch.bfloat16
         assert abs(dq_weight[0, 0].item() - 448.0) < 1e-3
 
-        # Test 2: Verify Gaudi2 redirection in convert_model_to_high_precision_if_necessary
+        # Test 2: Verify Gaudi2 redirection in convert_module_to_hp_if_necessary
         mock_layer = MagicMock()
         mock_layer.in_features = 2
         mock_layer.out_features = 1
@@ -689,14 +689,14 @@ class TestAutoRound:
         mock_layer.to.return_value = mock_layer
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=True):
-            convert_model_to_high_precision_if_necessary(mock_layer, device="hpu")
+            convert_module_to_hp_if_necessary(mock_layer, device="hpu")
             # Verify it was moved to CPU
             mock_layer.to.assert_called_with("cpu")
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=False):
             # Reset mock
             mock_layer.to.reset_mock()
-            convert_model_to_high_precision_if_necessary(mock_layer, device="hpu")
+            convert_module_to_hp_if_necessary(mock_layer, device="hpu")
             # Verify it was moved to HPU (as requested in device arg)
             mock_layer.to.assert_called_with("hpu")
 

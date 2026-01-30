@@ -30,58 +30,15 @@ from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-
-# ============================================================================
-# FP8 Dequantization Registry
-# ============================================================================
-# Registry mapping FP8 layer class names to their dequantization handlers.
-# This ensures detection and dequantization logic stay in sync.
-FP8_DEQUANT_REGISTRY = {}
-
-
-def register_fp8_layer(layer_name: str):
-    """Register a dequantization handler for an FP8 layer type.
-
-    Args:
-        layer_name: The class name of the FP8 layer type (e.g., "FP8Linear", "CompressedLinear")
-
-    Returns:
-        Decorator function that registers the handler.
-
-    Example:
-        @register_fp8_layer("FP8Linear")
-        def dequant_fp8_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-            # Dequantization logic
-            return dequantized_weight
-    """
-
-    def decorator(fn):
-        FP8_DEQUANT_REGISTRY[layer_name] = fn
-        return fn
-
-    return decorator
-
-
-def dequant_fp8_layer(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """Dequantize an FP8 layer using the registry.
-
-    Args:
-        layer: The FP8 layer to dequantize.
-        dtype: Target dtype for dequantized weights.
-        device: Target device for dequantization.
-
-    Returns:
-        Dequantized weight tensor.
-
-    Raises:
-        NotImplementedError: If the layer type is not registered.
-    """
-    name = layer.__class__.__name__
-    if name not in FP8_DEQUANT_REGISTRY:
-        raise NotImplementedError(
-            f"Unsupported FP8 layer type: {name}. " f"Supported types: {list(FP8_DEQUANT_REGISTRY.keys())}"
-        )
-    return FP8_DEQUANT_REGISTRY[name](layer, dtype=dtype, device=device)
+from auto_round.utils.weight_type_conversion import (
+    check_and_mark_quantized_model,
+)
+from auto_round.utils.weight_type_conversion import (
+    convert_to_high_precision_if_necessary as convert_module_to_hp_if_necessary,
+)
+from auto_round.utils.weight_type_conversion import (
+    is_quantized_input_model,
+)
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -189,19 +146,6 @@ def convert_dtype_torch2str_hf(dtype):
         raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
-
-
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if is_fp8_model(model):
-        return True
-    for n, m in model.named_modules():
-        if is_fp8_linear(m):
-            m.is_fp8_linear = True
-            if not hasattr(model, "is_fp8"):
-                model.is_fp8 = True
-    if hasattr(model, "is_fp8"):
-        return True
-    return False
 
 
 def check_diffusers_installed():  # pragma: no cover
@@ -389,7 +333,7 @@ def llm_load_model(
             )
 
     model = model.eval()
-    check_and_mark_fp8_model(model)
+    check_and_mark_quantized_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
@@ -539,7 +483,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
-    check_and_mark_fp8_model(model)
+    check_and_mark_quantized_model(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -670,45 +614,6 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "Qwen3MoeSparseMoeBlock".lower(),
         ]
     )
-
-
-def is_fp8_model(model: torch.nn.Module) -> bool:
-    if not hasattr(model, "is_fp8"):
-        return False
-    else:
-        return model.is_fp8
-
-
-def is_fp8_linear(module: torch.nn.Module) -> bool:
-    """Check if a module is an FP8 linear layer.
-
-    Detection follows this priority:
-    1. Explicit `is_fp8_linear` attribute (highest priority)
-    2. Registry lookup (for registered FP8 layer types)
-    3. Fallback dtype check (for backward compatibility with unregistered FP8 layers)
-
-    Args:
-        module: The module to check.
-
-    Returns:
-        True if the module is an FP8 linear layer, False otherwise.
-    """
-    # First check if explicitly marked
-    if hasattr(module, "is_fp8_linear"):
-        return module.is_fp8_linear
-
-    # Check registry for supported FP8 layer types
-    layer_name = module.__class__.__name__
-    if layer_name in FP8_DEQUANT_REGISTRY:
-        return True
-
-    # Fallback: Check for FP8 dtype (for torch.nn.Linear with FP8 weights)
-    # This maintains backward compatibility for layers not yet in registry
-    if type(module) == torch.nn.Linear and module.weight is not None:
-        if str(module.weight.dtype).startswith("torch.float8"):
-            return True
-
-    return False
 
 
 def get_block_names(model, quant_vision=False):
@@ -1071,33 +976,6 @@ def dequant_block_fp8_weight(
     return dequant_weight
 
 
-# Register FP8 layer dequantization handlers
-# Note: Handlers are registered here (after dequant_block_fp8_weight is defined)
-# to ensure all dependencies are available.
-@register_fp8_layer("CompressedLinear")
-def dequant_compressed_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """Dequantize CompressedLinear layer using compressor."""
-    layer = layer.to(device)
-    return layer.compressor.decompress_module(layer)
-
-
-@register_fp8_layer("FP8Linear")
-def dequant_fp8_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """Dequantize FP8Linear layer using block-based dequantization."""
-    layer = layer.to(device)
-    weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-    data_type = getattr(layer, "data_type", None)
-    # Pass data_type if dequant_block_fp8_weight supports it
-    # Check if function accepts data_type parameter
-    import inspect
-
-    sig = inspect.signature(dequant_block_fp8_weight)
-    if "data_type" in sig.parameters:
-        return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
-    else:
-        return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
-
-
 def check_to_quantized(config):
     """Checks if the configuration is valid for quantization.
 
@@ -1153,80 +1031,6 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
             f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). "
             "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length."
         )
-
-
-def convert_model_to_high_precision_if_necessary(
-    model_or_layer, dtype=torch.bfloat16, device: str = "cpu", to_cpu: bool = False
-):
-    """Convert FP8 quantized layer(s) to high-precision Linear layer(s) if necessary.
-
-    This function checks if the input is an FP8 layer/model and converts it accordingly.
-    If the input is not FP8, it returns the input unchanged.
-
-    Args:
-        model_or_layer: Either a single layer, a block, or an entire model.
-        dtype: Target dtype for the converted layer(s). Defaults to torch.bfloat16.
-        device: Target device for the conversion. Defaults to "cpu".
-        to_cpu: If True, move converted layers to CPU. Defaults to False.
-
-    Returns:
-        If input is a single FP8 layer: A new torch.nn.Linear layer with dequantized weights.
-        If input is a model/block containing FP8 layers: The model with FP8 layers converted.
-        If input has no FP8 layers: Returns the input unchanged.
-    """
-    # Check if it's a single FP8 layer
-    if is_fp8_linear(model_or_layer):
-        return _convert_single_layer(model_or_layer, dtype, device, to_cpu)
-
-    # Check if it's a model/block containing FP8 layers
-    if is_fp8_model(model_or_layer):
-        return _convert_model_layers(model_or_layer, dtype, device, to_cpu)
-
-    # No FP8 layers, return unchanged
-    return model_or_layer
-
-
-def _convert_single_layer(layer, dtype, device, to_cpu):
-    """Convert a single FP8 layer to a standard Linear layer."""
-    from auto_round.schemes import QuantizationScheme
-    from auto_round.utils.device import is_gaudi2
-
-    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias is not None:
-        new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-
-    # Copy quantization scheme attributes
-    scheme_keys = (f.name for f in fields(QuantizationScheme))
-    for key in tuple(scheme_keys) + ("global_name", "scale_dtype"):
-        setattr(new_layer, key, getattr(layer, key, None))
-
-    # Handle Gaudi2 device compatibility
-    if is_gaudi2():
-        device = "cpu"
-
-    # Use registry-based dequantization
-    dq_weight = dequant_fp8_layer(layer, dtype=dtype, device=device)
-    new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
-
-    if to_cpu:
-        new_layer = new_layer.to("cpu")
-
-    return new_layer
-
-
-def _convert_model_layers(model, dtype, device, to_cpu):
-    """Convert all FP8 layers in a model to high-precision Linear layers."""
-    from auto_round.utils.device import clear_memory
-
-    cnt = 0
-    for n, m in model.named_modules():
-        if is_fp8_linear(m):
-            new_module = _convert_single_layer(m, dtype, device, to_cpu)
-            set_module(model, n, new_module)
-            cnt += 1
-            if cnt % 10 == 0:
-                clear_memory()
-    return model
 
 
 def _to_model_dtype(model, model_dtype):

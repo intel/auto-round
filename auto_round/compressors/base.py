@@ -73,13 +73,13 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    check_and_mark_fp8_model,
+    check_and_mark_quantized_model,
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
     compile_func,
     convert_dtype_str2torch,
-    convert_model_to_high_precision_if_necessary,
+    convert_module_to_hp_if_necessary,
     detect_device,
     find_matching_blocks,
     flatten_list,
@@ -91,11 +91,10 @@ from auto_round.utils import (
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
-    is_fp8_linear,
-    is_fp8_model,
     is_hpex_available,
     is_moe_model,
     is_moe_model_via_config,
+    is_quantized_input_model,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -295,7 +294,7 @@ class BaseCompressor(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
-        check_and_mark_fp8_model(model)
+        check_and_mark_quantized_model(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -510,8 +509,8 @@ class BaseCompressor(object):
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
-        if getattr(model, "is_fp8", False):
-            logger.info("AutoScheme does not currently support FP8 models.")
+        if is_quantized_input_model(model):
+            logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
             sys.exit(-1)
 
         all_dtypes = []
@@ -1133,7 +1132,7 @@ class BaseCompressor(object):
         if dtype is not None:
             m = m.to(dtype)
 
-        m = convert_model_to_high_precision_if_necessary(m, self.amp_dtype, self.device)
+        m = convert_module_to_hp_if_necessary(m, self.amp_dtype, self.device)
         set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
@@ -1241,7 +1240,7 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
-                m = convert_model_to_high_precision_if_necessary(m, self.amp_dtype, self.device)
+                m = convert_module_to_hp_if_necessary(m, self.amp_dtype, self.device)
                 set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
@@ -1369,7 +1368,7 @@ class BaseCompressor(object):
                         m.to("meta")
 
         # Convert remaining fp8
-        convert_model_to_high_precision_if_necessary(self.model, self.amp_dtype, self.device)
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1440,7 +1439,7 @@ class BaseCompressor(object):
                 block = get_module(self.model, block_name)
                 materialize_model_(block)
                 block.to("cpu")
-                convert_model_to_high_precision_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+                convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -1735,7 +1734,7 @@ class BaseCompressor(object):
         pbar.close()
         self._quantize_layers(layer_names, all_inputs)
 
-        convert_model_to_high_precision_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1799,7 +1798,7 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                layer = convert_model_to_high_precision_if_necessary(layer, self.amp_dtype, self.device)
+                layer = convert_module_to_hp_if_necessary(layer, self.amp_dtype, self.device)
                 set_module(self.model, layer_name, layer)
 
                 wrapper_layer = WrapperLinear(
@@ -2107,7 +2106,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if is_fp8_model(self.model):
+        if is_quantized_input_model(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -2758,7 +2757,7 @@ class BaseCompressor(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         materialize_model_(block)
-        convert_model_to_high_precision_if_necessary(block, self.amp_dtype, device)
+        convert_module_to_hp_if_necessary(block, self.amp_dtype, device)
 
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
