@@ -72,8 +72,8 @@ def test_unfuse_experts_weights():
     original_gate_up = module.gate_up_proj.data.clone()
     original_down = module.down_proj.data.clone()
 
-    # Unfuse
-    success = _unfuse_experts_weights_inplace(module)
+    # Unfuse (check_decorator=False since mock module doesn't have the decorator)
+    success = _unfuse_experts_weights_inplace(module, check_decorator=False)
     assert success, "Failed to unfuse weights"
 
     # Verify structure
@@ -123,8 +123,8 @@ def test_unfuse_experts_weights_transposed():
     original_gate_up = module.gate_up_proj.data.clone()
     original_down = module.down_proj.data.clone()
 
-    # Unfuse
-    success = _unfuse_experts_weights_inplace(module)
+    # Unfuse (check_decorator=False since mock module doesn't have the decorator)
+    success = _unfuse_experts_weights_inplace(module, check_decorator=False)
     assert success, "Failed to unfuse transposed weights"
 
     # Verify structure
@@ -173,8 +173,8 @@ def test_linear_loop_forward():
 
     module = MockExperts()
 
-    # Unfuse weights
-    _unfuse_experts_weights_inplace(module)
+    # Unfuse weights (check_decorator=False since mock module doesn't have the decorator)
+    _unfuse_experts_weights_inplace(module, check_decorator=False)
 
     # Create inputs
     hidden_states = torch.randn(num_tokens, hidden_dim)
@@ -223,6 +223,12 @@ def test_prepare_model_for_moe_quantization():
             self.num_experts = num_experts
             self.has_bias = False
             self.is_transposed = False
+        
+        def forward(self, x):
+            pass
+
+    # Add __wrapped__ to simulate @use_experts_implementation decorator
+    MockExpertsModule.forward.__wrapped__ = True
 
     class MockModel(nn.Module):
         def __init__(self):

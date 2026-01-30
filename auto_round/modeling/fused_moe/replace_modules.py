@@ -73,7 +73,15 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
 
 
 def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module) -> bool:
-    """Skip MOE replacement if linear_loop experts are already unfused."""
+    """Skip MOE replacement if linear_loop experts are already unfused.
+    
+    This is only true when:
+    1. model.config._experts_implementation == "linear_loop" (set by prepare_model_for_moe_quantization)
+    2. The experts' gate_up_proj and down_proj are already nn.ModuleList
+    
+    Note: _experts_implementation is only set when the experts class supports
+    @use_experts_implementation decorator, so we don't need to check that again here.
+    """
     if not hasattr(model, "config"):
         return False
     if getattr(model.config, "_experts_implementation", None) != "linear_loop":
@@ -83,7 +91,12 @@ def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module
         return False
     gate_up = getattr(experts, "gate_up_proj", None)
     down = getattr(experts, "down_proj", None)
-    return isinstance(gate_up, torch.nn.ModuleList) and isinstance(down, torch.nn.ModuleList)
+    result = isinstance(gate_up, torch.nn.ModuleList) and isinstance(down, torch.nn.ModuleList)
+    logger.info(
+        f"_should_skip_moe_replacement for {module.__class__.__name__}: "
+        f"gate_up type={type(gate_up).__name__}, down type={type(down).__name__}, skip={result}"
+    )
+    return result
 
 
 @dump_mem_usage("Materializing model", log_level="debug")

@@ -19,6 +19,59 @@ import torch.nn as nn
 from auto_round.utils import copy_python_files_from_model_cache, logger, unsupported_meta_device
 
 
+def _has_unfused_moe_experts(model: nn.Module) -> bool:
+    """Check if model has unfused MOE experts (nn.ModuleList instead of 3D Parameter).
+    
+    This is used to detect if we need to bypass transformers' weight conversion
+    during save_pretrained.
+    """
+    for module in model.modules():
+        if hasattr(module, 'gate_up_proj') and isinstance(module.gate_up_proj, nn.ModuleList):
+            if hasattr(module, 'down_proj') and isinstance(module.down_proj, nn.ModuleList):
+                return True
+    return False
+
+
+def _save_model_state_dict(
+    model: nn.Module,
+    save_dir: str,
+    max_shard_size: str = "5GB",
+    safe_serialization: bool = True,
+):
+    """Save model using state_dict directly, bypassing transformers' weight conversion.
+    
+    This is needed for models with unfused MOE experts where transformers'
+    revert_weight_conversion expects 3D tensor format but we have ModuleList.
+    """
+    import torch
+    from safetensors.torch import save_file
+    
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Save config
+    if hasattr(model, "config") and model.config is not None:
+        model.config.save_pretrained(save_dir)
+
+    if hasattr(model, "generation_config") and model.generation_config is not None:
+        try:
+            model.generation_config.save_pretrained(save_dir)
+        except Exception:
+            pass  # generation_config save can fail for some models
+    
+    # Get state dict
+    state_dict = model.state_dict()
+    
+    # Save weights
+    if safe_serialization:
+        # Save as safetensors
+        weights_file = os.path.join(save_dir, "model.safetensors")
+        save_file(state_dict, weights_file)
+    else:
+        # Save as pytorch bin
+        weights_file = os.path.join(save_dir, "pytorch_model.bin")
+        torch.save(state_dict, weights_file)
+
+
 def save_model(
     model: nn.Module,
     save_dir: str,
@@ -47,12 +100,22 @@ def save_model(
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
+    
+    # Check if model has unfused MOE experts - if so, we need to bypass transformers'
+    # weight conversion which expects original 3D tensor format
+    has_unfused_experts = _has_unfused_moe_experts(model)
+    
     if unsupported_meta_device(model):
         if hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(save_dir)
 
         if hasattr(model, "generation_config") and model.generation_config is not None:
             model.generation_config.save_pretrained(save_dir)
+    elif has_unfused_experts:
+        # For models with unfused MOE experts, save state_dict directly to avoid
+        # transformers' revert_weight_conversion which expects 3D tensor format
+        logger.info("Saving model with unfused MOE experts using state_dict (bypassing weight conversion)")
+        _save_model_state_dict(model, save_dir, max_shard_size, safe_serialization)
     else:
         try:
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
@@ -68,6 +131,35 @@ def save_model(
         data["torch_dtype"] = str(dtype).split(".")[-1]
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
+
+    # Save _experts_implementation to config.json if set (for MOE models with unfused experts)
+    # Check main config and nested configs (e.g., text_config for VLM models)
+    if hasattr(model, "config") and os.path.exists(config_path):
+        experts_impl = None
+        nested_config_name = None
+
+        # Check main config first
+        if hasattr(model.config, "_experts_implementation"):
+            experts_impl = model.config._experts_implementation
+
+        # Check nested configs (text_config, llm_config, etc.)
+        for attr in ['text_config', 'llm_config', 'language_config']:
+            nested_cfg = getattr(model.config, attr, None)
+            if nested_cfg and hasattr(nested_cfg, "_experts_implementation"):
+                experts_impl = nested_cfg._experts_implementation
+                nested_config_name = attr
+                break
+
+        if experts_impl:
+            with open(config_path, "r") as file:
+                data = json.load(file)
+            if nested_config_name and nested_config_name in data:
+                data[nested_config_name]["experts_implementation"] = experts_impl
+            else:
+                data["experts_implementation"] = experts_impl
+            with open(config_path, "w") as file:
+                json.dump(data, file, indent=2)
+
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:

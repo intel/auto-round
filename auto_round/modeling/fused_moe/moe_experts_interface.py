@@ -44,6 +44,9 @@ except ImportError:
     HAS_EXPERTS_FUNCTIONS = False
     ALL_EXPERTS_FUNCTIONS = None
 
+# Track if we've logged linear_loop usage (to avoid spamming logs)
+_linear_loop_logged = False
+
 
 def linear_loop_experts_forward(
     self: nn.Module,
@@ -73,6 +76,11 @@ def linear_loop_experts_forward(
     Returns:
         final_hidden_states: Output tensor of shape (num_tokens, hidden_dim)
     """
+    global _linear_loop_logged
+    if not _linear_loop_logged:
+        logger.info(f"Using linear_loop experts forward for {self.__class__.__name__}")
+        _linear_loop_logged = True
+
     device = hidden_states.device
     num_top_k = top_k_index.size(-1)
     num_tokens = hidden_states.size(0)
@@ -147,7 +155,20 @@ def register_linear_loop_experts() -> bool:
     return True
 
 
-def _unfuse_experts_weights_inplace(module: nn.Module) -> bool:
+def _experts_supports_decorator(module: nn.Module) -> bool:
+    """Check if experts module supports @use_experts_implementation decorator.
+    
+    Only experts classes decorated with @use_experts_implementation will use
+    our linear_loop forward. Others need full module replacement.
+    """
+    forward_method = getattr(module.__class__, 'forward', None)
+    if forward_method is None:
+        return False
+    # @use_experts_implementation sets __wrapped__ on the decorated method
+    return hasattr(forward_method, '__wrapped__')
+
+
+def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = True) -> bool:
     """Convert fused 3D expert weights to nn.ModuleList of nn.Linear layers.
 
     This function modifies the module in-place, replacing:
@@ -156,6 +177,8 @@ def _unfuse_experts_weights_inplace(module: nn.Module) -> bool:
 
     Args:
         module: The experts module to unfuse
+        check_decorator: If True, only unfuse if the module supports 
+            @use_experts_implementation decorator. Default is True.
 
     Returns:
         True if unfusing was successful, False if module doesn't match pattern
@@ -166,6 +189,13 @@ def _unfuse_experts_weights_inplace(module: nn.Module) -> bool:
     if not hasattr(module, 'down_proj') or not isinstance(module.down_proj, nn.Parameter):
         return False
     if module.gate_up_proj.dim() != 3 or module.down_proj.dim() != 3:
+        return False
+
+    # Only unfuse if the module supports the decorator (unless check_decorator is False)
+    # Modules that don't support the decorator (like Llama4TextExperts) should be
+    # handled by full module replacement instead
+    if check_decorator and not _experts_supports_decorator(module):
+        logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
     gate_up_proj = module.gate_up_proj
@@ -284,23 +314,26 @@ def prepare_model_for_moe_quantization(
             "This requires transformers >= 5.0.0 with MOE integration support."
         )
 
-    # Set config
-    if hasattr(model, 'config'):
-        model.config._experts_implementation = implementation
-        logger.info(f"Set model.config._experts_implementation = '{implementation}'")
-    else:
-        logger.warning("Model has no config attribute, cannot set _experts_implementation")
-
-    # Unfuse all fused experts modules
+    # Unfuse all fused experts modules (only those supporting @use_experts_implementation)
     unfused_modules = []
     for name, module in model.named_modules():
         if _unfuse_experts_weights_inplace(module):
             unfused_modules.append(name)
             logger.debug(f"Unfused expert weights in: {name}")
 
+    # Only set config if we actually unfused something
+    # Models that don't support the decorator (like Llama4) won't have anything unfused
+    # and should use full module replacement instead
     if unfused_modules:
         logger.info(f"Unfused {len(unfused_modules)} MOE experts modules for quantization")
         clear_memory()
+        
+        # Set config for linear_loop forward
+        if hasattr(model, 'config'):
+            saved_impl = getattr(model.config, 'experts_implementation', None)
+            impl_to_set = saved_impl if saved_impl else implementation
+            model.config._experts_implementation = impl_to_set
+            logger.info(f"Set model.config._experts_implementation = '{impl_to_set}'")
 
     return unfused_modules
 
