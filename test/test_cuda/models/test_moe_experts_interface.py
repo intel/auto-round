@@ -29,7 +29,6 @@ def test_linear_loop_registration():
     """Test that linear_loop is registered with transformers."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
         is_linear_loop_available,
-        register_linear_loop_experts,
     )
 
     if not is_linear_loop_available():
@@ -149,7 +148,6 @@ def test_linear_loop_forward():
     """Test that linear_loop forward produces correct results."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
         _unfuse_experts_weights_inplace,
-        linear_loop_experts_forward,
     )
 
     num_experts = 4
@@ -195,7 +193,6 @@ def test_prepare_model_for_moe_quantization():
     """Test the full prepare_model_for_moe_quantization flow."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
         is_linear_loop_available,
-        prepare_model_for_moe_quantization,
     )
 
     if not is_linear_loop_available():
