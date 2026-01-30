@@ -257,10 +257,7 @@ class BaseCompressor(object):
 
         # 1. Pre-extract user-specified overrides from kwargs
         # This ensures we know exactly what the user wants to "force"
-        self.user_scheme_overrides = {
-            k: kwargs.pop(k) for k in scheme_fields
-            if k in kwargs and kwargs[k] is not None
-        }
+        self.user_scheme_overrides = {k: kwargs.pop(k) for k in scheme_fields if k in kwargs and kwargs[k] is not None}
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -634,8 +631,7 @@ class BaseCompressor(object):
             # Check for conflict between user-specified bits and inferred bits
             if inferred_bits != config.get(bits_key):
                 logger.warning(
-                    f"'{dt_key}' does not match '{bits_key}'. "
-                    f"Resetting '{bits_key}' to {inferred_bits}."
+                    f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}."
                 )
                 config[bits_key] = inferred_bits
 
@@ -646,9 +642,7 @@ class BaseCompressor(object):
                     break
 
     def _override_scheme_with_user_specify(
-            self,
-            scheme: Union[str, dict, QuantizationScheme],
-            user_scheme_overrides: dict[str, Any]
+        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any]
     ) -> Union[str, QuantizationScheme]:
         """
         Updates a base quantization scheme with user-provided overrides.
@@ -687,13 +681,15 @@ class BaseCompressor(object):
         self._reconcile_bits_and_dtype(scheme_dict)
 
         # 5. Fallback logic: Inherit activation settings from weight settings
-        scheme_dict["act_group_size"] = (scheme_dict.get("act_group_size")
-                                         if scheme_dict.get("act_group_size") is not None
-                                         else scheme_dict.get("group_size"))
+        scheme_dict["act_group_size"] = (
+            scheme_dict.get("act_group_size")
+            if scheme_dict.get("act_group_size") is not None
+            else scheme_dict.get("group_size")
+        )
         scheme_dict["act_bits"] = scheme_dict.get("act_bits") or 16
-        scheme_dict["act_sym"] = (scheme_dict.get("act_sym")
-                                  if scheme_dict.get("act_sym") is not None
-                                  else scheme_dict.get("sym"))
+        scheme_dict["act_sym"] = (
+            scheme_dict.get("act_sym") if scheme_dict.get("act_sym") is not None else scheme_dict.get("sym")
+        )
 
         # 6. Activation data_type logic
         if scheme_dict.get("act_data_type") is None:
@@ -710,9 +706,7 @@ class BaseCompressor(object):
         return QuantizationScheme.from_dict(scheme_dict)
 
     def _parse_and_set_scheme(
-            self,
-            scheme: Union[str, dict, QuantizationScheme, AutoScheme],
-            user_scheme_overrides: dict[str, Any]
+        self, scheme: Union[str, dict, QuantizationScheme, AutoScheme], user_scheme_overrides: dict[str, Any]
     ) -> tuple[Union[str, QuantizationScheme], bool]:
         """
         Parses the final scheme and binds all resulting attributes to 'self'.
@@ -726,8 +720,7 @@ class BaseCompressor(object):
 
             # Map user overrides across all auto-scheme options
             scheme.options = [
-                self._override_scheme_with_user_specify(opt, user_scheme_overrides)
-                for opt in scheme.options
+                self._override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options
             ]
 
             # Select the primary scheme for attribute binding (skipping BF16)
