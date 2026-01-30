@@ -671,6 +671,11 @@ class BaseCompressor(object):
             scheme_dict = asdict(scheme)
         elif isinstance(scheme, str):
             normalized_name = scheme.strip("'\" ").upper()
+            if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
+                logger.warning(
+                    "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
+                )
+                user_scheme_overrides = {}
             # If no overrides exist, return the normalized string immediately
             if not user_scheme_overrides:
                 return normalized_name
