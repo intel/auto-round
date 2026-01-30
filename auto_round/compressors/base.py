@@ -726,8 +726,8 @@ class BaseCompressor(object):
             else:
                 for option in scheme.options:
                     if isinstance(option, str):
-                        if "mixed" in str:
-                            raise ValueError("Mixed option {option} is not supported")
+                        if "mixed" in option:
+                            raise ValueError(f"Mixed option {option} is not supported")
 
             # Map user overrides across all auto-scheme options
             scheme.options = [
