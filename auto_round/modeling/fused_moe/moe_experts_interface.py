@@ -244,10 +244,6 @@ def _unfuse_experts_weights_inplace(module: nn.Module) -> bool:
     # First, remove the old parameters
     del module.gate_up_proj
     del module.down_proj
-    if hasattr(module, 'gate_up_proj_bias'):
-        del module.gate_up_proj_bias
-    if hasattr(module, 'down_proj_bias'):
-        del module.down_proj_bias
 
     # Set the new ModuleLists
     module.gate_up_proj = gate_up_linears
