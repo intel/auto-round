@@ -4,13 +4,14 @@ import shutil
 import pytest
 import torch
 import transformers
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import llm_load_model
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
 class TestAutoRound:
@@ -46,6 +47,11 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="GGUF format saving and loading failed in transformers v5, \
+            https://github.com/huggingface/transformers/issues/43482",
+    )
     def test_gguf_imatrix(self):
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
@@ -108,6 +114,11 @@ class TestAutoRound:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="GGUF format saving and loading failed in transformers v5, \
+            https://github.com/huggingface/transformers/issues/43482",
+    )
     def test_fp8_model_gguf(self):
         from llama_cpp import Llama
 
@@ -133,6 +144,11 @@ class TestAutoRound:
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="We need this patch for fp8 model loading without dequantization."
+        "https://github.com/intel/auto-round/blob/72e1cecb4a984db101e26700618266115029b9ac/test/test_cuda/quantization/test_mxfp_nvfp.py#L19C5-L19C25",
+    )
     def test_diff_datatype(self):
         for scheme in ["NVFP4", "MXFP4"]:
             model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
