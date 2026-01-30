@@ -25,7 +25,7 @@ from transformers.models.deepseek_v2.modeling_deepseek_v2 import (
     eager_attention_forward,
 )
 
-from auto_round.modeling.unfused_moe.replace_modules import ReplacementModuleBase
+from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.utils import is_hpex_available
 
 
