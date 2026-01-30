@@ -30,7 +30,7 @@ from auto_round.inference.backend import (
 )
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe import apply_modeling_patch
+from auto_round.modeling.unfused_moe import apply_modeling_patch
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
