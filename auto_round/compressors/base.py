@@ -78,6 +78,7 @@ from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     compile_func,
+    compress_layer_names,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
     convert_fp8_module_to_16b,
@@ -1778,7 +1779,8 @@ class BaseCompressor(object):
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
         if len(unquantized_layers) > 0:
-            summary_info += f",  {unquantized_layers} have not been quantized"
+            compressed_names = compress_layer_names(unquantized_layers)
+            summary_info += f",  {compressed_names} have not been quantized"
         logger.info(summary_info)
 
         self.quantized = True
@@ -2993,7 +2995,8 @@ class BaseCompressor(object):
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
-            logger.info(f"{unquantized_layer_names} have not been quantized")
+            compressed_names = compress_layer_names(unquantized_layer_names)
+            logger.info(f"{compressed_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_params)
 

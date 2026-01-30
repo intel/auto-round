@@ -390,3 +390,63 @@ class GlobalState:
 
 
 global_state = GlobalState()
+
+
+def compress_layer_names(layer_names):
+    """Compress similar layer names into patterns to reduce log verbosity.
+    e.g., ['model.layers.3.attn.q', 'model.layers.4.attn.q'] -> 'model.layers.[3-4].attn.q'
+    """
+    if not layer_names:
+        return layer_names
+
+    from collections import defaultdict
+
+    grouped = defaultdict(lambda: defaultdict(list))
+    standalone = []
+
+    for name in layer_names:
+        match = re.match(r"^(.+\.layers\.)(\d+)(.*)$", name)
+        if match:
+            prefix, layer_num, suffix = match.groups()
+            # Check if suffix contains another number (e.g., experts.45)
+            expert_match = re.match(r"^(\..*?\.)(\d+)(.*)$", suffix)
+            if expert_match:
+                middle, expert_num, rest = expert_match.groups()
+                pattern = f"{prefix}{{L}}{middle}{{E}}{rest}"
+                grouped[pattern][(int(layer_num), int(expert_num))].append(name)
+            else:
+                pattern = f"{prefix}{{L}}{suffix}"
+                grouped[pattern][int(layer_num)].append(name)
+        else:
+            standalone.append(name)
+
+    compressed = []
+    for pattern, items in grouped.items():
+        if "{E}" in pattern:
+            layer_experts = defaultdict(list)
+            for layer_num, expert_num in sorted(items.keys()):
+                layer_experts[layer_num].append(expert_num)
+            for layer_num, expert_nums in sorted(layer_experts.items()):
+                compressed.append(
+                    pattern.replace("{L}", str(layer_num)).replace("{E}", f"[{_format_range(expert_nums)}]")
+                )
+        else:
+            layer_nums = sorted(items.keys())
+            compressed.append(pattern.replace("{L}", f"[{_format_range(layer_nums)}]"))
+
+    return compressed + standalone
+
+
+def _format_range(nums):
+    """Format [0,1,2,5,7,8] -> '0-2,5,7-8'"""
+    if len(nums) == 1:
+        return str(nums[0])
+    ranges, start, end = [], nums[0], nums[0]
+    for n in nums[1:]:
+        if n == end + 1:
+            end = n
+        else:
+            ranges.append(f"{start}-{end}" if start != end else str(start))
+            start = end = n
+    ranges.append(f"{start}-{end}" if start != end else str(start))
+    return ",".join(ranges)
