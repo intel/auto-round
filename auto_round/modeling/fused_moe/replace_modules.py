@@ -23,10 +23,10 @@ from transformers import PreTrainedModel
 from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
 
 BUILTIN_MODULES = {
-    "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
-    "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
-    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
-    "DeepseekV2Attention": LazyImport("auto_round.modelling.deepseek_v2"),
+    "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
+    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
+    "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
 }
 
 
