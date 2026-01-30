@@ -43,7 +43,7 @@ try:
 
     HAS_EXPERTS_INTERFACE = True
 except ImportError:
-    HAS_EXPERTS_FUNCTIONS = False
+    HAS_EXPERTS_INTERFACE = False
     ALL_EXPERTS_FUNCTIONS = None
 
 # Track if we've logged linear_loop usage (to avoid spamming logs)

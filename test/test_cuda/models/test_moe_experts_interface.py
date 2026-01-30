@@ -28,6 +28,7 @@ from torch import nn
 def test_linear_loop_registration():
     """Test that linear_loop is registered with transformers."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
+        register_linear_loop_experts,
         is_linear_loop_available,
         register_linear_loop_experts,
     )
@@ -148,6 +149,7 @@ def test_unfuse_experts_weights_transposed():
 def test_linear_loop_forward():
     """Test that linear_loop forward produces correct results."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
+        linear_loop_experts_forward,
         _unfuse_experts_weights_inplace,
         linear_loop_experts_forward,
     )
@@ -194,6 +196,7 @@ def test_linear_loop_forward():
 def test_prepare_model_for_moe_quantization():
     """Test the full prepare_model_for_moe_quantization flow."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
+        prepare_model_for_moe_quantization,
         is_linear_loop_available,
         prepare_model_for_moe_quantization,
     )
@@ -220,7 +223,7 @@ def test_prepare_model_for_moe_quantization():
             self.num_experts = num_experts
             self.has_bias = False
             self.is_transposed = False
-
+        
         def forward(self, x):
             pass
 
