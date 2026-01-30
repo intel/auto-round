@@ -30,14 +30,10 @@ from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils.weight_type_conversion import (
+from auto_round.utils.weight_handler import (
     check_and_mark_quantized_model,
-)
-from auto_round.utils.weight_type_conversion import (
-    convert_to_high_precision_if_necessary as convert_module_to_hp_if_necessary,
-)
-from auto_round.utils.weight_type_conversion import (
-    is_quantized_input_model,
+    convert_module_to_hp_if_necessary,
+    is_quantized_input_module,
 )
 
 

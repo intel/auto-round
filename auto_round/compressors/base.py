@@ -93,8 +93,7 @@ from auto_round.utils import (
     is_debug_mode,
     is_hpex_available,
     is_moe_model,
-    is_moe_model_via_config,
-    is_quantized_input_model,
+    is_quantized_input_module,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -509,7 +508,7 @@ class BaseCompressor(object):
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
-        if is_quantized_input_model(model):
+        if is_quantized_input_module(model):
             logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
             sys.exit(-1)
 
@@ -2106,7 +2105,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if is_quantized_input_model(self.model):
+        if is_quantized_input_module(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []

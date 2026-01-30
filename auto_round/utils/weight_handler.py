@@ -28,11 +28,8 @@ module weights to high precision.
    - Registry functions: register_weight_type_handler, get_handler, etc.
 
 2. PUBLIC API (Lines ~180-260)
-   - detect_weight_type(): Detect weight type of a single layer
-   - detect_model_weight_type(): Detect weight type in a model
-   - is_quantized_layer(): Check if layer is quantized
-   - is_quantized_model(): Check if model has quantized layers
-   - convert_to_high_precision_if_necessary(): Main conversion function
+   - detect_weight_type(): Detect weight type of a layer or model
+   - convert_module_to_hp_if_necessary(): Main conversion function
 
 3. HANDLER IMPLEMENTATIONS (Lines ~260+)
    - FP8BlockHandler: Fully implemented for FP8 block-wise quantization
@@ -46,11 +43,10 @@ module weights to high precision.
 
 Usage - Detect and Convert:
     >>> from auto_round.utils.weight_type_conversion import (
-    ...     convert_to_high_precision_if_necessary,
-    ...     is_quantized_model,
+    ...     convert_module_to_hp_if_necessary,
     ... )
     >>> if is_quantized_model(model):
-    ...     model = convert_to_high_precision_if_necessary(model)
+    ...     model = convert_module_to_hp_if_necessary(model)
 
 Adding a New Weight Type Handler:
     1. Add new type to ModuleWeightType enum
@@ -102,9 +98,7 @@ class WeightTypeHandler(ABC):
 
     Subclasses must implement:
         - detect_layer: Check if a single layer is of this weight type
-        - detect_model: Check if a model contains layers of this weight type
         - convert_layer: Convert a single layer to high precision
-        - convert_model: Convert all matching layers in a model
     """
 
     @abstractmethod
@@ -116,18 +110,6 @@ class WeightTypeHandler(ABC):
 
         Returns:
             True if the module is of this weight type, False otherwise.
-        """
-        pass
-
-    @abstractmethod
-    def detect_model(self, model: torch.nn.Module) -> bool:
-        """Check if a model contains layers of this weight type.
-
-        Args:
-            model: The model to check.
-
-        Returns:
-            True if the model contains layers of this weight type, False otherwise.
         """
         pass
 
@@ -149,27 +131,6 @@ class WeightTypeHandler(ABC):
 
         Returns:
             A new high-precision layer with dequantized weights.
-        """
-        pass
-
-    @abstractmethod
-    def convert_model(
-        self,
-        model: torch.nn.Module,
-        dtype: torch.dtype = torch.bfloat16,
-        device: str = "cpu",
-        to_cpu: bool = False,
-    ) -> torch.nn.Module:
-        """Convert all matching layers in a model to high precision.
-
-        Args:
-            model: The model containing quantized layers.
-            dtype: Target dtype for the converted layers.
-            device: Target device for the conversion.
-            to_cpu: If True, move converted layers to CPU.
-
-        Returns:
-            The model with quantized layers converted to high precision.
         """
         pass
 
@@ -228,70 +189,36 @@ def get_all_handlers() -> Dict[ModuleWeightType, WeightTypeHandler]:
 # Section 2: PUBLIC API - Detection and Conversion Functions
 # ============================================================================
 def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
-    """Detect the weight type of a single module.
+    """Detect the weight type of a module or model.
 
-    Iterates through all registered handlers and returns the first matching type.
+    First checks if the module itself has a quantized_weight_type attribute.
+    If not found, scans all submodules to find any with quantized_weight_type attribute.
 
     Args:
-        module: The module to check.
+        module: The module or model to check.
 
     Returns:
         The detected ModuleWeightType, or None if no match found.
     """
-    for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
-        if handler.detect_layer(module):
-            return weight_type
+    # Check if module itself is marked
+    if hasattr(module, "quantized_weight_type") and module.quantized_weight_type is not None:
+        return module.quantized_weight_type
+
+    # Scan submodules for quantized_weight_type attribute
+    for submodule in module.modules():
+        if hasattr(submodule, "quantized_weight_type") and submodule.quantized_weight_type is not None:
+            return submodule.quantized_weight_type
+
     return None
-
-
-def detect_model_weight_type(model: torch.nn.Module) -> Optional[ModuleWeightType]:
-    """Detect the weight type used in a model.
-
-    Iterates through all registered handlers and returns the first matching type.
-
-    Args:
-        model: The model to check.
-
-    Returns:
-        The detected ModuleWeightType, or None if no match found.
-    """
-    for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
-        if handler.detect_model(model):
-            return weight_type
-    return None
-
-
-def is_quantized_layer(module: torch.nn.Module) -> bool:
-    """Check if a module is a quantized layer of any registered type.
-
-    Args:
-        module: The module to check.
-
-    Returns:
-        True if the module is a quantized layer, False otherwise.
-    """
-    return detect_weight_type(module) is not None
-
-
-def is_quantized_model(model: torch.nn.Module) -> bool:
-    """Check if a model contains quantized layers of any registered type.
-
-    Args:
-        model: The model to check.
-
-    Returns:
-        True if the model contains quantized layers, False otherwise.
-    """
-    return detect_model_weight_type(model) is not None
 
 
 # --- Model Marking Functions ---
 def check_and_mark_quantized_model(model: torch.nn.Module) -> Optional[ModuleWeightType]:
     """Check if model contains quantized layers and mark them accordingly.
 
-    This function scans the model for quantized layers and marks them with
-    `is_quantized_linear = True`. It also sets `quantized_weight_type` on the
-    model to indicate the detected weight type.
+    This function scans the model for quantized layers using handlers' detect_layer method
+    (which checks actual characteristics). It marks detected layers with `quantized_weight_type`.
+    The model itself is not marked; use detect_weight_type to check the model.
 
     Args:
         model: The model to check and mark.
@@ -299,25 +226,24 @@ def check_and_mark_quantized_model(model: torch.nn.Module) -> Optional[ModuleWei
     Returns:
         The detected ModuleWeightType if quantized layers are found, None otherwise.
     """
-    # Check if already marked
-    if hasattr(model, "quantized_weight_type") and model.quantized_weight_type is not None:
-        return model.quantized_weight_type
-
+    detected_type = set()
     for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
         for n, m in model.named_modules():
+            # Use handler to detect based on actual characteristics
             if handler.detect_layer(m):
-                m.is_quantized_linear = True
-                if not hasattr(model, "quantized_weight_type"):
-                    model.quantized_weight_type = weight_type
+                # Mark the layer itself
+                m.quantized_weight_type = weight_type
+                # Record detected types
+                detected_type.add(weight_type)
 
-    return getattr(model, "quantized_weight_type", None)
+    return detected_type
 
 
-def is_quantized_input_model(model: torch.nn.Module) -> Optional[ModuleWeightType]:
+def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightType]:
     """Check if a model has quantized input weights and return the weight type.
 
-    This checks for the `quantized_weight_type` attribute set by
-    `check_and_mark_quantized_model`.
+    This traverses all submodules to check for the `quantized_weight_type` attribute
+    set by `check_and_mark_quantized_model`.
 
     Args:
         model: The model to check.
@@ -325,13 +251,20 @@ def is_quantized_input_model(model: torch.nn.Module) -> Optional[ModuleWeightTyp
     Returns:
         The ModuleWeightType if the model has quantized weights, None otherwise.
     """
+    # Check model itself first
     if hasattr(model, "quantized_weight_type") and model.quantized_weight_type is not None:
         return model.quantized_weight_type
+
+    # Traverse all submodules to find quantized layers
+    for module in model.modules():
+        if hasattr(module, "quantized_weight_type") and module.quantized_weight_type is not None:
+            return module.quantized_weight_type
+
     return None
 
 
 # --- Main Conversion Function ---
-def convert_to_high_precision_if_necessary(
+def convert_module_to_hp_if_necessary(
     model_or_layer: torch.nn.Module,
     dtype: torch.dtype = torch.bfloat16,
     device: str = "cpu",
@@ -353,19 +286,26 @@ def convert_to_high_precision_if_necessary(
         If input is a model containing quantized layers: The model with layers converted.
         If input has no quantized layers: Returns the input unchanged.
     """
-    # Check if it's a single quantized layer
-    layer_type = detect_weight_type(model_or_layer)
-    if layer_type is not None:
-        handler = get_handler(layer_type)
+    from auto_round.utils.device import clear_memory
+    from auto_round.utils.model import set_module
+
+    # Check if it's a single quantized layer (has the attribute directly)
+    if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
+        handler = get_handler(model_or_layer.quantized_weight_type)
         return handler.convert_layer(model_or_layer, dtype, device, to_cpu)
 
-    # Check if it's a model containing quantized layers
-    model_type = detect_model_weight_type(model_or_layer)
-    if model_type is not None:
-        handler = get_handler(model_type)
-        return handler.convert_model(model_or_layer, dtype, device, to_cpu)
+    # Otherwise, traverse model and convert all quantized layers
+    # Get handler for each layer to support mixed quantization types
+    cnt = 0
+    for n, m in model_or_layer.named_modules():
+        if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
+            handler = get_handler(m.quantized_weight_type)
+            new_module = handler.convert_layer(m, dtype, device, to_cpu)
+            set_module(model_or_layer, n, new_module)
+            cnt += 1
+            if cnt % 10 == 0:
+                clear_memory()
 
-    # No quantized layers, return unchanged
     return model_or_layer
 
 
@@ -429,11 +369,7 @@ class FP8BlockHandler(WeightTypeHandler):
         return self.FP8_DEQUANT_REGISTRY[name](layer, dtype=dtype, device=device)
 
     def detect_layer(self, module: torch.nn.Module) -> bool:
-        """Check if a module is an FP8 linear layer."""
-        # Check explicit marker
-        if hasattr(module, "is_quantized_linear") and module.is_quantized_linear:
-            return True
-
+        """Check if a module is an FP8 linear layer based on actual characteristics."""
         # Check registry for supported FP8 layer types
         layer_name = module.__class__.__name__
         if layer_name in self.FP8_DEQUANT_REGISTRY:
@@ -444,12 +380,6 @@ class FP8BlockHandler(WeightTypeHandler):
             if str(module.weight.dtype).startswith("torch.float8"):
                 return True
 
-        return False
-
-    def detect_model(self, model: torch.nn.Module) -> bool:
-        """Check if a model contains FP8 layers."""
-        if hasattr(model, "quantized_weight_type"):
-            return model.quantized_weight_type == ModuleWeightType.FP8_BLOCK
         return False
 
     def convert_layer(
@@ -485,27 +415,6 @@ class FP8BlockHandler(WeightTypeHandler):
             new_layer = new_layer.to("cpu")
 
         return new_layer
-
-    def convert_model(
-        self,
-        model: torch.nn.Module,
-        dtype: torch.dtype = torch.bfloat16,
-        device: str = "cpu",
-        to_cpu: bool = False,
-    ) -> torch.nn.Module:
-        """Convert all FP8 layers in a model to high-precision Linear layers."""
-        from auto_round.utils.device import clear_memory
-        from auto_round.utils.model import set_module
-
-        cnt = 0
-        for n, m in model.named_modules():
-            if self.detect_layer(m):
-                new_module = self.convert_layer(m, dtype, device, to_cpu)
-                set_module(model, n, new_module)
-                cnt += 1
-                if cnt % 10 == 0:
-                    clear_memory()
-        return model
 
 
 # --- FP8 Layer Dequantization Handlers ---
@@ -544,14 +453,8 @@ def _create_placeholder_handler(weight_type_name: str) -> Type[WeightTypeHandler
         def detect_layer(self, module: torch.nn.Module) -> bool:
             return False
 
-        def detect_model(self, model: torch.nn.Module) -> bool:
-            return False
-
         def convert_layer(self, layer, dtype=torch.bfloat16, device="cpu", to_cpu=False):
             raise NotImplementedError(f"{weight_type_name} layer conversion not yet implemented")
-
-        def convert_model(self, model, dtype=torch.bfloat16, device="cpu", to_cpu=False):
-            raise NotImplementedError(f"{weight_type_name} model conversion not yet implemented")
 
     PlaceholderHandler.__name__ = f"{weight_type_name}Handler"
     PlaceholderHandler.__doc__ = (
