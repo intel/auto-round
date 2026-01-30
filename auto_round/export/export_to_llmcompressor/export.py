@@ -40,6 +40,7 @@ from compressed_tensors.quantization import (
     QuantizationScheme,
     QuantizationStatus,
     QuantizationConfig,
+    QuantizationArgs,
 )
 from compressed_tensors.compressors import IntQuantizationCompressor
 from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter, get_offloaded_device
@@ -48,7 +49,7 @@ from compressed_tensors.utils import delete_offload_parameter, register_offload_
 def construct_ct_scheme(layer):
     weights_args = QuantizationArgs(
         num_bits=layer.bits,
-        type=layer.data_type.split("_")[0], # int_sym
+        type=layer.data_type.split("_")[-2], # int_sym, rtn_int_sym
         symmetric=layer.sym,
         dynamic=False,
         group_size=layer.group_size if layer.group_size != 0 else None,
@@ -56,7 +57,7 @@ def construct_ct_scheme(layer):
     )
     activations_args = QuantizationArgs(
         num_bits=layer.act_bits,
-        type=layer.act_data_type.split("_")[0], # int_sym
+        type=layer.act_data_type.split("_")[-2], # int_sym, rtn_int_sym
         symmetric=layer.act_sym,
         dynamic=layer.act_dynamic,
         group_size=layer.act_group_size if layer.group_size != 0 else None,
