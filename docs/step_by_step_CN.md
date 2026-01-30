@@ -41,8 +41,9 @@
   + [指定推理后端](#指定推理后端)
   + [将 GPTQ/AWQ 模型转换为 AutoRound 格式](#将-GPT-或-AWQ-模型转换为autoround格式)
 * [5 效果评估](#5-效果评估)
-  + [训练与评估一体化](#训练与评估一体化)
-  + [量化模型效果评估](#单独评估)
+  + [单卡评估](#单-GPU-评估)
+  + [多卡评估](#多-GPU-评估)
+  + [注意事项](#注意事项)
 * [6 已知问题](#6-已知问题)
 
 ## 1 前提条件
@@ -580,7 +581,7 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 
 
 
-# 4 推理部署
+## 4 推理部署
 AutoRound 支持十余种推理后端，并会根据已安装的库自动选择最优后端；如果检测到系统中存在更优后端但缺少相关依赖，也会主动提示用户安装。
 
 ​**请勿在推理过程中手动将量化后的模型迁移到其他设备**​（例如执行 `model.to('cpu')`），否则可能导致意外错误。
@@ -703,54 +704,50 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 
 
-# 5 效果评估
-### 训练与评估一体化
-AutoRound 借助 `lm-eval-harness` 评估。如果没有指定评估任务（`--task`），会使用默认的任务集（十余个常用评测任务）。
+## 5 效果评估
 
-**命令行示例**：
-~~~bash
-auto-round --model Qwen/Qwen3-0.6B  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
-~~~
-> 若导出了多种量化格式，会自动采用**最后一种格式**的模型评估
+AutoRound 借助 [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness) 来评估模型。如果没有指定评估任务（`--task`），会使用默认的任务集（十余个常用评测任务）。
 
-### 单独评估
-#### AutoRound 原生格式模型
-##### 基于 lm-eval-harness 评估
-直接通过以下命令行调用即可，无需额外配置：
-~~~bash
-auto-round --model="你的模型保存路径" --eval  --tasks lambada_openai --eval_bs 16
-~~~
-> 注意：若要使用vllm后端加速评估，添加`--eval_backend vllm`即可，同时也支持 `--tensor_parallel_size` 等 vllm 常用参数。
+### 单 GPU 评估
 
-**多 GPU 评估示例**：
-~~~bash
-auto-round --model="你的模型保存路径" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
-~~~
+**HF 后端（默认）:**
+```bash
+auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
+```
 
-##### 基于其他评估框架
-若评估框架支持加载 Hugging Face 标准模型，则无需修改框架代码，**在评估脚本开头添加以下语句**即可支持 AutoRound 格式模型：
-~~~python
-from auto_round import AutoRoundConfig
-~~~  
+**vLLM 后端:**
+```bash
+auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --tasks mmlu --eval_backend vllm
+```
 
-#### AutoGPTQ/AutoAWQ 格式模型
-为保证评估框架与该格式的兼容，使用时请参照对应的官方仓库。基于 `lm-eval-harness` 的评估示例如下：
+### 多 GPU 评估
 
-**单 GPU 评估**：
-~~~bash
-lm_eval --model hf --model_args pretrained="你的模型保存路径" --device cuda:0 --tasks lambada_openai --batch_size 16
-~~~
+**HF 后端:**
+```bash
+auto-round --model="your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_bs 16
+```
 
-**多 GPU 评估**：
-~~~bash
-CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="你的模型保存路径",parallelize=True --tasks lambada_openai --batch_size 16
-~~~
+**vLLM 后端（法一：用 `--device_map` 参数）**
+```bash
+auto-round "your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_backend vllm
+```
+
+**vLLM 后端（法二：手动配置）:**
+```bash
+CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_openai --eval_backend vllm --vllm_args="tensor_parallel_size=2,gpu_memory_utilization=0.8"
+```
+
+### 注意事项
+
+- 对于原始模型和量化后的模型，都支持用 `--eval` 参数直接评估。
+- 为应对部分任务运行失败的情况，可使用 `--eval_task_by_task` 参数，按顺序执行评测任务（该参数目前只适用于 HF 后端）。
+- 若导出了多种格式，会自动选用列表中的**最后一种格式**的模型评估。
+- 对于 vLLM 后端，可通过 `--device 0,1,2` 指定 GPU 设备。该参数会自动设置 `CUDA_VISIBLE_DEVICES`，并根据设备数量配置 `tensor_parallel_size` 。此外，也支持通过环境变量和 `--vllm_args` 参数进行手动设置。
 
 
+## 6 已知问题
+量化过程存在的随机性可能会影响到部分模型的训练效果。若要保证实验结果可复现，可开启确定性算法（ `enable_deterministic_algorithms=True` ）。
 
-# 6 已知问题
-1. 量化过程存在的随机性可能会影响到部分模型的训练效果。若要保证实验结果可复现，可开启确定性算法（ `enable_deterministic_algorithms=True` ）。
+部分视觉语言模型（VLM）需要手动适配。
 
-2. 部分视觉语言模型（VLM）需要手动适配。
-
-3. 暂不支持 Mamba 架构的模型。
+暂不支持 Mamba 架构的模型。
