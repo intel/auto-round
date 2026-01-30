@@ -1543,6 +1543,7 @@ def copy_python_files_from_model_cache(model, save_path: str):
 
             cache_dir = TRANSFORMERS_CACHE
             from huggingface_hub.constants import HF_HUB_CACHE
+
             cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
 
             cache_dir = os.environ.get("HF_HOME", None)
