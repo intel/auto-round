@@ -18,6 +18,12 @@ from auto_round.modeling.fused_moe.replace_modules import (
     materialize_model_,
     release_original_module_,
 )
+from auto_round.modeling.fused_moe.moe_experts_interface import (
+    is_linear_loop_available,
+    linear_loop_experts_forward,
+    prepare_model_for_moe_quantization,
+    register_linear_loop_experts,
+)
 
 __all__ = [
     "ReplacementModuleBase",
