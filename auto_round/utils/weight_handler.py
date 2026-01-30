@@ -18,56 +18,49 @@ Extensible Module Weight Type Conversion Framework.
 This module provides a registry-based system for detecting and converting quantized
 module weights to high precision.
 
-================================================================================
-                                TABLE OF CONTENTS
-================================================================================
+Table of Contents:
+    1. CORE FRAMEWORK
+       - ModuleWeightType: Enum of supported weight types
+       - WeightTypeHandler: Abstract base class for handlers
+       - Registry functions: register_weight_type_handler, get_handler, etc.
 
-1. CORE FRAMEWORK (Lines ~60-180)
-   - ModuleWeightType: Enum of supported weight types
-   - WeightTypeHandler: Abstract base class for handlers
-   - Registry functions: register_weight_type_handler, get_handler, etc.
+    2. PUBLIC API
+       - detect_weight_type(): Detect weight type of a layer or model
+       - check_and_mark_quantized_model(): Check and mark quantized layers
+       - is_quantized_input_module(): Check if model has quantized weights
+       - convert_module_to_hp_if_necessary(): Main conversion function
 
-2. PUBLIC API (Lines ~180-260)
-   - detect_weight_type(): Detect weight type of a layer or model
-   - convert_module_to_hp_if_necessary(): Main conversion function
+    3. HANDLER IMPLEMENTATIONS
+       - FP8BlockHandler: Fully implemented for FP8 block-wise quantization
+       - MXFP8Handler: Placeholder (TODO)
+       - MXFP4Handler: Placeholder (TODO)
+       - NVFP4Handler: Placeholder (TODO)
 
-3. HANDLER IMPLEMENTATIONS (Lines ~260+)
-   - FP8BlockHandler: Fully implemented for FP8 block-wise quantization
-   - MXFP8Handler: Placeholder (TODO)
-   - MXFP4Handler: Placeholder (TODO)
-   - NVFP4Handler: Placeholder (TODO)
+Quick Start Guide:
+    Usage - Detect and Convert:
+        >>> from auto_round.utils.weight_handler import (
+        ...     check_and_mark_quantized_model,
+        ...     convert_module_to_hp_if_necessary,
+        ... )
+        >>> check_and_mark_quantized_model(model)
+        >>> model = convert_module_to_hp_if_necessary(model)
 
-================================================================================
-                              QUICK START GUIDE
-================================================================================
+    Adding a New Weight Type Handler:
+        1. Add new type to ModuleWeightType enum
+        2. Create handler class inheriting from WeightTypeHandler
+        3. Register with @register_weight_type_handler decorator
 
-Usage - Detect and Convert:
-    >>> from auto_round.utils.weight_type_conversion import (
-    ...     convert_module_to_hp_if_necessary,
-    ... )
-    >>> if is_quantized_model(model):
-    ...     model = convert_module_to_hp_if_necessary(model)
-
-Adding a New Weight Type Handler:
-    1. Add new type to ModuleWeightType enum
-    2. Create handler class inheriting from WeightTypeHandler
-    3. Register with @register_weight_type_handler decorator
-
-    Example:
-        @register_weight_type_handler(ModuleWeightType.MY_NEW_TYPE)
-        class MyNewTypeHandler(WeightTypeHandler):
-            def detect_layer(self, module): ...
-            def detect_model(self, model): ...
-            def convert_layer(self, layer, dtype, device, to_cpu): ...
-            def convert_model(self, model, dtype, device, to_cpu): ...
-
-================================================================================
+        Example:
+            @register_weight_type_handler(ModuleWeightType.MY_NEW_TYPE)
+            class MyNewTypeHandler(WeightTypeHandler):
+                def detect_layer(self, module): ...
+                def convert_layer(self, layer, dtype, device, to_cpu): ...
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import fields
 from enum import Enum, auto
-from typing import Callable, Dict, Optional, Type, Union
+from typing import Callable, Dict, Optional, Set, Type
 
 import torch
 
@@ -97,8 +90,8 @@ class WeightTypeHandler(ABC):
     """Abstract base class for weight type detection and conversion handlers.
 
     Subclasses must implement:
-        - detect_layer: Check if a single layer is of this weight type
-        - convert_layer: Convert a single layer to high precision
+        - detect_layer(): Check if a single layer is of this weight type
+        - convert_layer(): Convert a single layer to high precision
     """
 
     @abstractmethod
@@ -213,7 +206,7 @@ def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
 
 
 # --- Model Marking Functions ---
-def check_and_mark_quantized_model(model: torch.nn.Module) -> Optional[ModuleWeightType]:
+def check_and_mark_quantized_model(model: torch.nn.Module) -> Set[ModuleWeightType]:
     """Check if model contains quantized layers and mark them accordingly.
 
     This function scans the model for quantized layers using handlers' detect_layer method
@@ -224,9 +217,9 @@ def check_and_mark_quantized_model(model: torch.nn.Module) -> Optional[ModuleWei
         model: The model to check and mark.
 
     Returns:
-        The detected ModuleWeightType if quantized layers are found, None otherwise.
+        A set of detected ModuleWeightType values. Empty set if no quantized layers found.
     """
-    detected_type = set()
+    detected_types: Set[ModuleWeightType] = set()
     for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
         for n, m in model.named_modules():
             # Use handler to detect based on actual characteristics
@@ -234,9 +227,9 @@ def check_and_mark_quantized_model(model: torch.nn.Module) -> Optional[ModuleWei
                 # Mark the layer itself
                 m.quantized_weight_type = weight_type
                 # Record detected types
-                detected_type.add(weight_type)
+                detected_types.add(weight_type)
 
-    return detected_type
+    return detected_types
 
 
 def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightType]:
@@ -422,15 +415,37 @@ class FP8BlockHandler(WeightTypeHandler):
 
 
 @FP8BlockHandler.register_fp8_layer("CompressedLinear")
-def _dequant_compressed_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """Dequantize CompressedLinear layer using compressor."""
+def _dequant_compressed_linear(
+    layer: torch.nn.Module, dtype: torch.dtype = torch.bfloat16, device: str = "cpu"
+) -> torch.Tensor:
+    """Dequantize CompressedLinear layer using compressor.
+
+    Args:
+        layer: The CompressedLinear layer to dequantize.
+        dtype: Target dtype for dequantized weights.
+        device: Target device for dequantization.
+
+    Returns:
+        Dequantized weight tensor.
+    """
     layer = layer.to(device)
     return layer.compressor.decompress_module(layer)
 
 
 @FP8BlockHandler.register_fp8_layer("FP8Linear")
-def _dequant_fp8_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """Dequantize FP8Linear layer using block-based dequantization."""
+def _dequant_fp8_linear(
+    layer: torch.nn.Module, dtype: torch.dtype = torch.bfloat16, device: str = "cpu"
+) -> torch.Tensor:
+    """Dequantize FP8Linear layer using block-based dequantization.
+
+    Args:
+        layer: The FP8Linear layer to dequantize.
+        dtype: Target dtype for dequantized weights.
+        device: Target device for dequantization.
+
+    Returns:
+        Dequantized weight tensor.
+    """
     from auto_round.utils.model import dequant_block_fp8_weight
 
     layer = layer.to(device)
