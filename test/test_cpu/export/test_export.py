@@ -462,6 +462,7 @@ class TestAutoRound:
         get_formats("auto_round:auto_awq", ar)
 
     def test_llmc_dynamic_wint8aint8_export(self):
+        from safetensors import safe_open
         autoround = AutoRound(
             self.model_name,
             iters=0,
