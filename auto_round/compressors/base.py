@@ -643,13 +643,12 @@ class BaseCompressor(object):
                     break
 
     def _override_scheme_with_user_specify(
-        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any]
+        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
     ) -> Union[str, QuantizationScheme]:
         """
         Updates a base quantization scheme with user-provided overrides.
         Handles GGUF formatting and synchronizes weight/activation parameters.
         """
-
         # 1. GGUF special handling: map data_type suffix to GGUF scheme names
         dt_override = user_scheme_overrides.get("data_type", "")
         if isinstance(scheme, str) and dt_override.endswith("_dq") and not scheme.startswith("gguf"):
@@ -671,7 +670,7 @@ class BaseCompressor(object):
                 )
                 user_scheme_overrides = {}
             # If no overrides exist, return the normalized string immediately
-            if not user_scheme_overrides:
+            if not user_scheme_overrides and retrun_str:
                 return normalized_name
             scheme_dict = asdict(preset_name_to_scheme(normalized_name))
         else:
@@ -748,7 +747,7 @@ class BaseCompressor(object):
 
         # Extract attributes from the chosen default_scheme
         if isinstance(default_scheme, str):
-            final_attrs = asdict(preset_name_to_scheme(default_scheme))
+            final_attrs = self._override_scheme_with_user_specify(scheme, user_scheme_overrides, return_str=False)
         else:
             final_attrs = asdict(default_scheme)
 
