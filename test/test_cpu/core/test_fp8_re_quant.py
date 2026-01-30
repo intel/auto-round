@@ -71,7 +71,7 @@ class TestFP8ReQuant(unittest.TestCase):
             print(f"Skipping remote config fetch due to: {e}. Using hardcoded fallback.")
             in_features, out_features = 12288, 28672  # Devstral 2 parameters
 
-        class DevstralLayerMock(nn.Module):
+        class FP8Linear(nn.Module):
             def __init__(self, in_f, out_f):
                 super().__init__()
                 self.in_features = in_f
@@ -82,7 +82,7 @@ class TestFP8ReQuant(unittest.TestCase):
                 self.bias = None
                 self.data_type = "fp8"
 
-        mock_layer = DevstralLayerMock(in_features, out_features)
+        mock_layer = FP8Linear(in_features, out_features)
 
         # This should now pass without AttributeError for 'block_size'
         new_layer = convert_fp8_layer_to_linear(mock_layer, dtype=torch.bfloat16)
