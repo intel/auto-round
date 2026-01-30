@@ -136,7 +136,7 @@ class TestAutoRound:
             "/models/Phi-3.5-vision-instruct",
             "/models/Qwen2-VL-2B-Instruct",
             "/models/SmolVLM-256M-Instruct",
-            "/models/Mistral-Small-3.1-24B-Instruct-2503",
+            "/models/Mistral-Small-3.2-24B-Instruct-2506",
             "/models/InternVL3-1B",
             "/models/pixtral-12b",
         ]:
