@@ -312,6 +312,8 @@ def _handle_special_schemes(
     Provide some special auto_round recipes.
 
     """
+    if not isinstance(scheme_name, str):
+        return layer_config
     if layer_config is None:
         layer_config = {}
     if scheme_name.lower() == "gguf:q2_k_mixed":
