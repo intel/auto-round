@@ -9,8 +9,7 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3ForCausal
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
 from auto_round import AutoRound
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
+from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 
 
 @pytest.fixture
@@ -31,6 +30,10 @@ def setup_llama4():
     model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+
+    # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
+    config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
     model = Llama4ForConditionalGeneration(config)
@@ -44,6 +47,10 @@ def setup_qwen3_vl_moe():
     model_name = "/models/Qwen3-VL-30B-A3B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
+
+    # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
+    config.text_config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -210,7 +217,7 @@ def has_module(model: torch.nn.Module, module_name: str) -> bool:
 
 
 def test_register_module_out_of_tree_base():
-    from auto_round.modelling.replace_modules import ReplacementModuleBase
+    from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 
     for name, subclass in ReplacementModuleBase._replacement_registry.items():
         if name == "Qwen3MLP":

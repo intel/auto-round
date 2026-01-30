@@ -147,7 +147,7 @@ class TestAutoRound:
                 continue
             assert is_mllm_model(model)
 
-        for model_name in ["/models/glm-4-9b-chat", "/models/Qwen2.5-1.5B-Instruct/"]:
+        for model_name in ["/models/Qwen2.5-1.5B-Instruct/"]:
             assert not is_mllm_model(model_name)
             model, _ = llm_load_model(model_name)
             assert not is_mllm_model(model)

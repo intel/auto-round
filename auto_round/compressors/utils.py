@@ -79,7 +79,7 @@ def is_wint8aint8(ar):
 
 def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
-        return "fp8_static" in ar_or_format
+        return "fp8_static" in ar_or_format.lower()
     if ar_or_format.act_dynamic:
         return False
     if is_wfp8afp8(ar_or_format):
