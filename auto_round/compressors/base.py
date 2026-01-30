@@ -260,10 +260,7 @@ class BaseCompressor(object):
 
         # 1. Pre-extract user-specified overrides from kwargs
         # This ensures we know exactly what the user wants to "force"
-        self.user_scheme_overrides = {
-            k: kwargs.pop(k) for k in scheme_fields
-            if k in kwargs and kwargs[k] is not None
-        }
+        self.user_scheme_overrides = {k: kwargs.pop(k) for k in scheme_fields if k in kwargs and kwargs[k] is not None}
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -618,8 +615,6 @@ class BaseCompressor(object):
             self.device = tmp_devices[0]
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
-
-
 
     def _parse_and_set_scheme(
         self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any]
