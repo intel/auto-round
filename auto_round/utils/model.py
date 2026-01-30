@@ -25,6 +25,7 @@ from typing import Union
 import psutil
 import torch
 import transformers
+from packaging import version
 
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
@@ -1536,7 +1537,16 @@ def copy_python_files_from_model_cache(model, save_path: str):
         import shutil
 
         from huggingface_hub import hf_hub_download
-        from transformers import TRANSFORMERS_CACHE
+
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            from transformers import TRANSFORMERS_CACHE
+
+            cache_dir = TRANSFORMERS_CACHE
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME", None)
         from transformers.utils import http_user_agent
 
         cache_path = config._name_or_path
@@ -1545,7 +1555,7 @@ def copy_python_files_from_model_cache(model, save_path: str):
             config_file_path = hf_hub_download(
                 repo_id=cache_path,
                 filename="config.json",
-                cache_dir=TRANSFORMERS_CACHE,
+                cache_dir=cache_dir,
                 force_download=False,
                 user_agent=user_agent,
             )
