@@ -622,14 +622,6 @@ class BaseCompressor(object):
         """Parse and set the quantization scheme."""
 
         def _parse_and_set(scheme, kwargs):
-            if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
-                if "bits" not in user_scheme_overrides:
-                    data_type = kwargs["data_type"]
-                    raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
-                    )
-                bits = kwargs["bits"]
-                scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
             res = None
             if isinstance(scheme, QuantizationScheme):
                 scheme = asdict(scheme)
@@ -641,9 +633,26 @@ class BaseCompressor(object):
                 # even though they share the same scheme dict.
                 scheme = scheme.strip("'\" ")
                 res = scheme
-                scheme = scheme.upper()
+                if (
+                    kwargs.get("data_type", None) is not None
+                    and kwargs["data_type"].endswith("_dq")
+                    and not scheme.startswith("gguf")
+                ):
+                    if "bits" not in kwargs:
+                        data_type = kwargs["data_type"]
+                        raise KeyError(
+                            f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
+                        )
+                    bits = kwargs["bits"]
+                    scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
 
+                scheme = scheme.upper()
                 scheme = asdict(preset_name_to_scheme(scheme))
+                if res.upper().startswith("GGUF") and len(kwargs) > 0:
+                    logger.warning(
+                        "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
+                    )
+                    kwargs = {}
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
                 if key in kwargs and kwargs[key] is not None:
