@@ -1058,6 +1058,40 @@ def _to_model_dtype(model, model_dtype):
 
 
 
+def get_attr(module, key):
+    """Get attribute from module by key name.
+    
+    This function can access both modules and their attributes (like weight, bias).
+    For accessing only modules, prefer using get_module which uses PyTorch's native API.
+
+    Args:
+        module (torch.nn.Module): original model
+        key (str): attribute name (e.g., "layer.weight", "layer.bias")
+    """
+    name_list = key.split(".")
+    for name in name_list:
+        module = getattr(module, name, None)
+    return module
+
+
+def set_attr(model, key, new_attr):
+    """Set attribute into model by key name.
+    
+    This function can set both modules and their attributes (like weight, bias).
+    For setting only modules, prefer using set_module which uses PyTorch's native API.
+
+    Args:
+        model (torch.nn.Module): original model
+        key (str): attribute name (e.g., "layer.weight", "layer.bias")
+        new_attr (object): new attribute to be inserted
+    """
+    module = model
+    name_list = key.split(".")
+    for name in name_list[:-1]:
+        if hasattr(module, name):
+            module = getattr(module, name)
+    setattr(module, name_list[-1], new_attr)
+
 
 def get_module(module, key):
     """Get module from model by key name using PyTorch native API.
