@@ -1067,10 +1067,17 @@ def get_attr(module, key):
     Args:
         module (torch.nn.Module): original model
         key (str): attribute name (e.g., "layer.weight", "layer.bias")
+    
+    Raises:
+        AttributeError: If any attribute in the path is missing
     """
     name_list = key.split(".")
     for name in name_list:
-        module = getattr(module, name, None)
+        if not hasattr(module, name):
+            raise AttributeError(
+                f"Attribute '{name}' not found while resolving '{key}'"
+            )
+        module = getattr(module, name)
     return module
 
 
@@ -1084,12 +1091,18 @@ def set_attr(model, key, new_attr):
         model (torch.nn.Module): original model
         key (str): attribute name (e.g., "layer.weight", "layer.bias")
         new_attr (object): new attribute to be inserted
+    
+    Raises:
+        AttributeError: If any intermediate attribute in the path is missing
     """
     module = model
     name_list = key.split(".")
     for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
+        if not hasattr(module, name):
+            raise AttributeError(
+                f"Attribute '{name}' not found while resolving '{key}'"
+            )
+        module = getattr(module, name)
     setattr(module, name_list[-1], new_attr)
 
 
