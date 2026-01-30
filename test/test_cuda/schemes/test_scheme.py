@@ -2,11 +2,12 @@ import os
 import shutil
 
 import pytest
+from packaging import version
 
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme
 
-from ...helpers import get_model_path, save_tiny_model
+from ...helpers import get_model_path, save_tiny_model, transformers_version
 
 
 class TestAutoRound:
@@ -104,6 +105,9 @@ class TestAutoRound:
             if n == "model.decoder.layers.4.self_attn.k_proj":
                 assert m.group_size == 64
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"), reason="transformers v5 MOE model has breaking changes"
+    )
     def test_q2k_mixed(self):
         model_path = "/data0/MiroThinker-v1.5-30B"
         saved_tiny_model_path = save_tiny_model(

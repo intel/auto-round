@@ -35,6 +35,10 @@ def setup_llama4():
     model_name = llama4_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+
+    # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
+    config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
     # config.vision_config.rope_theta = config.vision_config.rope_parameters["rope_theta"] # for transformers >= 5.0
@@ -99,7 +103,7 @@ def test_gptoss(setup_gpt_oss, scheme):
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
-    from auto_round.modelling.gpt_oss import GPTOssSingleExpert
+    from auto_round.modeling.fused_moe.gpt_oss import GPTOssSingleExpert
 
     single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
     quant_linear_cnt = count_modules_by_type(quantized_model, QuantLinear)
@@ -123,10 +127,6 @@ def test_gptoss(setup_gpt_oss, scheme):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
-@pytest.mark.skipif(
-    transformers_version >= version.parse("5.0.0"),
-    reason="transformers v5 'Llama4VisionConfig' object has no attribute 'rope_theta'",
-)
 def test_llama4(setup_llama4):
     model, tokenizer, output_dir, config = setup_llama4
 

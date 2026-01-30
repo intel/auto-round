@@ -4,12 +4,13 @@ import shutil
 import pytest
 import torch
 import transformers
+from packaging import version
 from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
 class TestAutoRound:
@@ -295,6 +296,10 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-2")
@@ -325,7 +330,11 @@ class TestAutoRound:
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_gptq_lmhead_export(self, tiny_qwen_model_path, dataloader):
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
+    def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         model_name = get_model_path("microsoft/phi-2")
         tiny_model = get_tiny_model(model_name)

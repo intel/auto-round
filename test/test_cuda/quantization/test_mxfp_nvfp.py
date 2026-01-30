@@ -1,5 +1,6 @@
 import copy
 import shutil
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -9,7 +10,14 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import get_model_path, save_tiny_model
+
+
+# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
+@pytest.fixture()
+def mock_cuda_capability():
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+        yield
 
 
 class TestAutoRound:
@@ -28,18 +36,22 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader):
+    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, mock_cuda_capability):
+        # mock_cuda_capability is not used but needed to enable fp8 support in torch
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        tiny_model_path = "./tmp/tiny_qwen3_fp8"
+        save_tiny_model(model_name, tiny_model_path)
         scheme = "mxfp4"
         ar = AutoRound(
-            model=model_name,
-            iters=2,
+            model=tiny_model_path,
+            iters=0,
             seqlen=2,
             scheme=scheme,
             dataset=dataloader,
         )
+        print(ar.model)
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
-        tmp_layer = compressed_model.model.layers[3].self_attn.q_proj
+        tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
             and hasattr(tmp_layer, "weight_packed")

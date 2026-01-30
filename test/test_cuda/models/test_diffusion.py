@@ -5,11 +5,13 @@ import shutil
 
 import pytest
 import requests
-from diffusers import AutoPipelineForText2Image
+from packaging import version
 from PIL import Image
 
 from auto_round import AutoRoundDiffusion
 from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
+
+from ...helpers import transformers_version
 
 
 class TestAutoRound:
@@ -29,7 +31,13 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
+    )
     def test_diffusion_tune(self):
+        from diffusers import AutoPipelineForText2Image
+
         ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name).to("cuda")
         model = pipe.transformer
@@ -57,7 +65,13 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
+    )
     def test_diffusion_rtn(self):
+        from diffusers import AutoPipelineForText2Image
+
         ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
 
