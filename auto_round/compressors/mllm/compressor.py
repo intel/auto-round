@@ -41,7 +41,6 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_max_vram,
-    is_fp8_model,
     mllm_load_model,
     mv_module_from_gpu,
     to_device,

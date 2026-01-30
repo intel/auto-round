@@ -1,6 +1,5 @@
 import copy
 import shutil
-from unittest.mock import patch
 
 import pytest
 import torch
@@ -11,13 +10,6 @@ from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum
 
 from ...helpers import get_model_path, save_tiny_model
-
-
-# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
-@pytest.fixture()
-def mock_cuda_capability():
-    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
-        yield
 
 
 class TestAutoRound:
