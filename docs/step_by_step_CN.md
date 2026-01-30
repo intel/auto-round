@@ -727,7 +727,7 @@ auto-round --model Qwen/Qwen3-0.6B --bits 4 --format "auto_round,auto_gptq" --ta
 auto-round --model="your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_bs 16
 ```
 
-**vLLM 后端（法一：用 `--device_map` 参数）**
+**vLLM 后端（用法一：用 `--device_map` 参数）**
 ```bash
 auto-round "your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_backend vllm
 ```
