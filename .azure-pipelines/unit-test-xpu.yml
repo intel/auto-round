@@ -21,8 +21,8 @@ pr:
       - "*.md"
       - "**/*.md"
 
-# test kernel cpu ut only before public xpu available
-pool: ICX-16C
+# use XPU BMG B60 agent pool to run unit tests
+pool: B60
 
 variables:
   IMAGE_NAME: "auto-round"
