@@ -52,6 +52,8 @@ class AutoRound:
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
 
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config", "enable_adam")
+
     bits: int | None
     group_size: int | None
     sym: bool | None
@@ -84,7 +86,7 @@ class AutoRound:
         seed: int = 42,
         enable_adam: bool = False,
         extra_config: ExtraConfig = None,
-        enable_alg_ext: bool = None,
+        enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
         **kwargs,
@@ -155,6 +157,8 @@ class AutoRound:
             ... }
         """
 
+        local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+
         model_cls = []
 
         if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
@@ -176,34 +180,16 @@ class AutoRound:
         if enable_adam:
             model_cls.append(AdamCompressor)
         dynamic_compressor = type("AutoRound", tuple(model_cls), {})
-        if extra_config:
-            kwargs.update(extra_config.to_dict())
-        if enable_alg_ext is not None:
-            kwargs["enable_alg_ext"] = enable_alg_ext
-        if disable_opt_rtn is not None:
-            kwargs["disable_opt_rtn"] = disable_opt_rtn
         if "fp_layers" in kwargs:
             logger.warning_once(
                 "'fp_layers' is deprecated, please use 'ignore_layers' to set layers not to be quantized."
             )
             kwargs["ignore_layers"] = kwargs.pop("fp_layers")
+
+        if extra_config is not None:
+            local_args.update(extra_config.to_dict())
         ar = dynamic_compressor(
-            model=model,
-            tokenizer=tokenizer,
-            platform=platform,
-            scheme=scheme,
-            layer_config=layer_config,
-            dataset=dataset,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            batch_size=batch_size,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=device_map,
-            enable_torch_compile=enable_torch_compile,
-            seed=seed,
-            low_cpu_mem_usage=low_cpu_mem_usage,
+            **local_args,
             **kwargs,
         )
         return ar
@@ -351,22 +337,9 @@ class AutoRoundLLM(LLMCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
-            model=model,
-            tokenizer=tokenizer,
-            platform=platform,
-            scheme=scheme,
-            layer_config=layer_config,
-            dataset=dataset,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            batch_size=batch_size,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=device_map,
-            enable_torch_compile=enable_torch_compile,
-            seed=seed,
+            **local_args,
             **kwargs,
         )
 
@@ -454,23 +427,9 @@ class AutoRoundAdam(AdamCompressor):
         optimizer="AdamW",
         **kwargs,
     ):
+        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
-            model=model,
-            tokenizer=tokenizer,
-            platform=platform,
-            scheme=scheme,
-            layer_config=layer_config,
-            batch_size=batch_size,
-            dataset=dataset,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            seed=seed,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            enable_torch_compile=enable_torch_compile,
-            device_map=device_map,
-            optimizer=optimizer,
+            **local_args,
             **kwargs,
         )
 
@@ -507,7 +466,7 @@ class AutoRoundMLLM(MLLMCompressor):
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
         sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).s
+        seed (int): The random seed (default is 42).
         nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
@@ -559,25 +518,9 @@ class AutoRoundMLLM(MLLMCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
-            model=model,
-            tokenizer=tokenizer,
-            platform=platform,
-            processor=processor,
-            image_processor=image_processor,
-            scheme=scheme,
-            layer_config=layer_config,
-            dataset=dataset,
-            quant_nontext_module=quant_nontext_module,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            batch_size=batch_size,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=device_map,
-            enable_torch_compile=enable_torch_compile,
-            seed=seed,
+            **local_args,
             **kwargs,
         )
 
@@ -641,23 +584,8 @@ class AutoRoundDiffusion(DiffusionCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
-            model=model,
-            tokenizer=None,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
-            generator_seed=generator_seed,
-            scheme=scheme,
-            layer_config=layer_config,
-            dataset=dataset,
-            iters=iters,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            batch_size=batch_size,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=device_map,
-            enable_torch_compile=enable_torch_compile,
-            seed=seed,
+            **local_args,
             **kwargs,
         )

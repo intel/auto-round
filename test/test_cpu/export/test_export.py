@@ -214,13 +214,9 @@ class TestAutoRound:
             bits=8,
             group_size=-1,
             iters=0,
-            act_bits=8,
+            scheme="fp8_static",
             nsamples=2,
             seqlen=2,
-            data_type="fp8",
-            act_data_type="fp8",
-            act_dynamic=False,
-            act_group_size=0,
             static_kv_dtype=static_kv_dtype,
         )
         quantized_model_path = "./saved"

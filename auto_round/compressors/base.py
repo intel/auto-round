@@ -25,11 +25,13 @@ from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
+import transformers
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from packaging import version
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed
+from transformers import AutoConfig, set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -52,10 +54,11 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -93,6 +96,7 @@ from auto_round.utils import (
     is_fp8_model,
     is_hpex_available,
     is_moe_model,
+    is_moe_model_via_config,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -259,7 +263,25 @@ class BaseCompressor(object):
         self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
+        self.is_model_patched = False
         if isinstance(model, str):
+            try:
+                # config = AutoConfig.from_pretrained(model)
+                self.is_model_patched = apply_model_monkey_patches(model_name=model)
+
+                # TODO excluded  ori_params_moe
+                # if (
+                #     not self.is_model_patched
+                #     and is_moe_model_via_config(config)
+                #     and version.parse(transformers.__version__) >= version.parse("5.0.0")
+                # ):
+                #     logger.warning(
+                #         "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                #         "please submit an issue to https://github.com/intel/auto-round/issues"
+                #     )
+
+            except:
+                pass
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,
@@ -280,6 +302,10 @@ class BaseCompressor(object):
         self.shared_cache_keys = get_shared_keys(self.model)
 
         self.layer_config = layer_config
+
+        self.supported_types = SUPPORTED_LAYER_TYPES
+        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
@@ -316,7 +342,6 @@ class BaseCompressor(object):
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
-        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
         self.supported_types = SUPPORTED_LAYER_TYPES
@@ -469,7 +494,6 @@ class BaseCompressor(object):
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
         self.attention_mask = []
 
@@ -613,7 +637,15 @@ class BaseCompressor(object):
                 scheme = scheme.strip("'\" ")
                 res = scheme
                 scheme = scheme.upper()
-                self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
+                self.layer_config = _handle_special_schemes(
+                    scheme,
+                    self.layer_config,
+                    self.model,
+                    supported_types=self.supported_types,
+                    inner_supported_types=self.inner_supported_types,
+                    quant_lm_head=self.quant_lm_head,
+                    mllm=getattr(self, "mllm", False),
+                )
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
