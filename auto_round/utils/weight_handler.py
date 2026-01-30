@@ -449,7 +449,13 @@ def _dequant_fp8_linear(
     from auto_round.utils.model import dequant_block_fp8_weight
 
     layer = layer.to(device)
-    weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+    weight_scale = getattr(layer, "weight_scale", None)
+    if weight_scale is None:
+        weight_scale = getattr(layer, "weight_scale_inv", None)
+    if weight_scale is None:
+        raise AttributeError(
+            "FP8Linear layer is missing both 'weight_scale' and 'weight_scale_inv' attributes required for dequantization."
+        )
     data_type = getattr(layer, "data_type", None)
     return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
 
