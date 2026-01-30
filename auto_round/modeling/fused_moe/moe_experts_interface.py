@@ -15,7 +15,7 @@
 """
 Custom experts implementation for transformers' MOE integration.
 
-This module provides a `linear_loop` experts implementation that uses 
+This module provides a `linear_loop` experts implementation that uses
 individual nn.Linear layers per expert instead of fused 3D Parameters.
 This enables proper quantization of MOE expert weights.
 
@@ -31,14 +31,16 @@ Usage:
     # Now the model uses linear_loop forward which supports quantized nn.Linear layers
 """
 
-import torch
-from torch import nn
 from typing import Callable
 
-from auto_round.utils import logger, clear_memory
+import torch
+from torch import nn
+
+from auto_round.utils import clear_memory, logger
 
 try:
     from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS
+
     HAS_EXPERTS_INTERFACE = True
 except ImportError:
     HAS_EXPERTS_FUNCTIONS = False
@@ -102,7 +104,7 @@ def linear_loop_experts_forward(
     # Process each expert
     for expert_idx in range(num_experts):
         # Find samples routed to this expert
-        mask = (expert_ids == expert_idx)
+        mask = expert_ids == expert_idx
         if not mask.any():
             continue
 
@@ -112,7 +114,7 @@ def linear_loop_experts_forward(
         gate_up_out = self.gate_up_proj[expert_idx](expert_input)  # (num_samples, 2*intermediate_dim)
 
         # Apply gating
-        if hasattr(self, '_apply_gate'):
+        if hasattr(self, "_apply_gate"):
             gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
         else:
             gate, up = gate_up_out.chunk(2, dim=-1)
@@ -157,15 +159,15 @@ def register_linear_loop_experts() -> bool:
 
 def _experts_supports_decorator(module: nn.Module) -> bool:
     """Check if experts module supports @use_experts_implementation decorator.
-    
+
     Only experts classes decorated with @use_experts_implementation will use
     our linear_loop forward. Others need full module replacement.
     """
-    forward_method = getattr(module.__class__, 'forward', None)
+    forward_method = getattr(module.__class__, "forward", None)
     if forward_method is None:
         return False
     # @use_experts_implementation sets __wrapped__ on the decorated method
-    return hasattr(forward_method, '__wrapped__')
+    return hasattr(forward_method, "__wrapped__")
 
 
 def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = True) -> bool:
@@ -177,16 +179,16 @@ def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = T
 
     Args:
         module: The experts module to unfuse
-        check_decorator: If True, only unfuse if the module supports 
+        check_decorator: If True, only unfuse if the module supports
             @use_experts_implementation decorator. Default is True.
 
     Returns:
         True if unfusing was successful, False if module doesn't match pattern
     """
     # Check if this is a fused experts module
-    if not hasattr(module, 'gate_up_proj') or not isinstance(module.gate_up_proj, nn.Parameter):
+    if not hasattr(module, "gate_up_proj") or not isinstance(module.gate_up_proj, nn.Parameter):
         return False
-    if not hasattr(module, 'down_proj') or not isinstance(module.down_proj, nn.Parameter):
+    if not hasattr(module, "down_proj") or not isinstance(module.down_proj, nn.Parameter):
         return False
     if module.gate_up_proj.dim() != 3 or module.down_proj.dim() != 3:
         return False
@@ -203,8 +205,8 @@ def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = T
     num_experts = gate_up_proj.shape[0]
 
     # Detect if transposed (from decorator attributes or shape analysis)
-    is_transposed = getattr(module, 'is_transposed', None)
-    has_bias = getattr(module, 'has_bias', False)
+    is_transposed = getattr(module, "is_transposed", None)
+    has_bias = getattr(module, "has_bias", False)
 
     if is_transposed is None:
         # Infer from shape: gate_up has 2*intermediate in one dimension
@@ -221,37 +223,29 @@ def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = T
         hidden_dim = gate_up_proj.shape[2]
 
     # Get bias if present
-    gate_up_bias = getattr(module, 'gate_up_proj_bias', None)
-    down_bias = getattr(module, 'down_proj_bias', None)
+    gate_up_bias = getattr(module, "gate_up_proj_bias", None)
+    down_bias = getattr(module, "down_proj_bias", None)
 
     # Create nn.ModuleList of nn.Linear layers
     gate_up_linears = nn.ModuleList()
     down_linears = nn.ModuleList()
 
     dtype = gate_up_proj.dtype
-    device = gate_up_proj.device if gate_up_proj.device.type != 'meta' else 'cpu'
+    device = gate_up_proj.device if gate_up_proj.device.type != "meta" else "cpu"
 
     for i in range(num_experts):
         # Create gate_up linear (hidden_dim -> 2*intermediate_dim)
         gate_up_linear = nn.Linear(
-            hidden_dim, 
-            2 * intermediate_dim, 
-            bias=has_bias and gate_up_bias is not None,
-            dtype=dtype,
-            device=device
+            hidden_dim, 2 * intermediate_dim, bias=has_bias and gate_up_bias is not None, dtype=dtype, device=device
         )
 
         # Create down linear (intermediate_dim -> hidden_dim)
         down_linear = nn.Linear(
-            intermediate_dim,
-            hidden_dim,
-            bias=has_bias and down_bias is not None,
-            dtype=dtype,
-            device=device
+            intermediate_dim, hidden_dim, bias=has_bias and down_bias is not None, dtype=dtype, device=device
         )
 
         # Copy weights if not on meta device
-        if gate_up_proj.device.type != 'meta':
+        if gate_up_proj.device.type != "meta":
             if is_transposed:
                 # gate_up: (hidden, 2*intermediate) -> need transpose for Linear (out, in)
                 gate_up_linear.weight.data.copy_(gate_up_proj[i].t())
@@ -262,7 +256,7 @@ def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = T
                 gate_up_linear.weight.data.copy_(gate_up_proj[i])
                 # down: (hidden, intermediate) -> already (out, in) format
                 down_linear.weight.data.copy_(down_proj[i])
-            
+
             if has_bias and gate_up_bias is not None:
                 gate_up_linear.bias.data.copy_(gate_up_bias[i])
                 down_linear.bias.data.copy_(down_bias[i])
@@ -280,16 +274,13 @@ def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = T
     module.down_proj = down_linears
 
     # Ensure num_experts is set
-    if not hasattr(module, 'num_experts'):
+    if not hasattr(module, "num_experts"):
         module.num_experts = num_experts
 
     return True
 
 
-def prepare_model_for_moe_quantization(
-    model: nn.Module,
-    implementation: str = "linear_loop"
-) -> list[str]:
+def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = "linear_loop") -> list[str]:
     """Prepare a model for MOE quantization using transformers' experts interface.
 
     This function:
@@ -327,10 +318,10 @@ def prepare_model_for_moe_quantization(
     if unfused_modules:
         logger.info(f"Unfused {len(unfused_modules)} MOE experts modules for quantization")
         clear_memory()
-        
+
         # Set config for linear_loop forward
-        if hasattr(model, 'config'):
-            saved_impl = getattr(model.config, 'experts_implementation', None)
+        if hasattr(model, "config"):
+            saved_impl = getattr(model.config, "experts_implementation", None)
             impl_to_set = saved_impl if saved_impl else implementation
             model.config._experts_implementation = impl_to_set
             logger.info(f"Set model.config._experts_implementation = '{impl_to_set}'")

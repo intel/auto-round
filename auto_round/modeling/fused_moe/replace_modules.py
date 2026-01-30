@@ -45,10 +45,7 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     )
 
     if not is_linear_loop_available():
-        logger.warning(
-            "MOE handling requires transformers 5.0+. "
-            "MOE modules will not be handled."
-        )
+        logger.warning("MOE handling requires transformers 5.0+. " "MOE modules will not be handled.")
         return []
 
     # Use transformers' experts interface
@@ -74,11 +71,11 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
 
 def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module) -> bool:
     """Skip MOE replacement if linear_loop experts are already unfused.
-    
+
     This is only true when:
     1. model.config._experts_implementation == "linear_loop" (set by prepare_model_for_moe_quantization)
     2. The experts' gate_up_proj and down_proj are already nn.ModuleList
-    
+
     Note: _experts_implementation is only set when the experts class supports
     @use_experts_implementation decorator, so we don't need to check that again here.
     """
