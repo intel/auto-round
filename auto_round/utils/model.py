@@ -1540,9 +1540,11 @@ def copy_python_files_from_model_cache(model, save_path: str):
 
         if version.parse(transformers.__version__) < version.parse("5.0.0"):
             from transformers import TRANSFORMERS_CACHE
+
             cache_dir = TRANSFORMERS_CACHE
         else:
             import os
+
             cache_dir = os.environ.get("HF_HOME", None)
         from transformers.utils import http_user_agent
 
