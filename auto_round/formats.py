@@ -27,6 +27,7 @@ import torch
 import transformers
 
 from auto_round.compressors.utils import (
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
@@ -62,6 +63,7 @@ class AutoRoundExportFormat(str, Enum):
     NV_FP = "nv_fp"
     MX_FP_RCEIL = "mx_fp_rceil"
     NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
+    INT = "int"
 
 
 if TYPE_CHECKING:
@@ -353,6 +355,10 @@ class LLMCompressorFormat(OutputFormat):
                         f"please note that group_size={ar.group_size}"
                         " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
                     )
+            elif is_dynamic_wint8aint8(ar):
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+                check_compressed_tensors_supported()
+                self.backend = LLMCompressorFormat(ar.data_type, ar)
         else:
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
@@ -364,9 +370,9 @@ class LLMCompressorFormat(OutputFormat):
         error_logs = []
         if scheme.bits not in [4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
-        if not re.search("mxfp|fp|nvfp", scheme.data_type):
+        if not re.search("mxfp|fp|nvfp|int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
-        if scheme.data_type == "fp" and scheme.bits != 8:
+        if scheme.data_type in ["fp", "int"] and scheme.bits != 8:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
@@ -415,7 +421,9 @@ class LLMCompressorFormat(OutputFormat):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
-
+        elif re.search(f"{AutoRoundExportFormat.INT.value}", self.output_format):
+            from auto_round.export.export_to_llmcompressor.export import pack_layer
+            return pack_layer(layer_name, model, device=device)
         ## passed as no other llm_compressor format is supported yet
         logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
         return

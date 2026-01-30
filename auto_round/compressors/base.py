@@ -43,6 +43,7 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
     is_static_wfp8afp8,
@@ -767,6 +768,7 @@ class BaseCompressor(object):
             self.act_bits <= 8
             and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
             and not is_mx_fp(self.act_data_type)
+            and not is_dynamic_wint8aint8(self)
         ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
