@@ -13,16 +13,12 @@
 # limitations under the License.
 
 import copy
-import inspect
 import os
 from typing import Callable, Union
 
 import torch
-import torch.nn as nn
 
-from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp, is_static_wfp8afp8
-from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
-from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
+from auto_round.compressors.utils import is_static_wfp8afp8
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
