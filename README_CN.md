@@ -90,7 +90,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 pip install auto-round
 
 # HPU
-pip install auto-round-lib
+pip install auto-round-hpu
 ```
 
 <details>
@@ -101,7 +101,7 @@ pip install auto-round-lib
   pip install .
 
   # HPU
-  python setup.py install lib
+  python setup.py install hpu
   ```
 
 </details>
