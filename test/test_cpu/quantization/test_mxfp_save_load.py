@@ -60,7 +60,7 @@ def test_e2e_quant_and_load(scheme_name, weight_data_type, act_data_type):
 
         # Quantize and save the model to the temporary directory
         quantized_model_path = f"{temp_dir}/tmp_autoround"
-        autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
 
         # Perform inference with the quantized model
         model = AutoModelForCausalLM.from_pretrained(

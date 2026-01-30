@@ -38,14 +38,16 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:gptqmodel"
+        )
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
@@ -53,10 +55,10 @@ class TestAutoRoundTorchBackend:
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
+            quantized_model_path, dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai", limit=10)
         print(result["results"]["lambada_openai"]["acc,none"])
@@ -79,17 +81,19 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=1000)
         print(result["results"]["lambada_openai"]["acc,none"])
         assert result["results"]["lambada_openai"]["acc,none"] > 0.28
         torch.cuda.empty_cache()
-        shutil.rmtree(self.save_folder, ignore_errors=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)

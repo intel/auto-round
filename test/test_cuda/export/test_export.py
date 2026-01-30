@@ -117,7 +117,7 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -219,8 +219,9 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "./saved/test_export"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
-        from transformers import AutoRoundConfig
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+
+        from auto_round import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", quantization_config=AutoRoundConfig()
@@ -319,7 +320,10 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_awq"
+        )
+
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
@@ -350,7 +354,10 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_gptq"
+        )
+
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()

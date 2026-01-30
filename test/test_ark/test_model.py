@@ -40,7 +40,9 @@ class TestAutoRoundARKBackend:
         else:
             autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format=format)  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format=format
+        )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(

@@ -33,13 +33,13 @@ class TestAlgExt:
     def test_2bits(self):
         model_name = get_model_path("facebook/opt-125m")
         ar = AutoRound(model=model_name, bits=2, group_size=64, enable_alg_ext=True)
-        ar.quantize_and_save(self.save_folder)
+        _, quantized_model_path = ar.quantize_and_save(self.save_folder)
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
+            quantized_model_path,
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
         print(result["results"]["lambada_openai"]["acc,none"])
         # wo alg ext 0.2078, with 0.2371
