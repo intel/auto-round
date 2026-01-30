@@ -117,10 +117,13 @@ pip install auto-round-hpu
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
+>If you encounter issues during quantization, try using pure RTN mode with iters=0, disable_opt_rtn=True. Additionally, using group_size=32 or mixed bits is recommended for better results..
+
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 > **ModelScope is supported for model downloads, simply set `AR_USE_MODELSCOPE=1`.**
+
 
 ```bash
 auto-round \
@@ -266,10 +269,6 @@ ar.quantize_and_save()
 </details>
 
 ### API Usage for VLMs
-
-If you encounter issues during quantization, try setting iters=0 (to enable RTN) and group_size=32 for better
-results.
-
 
 <details>
   <summary>Click to expand</summary>

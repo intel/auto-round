@@ -27,7 +27,8 @@ from torch import nn
 
 def test_linear_loop_registration():
     """Test that linear_loop is registered with transformers."""
-    from auto_round.modeling.unfused_moe.moe_experts_interface import (
+    from auto_round.modeling.fused_moe.moe_experts_interface import (
+        register_linear_loop_experts,
         is_linear_loop_available,
         register_linear_loop_experts,
     )
@@ -46,7 +47,7 @@ def test_linear_loop_registration():
 
 def test_unfuse_experts_weights():
     """Test unfusing fused expert weights to nn.Linear layers."""
-    from auto_round.modeling.unfused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
+    from auto_round.modeling.fused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
 
     # Create a mock fused experts module (Mixtral style - not transposed)
     num_experts = 4
@@ -98,7 +99,7 @@ def test_unfuse_experts_weights():
 
 def test_unfuse_experts_weights_transposed():
     """Test unfusing transposed expert weights (Llama4/GptOss style)."""
-    from auto_round.modeling.unfused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
+    from auto_round.modeling.fused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
 
     num_experts = 4
     hidden_dim = 64
@@ -147,7 +148,8 @@ def test_unfuse_experts_weights_transposed():
 
 def test_linear_loop_forward():
     """Test that linear_loop forward produces correct results."""
-    from auto_round.modeling.unfused_moe.moe_experts_interface import (
+    from auto_round.modeling.fused_moe.moe_experts_interface import (
+        linear_loop_experts_forward,
         _unfuse_experts_weights_inplace,
         linear_loop_experts_forward,
     )
@@ -193,7 +195,8 @@ def test_linear_loop_forward():
 
 def test_prepare_model_for_moe_quantization():
     """Test the full prepare_model_for_moe_quantization flow."""
-    from auto_round.modeling.unfused_moe.moe_experts_interface import (
+    from auto_round.modeling.fused_moe.moe_experts_interface import (
+        prepare_model_for_moe_quantization,
         is_linear_loop_available,
         prepare_model_for_moe_quantization,
     )
@@ -267,8 +270,8 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
     import shutil
 
     from auto_round import AutoRound
-    from auto_round.modeling.unfused_moe.moe_experts_interface import is_linear_loop_available
-
+    from auto_round.modeling.fused_moe.moe_experts_interface import is_linear_loop_available
+    
     if not is_linear_loop_available():
         print("SKIP: transformers MOE integration not available")
         return
@@ -282,7 +285,6 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
         "experts.*2": {"bits": 16, "act_bits": 16},
         "experts.*5": {"bits": 16, "act_bits": 16},
     }
-
     # Use linear_loop backend
     autoround = AutoRound(
         model_name,
@@ -296,7 +298,6 @@ def test_deepseek_v2_with_linear_loop(tiny_deepseek_v2_model_path, dataloader):
 
     # Run quantization (this triggers update_module which prepares MOE for quantization)
     compressed_model, _ = autoround.quantize()
-
     # Check that model was prepared with linear_loop
     model = autoround.model
     assert hasattr(model, "config")
