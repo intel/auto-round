@@ -70,9 +70,9 @@ pip install auto-round
 ### 自定义数据集
 
 可通过以下方式指定：
-- 法一：向 `dataset` 参数传入本地 JSON 文件路径
-- 法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集名称和拆分参数初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
-- 法三：向 `dataset` 参数传入字符串列表或者 input_ids 列表
+- 用法一：向 `dataset` 参数传入本地 JSON 文件路径
+- 用法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集名称和拆分参数初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
+- 用法三：向 `dataset` 参数传入字符串列表或者 input_ids 列表
 
     ~~~python
     def customized_data():
@@ -732,7 +732,7 @@ auto-round --model="your_model_path" --eval --device_map 0,1 --tasks lambada_ope
 auto-round "your_model_path" --eval --device_map 0,1 --tasks lambada_openai --eval_backend vllm
 ```
 
-**vLLM 后端（法二：手动配置）:**
+**vLLM 后端（用法二：手动配置）:**
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_openai --eval_backend vllm --vllm_args="tensor_parallel_size=2,gpu_memory_utilization=0.8"
 ```
