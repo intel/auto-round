@@ -670,7 +670,7 @@ class BaseCompressor(object):
                 )
                 user_scheme_overrides = {}
             # If no overrides exist, return the normalized string immediately
-            if not user_scheme_overrides and retrun_str:
+            if not user_scheme_overrides and return_str:
                 return normalized_name
             scheme_dict = asdict(preset_name_to_scheme(normalized_name))
         else:
