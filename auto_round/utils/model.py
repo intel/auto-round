@@ -1542,8 +1542,8 @@ def copy_python_files_from_model_cache(model, save_path: str):
             from transformers import TRANSFORMERS_CACHE
 
             cache_dir = TRANSFORMERS_CACHE
-        else:
-            import os
+            from huggingface_hub.constants import HF_HUB_CACHE
+            cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
 
             cache_dir = os.environ.get("HF_HOME", None)
         from transformers.utils import http_user_agent
