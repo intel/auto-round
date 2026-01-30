@@ -69,9 +69,8 @@ def is_wfp8afp8(ar):
 
 
 def is_wint8aint8(ar):
-    if (
-        ("int8" in ar.act_data_type or ("int" in ar.act_data_type and ar.act_bits == 8))
-        and ("int8" in ar.data_type or ("int" in ar.data_type and ar.bits == 8))
+    if ("int8" in ar.act_data_type or ("int" in ar.act_data_type and ar.act_bits == 8)) and (
+        "int8" in ar.data_type or ("int" in ar.data_type and ar.bits == 8)
     ):
         return True
     else:

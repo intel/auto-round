@@ -357,6 +357,7 @@ class LLMCompressorFormat(OutputFormat):
                     )
             elif is_dynamic_wint8aint8(ar):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
                 check_compressed_tensors_supported()
                 self.backend = LLMCompressorFormat(ar.data_type, ar)
         else:
@@ -423,6 +424,7 @@ class LLMCompressorFormat(OutputFormat):
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
         elif re.search(f"{AutoRoundExportFormat.INT.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
+
             return pack_layer(layer_name, model, device=device)
         ## passed as no other llm_compressor format is supported yet
         logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")

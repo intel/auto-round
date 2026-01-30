@@ -426,7 +426,6 @@ class TestAutoRound:
         assert format_list[1].output_format == "auto_round"
         assert format_list[1].get_backend_name() == "auto_round:llm_compressor:int"
 
-
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
         from auto_round.formats import get_formats
 
@@ -461,7 +460,6 @@ class TestAutoRound:
             sym=True,
         )
         get_formats("auto_round:auto_awq", ar)
-
 
     def test_llmc_dynamic_wint8aint8_export(self):
         autoround = AutoRound(

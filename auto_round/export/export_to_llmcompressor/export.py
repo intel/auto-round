@@ -17,8 +17,17 @@ import os
 from typing import Callable, Union
 
 import torch
+from compressed_tensors.compressors import IntQuantizationCompressor
+from compressed_tensors.quantization import (
+    QuantizationArgs,
+    QuantizationConfig,
+    QuantizationScheme,
+    QuantizationStatus,
+)
+from compressed_tensors.utils import delete_offload_parameter, get_offloaded_device, register_offload_parameter
 
 from auto_round.compressors.utils import is_static_wfp8afp8
+from auto_round.export.utils import save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -29,35 +38,25 @@ from auto_round.utils import (
     set_module,
     unsupported_meta_device,
 )
-from auto_round.export.utils import save_model
 from auto_round.wrapper import WrapperWALayer
-
-from compressed_tensors.quantization import (
-    QuantizationScheme,
-    QuantizationStatus,
-    QuantizationConfig,
-    QuantizationArgs,
-)
-from compressed_tensors.compressors import IntQuantizationCompressor
-from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter, get_offloaded_device
 
 
 def construct_ct_scheme(layer):
     weights_args = QuantizationArgs(
         num_bits=layer.bits,
-        type=layer.data_type.split("_")[-2], # int_sym, rtn_int_sym
+        type=layer.data_type.split("_")[-2],  # int_sym, rtn_int_sym
         symmetric=layer.sym,
         dynamic=False,
         group_size=layer.group_size if layer.group_size != 0 else None,
-        strategy=None if layer.group_size != 0 else "tensor"
+        strategy=None if layer.group_size != 0 else "tensor",
     )
     activations_args = QuantizationArgs(
         num_bits=layer.act_bits,
-        type=layer.act_data_type.split("_")[-2], # int_sym, rtn_int_sym
+        type=layer.act_data_type.split("_")[-2],  # int_sym, rtn_int_sym
         symmetric=layer.act_sym,
         dynamic=layer.act_dynamic,
         group_size=layer.act_group_size if layer.group_size != 0 else None,
-        strategy=None if layer.act_group_size != 0 else "tensor"
+        strategy=None if layer.act_group_size != 0 else "tensor",
     )
     scheme = QuantizationScheme(
         targets=[layer.__class__.__name__],
@@ -65,6 +64,7 @@ def construct_ct_scheme(layer):
         input_activations=activations_args,
     )
     return scheme
+
 
 def pack_layer(name, model, device=None):
     layer = get_module(model, name)
@@ -91,9 +91,7 @@ def pack_layer(name, model, device=None):
     delattr(layer, "scale")
 
     compressor = IntQuantizationCompressor()
-    q_state_dict = compressor.compress(
-        layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False
-    )
+    q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
 
     # remove any existing parameters
     offload_device = get_offloaded_device(layer)
