@@ -12,6 +12,7 @@ pr:
       - auto_round_extension/ark
       - auto_round/inference
       - test/test_ark
+      - test/test_xpu
       - setup.py
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/unit-test-xpu.yml
