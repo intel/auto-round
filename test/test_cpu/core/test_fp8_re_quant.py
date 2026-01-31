@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig
 
-from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
+from auto_round.utils.model import convert_fp8_layer_to_linear, _dequant_fp8_linear_weight
 
 
 class MockFP8Layer:
@@ -32,7 +32,7 @@ class TestFP8ReQuant(unittest.TestCase):
         in_features, out_features = 128, 64
         layer = MockFP8Layer(in_features, out_features)
 
-        dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale, block_size=None)
+        dq_weight = _dequant_fp8_linear_weight(layer.weight, layer.weight_scale, block_size=None)
         self.assertEqual(dq_weight.shape, (out_features, in_features))
         self.assertEqual(dq_weight.dtype, torch.bfloat16)
 
@@ -46,13 +46,13 @@ class TestFP8ReQuant(unittest.TestCase):
 
         # Per-channel scale (out_features)
         scale = torch.randn(out_features)
-        dq_weight = dequant_block_fp8_weight(weight, scale, block_size=None)
+        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
         expected = weight.to(torch.bfloat16) * scale.view(-1, 1).to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
         # Per-channel scale (in_features)
         scale = torch.randn(in_features)
-        dq_weight = dequant_block_fp8_weight(weight, scale, block_size=None)
+        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
         expected = weight.to(torch.bfloat16) * scale.view(1, -1).to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
