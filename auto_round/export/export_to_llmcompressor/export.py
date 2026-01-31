@@ -35,6 +35,7 @@ from auto_round.wrapper import WrapperWALayer
 
 def construct_ct_scheme(layer):
     from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
+
     weights_args = QuantizationArgs(
         num_bits=layer.bits,
         type=layer.data_type.split("_")[-2],  # int_sym, rtn_int_sym
