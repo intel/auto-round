@@ -485,7 +485,7 @@ class TestAutoRound:
             act_data_type="int",
             act_sym=True,
             act_dynamic=True,
-            act_group_size=0,
+            act_group_size=-1,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")

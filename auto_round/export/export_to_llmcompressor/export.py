@@ -17,14 +17,6 @@ import os
 from typing import Callable, Union
 
 import torch
-from compressed_tensors.compressors import IntQuantizationCompressor
-from compressed_tensors.quantization import (
-    QuantizationArgs,
-    QuantizationConfig,
-    QuantizationScheme,
-    QuantizationStatus,
-)
-from compressed_tensors.utils import delete_offload_parameter, get_offloaded_device, register_offload_parameter
 
 from auto_round.compressors.utils import is_static_wfp8afp8
 from auto_round.export.utils import save_model
@@ -42,21 +34,22 @@ from auto_round.wrapper import WrapperWALayer
 
 
 def construct_ct_scheme(layer):
+    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
     weights_args = QuantizationArgs(
         num_bits=layer.bits,
         type=layer.data_type.split("_")[-2],  # int_sym, rtn_int_sym
         symmetric=layer.sym,
         dynamic=False,
-        group_size=layer.group_size if layer.group_size != 0 else None,
-        strategy=None if layer.group_size != 0 else "tensor",
+        group_size=None,
+        strategy="tensor" if layer.act_group_size == 0 else "channel" if layer.act_group_size == -1 else None,
     )
     activations_args = QuantizationArgs(
         num_bits=layer.act_bits,
         type=layer.act_data_type.split("_")[-2],  # int_sym, rtn_int_sym
         symmetric=layer.act_sym,
         dynamic=layer.act_dynamic,
-        group_size=layer.act_group_size if layer.group_size != 0 else None,
-        strategy=None if layer.act_group_size != 0 else "tensor",
+        group_size=None,
+        strategy="tensor" if layer.act_group_size == 0 else "token" if layer.act_group_size == -1 else None,
     )
     scheme = QuantizationScheme(
         targets=[layer.__class__.__name__],
@@ -67,6 +60,10 @@ def construct_ct_scheme(layer):
 
 
 def pack_layer(name, model, device=None):
+    from compressed_tensors.compressors import IntQuantizationCompressor
+    from compressed_tensors.quantization import QuantizationStatus
+    from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter
+
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
@@ -79,7 +76,7 @@ def pack_layer(name, model, device=None):
 
     scheme = construct_ct_scheme(layer)
     setattr(layer, "quantization_scheme", scheme)
-    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale))
+    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(device)))
     if not isinstance(layer.zp, torch.Tensor):
         if layer.sym:
             zp = torch.full_like(layer.weight_scale, 0).to(torch.int8)
@@ -87,21 +84,21 @@ def pack_layer(name, model, device=None):
             zp = torch.full_like(layer.weight_scale, layer.zp).to(torch.int8)
     else:
         zp = layer.zp
-    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp, requires_grad=False))
+
+    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(device), requires_grad=False))
     delattr(layer, "scale")
 
     compressor = IntQuantizationCompressor()
     q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
 
     # remove any existing parameters
-    offload_device = get_offloaded_device(layer)
     for name, _ in list(layer.named_parameters(recurse=False)):
         delete_offload_parameter(layer, name)
 
     # replace with compressed parameters
     for name, value in q_state_dict.items():
         param = torch.nn.Parameter(value, requires_grad=False)
-        register_offload_parameter(layer, name, param, offload_device)
+        register_offload_parameter(layer, name, param, device)
 
     layer.quantization_status = QuantizationStatus.COMPRESSED
 
@@ -140,6 +137,7 @@ def save_quantized_as_llmcompressor(
     Returns:
         torch.nn.Module: The quantized model that was saved.
     """
+    from compressed_tensors.quantization import QuantizationConfig
 
     safe_serialization = kwargs.get("safe_serialization", True)
     processor = kwargs.get("processor", None)
