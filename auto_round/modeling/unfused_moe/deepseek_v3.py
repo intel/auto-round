@@ -106,7 +106,7 @@ class LinearDeepseekV3MoE(nn.Module):
 
 
 # from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MLP
-from transformers.integrations.finegrained_fp8 import  FP8Linear, should_convert_module, logger
+from transformers.integrations.finegrained_fp8 import FP8Linear, logger, should_convert_module
 
 
 def replace_with_fp8_linear(
@@ -163,5 +163,7 @@ def replace_with_fp8_linear(
         )
     return model
 
+
 from transformers.integrations import finegrained_fp8 as tf_fp8
-tf_fp8.replace_with_fp8_linear = replace_with_fp8_linear 
+
+tf_fp8.replace_with_fp8_linear = replace_with_fp8_linear
