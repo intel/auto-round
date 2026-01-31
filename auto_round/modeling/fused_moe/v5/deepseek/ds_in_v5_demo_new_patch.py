@@ -24,6 +24,8 @@ model_name = "/storage/yiliu7/unsloth/DeepSeek-R1-BF16/"
 model_name = "/mnt/disk5/unsloth/DeepSeek-R1-BF16"
 # model_name = "/mnt/disk8/Qwen/Qwen3-8B-FP8"
 model_name = "/mnt/disk6/yiliu4/deepseek-ai/DeepSeek-R1-0528"
+model_name = "/storage/yiliu7/deepseek-ai/DeepSeek-R1/"
+model_id = "/storage/yiliu7/DeepSeek-R1-FP8_STATIC/"
 # model_name = "/mnt/disk3/yiliu4/DeepSeek-R1-G2-INC-424-Converter207"
 # model_name = "/mnt/disk8/Qwen/Qwen3-8B"
 # model_name = "/mnt/disk8/Qwen/Qwen3-8B-FP8"
@@ -31,7 +33,7 @@ model_name = "/mnt/disk6/yiliu4/deepseek-ai/DeepSeek-R1-0528"
 # model_name = "/mnt/disk8/Qwen/Qwen3-30B-A3B"
 # model_name = "/mnt/disk8/deepseek-ai/DeepSeek-V2-Lite-Chat"
 
-device = "cpu"
+device = "cuda"
 from loguru import logger
 
 
@@ -79,7 +81,6 @@ def main(args):
     # from ds_patch import apply_transformer_patches
 
     # from qwen_v5_patch import apply_transformer_patches_qwen
-
     # disable_concat_experts()
     # apply_transformer_patches()
     # apply_transformer_patches_qwen()
@@ -91,12 +92,26 @@ def main(args):
         dump_cur_ram("before model load")
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
         tokenizer.add_bos_token = True
+        # max_memory = {
+        #     # 0: "30GB",
+        #     # 1: "30GB",
+        #     # 2: "30GB",
+        #     # 3: "30GB",
+        #     4: "178GB",
+        #     5: "178GB",
+        #     6: "178GB",
+        #     7: "178GB",
+
+        # }
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype="auto",
             trust_remote_code=trust_remote_code,
             #   _experts_implementation="eager",
-            device_map="cpu",  # device_map="auto",
+            # device_map="cpu",
+            device_map="auto",
+            # max_memory=max_memory,
+            # offload_folder="/storage/yiliu7/tmp/offload_ds",
         )
         msg = "The capital of France is"
         model.eval()
@@ -120,7 +135,7 @@ def main(args):
             print(dm.debug_string(show_stack_trace=True))
             print(res)
             exit(0)
-        inputs = tokenizer(msg, return_tensors="pt").to("cpu")
+        inputs = tokenizer(msg, return_tensors="pt").to(device)
 
         outputs = model.generate(**inputs, max_new_tokens=32)
         decode_output = tokenizer.decode(outputs[0], skip_special_tokens=True)

@@ -103,3 +103,65 @@ class LinearDeepseekV3MoE(nn.Module):
         hidden_states = self.experts_forward(hidden_states, topk_indices, topk_weights).view(*orig_shape)
         hidden_states = hidden_states + self.shared_experts(residuals)
         return hidden_states
+
+
+# from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MLP
+from transformers.integrations.finegrained_fp8 import  FP8Linear, should_convert_module, logger
+
+
+def replace_with_fp8_linear(
+    model, modules_to_not_convert: list[str] | None = None, quantization_config=None, pre_quantized=False
+):
+    """
+    A helper function to replace all `torch.nn.Linear` modules by `FP8Linear` modules.
+
+    Parameters:
+        model (`torch.nn.Module`):
+            Input model or `torch.nn.Module` as the function is run recursively.
+        modules_to_not_convert (`list[`str`]`, *optional*, defaults to `None`):
+            Names of the modules to not convert. In practice we keep the `lm_head` in full precision for numerical stability reasons.
+        quantization_config (`FbgemmFp8Config`):
+            The quantization config object that contains the quantization parameters.
+        pre_quantized (`book`, defaults to `False`):
+            Whether the model is pre-quantized or not
+    """
+
+    if quantization_config.dequantize:
+        return model
+
+    has_been_replaced = False
+    for module_name, module in model.named_modules():
+        if not should_convert_module(module_name, modules_to_not_convert):
+            continue
+        # we need this to correctly materialize the weights during quantization
+        module_kwargs = {} if pre_quantized else {"dtype": None}
+        new_module = None
+        with torch.device("meta"):
+            # breakpoint()
+            # if module_name.endswith(".experts"):
+            #     new_module = FP8Expert(
+            #         config=model.config, block_size=quantization_config.weight_block_size, **module_kwargs
+            #     )
+            # elif isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear):
+                new_module = FP8Linear(
+                    in_features=module.in_features,
+                    out_features=module.out_features,
+                    bias=module.bias is not None,
+                    activation_scheme=quantization_config.activation_scheme,
+                    block_size=quantization_config.weight_block_size,
+                    **module_kwargs,
+                )
+            if new_module is not None:
+                model.set_submodule(module_name, new_module)
+                has_been_replaced = True
+
+    if not has_been_replaced:
+        logger.warning(
+            "You are loading your model using fp8 but no linear modules were found in your model."
+            " Please double check your model architecture."
+        )
+    return model
+
+from transformers.integrations import finegrained_fp8 as tf_fp8
+tf_fp8.replace_with_fp8_linear = replace_with_fp8_linear 
