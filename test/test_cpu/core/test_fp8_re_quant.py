@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig
 
-from auto_round.utils.model import convert_fp8_layer_to_linear, _dequant_fp8_linear_weight
+from auto_round.utils.model import _dequant_fp8_linear_weight, convert_fp8_layer_to_linear
 
 
 class MockFP8Layer:
