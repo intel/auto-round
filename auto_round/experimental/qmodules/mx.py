@@ -96,7 +96,7 @@ class MXQuantLinearBase(QModuleBase):
 
         # Rotation matrices buffers
         self.enable_transform = False
-        if self.config.transform_config is not None:
+        if self.config.transform_config:
             self.enable_transform = True
             self.register_buffer(
                 "forward_hadamard_matrix",
@@ -161,7 +161,6 @@ class MXQuantLinearBase(QModuleBase):
 
         if self.enable_transform:
             from ..triton.mxfp4 import mxfp4_forward_kernel_wrapper
-
             orig_shape = input.shape
             x_flat = input.contiguous().flatten(end_dim=-2)
             qdq_input, _ = mxfp4_forward_kernel_wrapper(

@@ -215,7 +215,7 @@ class BaseCompressor(object):
             minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
             low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
-            transform_config (dict, optional): transform matrix config like hadamard, like {"transform_class": "hadamard"}.
+            transform_config (dict, optional): transform matirx config like hadamard, like {"transform_class": "hadamard"}. 
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.
@@ -2824,7 +2824,9 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            transform_config=self.transform_config,
         )
+
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales
 
