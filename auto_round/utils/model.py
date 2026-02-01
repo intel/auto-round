@@ -1224,18 +1224,27 @@ class with_thread_limits(ContextDecorator):
 
 
 @with_thread_limits()
-def dequant_block_fp8_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+def _dequant_fp8_linear_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list = None, data_type: str = None
 ) -> torch.Tensor:
     """Core dequantization logic for block-wise FP8 weights."""
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
-    assert len(block_size) == 2
 
     # If weight is stored as uint8, view it as float8_e4m3fn
     if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
         weight = weight.view(torch.float8_e4m3fn)
+
+    if block_size is None:
+        if weight_scale.numel() > 1 and weight_scale.shape != weight.shape:
+            if weight_scale.numel() == weight.shape[0]:
+                weight_scale = weight_scale.view(-1, 1)
+            elif weight_scale.numel() == weight.shape[-1]:
+                weight_scale = weight_scale.view(1, -1)
+        return weight.to(dtype) * weight_scale.to(dtype)
+
+    assert len(block_size) == 2
 
     weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
@@ -1266,7 +1275,7 @@ def dequant_block_fp8_weight(
 
 
 # Register FP8 layer dequantization handlers
-# Note: Handlers are registered here (after dequant_block_fp8_weight is defined)
+# Note: Handlers are registered here (after _dequant_fp8_linear_weight is defined)
 # to ensure all dependencies are available.
 @register_fp8_layer("CompressedLinear")
 def dequant_compressed_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
@@ -1280,16 +1289,17 @@ def dequant_fp8_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
     """Dequantize FP8Linear layer using block-based dequantization."""
     layer = layer.to(device)
     weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
+    block_size = getattr(layer, "block_size", None)
     data_type = getattr(layer, "data_type", None)
-    # Pass data_type if dequant_block_fp8_weight supports it
+    # Pass data_type if _dequant_fp8_linear_weight supports it
     # Check if function accepts data_type parameter
     import inspect
 
-    sig = inspect.signature(dequant_block_fp8_weight)
+    sig = inspect.signature(_dequant_fp8_linear_weight)
     if "data_type" in sig.parameters:
-        return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
+        return _dequant_fp8_linear_weight(layer.weight, weight_scale, block_size, data_type=data_type)
     else:
-        return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
+        return _dequant_fp8_linear_weight(layer.weight, weight_scale, block_size)
 
 
 def check_to_quantized(config):
@@ -1383,7 +1393,6 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
 
     if is_gaudi2():
         device = "cpu"
-
     # Use registry-based dequantization
     dq_weight = dequant_fp8_layer(layer, dtype=dtype, device=device)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
