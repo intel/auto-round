@@ -1253,38 +1253,69 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
-def get_module(module, key):
-    """Get module from model by key name.
+def get_attr(module, key):
+    """Get attribute from module by key name.
+
+    This function can access both modules and their attributes (like weight, bias).
+    For accessing only modules, prefer using get_module which uses PyTorch's native API.
 
     Args:
         module (torch.nn.Module): original model
-        key (str): module name to be replaced
+        key (str): attribute name (e.g., "layer.weight", "layer.bias")
+
+    Raises:
+        AttributeError: If any attribute in the path is missing
     """
     name_list = key.split(".")
     for name in name_list:
-        module = getattr(module, name, None)
+        if not hasattr(module, name):
+            raise AttributeError(f"Attribute '{name}' not found while resolving '{key}'")
+        module = getattr(module, name)
     return module
 
 
-def set_module(model, key, new_module):
-    """Set new module into model by key name.
+def set_attr(model, key, new_attr):
+    """Set attribute into model by key name.
+
+    This function can set both modules and their attributes (like weight, bias).
+    For setting only modules, prefer using set_module which uses PyTorch's native API.
 
     Args:
         model (torch.nn.Module): original model
-        key (str): module name to be replaced
-        new_module (torch.nn.Module): new module to be inserted
+        key (str): attribute name (e.g., "layer.weight", "layer.bias")
+        new_attr (object): new attribute to be inserted
+
+    Raises:
+        AttributeError: If any intermediate attribute in the path is missing
     """
     module = model
     name_list = key.split(".")
     for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
+        if not hasattr(module, name):
+            raise AttributeError(f"Attribute '{name}' not found while resolving '{key}'")
+        module = getattr(module, name)
+    setattr(module, name_list[-1], new_attr)
 
 
-# For getting and setting attribution, such as 'lm_head.weight'
-get_attr = get_module
-set_attr = set_module
+def get_module(module, key):
+    """Get module from model by key name using PyTorch native API.
+
+    Args:
+        module (torch.nn.Module): original model
+        key (str): module name
+    """
+    return module.get_submodule(key)
+
+
+def set_module(model, key, new_module):
+    """Set new module into model by key name using PyTorch native API.
+
+    Args:
+        model (torch.nn.Module): original model
+        key (str): module name
+        new_module (torch.nn.Module): new module to be inserted
+    """
+    model.set_submodule(key, new_module)
 
 
 def get_layer_features(layer):
