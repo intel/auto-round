@@ -264,7 +264,7 @@ def merge_lists_unionfind(list_of_lists):
         if root_x != root_y:
             parent[root_y] = root_x
 
-    # 初始化并查集
+    # Initialize Union-Find
     for lst in list_of_lists:
         for item in lst:
             if item not in parent:
@@ -272,7 +272,7 @@ def merge_lists_unionfind(list_of_lists):
         for i in range(1, len(lst)):
             union(lst[0], lst[i])
 
-    # 收集结果
+    # Collect results
     groups = {}
     for item in parent:
         root = find(item)
