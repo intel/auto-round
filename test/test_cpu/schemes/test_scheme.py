@@ -159,3 +159,30 @@ class TestAutoRound:
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
         assert len(device_list) == 1 and "cpu" in device_list
+
+    def test_set_scheme(self, tiny_qwen_model_path):
+        ar = AutoRound(
+            tiny_qwen_model_path,
+            scheme="gguf:q2_k_s",
+            data_type="fp",
+            nsamples=1,
+            disable_opt_rtn=True,
+            iters=0,
+            seqlen=2,
+        )
+        ar.quantize()
+
+        from auto_round.schemes import QuantizationScheme
+
+        qs = QuantizationScheme.from_dict({"bits": 4, "group_size": 64})
+        ar = AutoRound(
+            tiny_qwen_model_path,
+            scheme=qs,
+            bits=2,
+            data_type="int_asym_dq",
+            nsamples=1,
+            iters=0,
+            disable_opt_rtn=True,
+            seqlen=2,
+        )
+        ar.quantize()
