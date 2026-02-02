@@ -31,6 +31,11 @@ from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.device import (
+    _use_hpu_compile_mode,
+    get_device_and_parallelism,
+    override_cuda_device_capability,
+)
 
 # ============================================================================
 # FP8 Dequantization Registry
@@ -332,12 +337,6 @@ def llm_load_model(
     else:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
-    from auto_round.utils.device import (
-        _use_hpu_compile_mode,
-        get_device_and_parallelism,
-        set_fake_cuda_device_capability,
-    )
-
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
     if device_str is not None and "hpu" in device_str:
@@ -368,14 +367,13 @@ def llm_load_model(
             )
         except ValueError as e:
             if "FP8 quantized" in str(e):
-                orig_func = set_fake_cuda_device_capability()
-                model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=trust_remote_code,
-                    device_map="auto" if use_auto_mapping else None,
-                )
-                torch.cuda.get_device_capability = orig_func
+                with override_cuda_device_capability():
+                    model = model_cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        torch_dtype=torch_dtype,
+                        trust_remote_code=trust_remote_code,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
@@ -428,7 +426,7 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
+    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -501,14 +499,13 @@ def mllm_load_model(
                 )
             except ValueError as e:
                 if "FP8 quantized" in str(e):
-                    orig_func = set_fake_cuda_device_capability()
-                    model = cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        trust_remote_code=trust_remote_code,
-                        torch_dtype=torch_dtype,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
-                    torch.cuda.get_device_capability = orig_func
+                    with override_cuda_device_capability():
+                        model = cls.from_pretrained(
+                            pretrained_model_name_or_path,
+                            trust_remote_code=trust_remote_code,
+                            torch_dtype=torch_dtype,
+                            device_map="auto" if use_auto_mapping else None,
+                        )
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 else:
                     raise
@@ -1203,7 +1200,7 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"
     # Use registry-based dequantization
     dq_weight = dequant_fp8_layer(layer, dtype=dtype, device=device)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
-
+    logger.warning_once("Converted FP8 layer to Linear layer with dequantized weights.")
     return new_layer
 
 
