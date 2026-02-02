@@ -123,6 +123,15 @@ def tiny_qwen_2_5_vl_model_path():
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
+# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
+@pytest.fixture(autouse=True, scope="session")
+def mock_cuda_capability():
+    from unittest.mock import patch
+
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+        yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def clean_tmp_model_folder():
     yield
