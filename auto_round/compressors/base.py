@@ -2152,7 +2152,7 @@ class BaseCompressor(object):
                                 elif isinstance(device, str):
                                     device = 0
                                 else:
-                                    raise f"Unsupported device {device} in device_map: {self.device_map}"
+                                    raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
                                 # Use 90% of the reported max memory to leave headroom for activations,
                                 # temporary tensors, other processes, and allocator fragmentation, reducing
                                 # the chance of runtime OOM while still utilizing most available memory.
