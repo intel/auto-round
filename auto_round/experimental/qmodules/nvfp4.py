@@ -165,6 +165,12 @@ class NVFP4QuantLinear(QModuleBase):
         dq_weight = self._dequant_nvfp4_tensor(self.weight_packed, self.weight_scale)
         return dq_weight
 
+    @property
+    def weight(self) -> torch.Tensor:
+        if not hasattr(self, '_cached_weight') or self._cached_weight is None:
+            self._cached_weight = self.dequant_weight_online()
+        return self._cached_weight
+
     def qdq_input(self, activation: torch.Tensor):
         original_dtype = activation.dtype
         temp_qdq_act = _nvfp4_qdq(activation.to(torch.float32), self.config, self.input_global_scale)

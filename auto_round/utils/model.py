@@ -1462,28 +1462,41 @@ def set_amax_for_uncalibrated_experts(
             get_nested_attr(module, attr_name) for module in experts if get_nested_attr(module, attr_name) is not None
         ]
         if len(amax_values) == 0:
-            return uncalibrated_experts
-        # Flatten all tensors to 1D before concatenation
-        flat_values = [t.reshape(-1) for t in amax_values]
-        all_values = torch.cat(flat_values)
-        set_amax_value = torch.max(all_values)
+            # All experts are uncalibrated - this indicates insufficient calibration data
+            # We cannot proceed without any reference act_max values
+            logger.warning_once(
+                "All expert layers are missing amax values. "
+                "This typically occurs in MoE models when the calibration dataset is too small "
+                "and no experts are activated. Consider increasing nsamples or seqlen "
+                "to ensure at least some experts are exercised during calibration."
+            )
+            return uncalibrated_experts  # Return empty list, no act_max can be set
+        else:
+            # Flatten all tensors to 1D before concatenation
+            flat_values = [t.reshape(-1) for t in amax_values]
+            all_values = torch.cat(flat_values)
+            set_amax_value = torch.max(all_values)
 
     for module in experts:
         current_amax = get_nested_attr(module, attr_name)
 
         # Set amax if it's None (uncalibrated) OR if unify_all is True
         if current_amax is None or unify_all:
-            if current_amax is None:
-                logger.warning_once(
-                    "Missing amax value of expert layers."
-                    "This typically occurs in MoE models when certain experts are not activated during calibration. "
-                    "Consider increasing your calibration dataset size to ensure all experts are exercised."
-                )
             # Use float32 dtype explicitly to ensure we create a floating point tensor
             if not isinstance(set_amax_value, torch.Tensor):
                 set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
-            set_nested_attr(module, attr_name, set_amax_value)
-            # uncalibrated_experts.append(module)
+            set_nested_attr(module, attr_name, set_amax_value.clone())
+            if current_amax is None:
+                uncalibrated_experts.append(module)
+
+    if uncalibrated_experts:
+        logger.warning_once(
+            f"Found {len(uncalibrated_experts)} uncalibrated expert layers. "
+            "Using max amax from calibrated experts to fill missing values. "
+            "This occurs when some MoE experts are not activated during calibration."
+        )
+
+    return uncalibrated_experts
 
 
 # Please refer to: https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/
@@ -1500,13 +1513,31 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
     for name, sub_module in model.named_modules():
         if not (is_moe_layer(sub_module) and hasattr(sub_module, "experts")):
             continue
+
+        # Handle router (gate) layer - it's a Linear layer used for token routing
+        # It needs act_max for quantization but may not be calibrated if it wasn't exercised
+        _set_amax_for_moe_auxiliary_layers(sub_module, attr_name=attr_name)
+
         expert_linear_names = get_expert_linear_names(sub_module)
         # Get input projection names for FP8 dispatch unification
         expert_input_proj_names = get_expert_input_proj_names(sub_module)
 
-        for linear_name in expert_linear_names:
-            if isinstance(sub_module.experts, collections.abc.Iterable):
-                # For other MoE models (like Mixtral) with iterable experts
+        # Check experts structure and handle accordingly
+        if _is_unfused_experts_module(sub_module.experts):
+            # Unfused experts: gate_up_proj/down_proj are nn.ModuleList
+            _set_amax_for_unfused_experts(sub_module.experts, attr_name=attr_name)
+        elif _is_fused_experts_module(sub_module.experts):
+            # Fused experts: 3D Parameters (e.g., DeepseekV2Experts)
+            # For fused experts, act_max is set on the parent MOE module, not individual experts
+            # Skip processing here as they don't have individual Linear layers to calibrate
+            logger.debug(
+                f"Skipping act_max setting for fused experts module '{name}': "
+                f"fused experts use parent module's act_max"
+            )
+            continue
+        elif isinstance(sub_module.experts, collections.abc.Iterable):
+            # Iterable experts: list of expert modules (e.g., Mixtral)
+            for linear_name in expert_linear_names:
                 try:
                     # Determine if this is an input projection that needs scale unification
                     unify_scale = linear_name in expert_input_proj_names and envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
@@ -1528,12 +1559,155 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                         f"to be updated for this model architecture. "
                         f"Original error: {e}"
                     ) from e
-            else:
-                # Unsupported MoE model structure
-                raise NotImplementedError(
-                    f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
-                    f"Please file an issue or add support for this model architecture."
-                )
+        else:
+            # Unknown experts structure
+            logger.warning(
+                f"Unknown experts structure in '{name}': type={type(sub_module.experts).__name__}. "
+                f"Skipping act_max setting. This may cause issues during export."
+            )
+
+
+def _is_unfused_experts_module(module: torch.nn.Module) -> bool:
+    """Check if the module is an unfused experts module (has ModuleList gate_up_proj/down_proj)."""
+    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
+        return False
+    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(
+        module.down_proj, torch.nn.ModuleList
+    )
+
+
+def _is_fused_experts_module(module: torch.nn.Module) -> bool:
+    """Check if the module is a fused experts module (has 3D Parameter gate_up_proj/down_proj)."""
+    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
+        return False
+    return (
+        isinstance(module.gate_up_proj, torch.nn.Parameter)
+        and isinstance(module.down_proj, torch.nn.Parameter)
+        and module.gate_up_proj.dim() == 3
+        and module.down_proj.dim() == 3
+    )
+
+
+def _set_amax_for_unfused_experts(experts_module: torch.nn.Module, attr_name: str = "act_max"):
+    """Set amax for unfused experts module with ModuleList attributes.
+
+    This handles experts modules that have been unfused to have:
+    - gate_up_proj: nn.ModuleList of nn.Linear (input projections, unified scale)
+    - down_proj: nn.ModuleList of nn.Linear (output projections)
+    """
+    if hasattr(experts_module, "gate_up_proj") and isinstance(experts_module.gate_up_proj, torch.nn.ModuleList):
+        unify_scale = envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
+        set_amax_for_uncalibrated_experts(
+            list(experts_module.gate_up_proj),
+            attr_name=attr_name,
+            unify_all=unify_scale,
+        )
+
+    if hasattr(experts_module, "down_proj") and isinstance(experts_module.down_proj, torch.nn.ModuleList):
+        set_amax_for_uncalibrated_experts(
+            list(experts_module.down_proj),
+            attr_name=attr_name,
+            unify_all=False,
+        )
+
+
+def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: str = "act_max"):
+    """Set amax for auxiliary layers in MOE modules (gate/router, shared_experts).
+
+    These layers are not part of the experts structure but are siblings in the MOE module.
+    They need act_max for quantization but may be missing if not all paths were exercised
+    during calibration.
+
+    Args:
+        moe_module: The MOE module (e.g., DeepseekV2MoE)
+        attr_name: The attribute name for amax (default: "act_max")
+    """
+    # Collect all Linear layers that have act_bits set but missing act_max
+    layers_needing_amax = []
+
+    # Check gate (router) layer - it's typically a Linear layer for token routing
+    if hasattr(moe_module, "gate") and isinstance(moe_module.gate, torch.nn.Linear):
+        gate = moe_module.gate
+        if hasattr(gate, "act_bits") and gate.act_bits < 8:
+            if get_nested_attr(gate, attr_name) is None:
+                layers_needing_amax.append(gate)
+
+    # Check shared_experts - may have Linear layers that need act_max
+    if hasattr(moe_module, "shared_experts"):
+        shared_experts = moe_module.shared_experts
+        if shared_experts is not None:
+            for child_name, child in shared_experts.named_modules():
+                if isinstance(child, torch.nn.Linear):
+                    if hasattr(child, "act_bits") and child.act_bits < 8:
+                        if get_nested_attr(child, attr_name) is None:
+                            layers_needing_amax.append(child)
+
+    if not layers_needing_amax:
+        return
+
+    # Try to get reference amax from calibrated experts
+    reference_amax = _get_reference_amax_from_experts(moe_module, attr_name)
+
+    if reference_amax is not None:
+        for layer in layers_needing_amax:
+            if not isinstance(reference_amax, torch.Tensor):
+                reference_amax = torch.tensor(reference_amax, dtype=torch.float32)
+            set_nested_attr(layer, attr_name, reference_amax.clone())
+        logger.warning_once(
+            f"Set act_max for {len(layers_needing_amax)} MOE auxiliary layers (gate/shared_experts) "
+            f"using reference value from calibrated experts."
+        )
+    else:
+        logger.warning_once(
+            f"Cannot set act_max for {len(layers_needing_amax)} MOE auxiliary layers: "
+            f"no calibrated experts found to use as reference."
+        )
+
+
+def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str = "act_max"):
+    """Get a reference amax value from calibrated expert layers.
+
+    Args:
+        moe_module: The MOE module containing experts
+        attr_name: The attribute name for amax
+
+    Returns:
+        A reference amax tensor, or None if no calibrated experts found
+    """
+    amax_values = []
+
+    if not hasattr(moe_module, "experts"):
+        return None
+
+    experts = moe_module.experts
+
+    # Handle unfused experts (ModuleList)
+    if _is_unfused_experts_module(experts):
+        for proj_list in [getattr(experts, "gate_up_proj", None), getattr(experts, "down_proj", None)]:
+            if proj_list is not None and isinstance(proj_list, torch.nn.ModuleList):
+                for layer in proj_list:
+                    amax = get_nested_attr(layer, attr_name)
+                    if amax is not None:
+                        amax_values.append(amax)
+
+    # Handle iterable experts (list of modules)
+    elif isinstance(experts, collections.abc.Iterable):
+        expert_linear_names = get_expert_linear_names(moe_module)
+        for expert in experts:
+            for linear_name in expert_linear_names:
+                layer = getattr(expert, linear_name, None)
+                if layer is not None:
+                    amax = get_nested_attr(layer, attr_name)
+                    if amax is not None:
+                        amax_values.append(amax)
+
+    if not amax_values:
+        return None
+
+    # Return max of all amax values
+    flat_values = [t.reshape(-1) for t in amax_values]
+    all_values = torch.cat(flat_values)
+    return torch.max(all_values)
 
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
