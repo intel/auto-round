@@ -32,7 +32,6 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
-from auto_round.utils.model import get_layer_names_in_block
 from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -46,6 +45,7 @@ from auto_round.utils import (
     set_module,
     unsupported_meta_device,
 )
+from auto_round.utils.model import get_layer_names_in_block
 
 
 def _is_supported_layer(module: torch.nn.Module) -> bool:
@@ -60,35 +60,37 @@ def _collect_modules_to_not_convert(
     to_quant_block_names: list = None,
 ) -> list:
     """Collect all module names that should not be converted (not quantized).
-    
+
     Args:
         model: The model to scan
         layer_config: Configuration dict for layers
         regex_config: Regex-based configuration for layers
         to_quant_block_names: List of block names to quantize (for MLLM models)
-    
+
     Returns:
         List of module names to not convert
     """
     modules_to_not_convert = set()
-    
+
     # 1. add non-quantized block directly
     if to_quant_block_names:
         all_blocks = get_block_names(model, quant_vision=True)
         all_block_names = extract_block_names_to_str(all_blocks).split(",")
-        to_quant_set = set(to_quant_block_names.split(",") if isinstance(to_quant_block_names, str) else to_quant_block_names)
+        to_quant_set = set(
+            to_quant_block_names.split(",") if isinstance(to_quant_block_names, str) else to_quant_block_names
+        )
         non_quant_blocks = set(all_block_names) - to_quant_set
         modules_to_not_convert.update(non_quant_blocks)
-    
+
     layers_in_blocks = set(get_layer_names_in_block(model, quant_block_list=all_blocks))
-    
+
     # 2. Collect non-quantized layers from layer_config
     layers_from_block_patterns = set()
     for layer_name, layer_cfg in layer_config.items():
         if not check_to_quantized(layer_cfg) and not any(name in layer_name for name in modules_to_not_convert):
             layers_from_block_patterns.add(layer_name)
     modules_to_not_convert.update(layers_from_block_patterns)
-    
+
     # 3. Scan full model for supported layers not in layer_config and not in blocks
     for module_name, module in model.named_modules():
         if _is_supported_layer(module):
@@ -96,13 +98,13 @@ def _collect_modules_to_not_convert(
             if module_name not in layer_config and module_name not in layers_in_blocks:
                 # Standalone layer outside blocks
                 modules_to_not_convert.add(module_name)
-    
+
     # 4. Add high-precision layers from regex_config (bits > 8)
     for regex_name, regex_cfg in regex_config.items():
         bits = regex_cfg.get("bits")
         if bits and int(bits) > 8:
             modules_to_not_convert.add(regex_name)
-    
+
     return list(modules_to_not_convert)
 
 
@@ -161,7 +163,7 @@ def save_quantized_as_autoawq(
     logger.info("Saving quantized model to auto_awq format")
     if tokenizer is not None and hasattr(tokenizer, "save_pretrained") and output_dir is not None:
         tokenizer.save_pretrained(output_dir)
-    
+
     if processor is not None and output_dir is not None:
         processor.save_pretrained(output_dir)
     if image_processor is not None and output_dir is not None:
@@ -224,4 +226,3 @@ def save_quantized_as_autoawq(
     save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model
-
