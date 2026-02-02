@@ -42,11 +42,6 @@ def test_opt_125m_compile_mode():
     run_opt_125m_on_hpu()
 
 
-def test_import():
-    from auto_round import AutoRound
-    from auto_round.export.export_to_itrex.export import WeightOnlyLinear, save_quantized_as_itrex
-
-
 @pytest.mark.parametrize(
     "data_type",
     ["fp8_to_int_sym"],

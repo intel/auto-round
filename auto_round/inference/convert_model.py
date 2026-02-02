@@ -30,6 +30,7 @@ from auto_round.inference.backend import (
 )
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
+from auto_round.modeling.unfused_moe import apply_modeling_patch
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
@@ -472,7 +473,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
     This function handles backend-specific post-init steps, including AutoGPTQ,
-    GPTQModel, IPEX/ITREx layers, and ExLLaMAv2 kernels. It also ensures the
+    GPTQModel, IPEX layers, and ExLLaMAv2 kernels. It also ensures the
     model's data type is compatible with all used backends.
 
     Args:
@@ -482,7 +483,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """
     need_autogptq_init = False
     need_gptqmodel_init = False
-    need_ipex_itrex_init = False
+    need_ipex_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -493,7 +494,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
         elif backend.startswith(("ipex", "auto_round_kernel")):
-            need_ipex_itrex_init = True
+            need_ipex_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -503,12 +504,33 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     # GPTQModel post-init
     if need_gptqmodel_init:
+        from gptqmodel.quantization import METHOD  # pylint: disable=E0401
+        from gptqmodel.utils.importer import hf_select_quant_linear_v2  # pylint: disable=E0401
+        from gptqmodel.utils.model import hf_convert_gptq_v1_to_v2_format  # pylint: disable=E0401
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
 
+        quant_linear = hf_select_quant_linear_v2(
+            bits=model.config.quantization_config.bits,
+            group_size=model.config.quantization_config.group_size,
+            desc_act=False,
+            sym=model.config.quantization_config.sym,
+            format="gptq_v2",
+            quant_method=METHOD.GPTQ,
+            backend="EXLLAMA_V2",
+            pack=True,
+            device_map="auto",
+        )
+        model, _ = hf_convert_gptq_v1_to_v2_format(
+            model,
+            bits=model.config.quantization_config.bits,
+            qlinear_kernel=quant_linear,
+            checkpoint_format="gptq",
+            meta=None,
+        )
         model = gptq_post_init(model, use_act_order=False)
 
-    # IPEX/ITREx post-init
-    if need_ipex_itrex_init:
+    # IPEX post-init
+    if need_ipex_init:
         message = "repacking to CPU/XPU format"
         layers = []  ## ipex post_init  will add one more layer
         for n, m in model.named_modules():
@@ -591,9 +613,10 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
-
-    # Preprocess model before replace layers
-    model = update_module(model)
+    is_applied = apply_modeling_patch(model)
+    if not is_applied:
+        # Preprocess model before replace layers
+        model = update_module(model, cleanup_original=True)
 
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)

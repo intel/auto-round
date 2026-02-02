@@ -1,12 +1,12 @@
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+--extra-index-url https://wheels.vllm.ai/nightly
 auto-gptq
 einops
-# pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
-intel-extension-for-pytorch
-lm-eval>=0.4.9.1
+# pip install -v git+https://github.com/ModelCloud/GPTQModel.git --no-build-isolation
+lm_eval >= 0.4.10  # for transformers >= 5.0.0
 optimum
 pandas
 pillow
 torchvision
 numba
-vllm>=0.8.5.post1,<=0.11.0
+vllm

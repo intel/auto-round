@@ -16,17 +16,24 @@ import json
 import os
 import re
 from collections import UserDict
-from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Union
 
+import psutil
 import torch
 import transformers
+from packaging import version
 
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.weight_handler import (
+    _dequant_fp8_linear_weight,
+    check_and_mark_quantized_module,
+    convert_module_to_hp_if_necessary,
+    is_quantized_input_module,
+)
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -134,19 +141,6 @@ def convert_dtype_torch2str_hf(dtype):
         raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
-
-
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if is_fp8_model(model):
-        return True
-    for n, m in model.named_modules():
-        if is_fp8_linear(m):
-            m.is_fp8_linear = True
-            if not hasattr(model, "is_fp8"):
-                model.is_fp8 = True
-    if hasattr(model, "is_fp8"):
-        return True
-    return False
 
 
 def check_diffusers_installed():  # pragma: no cover
@@ -334,7 +328,7 @@ def llm_load_model(
             )
 
     model = model.eval()
-    check_and_mark_fp8_model(model)
+    check_and_mark_quantized_module(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
@@ -484,7 +478,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
-    check_and_mark_fp8_model(model)
+    check_and_mark_quantized_module(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -617,26 +611,6 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
     )
 
 
-def is_fp8_model(model: torch.nn.Module) -> bool:
-    if not hasattr(model, "is_fp8"):
-        return False
-    else:
-        return model.is_fp8
-
-
-def is_fp8_linear(module: torch.nn.Module) -> bool:
-    if hasattr(module, "is_fp8_linear"):
-        return module.is_fp8_linear
-    if not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear"):
-        return False
-    if module.weight is None:
-        return False
-    if str(module.weight.dtype).startswith("torch.float8"):
-        return True
-    else:
-        return False
-
-
 def get_block_names(model, quant_vision=False):
     """Get the block names for transformers-like networks.
 
@@ -722,7 +696,14 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         return any(name.lower() in type(module).__name__.lower() for name in name_list)
 
     if module_match_name_list(
-        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+        module,
+        [
+            "Qwen2MoeSparseMoeBlock",
+            "Qwen3MoeSparseMoeBlock",
+            "DeepseekMoE",
+            "DeepseekV2MoE",
+            "DeepseekV3MoE",
+        ],
     ):
         return ["gate_proj", "down_proj", "up_proj"]
     elif module_match_name_list(module, ["MixtralMoeSparseMoeBlock"]):
@@ -840,7 +821,7 @@ def get_layer_names_in_block(
         class_names = []
     for n, m in model.named_modules():
         if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
-            m.bk_tmp_name = n
+            m.bk_global_name = n
     layers_in_block = []
     if bool(quant_block_list):
         all_blocks = quant_block_list
@@ -850,9 +831,9 @@ def get_layer_names_in_block(
         for block_name in block_names:
             block = get_module(model, block_name)
             for n, m in block.named_modules():
-                if hasattr(m, "bk_tmp_name"):
-                    layers_in_block.append(m.bk_tmp_name)
-                    delattr(m, "bk_tmp_name")
+                if hasattr(m, "bk_global_name"):
+                    layers_in_block.append(m.bk_global_name)
+                    delattr(m, "bk_global_name")
     return layers_in_block
 
 
@@ -864,81 +845,6 @@ def set_nested_attr(module, attr_name: str, value):
             return None  # No need to set act_max for fp layers
         module = getattr(module, attr)
     setattr(module, attrs[-1], value)
-
-
-def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
-    """Pads a matrix to make its dimensions multiples of block_size."""
-    M, N = weight.shape[-2:]
-    block_size_m, block_size_n = block_size
-    pad_M = (block_size_m - M % block_size_m) % block_size_m
-    pad_N = (block_size_n - N % block_size_n) % block_size_n
-
-    if pad_M == 0 and pad_N == 0:
-        return weight, M, N  # No padding needed
-    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
-    return padded_weight, M, N  # Return original dimensions for unpadding
-
-
-def _unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
-    """Removes padding from the matrix to restore its original shape."""
-    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
-        return weight
-    if keep_first_dim:
-        return weight[:, :original_M, :original_N]
-    else:
-        return weight[:original_M, :original_N]
-
-
-def pad_block_fp8_weight_naive(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
-) -> tuple[torch.Tensor, int, int]:
-    assert len(block_size) == 2
-
-    block_size_m, block_size_n = block_size
-    weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
-
-    weight, orig_M, orig_N = _pad_weight(weight, block_size)
-    M, N = weight.shape[-2:]
-
-    assert weight_scale_m == M // block_size_m
-    assert weight_scale_n == N // block_size_n
-
-    return weight, orig_M, orig_N
-
-
-def dequant_block_fp8_weight(weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list) -> torch.Tensor:
-    dtype = torch.bfloat16
-    if weight_scale is None:
-        return weight
-    assert len(block_size) == 2
-
-    weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
-
-    weight_shape_len = len(weight.shape)
-
-    block_size_m, block_size_n = block_size
-
-    # mul scale
-    if weight_shape_len == 2:
-        weight_scale_m, weight_scale_n = weight_scale.shape
-        weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
-        weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
-        keep_first_dim = False
-    elif weight_shape_len == 3:
-        fd, weight_scale_m, weight_scale_n = weight_scale.shape
-        weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
-        weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
-        keep_first_dim = True
-    else:
-        raise ValueError("Only support original weight shape is either 2 or 3")
-
-    dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
-
-    return dequant_weight
 
 
 def check_to_quantized(config):
@@ -996,46 +902,6 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
             f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). "
             "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length."
         )
-
-
-def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """ """
-    from auto_round.schemes import QuantizationScheme
-
-    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias is not None:
-        new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-    scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("tmp_name", "scale_dtype")
-    for key in keys:
-        setattr(new_layer, key, getattr(layer, key, None))
-
-    layer = layer.to(device)
-    if layer.__class__.__name__ == "CompressedLinear":
-        dq_weight = layer.compressor.decompress_module(layer)
-    else:
-        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size)
-    new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
-    return new_layer
-
-
-def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16, device: str = "cpu"):
-    """
-    Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
-    This is useful for compatibility with other frameworks or for further processing.
-    """
-    from auto_round.utils.device import clear_memory
-
-    cnt = 0
-    for n, m in model.named_modules():
-        if m.__class__.__name__ == "FP8Linear":
-            new_module = convert_fp8_layer_to_linear(m, dtype=dtype, device=device)
-            set_module(model, n, new_module)
-            cnt += 1
-            if cnt % 10 == 0:  # Tricky setting
-                clear_memory()
-    return model
 
 
 def _to_model_dtype(model, model_dtype):
@@ -1223,13 +1089,21 @@ def mv_module_from_gpu(module):
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
-    if hasattr(model, "config"):
+    if hasattr(model, "config") and hasattr(model.config, "to_dict"):
         for key in model.config.to_dict().keys():
             if "moe" in key or "expert" in key:
                 return True
     for n, m in model.named_modules():
         if "expert" in n:
             return True
+    return False
+
+
+def is_moe_model_via_config(config) -> bool:
+    if hasattr(config, "to_dict"):
+        for key in config.to_dict().keys():
+            if "moe" in key or "expert" in key:
+                return True
     return False
 
 
@@ -1371,7 +1245,16 @@ def copy_python_files_from_model_cache(model, save_path: str):
         import shutil
 
         from huggingface_hub import hf_hub_download
-        from transformers import TRANSFORMERS_CACHE
+
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            from transformers import TRANSFORMERS_CACHE
+
+            cache_dir = TRANSFORMERS_CACHE
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME", None)
         from transformers.utils import http_user_agent
 
         cache_path = config._name_or_path
@@ -1380,7 +1263,7 @@ def copy_python_files_from_model_cache(model, save_path: str):
             config_file_path = hf_hub_download(
                 repo_id=cache_path,
                 filename="config.json",
-                cache_dir=TRANSFORMERS_CACHE,
+                cache_dir=cache_dir,
                 force_download=False,
                 user_agent=user_agent,
             )
@@ -1457,6 +1340,30 @@ def is_separate_lm_head(model: torch.nn.Module) -> bool:
 
         f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
         if lm_head_name in f.keys():
+            return True
+        else:
+            return False
+
+
+def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
+    dir_path = model.name_or_path
+    if not os.path.isdir(dir_path):
+        dir_path = download_hf_model(dir_path)
+    if not tensor_name.endswith(".weight"):
+        tensor_name += ".weight"
+
+    if "model.safetensors.index.json" in os.listdir(dir_path):
+        with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
+            index_mapping = json.load(f)
+            if tensor_name in index_mapping["weight_map"]:
+                return True
+            else:
+                return False
+    else:
+        from safetensors import safe_open
+
+        f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
+        if tensor_name in f.keys():
             return True
         else:
             return False

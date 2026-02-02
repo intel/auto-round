@@ -45,8 +45,8 @@ def register_dataset(name):
             names = name
         else:
             names = [name]
-        for tmp_name in names:
-            CALIB_DATASETS[tmp_name] = dataset
+        for global_name in names:
+            CALIB_DATASETS[global_name] = dataset
         return dataset
 
     return register
@@ -146,9 +146,9 @@ def get_pile_dataset(
         # Check for proxy or SSL error
         if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
             logger.error(
-                "Network error detected, please checking proxy settings."
-                "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`"
-                " and set '--dataset swift/pile-val-backup' in AutoRound API."
+                f"Network error detected, please check proxy settings. "
+                f"Error: {error_message}. Or consider using a backup dataset by `pip install modelscope` "
+                f"and set '--dataset swift/pile-val-backup' in AutoRound API."
             )
         else:
             logger.error(f"Failed to load the dataset: {error_message}")
@@ -456,8 +456,15 @@ def get_new_chinese_title_dataset(
 
 
 @register_dataset("mbpp")
+@register_dataset("google-research-datasets/mbpp")
 def get_mbpp_dataset(
-    tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, apply_chat_template=False, system_prompt=None
+    tokenizer,
+    seqlen,
+    dataset_name="google-research-datasets/mbpp",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -473,6 +480,8 @@ def get_mbpp_dataset(
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
     from datasets import load_dataset
+
+    dataset_name = "google-research-datasets/mbpp"
 
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt

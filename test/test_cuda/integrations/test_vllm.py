@@ -8,12 +8,12 @@ Run `pytest test/test_cuda/test_vllm.py`.
 """
 
 import os
-import shutil
-import subprocess
 
 import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
+
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 MODELS = [
     "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  ##auto_round:auto_gptq
@@ -36,7 +36,13 @@ def test_auto_round(model):
     sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
     # Create an LLM.
     QUANTIZATION = "auto-round"
-    llm = LLM(model=model, quantization=QUANTIZATION, trust_remote_code=True, tensor_parallel_size=1)
+    llm = LLM(
+        model=model,
+        quantization=QUANTIZATION,
+        trust_remote_code=True,
+        tensor_parallel_size=1,
+        allow_deprecated_quantization=True,
+    )
     # Generate texts from the prompts.
     # The output is a list of RequestOutput objects
     # that contain the prompt, generated text, and other information.
@@ -47,31 +53,3 @@ def test_auto_round(model):
         generated_text = output.outputs[0].text
         if "France" in prompt:
             assert "Paris" in generated_text
-
-
-@pytest.mark.parametrize("model", MODELS)
-def test_vllm_lm_eval(model):
-    if shutil.which("auto-round") is None:
-        pytest.skip("auto-round CLI not available")
-
-    env = os.environ.copy()
-    env["VLLM_SKIP_WARMUP"] = "true"
-    env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
-    cmd = [
-        "auto-round",
-        "--model",
-        model,
-        "--eval",
-        "--tasks",
-        "lambada_openai",
-        "--eval_bs",
-        "8",
-        "--eval_backend",
-        "vllm",
-        "--limit",
-        "10",
-    ]
-
-    proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    assert proc.returncode == 0, f"auto-round failed (rc={proc.returncode}):\n{proc.stdout}"

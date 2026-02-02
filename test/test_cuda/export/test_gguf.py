@@ -5,17 +5,23 @@ import sys
 import pytest
 import torch
 import transformers
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_gguf
 
-from ...helpers import get_model_path, get_tiny_model, save_tiny_model
+from ...helpers import get_model_path, get_tiny_model, save_tiny_model, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="GGUF format saving and loading failed in transformers v5, \
+        https://github.com/huggingface/transformers/issues/43482",
+)
 class TestAutoRound:
     save_dir = "./saved"
 
@@ -59,7 +65,7 @@ class TestAutoRound:
 
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
-            f"PYTHONPATH='AUTO_ROUND_PATH:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
@@ -175,6 +181,7 @@ class TestAutoRound:
             nsamples=32,
             iters=0,
             disable_opt_rtn=True,
+            quant_nontext_module=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")

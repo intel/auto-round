@@ -1,17 +1,18 @@
 import shutil
 
 import pytest
+from packaging import version
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path
+from ...helpers import get_model_path, transformers_version
 
 gpt_oss_name_or_path = get_model_path("unsloth/gpt-oss-20b-BF16")
 llama4_name_or_path = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
-
+qwen3_vl_moe_name_or_path = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
 # local path for debug
 # llama4_name_or_path = get_model_path("/dataset/Llama-4-Scout-17B-16E-Instruct")
 
@@ -34,8 +35,13 @@ def setup_llama4():
     model_name = llama4_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+
+    # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
+    config.pad_token_id = None
+
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
+    # config.vision_config.rope_theta = config.vision_config.rope_parameters["rope_theta"] # for transformers >= 5.0
     model = Llama4ForConditionalGeneration(config)
     output_dir = "./tmp/test_quantized_llama4"
     return model, tokenizer, output_dir, config
@@ -44,7 +50,7 @@ def setup_llama4():
 @pytest.fixture
 def setup_qwen3_vl_moe():
     """Fixture to set up the qwen3_vl_moe model and tokenizer."""
-    model_name = "/tf_dataset/auto_round/models/Qwen/Qwen3-VL-30B-A3B-Instruct"
+    model_name = qwen3_vl_moe_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
     config.vision_config.num_hidden_layers = 1
@@ -97,7 +103,7 @@ def test_gptoss(setup_gpt_oss, scheme):
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
-    from auto_round.modelling.gpt_oss import GPTOssSingleExpert
+    from auto_round.modeling.fused_moe.gpt_oss import GPTOssSingleExpert
 
     single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
     quant_linear_cnt = count_modules_by_type(quantized_model, QuantLinear)

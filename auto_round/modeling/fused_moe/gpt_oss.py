@@ -14,22 +14,22 @@
 
 
 import torch
+import transformers
+from packaging import version
 from torch import nn
-from transformers.modeling_utils import no_init_weights as skip_weights_initialize
+
+transformers_version = version.parse(transformers.__version__)
+if transformers_version < version.parse("5.0.0"):
+    from transformers.modeling_utils import no_init_weights
+else:
+    from transformers.initialization import no_init_weights
+
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
-
-
-def _update_parameter(
-    module: torch.nn.Module,
-    name: str,
-    data: torch.Tensor,
-) -> None:
-    param = getattr(module, name)
-    param.data.copy_(data)
+from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.utils import clear_memory, unsupported_meta_device
 
 
 class GPTOssSingleExpert(nn.Module):
@@ -60,7 +60,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
     """
 
     def __init__(self, original: GptOssMLP, config: GptOssConfig):
-        super().__init__()
+        super().__init__(original)
         hidden_size = config.hidden_size
         intermediate_size = config.intermediate_size
         dtype_str = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
@@ -79,10 +79,12 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         # Build per-expert MLPs
         self.experts = nn.ModuleList()
         target_device = next(original.experts.parameters()).device
-        with skip_weights_initialize(), torch.device(target_device):
+        with no_init_weights(), torch.device("meta"):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 
+    def _materialize_weights(self) -> None:
+        original = self._get_original_module()
         if not unsupported_meta_device(original):
             for i, mlp in enumerate(self.experts):
                 _update_parameter(mlp.gate_proj, "weight", original.experts.gate_up_proj[i, :, ::2].T)
@@ -92,6 +94,8 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
                 _update_parameter(mlp.gate_proj, "bias", original.experts.gate_up_proj_bias[i, ::2])
                 _update_parameter(mlp.up_proj, "bias", original.experts.gate_up_proj_bias[i, 1::2])
                 _update_parameter(mlp.down_proj, "bias", original.experts.down_proj_bias[i])  # [H]
+            original.experts.to_empty(device="meta")  # release original experts parameters
+            clear_memory()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, T, H = hidden_states.shape
