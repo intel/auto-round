@@ -515,7 +515,7 @@ For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which re
 <summary>Customized device map</summary>
 If device_map=auto does not correctly map the model, we also support mapping different layers within a block to 
 different devices by setting the `device_map` argument in the AutoRound API. For reference, we provide an example of 
-quantifying the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
+quantizing the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
 
 ```python
 import torch
