@@ -16,7 +16,7 @@
   + [硬件兼容性](#硬件兼容性)
   + [环境参数配置](#环境参数配置)
   + [命令行使用方法](#命令行用法)
-  + [API使用方法](#api使用方法)
+  + [API 使用方法](#API-使用方法)
     - [AutoRound API 基础用法](#AutoRound-API-基础用法)
     - [混合精度量化方案](#混合精度量化)
     - [AutoRoundBest 配置方案](#AutoRoundBest-高精度配置用法)
@@ -24,7 +24,7 @@
     - [超参方案推荐](#超参方案推荐)
   + [AutoScheme 自动混合精度量化方案](#AutoScheme-自动混合精度量化方案)
     - [命令行用法](#命令行用法-1)
-    - [API 用法](#API-用法)
+    - [API-用法](#API-用法)
     - [AutoScheme 中的超参数](#AutoScheme-超参数说明)
   + [OPT RTN 模式](#OPT-RTN-模式)
   + [GGUF 格式](#GGUF-格式量化)
@@ -188,7 +188,7 @@ AutoRound 支持多种量化配置：
   auto-round-light --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
   ```
 
-### API使用方法
+### API 使用方法
 #### AutoRound API 基础用法
 该方案兼顾精度和训练耗时，**绝大多数场景下使用，2bit 等量化损失很大的场景尽量不要使用**。
 
