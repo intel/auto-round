@@ -318,11 +318,6 @@ def llm_load_model(
     device: str = "cpu",
     **kwargs,
 ):
-    from auto_round.utils.device import (
-        _use_hpu_compile_mode,
-        get_device_and_parallelism,
-        override_cuda_device_capability,
-    )
 
     assert platform.lower() in [
         "hf",
@@ -337,6 +332,11 @@ def llm_load_model(
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+    from auto_round.utils.device import (
+        _use_hpu_compile_mode,
+        get_device_and_parallelism,
+        override_cuda_device_capability,
+    )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
