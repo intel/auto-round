@@ -489,7 +489,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的标定阶段，二是参数量极大（如显存占用超 100GB）的模型。
 
 #### lm_head 量化中开启多 GPU 标定
-量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 RTN 模式。
+量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 Pure RTN 模式。
 
 <a id="llm-head-multi-gpu"></a>
 #### 手动配置设备映射
@@ -558,8 +558,8 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 - 将 `enable_torch_compile` 设为 True（开启 PyTorch 编译加速，不损失精度）
 - 开启 `low_gpu_mem_usage`（低显存模式，**增加训练耗时**）
 - 设置 `--bs 1 --gradient_accumulate_steps 8`（批次1+梯度累积8步，**增加训练耗时**）
-- 将 `bs` 降至 4（**可能会有轻微的损失精度**）
-- 将 `seqlen` 降至 512（**可能会有损失精度**）
+- 将 `bs` 降至 4（**可能会有轻微的精度损失**）
+- 将 `seqlen` 降至 512（**可能会有精度损失**）
 
 #### 降低 CPU 内存占用
 - 开启 `low_cpu_mem_usage`（实验性功能）：仅支持**导出指定一种格式**。每个 block 量化封装完成后会立即保存，从而降低峰值内存占用。
