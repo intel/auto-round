@@ -159,6 +159,3 @@ class TestAutoRound:
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
         assert len(device_list) == 1 and "cpu" in device_list
-
-
-
