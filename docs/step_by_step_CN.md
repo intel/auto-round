@@ -5,16 +5,16 @@
 
 本文档介绍了如何用 auto-round 量化大语言模型（LLM）。如需量化视觉大语言模型（VLM），请参阅[视觉大语言模型用户指南](../auto_round/compressors/mllm/README.md)；如需量化扩散模型，请参阅[扩散模型用户指南](../auto_round/compressors/diffusion/README.md)。
 
-* [1 前提条件](#1-前提条件)
+* [1 安装必要库](#1-安装必要库)
 * [2 准备标定数据集](#2-准备标定数据集)
   + [默认数据集](#默认数据集)
   + [自定义数据集](#自定义数据集)
   + [数据集操作](#数据集操作)
-* [3 量化操作](#3-量化操作)
+* [3 模型量化](#3-模型量化)
   + [可选量化配置](#可选量化配置)
   + [支持的导出格式](#支持的导出格式)
   + [硬件兼容性](#硬件兼容性)
-  + [环境配置](#环境配置)
+  + [环境参数配置](#环境参数配置)
   + [命令行使用方法](#命令行用法)
   + [API使用方法](#api使用方法)
     - [AutoRound API 基础用法](#AutoRound-API-基础用法)
@@ -30,7 +30,7 @@
   + [GGUF 格式](#GGUF-格式量化)
   + [量化成本](#量化成本)
   + [设备/多 GPU 量化设置](#设备及多-GPU-量化设置)
-    - [lm_head 量化中开启多 GPU 校准](#lm_head-量化中开启多-GPU-校准)
+    - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-GPU-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
 * [4 推理部署](#4-推理部署)
@@ -46,9 +46,9 @@
   + [注意事项](#注意事项)
 * [6 已知问题](#6-已知问题)
 
-## 1 前提条件
+## 1 安装必要库
 
-pip 安装 AutoRound 库（或从源码编译安装）
+请执行下面的指令安装auto-round库（或从源码编译安装）
 
 ```bash
 pip install auto-round
@@ -57,8 +57,9 @@ pip install auto-round
 ## 2 准备标定数据集
 
 ### 默认数据集
+**对于中国大陆用户推荐使用ModelCope中的swift/pile-val-backup以解决Huggiingface不能方位的问题**
 
-默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会自动从 Dataset Hub 下载。同时也支持使用以下数据集：
+默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会自动从 Huggingface Hub 下载。同时也支持使用以下数据集：
 - ModelScope 中的 `swift/pile-val-backup`：用于解决 HF 访问问题
 - `BAAI/CCI3-HQ`：用于中文场景
 - `codeparrot/github-code-clean`：用于代码场景
@@ -68,10 +69,10 @@ pip install auto-round
 - `openbmb/Ultra-FineWeb`
 
 ### 自定义数据集
-
+**建议用户还是尽量不使用padding的数据**。虽然对于padding过的数据我们有做特殊处理，但是目前验证的比较少。
 可通过以下方式指定：
 - 用法一：向 `dataset` 参数传入本地 JSON 文件路径
-- 用法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集名称和拆分参数初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
+- 用法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集数初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
 - 用法三：向 `dataset` 参数传入字符串列表或者 input_ids 列表
 
     ~~~python
@@ -104,7 +105,7 @@ pip install auto-round
 数据集之间请用英文逗号`,`分隔；单个数据集的参数请用英文冒号`:`分隔；同一参数的多个取值请用英文加号`+`连接。
 
 
-## 3 量化操作
+## 3 模型量化
 
 ### 可选量化配置
 
@@ -114,7 +115,7 @@ AutoRound 支持多种量化配置：
 - **W3A16**（bits:3, group_size:128, sym:True, act_bits:16）  
 - **W2A16**（bits:2, group_size:128, sym:True, act_bits:16）  
 - **GGUF:Q4_K_M**（支持 llamacpp 提供的所有 Q*_K、Q*_0、Q*_1 量化类型）
-- **仅权重混合位宽量化**
+- **混合bit**: （实验性功能）请使用AutoScheme接口或者使用API中的layer_config参数自己自定义
 - **NVFP4**（实验性功能）推荐导出为`llm_compressor`格式，参数：data_type=nvfp4, act_data_type=nvfp4, static_global_scale, group_size=16
 - **MXFP4**（研究性功能，暂无实际内核）：标准 MXFP4 量化，参数：data_type=mxfp, act_data_type=mxfp, bits=4, act_bits=4, group_size=32
 - **MXFP4_RCEIL**（研究性功能，暂无实际内核）：NVIDIA变体，参数：data_type=mxfp, act_data_type=mxfp_rceil, bits=4, act_bits=4, group_size=32
@@ -137,7 +138,7 @@ AutoRound 支持多种量化配置：
 
 **AutoAWQ 格式**：适用于 CUDA 设备的 4 位非对称量化，在社区中也广泛应用。**仅支持 4-bit 量化**。需设置 `--format auto_awq`。
 
-**LLM-Compressor 格式**：**支持 NVFP4、MXFP4（内核开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
+**LLM-Compressor 格式**：**支持 NVFP4、MXFP4（kernel开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
 
 #### 格式与方案支持对照表
 
@@ -163,7 +164,7 @@ AutoRound 支持多种量化配置：
 ### 命令行用法
 
 
-- **AutoRound 基础方案**：
+- **AutoRound 默认超参**：
   
   该方案很好地兼顾了精度和训练耗时，**推荐在绝大多数场景下使用**。
 
@@ -171,15 +172,15 @@ AutoRound 支持多种量化配置：
   auto-round --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
   ```
 
-- **AutoRoundBest 高精度方案**：
+- **AutoRoundBest 高精度超参**：
   
-  绝大多数场景下，该方案能实现最好的模型精度，缺点是训练耗时是基础方案的 4~5 倍；**特别适合 2-bit 量化**，若算力充足，可作为首选。
+  绝大多数场景下，该方案能实现最好的模型精度，缺点是训练耗时是基础方案的 4~5 倍；**特别适合 2-bit 量化**，若算力充足，可作为首选。跟默认参数的区别是调整了样本数量，从128提高了512.另外迭代次数从200次提高了1000.
   
   ```bash
   auto-round-best --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
   ```
 
-- **AutoRoundLight 高速方案**：
+- **AutoRoundLight 轻量级超参**：
   
   该方案训练速度最快（比基础方案快 2~3 倍），但小模型和 2-bit 量化下可能导致模型精度显著下降。所以**推荐在 4-bit 量化或参数量大于 3B 的模型的场景下使用**。
   
@@ -189,7 +190,7 @@ AutoRound 支持多种量化配置：
 
 ### API使用方法
 #### AutoRound API 基础用法
-该方案兼顾精度和训练耗时，**推荐在绝大多数场景下使用**。
+该方案兼顾精度和训练耗时，**绝大多数场景下使用，2bit等量化损失很大的场景尽量不要使用**。
 
 ```python
 from auto_round import AutoRound
@@ -209,7 +210,7 @@ ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 #### 混合精度量化
 自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme)章节。
 
-Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果不熟悉具体细节，建议**使用 AutoRound 原生格式**。
+Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果您不熟悉具体细节，**建议导出 AutoRound格式**。
 
 由于 vLLM 和 SGLang 框架会对 MoE 层、QKV 层进行融合以加速推理，所以**不建议给这些层设置不同的 bit **。
 
@@ -264,7 +265,7 @@ output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
 
-#### 配置方案推荐
+#### 超参方案推荐
 综上所述，**4-bits（W4A16）推荐使用基础方案（auto-round），2-bits（W2A16）推荐使用高精度方案（auto-round-best）**；你也可根据实际需求和算力，灵活调整相关的配置。
 
 <details>
@@ -303,13 +304,13 @@ W2G64 在 13 个任务上的平均精度与耗时
 
 </details>
 
-### AutoScheme 自动量化方案
+### AutoScheme 自动混合精度量化方案
 AutoScheme 采用自动化算法，可生成 **自适应的混合精度与数据类型** 的量化方案（mixed bits/data type quantization recipes）。相关测试结果请参考[《AutoScheme精度报告》](./auto_scheme_acc.md)。
 
 **注意**：混合数据类型方案在训练阶段可用，但当前版本还不支持导出至实际模型。
 
 #### 命令行用法
-训练时建议设置 `iters=200`
+如需启动训练建议设置 `iters=200`
 ~~~bash
 auto_round \
   --model_name  $model_name \
@@ -407,7 +408,7 @@ ar.quantize_and_save()
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
-### OPT RTN 优化舍入模式
+## OPT-RTN模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
 对于 GGUF 格式，我们参考 llamacpp 的思路，优化了 RTN 算法。若需使用原始（非优化）RTN 算法，开启 `--disable_opt_rtn` 即可。
@@ -442,6 +443,7 @@ ar.quantize_and_save(output_dir, format="gguf:q4_k_m")  # gguf:q*_k_s、gguf:q*_
 ```
 
 ### 量化成本
+该数据有点过时，目前量化显存会比下面表格报告的要少点。
 测试基于 Nvidia A100 80G、PyTorch 2.6.0.dev20241029+cu124。注意评测未计入数据加载和打包耗时。**建议在 PyTorch 2.6 及以上版本中开启 torch.compile 以加速**。
 
 若要降低 GPU 显存占用，除开启`low_gpu_mem_usage`外，还可以设置`gradient_accumulate_steps=8`和`batch_size=1`，但这会增加训练耗时。
@@ -458,7 +460,7 @@ ar.quantize_and_save(output_dir, format="gguf:q4_k_m")  # gguf:q*_k_s、gguf:q*_
 
 
 
-### 设备及多 GPU 量化设置
+### 设备及多卡量化设置
 **AutoRound API 的 `device_map` 参数可指定训练设备（注意不是用 Transformers.from_pretrained 中的 `device_map` 参数）**。
 
 AutoRound 采用 block（分块）逐块训练的方式处理模型，尽管单个 block 的规模远小于完整模型，但在训练过程中仍需要占用大量 GPU 显存（通常约为 block 大小的 10 倍）。在处理超大模型时，这可能会导致显存不足（OOM）错误。
@@ -484,10 +486,10 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 ~~~
 
 
-通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的校准阶段，二是参数量极大（如显存占用超 100GB）的模型。
+通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的标定阶段，二是参数量极大（如显存占用超 100GB）的模型。
 
-#### lm_head 量化中开启多 GPU 校准
-量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的校准，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 RTN 模式。
+#### lm_head 量化中开启多 GPU 标定
+量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 RTN 模式。
 
 <a id="llm-head-multi-gpu"></a>
 #### 手动配置设备映射
@@ -595,7 +597,7 @@ model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-text = "有一个喜欢冒险的女孩，"
+text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
@@ -609,7 +611,7 @@ model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="xpu", torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-text = "有一个喜欢冒险的女孩，"
+text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
@@ -623,7 +625,7 @@ model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-text = "有一个喜欢冒险的女孩，"
+text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
@@ -640,7 +642,7 @@ model_name = "Intel/Qwen2-7B-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(model_name).to("hpu").to(torch.bfloat16)
 
-text = "有一个喜欢冒险的女孩，"
+text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
@@ -665,7 +667,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-text = "有一个喜欢冒险的女孩，"
+text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
@@ -684,7 +686,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | torch                   | xpu/cpu/cuda   | 2、3、4、8     | BF16/FP16    | 0      | gptq/gptq_zp+-1 | auto-round                     |
 
 ### 将 GPTQ 或 AWQ 模型转换为 AutoRound 格式
-为了提升兼容性（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型经过序列化处理，其量化配置可能会发生变更。
+为了提升兼容性（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型再次存储，其量化配置可能会发生变更， 由gptq/awq量化变化成auto-round量化。
 
 转换并推理的示例：
 ```python
@@ -697,7 +699,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-text = "有一个喜欢冒险的女孩，"
+text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
