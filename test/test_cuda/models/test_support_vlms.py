@@ -177,6 +177,7 @@ class TestSupportVLMS:
         print(response)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @require_package_version_ut("transformers", "<4.54.0")
     def test_glm(self):
         model_path = "/models/glm-4v-9b/"
         ## test tune
