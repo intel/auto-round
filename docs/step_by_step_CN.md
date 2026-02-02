@@ -21,15 +21,15 @@
     - [混合精度量化方案](#混合精度量化)
     - [AutoRoundBest 配置方案](#AutoRoundBest-高精度配置用法)
     - [AutoRoundLight 配置方案](#AutoRoundLight-高速度配置用法)
-    - [配置方案推荐](#配置方案推荐)
-  + [AutoScheme 自动方案](#AutoScheme-自动量化方案)
+    - [超参方案推荐](#超参方案推荐)
+  + [AutoScheme 自动混合精度量化方案](#AutoScheme-自动混合精度量化方案)
     - [命令行用法](#命令行用法-1)
     - [API 用法](#API-用法)
     - [AutoScheme 中的超参数](#AutoScheme-超参数说明)
-  + [OPT RTN 模式](#OPT-RTN-优化舍入模式)
+  + [OPT RTN 模式](#OPT-RTN-模式)
   + [GGUF 格式](#GGUF-格式量化)
   + [量化成本](#量化成本)
-  + [设备/多 GPU 量化设置](#设备及多-GPU-量化设置)
+  + [设备及多卡量化设置](#设备及多卡量化设置)
     - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-GPU-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
@@ -39,7 +39,7 @@
   + [CUDA](#CUDA)
   + [HPU](#HPU)
   + [指定推理后端](#指定推理后端)
-  + [将 GPTQ/AWQ 模型转换为 AutoRound 格式](#将-GPT-或-AWQ-模型转换为autoround格式)
+  + [将 GPTQ/AWQ 模型转换为 AutoRound 格式](#将-GPTQ-或-AWQ-模型转换为-AutoRound-格式)
 * [5 效果评估](#5-效果评估)
   + [单卡评估](#单-GPU-评估)
   + [多卡评估](#多-GPU-评估)
@@ -48,7 +48,7 @@
 
 ## 1 安装必要库
 
-请执行下面的指令安装auto-round库（或从源码编译安装）
+请执行下面的指令安装 auto-round 库（或从源码编译安装）
 
 ```bash
 pip install auto-round
@@ -57,7 +57,7 @@ pip install auto-round
 ## 2 准备标定数据集
 
 ### 默认数据集
-**对于中国大陆用户推荐使用ModelCope中的swift/pile-val-backup以解决Huggiingface不能方位的问题**
+**对于中国大陆用户推荐使用 ModelScope 中的 swift/pile-val-backup 以解决 Huggingface 不能访问的问题**
 
 默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会自动从 Huggingface Hub 下载。同时也支持使用以下数据集：
 - ModelScope 中的 `swift/pile-val-backup`：用于解决 HF 访问问题
@@ -69,10 +69,10 @@ pip install auto-round
 - `openbmb/Ultra-FineWeb`
 
 ### 自定义数据集
-**建议用户还是尽量不使用padding的数据**。虽然对于padding过的数据我们有做特殊处理，但是目前验证的比较少。
+**建议用户还是尽量不使用 padding 的数据**。虽然对于 padding 过的数据我们有做特殊处理，但是目前验证的比较少。
 可通过以下方式指定：
 - 用法一：向 `dataset` 参数传入本地 JSON 文件路径
-- 用法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集数初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
+- 用法二：参照[示例代码](../auto_round/calib_dataset.py)注册数据集，然后使用新的数据集初始化 AutoRound 对象。示例： `autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)`
 - 用法三：向 `dataset` 参数传入字符串列表或者 input_ids 列表
 
     ~~~python
@@ -115,7 +115,7 @@ AutoRound 支持多种量化配置：
 - **W3A16**（bits:3, group_size:128, sym:True, act_bits:16）  
 - **W2A16**（bits:2, group_size:128, sym:True, act_bits:16）  
 - **GGUF:Q4_K_M**（支持 llamacpp 提供的所有 Q*_K、Q*_0、Q*_1 量化类型）
-- **混合bit**: （实验性功能）请使用AutoScheme接口或者使用API中的layer_config参数自己自定义
+- **混合bit**: （实验性功能）请使用 AutoScheme 接口或者使用 API 中的 `layer_config` 参数自己自定义
 - **NVFP4**（实验性功能）推荐导出为`llm_compressor`格式，参数：data_type=nvfp4, act_data_type=nvfp4, static_global_scale, group_size=16
 - **MXFP4**（研究性功能，暂无实际内核）：标准 MXFP4 量化，参数：data_type=mxfp, act_data_type=mxfp, bits=4, act_bits=4, group_size=32
 - **MXFP4_RCEIL**（研究性功能，暂无实际内核）：NVIDIA变体，参数：data_type=mxfp, act_data_type=mxfp_rceil, bits=4, act_bits=4, group_size=32
@@ -138,7 +138,7 @@ AutoRound 支持多种量化配置：
 
 **AutoAWQ 格式**：适用于 CUDA 设备的 4 位非对称量化，在社区中也广泛应用。**仅支持 4-bit 量化**。需设置 `--format auto_awq`。
 
-**LLM-Compressor 格式**：**支持 NVFP4、MXFP4（kernel开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
+**LLM-Compressor 格式**：**支持 NVFP4、MXFP4（kernel 开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
 
 #### 格式与方案支持对照表
 
@@ -157,7 +157,7 @@ AutoRound 支持多种量化配置：
 
 量化和推理均支持 CPU、英特尔 GPU、HPU 和 CUDA。
 
-### 环境配置
+### 环境参数配置
 
 为优化运行性能，量化前建议配置 AutoRound 的环境变量。关于日志级别、ModelScope 集成、工作区设置等可用的环境变量等更多细节，可参考[环境变量指南](./environments.md)。
 
@@ -190,7 +190,7 @@ AutoRound 支持多种量化配置：
 
 ### API使用方法
 #### AutoRound API 基础用法
-该方案兼顾精度和训练耗时，**绝大多数场景下使用，2bit等量化损失很大的场景尽量不要使用**。
+该方案兼顾精度和训练耗时，**绝大多数场景下使用，2bit 等量化损失很大的场景尽量不要使用**。
 
 ```python
 from auto_round import AutoRound
@@ -210,7 +210,7 @@ ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 #### 混合精度量化
 自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme)章节。
 
-Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果您不熟悉具体细节，**建议导出 AutoRound格式**。
+Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果您不熟悉具体细节，**建议导出 AutoRound 格式**。
 
 由于 vLLM 和 SGLang 框架会对 MoE 层、QKV 层进行融合以加速推理，所以**不建议给这些层设置不同的 bit **。
 
@@ -408,7 +408,7 @@ ar.quantize_and_save()
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
-## OPT-RTN模式
+## OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
 对于 GGUF 格式，我们参考 llamacpp 的思路，优化了 RTN 算法。若需使用原始（非优化）RTN 算法，开启 `--disable_opt_rtn` 即可。
@@ -686,7 +686,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | torch                   | xpu/cpu/cuda   | 2、3、4、8     | BF16/FP16    | 0      | gptq/gptq_zp+-1 | auto-round                     |
 
 ### 将 GPTQ 或 AWQ 模型转换为 AutoRound 格式
-为了提升兼容性（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型再次存储，其量化配置可能会发生变更， 由gptq/awq量化变化成auto-round量化。
+为了提升兼容性（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型再次存储，其量化配置可能会发生变更， 由 gptq/awq 量化变化成 auto-round 量化。
 
 转换并推理的示例：
 ```python
