@@ -750,7 +750,9 @@ class BaseCompressor(object):
 
         # Extract attributes from the chosen default_scheme
         if isinstance(default_scheme, str):
-            final_attrs = self._override_scheme_with_user_specify(default_scheme, user_scheme_overrides, return_str=False)
+            final_attrs = self._override_scheme_with_user_specify(
+                default_scheme, user_scheme_overrides, return_str=False
+            )
         else:
             final_attrs = asdict(default_scheme)
 
