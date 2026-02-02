@@ -1532,7 +1532,7 @@ class BaseCompressor(object):
         if tensor is None:
             return 0.0
         if isinstance(tensor, torch.Tensor):
-            return tensor.numel() * tensor.element_size() / (1024 ** 3)
+            return tensor.numel() * tensor.element_size() / (1024**3)
         elif isinstance(tensor, list):
             return sum(self._estimate_tensor_size_gb(t) for t in tensor)
         elif isinstance(tensor, dict):
@@ -1551,7 +1551,7 @@ class BaseCompressor(object):
         total = 0.0
         for param in self.model.parameters():
             if param.numel() > 0:  # Skip empty tensors
-                total += param.numel() * param.element_size() / (1024 ** 3)
+                total += param.numel() * param.element_size() / (1024**3)
         return total
 
     def _estimate_block_size_gb(self, block: torch.nn.Module) -> float:
@@ -1559,7 +1559,7 @@ class BaseCompressor(object):
         total = 0.0
         for param in block.parameters():
             if param.numel() > 0:
-                total += param.numel() * param.element_size() / (1024 ** 3)
+                total += param.numel() * param.element_size() / (1024**3)
         return total
 
     def _init_cpu_offload_dir(self) -> Optional[str]:
@@ -1701,7 +1701,9 @@ class BaseCompressor(object):
                     if hasattr(target, param_name):
                         old_param = getattr(target, param_name)
                         if isinstance(old_param, torch.nn.Parameter):
-                            setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
+                            setattr(
+                                target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad)
+                            )
                         else:
                             setattr(target, param_name, param)
             except Exception as e:
@@ -3057,7 +3059,11 @@ class BaseCompressor(object):
                 )
 
                 # Log output cache size for first block
-                if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks and not hasattr(self, "_logged_output_size"):
+                if (
+                    self.low_cpu_mem_usage
+                    and self.cpu_stream_offload_blocks
+                    and not hasattr(self, "_logged_output_size")
+                ):
                     output_size = self._estimate_tensor_size_gb(output)
                     logger.info(f"[Memory] block output cache size: {output_size:.2f} GB")
                     self._logged_output_size = True
@@ -3363,7 +3369,9 @@ class BaseCompressor(object):
         if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
             input_ids_size = self._estimate_tensor_size_gb(input_ids)
             input_others_size = self._estimate_tensor_size_gb(input_others)
-            logger.info(f"[Memory] input_ids size: {input_ids_size:.2f} GB, input_others size: {input_others_size:.2f} GB")
+            logger.info(
+                f"[Memory] input_ids size: {input_ids_size:.2f} GB, input_others size: {input_others_size:.2f} GB"
+            )
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
