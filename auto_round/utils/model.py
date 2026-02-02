@@ -1571,9 +1571,7 @@ def _is_unfused_experts_module(module: torch.nn.Module) -> bool:
     """Check if the module is an unfused experts module (has ModuleList gate_up_proj/down_proj)."""
     if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
         return False
-    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(
-        module.down_proj, torch.nn.ModuleList
-    )
+    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(module.down_proj, torch.nn.ModuleList)
 
 
 def _is_fused_experts_module(module: torch.nn.Module) -> bool:

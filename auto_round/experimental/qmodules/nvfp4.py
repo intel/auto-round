@@ -167,7 +167,7 @@ class NVFP4QuantLinear(QModuleBase):
 
     @property
     def weight(self) -> torch.Tensor:
-        if not hasattr(self, '_cached_weight') or self._cached_weight is None:
+        if not hasattr(self, "_cached_weight") or self._cached_weight is None:
             self._cached_weight = self.dequant_weight_online()
         return self._cached_weight
 
