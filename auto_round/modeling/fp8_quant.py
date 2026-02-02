@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
+
 from auto_round.utils import is_transformers_version_greater_or_equal_5
 from auto_round.utils import logger as auto_round_logger
 
@@ -35,7 +37,6 @@ def oot_replace_with_fp8_linear(
         pre_quantized (`bool`, defaults to `False`):
             Whether the model is pre-quantized or not
     """
-    import torch
     from transformers.integrations.finegrained_fp8 import (
         FP8Linear,
         logger,
@@ -81,7 +82,7 @@ def oot_replace_with_fp8_linear(
 
 
 def apply_fp8_expert_replacement_patch():
-    if is_transformers_version_greater_or_equal_5():
+    if is_transformers_version_greater_or_equal_5() and torch.cuda.is_available():
         import transformers.integrations.finegrained_fp8 as transformers_fp8
 
         transformers_fp8.replace_with_fp8_linear = oot_replace_with_fp8_linear
