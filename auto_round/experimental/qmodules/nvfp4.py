@@ -71,6 +71,7 @@ class NVFP4QuantLinear(QModuleBase):
         self.config = config
         self.dtype = dtype
         self.pre_dequantized = False
+        self._cached_weight = None
 
         # Validate dtype
         assert (
