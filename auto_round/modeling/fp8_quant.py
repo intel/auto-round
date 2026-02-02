@@ -13,9 +13,13 @@
 # limitations under the License.
 
 import torch
+from transformers.quantizers.quantizer_finegrained_fp8 import (
+    FineGrainedFP8HfQuantizer as OriginalFineGrainedFP8HfQuantizer,
+)
 
 from auto_round.utils import is_transformers_version_greater_or_equal_5
 from auto_round.utils import logger as auto_round_logger
+from auto_round.utils.device import override_cuda_device_capability
 
 
 # Patching replace_with_fp8_linear to disable expert replacement
@@ -81,12 +85,21 @@ def oot_replace_with_fp8_linear(
     return model
 
 
+_orig_validate_environment = OriginalFineGrainedFP8HfQuantizer.validate_environment
+
+
+@override_cuda_device_capability()
+def oot_validate_environment(self, *args, **kwargs):
+    return _orig_validate_environment(self, *args, **kwargs)
+
+
 def apply_fp8_expert_replacement_patch():
     if is_transformers_version_greater_or_equal_5() and torch.cuda.is_available():
         import transformers.integrations.finegrained_fp8 as transformers_fp8
 
         transformers_fp8.replace_with_fp8_linear = oot_replace_with_fp8_linear
         auto_round_logger.debug("Applied FP8 expert replacement patch to transformers.")
+        OriginalFineGrainedFP8HfQuantizer.validate_environment = oot_validate_environment
 
 
 apply_fp8_expert_replacement_patch()

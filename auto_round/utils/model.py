@@ -31,11 +31,6 @@ from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils.device import (
-    _use_hpu_compile_mode,
-    get_device_and_parallelism,
-    override_cuda_device_capability,
-)
 
 # ============================================================================
 # FP8 Dequantization Registry
@@ -323,6 +318,12 @@ def llm_load_model(
     device: str = "cpu",
     **kwargs,
 ):
+    from auto_round.utils.device import (
+        _use_hpu_compile_mode,
+        get_device_and_parallelism,
+        override_cuda_device_capability,
+    )
+
     assert platform.lower() in [
         "hf",
         "model_scope",
