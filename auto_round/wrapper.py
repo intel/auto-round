@@ -385,8 +385,6 @@ class WrapperLinear(torch.nn.Module):
             if not self.orig_layer.act_dynamic:
                 act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).to(self.device)
                 act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-                if act_max is not None and act_max.dim() == 0:
-                    act_max = act_max.unsqueeze(0)
                 if act_max is not None:
                     tmp_shape = 1
                     if self.orig_layer.act_group_size > 1:

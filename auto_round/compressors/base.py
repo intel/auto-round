@@ -2472,9 +2472,8 @@ class BaseCompressor(object):
             else:
                 act_max = act_max.to(module.act_max.device)
                 if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    module.act_max = torch.max(
-                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
-                    )
+                    max_val = torch.max(act_max.max(), module.act_max.max())
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
                 else:
                     module.act_max = torch.max(act_max, module.act_max)
 
