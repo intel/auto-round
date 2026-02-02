@@ -16,6 +16,8 @@ from auto_round.utils import is_transformers_version_greater_or_equal_5
 from auto_round.utils import logger as auto_round_logger
 
 
+# Patching replace_with_fp8_linear to disable expert replacement
+# https://github.com/huggingface/transformers/blob/78bb85146c59258a0710c8d08311d98d52303c38/src/transformers/integrations/finegrained_fp8.py#L720
 def oot_replace_with_fp8_linear(
     model, modules_to_not_convert: list[str] | None = None, quantization_config=None, pre_quantized=False
 ):
