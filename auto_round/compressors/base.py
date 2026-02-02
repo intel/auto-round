@@ -257,7 +257,12 @@ class BaseCompressor(object):
 
         # 1. Pre-extract user-specified overrides from kwargs
         # This ensures we know exactly what the user wants to "force"
-        self.user_scheme_overrides = {k: kwargs.pop(k) for k in scheme_fields if k in kwargs and kwargs[k] is not None}
+        self.user_scheme_overrides = {}
+        for k in scheme_fields:
+            if k in kwargs:
+                value = kwargs.pop(k)
+                if value is not None:
+                    self.user_scheme_overrides[k] = value
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -747,7 +752,7 @@ class BaseCompressor(object):
 
         # Extract attributes from the chosen default_scheme
         if isinstance(default_scheme, str):
-            final_attrs = self._override_scheme_with_user_specify(scheme, user_scheme_overrides, return_str=False)
+            final_attrs = self._override_scheme_with_user_specify(default_scheme, user_scheme_overrides, return_str=False)
         else:
             final_attrs = asdict(default_scheme)
 
