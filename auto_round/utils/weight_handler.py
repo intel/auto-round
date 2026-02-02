@@ -26,7 +26,7 @@ Table of Contents:
 
     2. PUBLIC API
        - detect_weight_type(): Detect weight type of a layer or model
-       - check_and_mark_quantized_model(): Check and mark quantized layers
+       - check_and_mark_quantized_module(): Check and mark quantized layers
        - is_quantized_input_module(): Check if model has quantized weights
        - convert_module_to_hp_if_necessary(): Main conversion function
 
@@ -39,10 +39,10 @@ Table of Contents:
 Quick Start Guide:
     Usage - Detect and Convert:
         >>> from auto_round.utils.weight_handler import (
-        ...     check_and_mark_quantized_model,
+        ...     check_and_mark_quantized_module,
         ...     convert_module_to_hp_if_necessary,
         ... )
-        >>> check_and_mark_quantized_model(model)
+        >>> check_and_mark_quantized_module(model)
         >>> model = convert_module_to_hp_if_necessary(model)
 
     Adding a New Weight Type Handler:
@@ -206,12 +206,12 @@ def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
 
 
 # --- Model Marking Functions ---
-def check_and_mark_quantized_model(model: torch.nn.Module) -> Set[ModuleWeightType]:
+def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightType]:
     """Check if model contains quantized layers and mark them accordingly.
 
-    This function scans the model for quantized layers using handlers' detect_layer method
-    (which checks actual characteristics). It marks detected layers with `quantized_weight_type`.
-    The model itself is not marked; use detect_weight_type to check the model.
+    This function scans the model (including the model itself) for quantized layers using
+    handlers' detect_layer method (which checks actual characteristics). It marks detected
+    layers with `quantized_weight_type`.
 
     Args:
         model: The model to check and mark.
@@ -221,6 +221,12 @@ def check_and_mark_quantized_model(model: torch.nn.Module) -> Set[ModuleWeightTy
     """
     detected_types: Set[ModuleWeightType] = set()
     for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
+        # Check model itself first
+        if handler.detect_layer(model):
+            model.quantized_weight_type = weight_type
+            detected_types.add(weight_type)
+
+        # Then check all submodules
         for n, m in model.named_modules():
             # Use handler to detect based on actual characteristics
             if handler.detect_layer(m):
@@ -236,7 +242,7 @@ def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightTy
     """Check if a model has quantized input weights and return the weight type.
 
     This traverses all submodules to check for the `quantized_weight_type` attribute
-    set by `check_and_mark_quantized_model`.
+    set by `check_and_mark_quantized_module`.
 
     Args:
         model: The model to check.
@@ -303,7 +309,95 @@ def convert_module_to_hp_if_necessary(
 
 
 # ============================================================================
-# Section 3: HANDLER IMPLEMENTATIONS
+# Section 3: FP8 BLOCK DEQUANTIZATION HELPERS
+# ============================================================================
+
+
+def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
+    """Pads a matrix to make its dimensions multiples of block_size."""
+    M, N = weight.shape[-2:]
+    block_size_m, block_size_n = block_size
+    pad_M = (block_size_m - M % block_size_m) % block_size_m
+    pad_N = (block_size_n - N % block_size_n) % block_size_n
+
+    if pad_M == 0 and pad_N == 0:
+        return weight, M, N  # No padding needed
+    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
+    return padded_weight, M, N  # Return original dimensions for unpadding
+
+
+def _unpad_weight(
+    weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False
+) -> torch.Tensor:
+    """Removes padding from the matrix to restore its original shape."""
+    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
+        return weight
+    if keep_first_dim:
+        return weight[:, :original_M, :original_N]
+    else:
+        return weight[:original_M, :original_N]
+
+
+def _pad_block_fp8_weight_naive(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
+) -> tuple[torch.Tensor, int, int]:
+    assert len(block_size) == 2
+
+    block_size_m, block_size_n = block_size
+    weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
+
+    weight, orig_M, orig_N = _pad_weight(weight, block_size)
+    M, N = weight.shape[-2:]
+
+    assert weight_scale_m == M // block_size_m
+    assert weight_scale_n == N // block_size_n
+
+    return weight, orig_M, orig_N
+
+
+def dequant_block_fp8_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+) -> torch.Tensor:
+    """Core dequantization logic for block-wise FP8 weights."""
+    dtype = torch.bfloat16
+    if weight_scale is None:
+        return weight
+    assert len(block_size) == 2
+
+    # If weight is stored as uint8, view it as float8_e4m3fn
+    if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
+        weight = weight.view(torch.float8_e4m3fn)
+
+    weight, orig_M, orig_N = _pad_block_fp8_weight_naive(weight, weight_scale, block_size)
+
+    weight_shape_len = len(weight.shape)
+    block_size_m, block_size_n = block_size
+
+    # mul scale
+    if weight_shape_len == 2:
+        weight_scale_m, weight_scale_n = weight_scale.shape
+        weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
+        weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
+        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+        keep_first_dim = False
+    elif weight_shape_len == 3:
+        fd, weight_scale_m, weight_scale_n = weight_scale.shape
+        weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
+        weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
+        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+        keep_first_dim = True
+    else:
+        raise ValueError("Only support original weight shape is either 2 or 3")
+
+    dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
+
+    return dequant_weight
+
+
+# ============================================================================
+# Section 4: HANDLER IMPLEMENTATIONS
 # ============================================================================
 
 
@@ -446,15 +540,14 @@ def _dequant_fp8_linear(
     Returns:
         Dequantized weight tensor.
     """
-    from auto_round.utils.model import dequant_block_fp8_weight
-
     layer = layer.to(device)
     weight_scale = getattr(layer, "weight_scale", None)
     if weight_scale is None:
         weight_scale = getattr(layer, "weight_scale_inv", None)
     if weight_scale is None:
         raise AttributeError(
-            "FP8Linear layer is missing both 'weight_scale' and 'weight_scale_inv' attributes required for dequantization."
+            "FP8Linear layer is missing both 'weight_scale' and 'weight_scale_inv' "
+            "attributes required for dequantization."
         )
     data_type = getattr(layer, "data_type", None)
     return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)

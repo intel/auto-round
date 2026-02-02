@@ -31,7 +31,7 @@ from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils.weight_handler import (
-    check_and_mark_quantized_model,
+    check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
     is_quantized_input_module,
 )
@@ -329,7 +329,7 @@ def llm_load_model(
             )
 
     model = model.eval()
-    check_and_mark_quantized_model(model)
+    check_and_mark_quantized_module(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
@@ -479,7 +479,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
-    check_and_mark_quantized_model(model)
+    check_and_mark_quantized_module(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor

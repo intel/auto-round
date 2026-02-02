@@ -73,7 +73,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    check_and_mark_quantized_model,
+    check_and_mark_quantized_module,
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
@@ -293,7 +293,7 @@ class BaseCompressor(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
-        check_and_mark_quantized_model(model)
+        check_and_mark_quantized_module(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
