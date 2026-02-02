@@ -1866,9 +1866,6 @@ class BaseCompressor(object):
             # Determine if immediate packing is required
             self._adjust_immediate_packing_and_saving()
 
-        if self.low_cpu_mem_usage:
-            self._offloaded_blocks = {}
-
         if self.iters == 0:
             return self._quantize_rtn()
 
