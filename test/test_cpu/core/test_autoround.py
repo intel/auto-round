@@ -663,7 +663,11 @@ class TestAutoRound:
         """Test Gaudi2-specific dequantization redirection logic in convert_module_to_hp_if_necessary."""
         from unittest.mock import MagicMock, patch
 
-        from auto_round.utils.model import convert_module_to_hp_if_necessary, _dequant_fp8_linear_weight, check_and_mark_quantized_module
+        from auto_round.utils.model import (
+            _dequant_fp8_linear_weight,
+            check_and_mark_quantized_module,
+            convert_module_to_hp_if_necessary,
+        )
 
         # Test 1: Verify Standard e4m3fn native dequantization result
         weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)

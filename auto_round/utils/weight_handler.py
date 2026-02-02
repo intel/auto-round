@@ -70,7 +70,6 @@ import torch
 from auto_round import envs
 from auto_round.logger import logger
 
-
 # ============================================================================
 # Section 0: UTILITY HELPERS
 # ============================================================================
@@ -139,6 +138,7 @@ class with_thread_limits(ContextDecorator):
         else:
             os.environ["AR_OMP_NUM_THREADS"] = self.old_omp
         torch.set_num_threads(self.old_torch)
+
 
 # ============================================================================
 # Section 1: CORE FRAMEWORK - Types, Base Classes, and Registry
@@ -385,6 +385,7 @@ def convert_module_to_hp_if_necessary(
 # ============================================================================
 # Section 3: FP8 BLOCK DEQUANTIZATION HELPERS
 # ============================================================================
+
 
 def _pad_block_fp8_weight_naive(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
