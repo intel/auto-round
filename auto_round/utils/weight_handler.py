@@ -57,14 +57,88 @@ Quick Start Guide:
                 def convert_layer(self, layer, dtype, device, to_cpu): ...
 """
 
+import os
 from abc import ABC, abstractmethod
+from contextlib import ContextDecorator
 from dataclasses import fields
 from enum import Enum, auto
 from typing import Callable, Dict, Optional, Set, Type
 
+import psutil
 import torch
 
+from auto_round import envs
 from auto_round.logger import logger
+
+
+# ============================================================================
+# Section 0: UTILITY HELPERS
+# ============================================================================
+
+
+def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
+    """Pads a matrix to make its dimensions multiples of block_size."""
+    M, N = weight.shape[-2:]
+    block_size_m, block_size_n = block_size
+    pad_M = (block_size_m - M % block_size_m) % block_size_m
+    pad_N = (block_size_n - N % block_size_n) % block_size_n
+
+    if pad_M == 0 and pad_N == 0:
+        return weight, M, N  # No padding needed
+    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
+    return padded_weight, M, N  # Return original dimensions for unpadding
+
+
+def _unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
+    """Removes padding from the matrix to restore its original shape."""
+    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
+        return weight
+    if keep_first_dim:
+        return weight[:, :original_M, :original_N]
+    else:
+        return weight[:original_M, :original_N]
+
+
+class with_thread_limits(ContextDecorator):
+    """
+    Context manager and decorator to temporarily set AR_OMP_NUM_THREADS and PyTorch threads.
+    Inspired by vLLM's thread limit decorator.
+    https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
+    """
+
+    def __init__(self, div=1):
+        self.div = div
+        self.old_omp = None
+        self.old_torch = None
+
+    def __enter__(self):
+        # Save original settings
+        self.old_omp = envs.AR_OMP_NUM_THREADS
+        self.old_torch = torch.get_num_threads()
+
+        try:
+            if psutil is not None:
+                num_cores = len(psutil.Process().cpu_affinity() or [])
+                if num_cores == 0:
+                    num_cores = os.cpu_count() or 1
+            else:
+                num_cores = os.cpu_count() or 1
+
+            # Set new limits
+            new_threads = max(1, num_cores // self.div)
+            os.environ["AR_OMP_NUM_THREADS"] = str(new_threads)
+            torch.set_num_threads(new_threads)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore original settings
+        if self.old_omp is None:
+            os.environ.pop("AR_OMP_NUM_THREADS", None)
+        else:
+            os.environ["AR_OMP_NUM_THREADS"] = self.old_omp
+        torch.set_num_threads(self.old_torch)
 
 # ============================================================================
 # Section 1: CORE FRAMEWORK - Types, Base Classes, and Registry
@@ -312,32 +386,6 @@ def convert_module_to_hp_if_necessary(
 # Section 3: FP8 BLOCK DEQUANTIZATION HELPERS
 # ============================================================================
 
-
-def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
-    """Pads a matrix to make its dimensions multiples of block_size."""
-    M, N = weight.shape[-2:]
-    block_size_m, block_size_n = block_size
-    pad_M = (block_size_m - M % block_size_m) % block_size_m
-    pad_N = (block_size_n - N % block_size_n) % block_size_n
-
-    if pad_M == 0 and pad_N == 0:
-        return weight, M, N  # No padding needed
-    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
-    return padded_weight, M, N  # Return original dimensions for unpadding
-
-
-def _unpad_weight(
-    weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False
-) -> torch.Tensor:
-    """Removes padding from the matrix to restore its original shape."""
-    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
-        return weight
-    if keep_first_dim:
-        return weight[:, :original_M, :original_N]
-    else:
-        return weight[:original_M, :original_N]
-
-
 def _pad_block_fp8_weight_naive(
     weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
 ) -> tuple[torch.Tensor, int, int]:
@@ -355,18 +403,28 @@ def _pad_block_fp8_weight_naive(
     return weight, orig_M, orig_N
 
 
-def dequant_block_fp8_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
+@with_thread_limits()
+def _dequant_fp8_linear_weight(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list = None, data_type: str = None
 ) -> torch.Tensor:
     """Core dequantization logic for block-wise FP8 weights."""
     dtype = torch.bfloat16
     if weight_scale is None:
         return weight
-    assert len(block_size) == 2
 
     # If weight is stored as uint8, view it as float8_e4m3fn
     if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
         weight = weight.view(torch.float8_e4m3fn)
+
+    if block_size is None:
+        if weight_scale.numel() > 1 and weight_scale.shape != weight.shape:
+            if weight_scale.numel() == weight.shape[0]:
+                weight_scale = weight_scale.view(-1, 1)
+            elif weight_scale.numel() == weight.shape[-1]:
+                weight_scale = weight_scale.view(1, -1)
+        return weight.to(dtype) * weight_scale.to(dtype)
+
+    assert len(block_size) == 2
 
     weight, orig_M, orig_N = _pad_block_fp8_weight_naive(weight, weight_scale, block_size)
 
@@ -542,6 +600,8 @@ def _dequant_fp8_linear(
     """
     layer = layer.to(device)
     weight_scale = getattr(layer, "weight_scale", None)
+    block_size = getattr(layer, "block_size", None)
+    data_type = getattr(layer, "data_type", None)
     if weight_scale is None:
         weight_scale = getattr(layer, "weight_scale_inv", None)
     if weight_scale is None:
@@ -549,8 +609,7 @@ def _dequant_fp8_linear(
             "FP8Linear layer is missing both 'weight_scale' and 'weight_scale_inv' "
             "attributes required for dequantization."
         )
-    data_type = getattr(layer, "data_type", None)
-    return dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
+    return _dequant_fp8_linear_weight(layer.weight, weight_scale, block_size, data_type=data_type)
 
 
 # ----------------------------------------------------------------------------

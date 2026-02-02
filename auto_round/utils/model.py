@@ -16,15 +16,13 @@ import json
 import os
 import re
 from collections import UserDict
-from contextlib import ContextDecorator, contextmanager
-from dataclasses import asdict, fields
-from functools import wraps
 from pathlib import Path
 from typing import Union
 
 import psutil
 import torch
 import transformers
+from packaging import version
 
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
@@ -34,6 +32,7 @@ from auto_round.utils.weight_handler import (
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
     is_quantized_input_module,
+    _dequant_fp8_linear_weight,
 )
 
 
@@ -848,130 +847,6 @@ def set_nested_attr(module, attr_name: str, value):
     setattr(module, attrs[-1], value)
 
 
-def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
-    """Pads a matrix to make its dimensions multiples of block_size."""
-    M, N = weight.shape[-2:]
-    block_size_m, block_size_n = block_size
-    pad_M = (block_size_m - M % block_size_m) % block_size_m
-    pad_N = (block_size_n - N % block_size_n) % block_size_n
-
-    if pad_M == 0 and pad_N == 0:
-        return weight, M, N  # No padding needed
-    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
-    return padded_weight, M, N  # Return original dimensions for unpadding
-
-
-def _unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
-    """Removes padding from the matrix to restore its original shape."""
-    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
-        return weight
-    if keep_first_dim:
-        return weight[:, :original_M, :original_N]
-    else:
-        return weight[:original_M, :original_N]
-
-
-def pad_block_fp8_weight_naive(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
-) -> tuple[torch.Tensor, int, int]:
-    assert len(block_size) == 2
-
-    block_size_m, block_size_n = block_size
-    weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
-
-    weight, orig_M, orig_N = _pad_weight(weight, block_size)
-    M, N = weight.shape[-2:]
-
-    assert weight_scale_m == M // block_size_m
-    assert weight_scale_n == N // block_size_n
-
-    return weight, orig_M, orig_N
-
-
-class with_thread_limits(ContextDecorator):
-    """
-    Context manager and decorator to temporarily set AR_OMP_NUM_THREADS and PyTorch threads.
-    Inspired by vLLM's thread limit decorator.
-    https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
-    """
-
-    def __init__(self, div=1):
-        self.div = div
-        self.old_omp = None
-        self.old_torch = None
-
-    def __enter__(self):
-        # Save original settings
-        self.old_omp = envs.AR_OMP_NUM_THREADS
-        self.old_torch = torch.get_num_threads()
-
-        try:
-            if psutil is not None:
-                num_cores = len(psutil.Process().cpu_affinity() or [])
-                if num_cores == 0:
-                    num_cores = os.cpu_count() or 1
-            else:
-                num_cores = os.cpu_count() or 1
-
-            # Set new limits
-            new_threads = max(1, num_cores // self.div)
-            os.environ["AR_OMP_NUM_THREADS"] = str(new_threads)
-            torch.set_num_threads(new_threads)
-        except Exception:
-            pass
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # Restore original settings
-        if self.old_omp is None:
-            os.environ.pop("AR_OMP_NUM_THREADS", None)
-        else:
-            os.environ["AR_OMP_NUM_THREADS"] = self.old_omp
-        torch.set_num_threads(self.old_torch)
-
-
-@with_thread_limits()
-def dequant_block_fp8_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
-) -> torch.Tensor:
-    """Core dequantization logic for block-wise FP8 weights."""
-    dtype = torch.bfloat16
-    if weight_scale is None:
-        return weight
-    assert len(block_size) == 2
-
-    # If weight is stored as uint8, view it as float8_e4m3fn
-    if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
-        weight = weight.view(torch.float8_e4m3fn)
-
-    weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
-
-    weight_shape_len = len(weight.shape)
-    block_size_m, block_size_n = block_size
-
-    # mul scale
-    if weight_shape_len == 2:
-        weight_scale_m, weight_scale_n = weight_scale.shape
-        weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
-        weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
-        keep_first_dim = False
-    elif weight_shape_len == 3:
-        fd, weight_scale_m, weight_scale_n = weight_scale.shape
-        weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
-        weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
-        keep_first_dim = True
-    else:
-        raise ValueError("Only support original weight shape is either 2 or 3")
-
-    dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
-
-    return dequant_weight
-
-
 def check_to_quantized(config):
     """Checks if the configuration is valid for quantization.
 
@@ -1339,7 +1214,16 @@ def copy_python_files_from_model_cache(model, save_path: str):
         import shutil
 
         from huggingface_hub import hf_hub_download
-        from transformers import TRANSFORMERS_CACHE
+
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            from transformers import TRANSFORMERS_CACHE
+
+            cache_dir = TRANSFORMERS_CACHE
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME", None)
         from transformers.utils import http_user_agent
 
         cache_path = config._name_or_path
@@ -1348,7 +1232,7 @@ def copy_python_files_from_model_cache(model, save_path: str):
             config_file_path = hf_hub_download(
                 repo_id=cache_path,
                 filename="config.json",
-                cache_dir=TRANSFORMERS_CACHE,
+                cache_dir=cache_dir,
                 force_download=False,
                 user_agent=user_agent,
             )
