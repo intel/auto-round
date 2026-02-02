@@ -638,27 +638,27 @@ class TestAutoRound:
             autoround.quantize()
 
     def test_dequant_fp8_weight(self):
-        from auto_round.utils import dequant_block_fp8_weight
+        from auto_round.utils.model import _dequant_fp8_linear_weight
 
         # test high precision weight (should skip LUT and not crash)
         weight = torch.randn(587, 7168)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
         # test low precision weight (should use LUT)
         weight = torch.randint(0, 255, (587, 7168), dtype=torch.uint8)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
         # test experts are stacked.
         weight = torch.randint(0, 255, [32, 5760, 1440], dtype=torch.uint8)
         weight_scale = torch.randn([32, 5760, 90])
         block_size = [1, 16]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert len(dequant_weight.shape) == 3
         assert dequant_weight.shape[0] == 32
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
@@ -667,14 +667,14 @@ class TestAutoRound:
         """Test Gaudi2-specific dequantization redirection logic in convert_fp8_layer_to_linear."""
         from unittest.mock import MagicMock, patch
 
-        from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
+        from auto_round.utils.model import _dequant_fp8_linear_weight, convert_fp8_layer_to_linear
 
         # Test 1: Verify Standard e4m3fn native dequantization result
         weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)
         weight_scale = torch.ones(1, 1, dtype=torch.bfloat16)
         block_size = [1, 2]
 
-        dq_weight = dequant_block_fp8_weight(weight_uint8, weight_scale, block_size)
+        dq_weight = _dequant_fp8_linear_weight(weight_uint8, weight_scale, block_size)
         assert dq_weight.dtype == torch.bfloat16
         assert abs(dq_weight[0, 0].item() - 448.0) < 1e-3
 
