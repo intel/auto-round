@@ -33,7 +33,7 @@ from auto_round.wrapper import WrapperWALayer
 
 
 def construct_ct_scheme(layer):
-    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme # pylint: disable=E0401
+    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme  # pylint: disable=E0401
 
     weights_args = QuantizationArgs(
         num_bits=layer.bits,
@@ -60,9 +60,9 @@ def construct_ct_scheme(layer):
 
 
 def pack_layer(name, model, device=None):
-    from compressed_tensors.compressors import IntQuantizationCompressor # pylint: disable=E0401
-    from compressed_tensors.quantization import QuantizationStatus # pylint: disable=E0401
-    from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter # pylint: disable=E0401
+    from compressed_tensors.compressors import IntQuantizationCompressor  # pylint: disable=E0401
+    from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
+    from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter  # pylint: disable=E0401
 
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
@@ -137,7 +137,7 @@ def save_quantized_as_llmcompressor(
     Returns:
         torch.nn.Module: The quantized model that was saved.
     """
-    from compressed_tensors.quantization import QuantizationConfig # pylint: disable=E0401
+    from compressed_tensors.quantization import QuantizationConfig  # pylint: disable=E0401
 
     safe_serialization = kwargs.get("safe_serialization", True)
     processor = kwargs.get("processor", None)
