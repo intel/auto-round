@@ -95,17 +95,20 @@ def oot_validate_environment(self, *args, **kwargs):
 
 def apply_fp8_expert_replacement_patch():
     if is_transformers_version_greater_or_equal_5() and torch.cuda.is_available():
-        import transformers.integrations.finegrained_fp8 as transformers_fp8
+        try:
+            import transformers.integrations.finegrained_fp8 as transformers_fp8
 
-        transformers_fp8.replace_with_fp8_linear = oot_replace_with_fp8_linear
-        auto_round_logger.debug("Applied FP8 expert replacement patch to transformers.")
-        OriginalFineGrainedFP8HfQuantizer.validate_environment = oot_validate_environment
-        auto_round_logger.debug(
-            (
-                "Patched FineGrainedFP8HfQuantizer.validate_environment to bypass device "
-                "capability check for loading FP8 models on unsupported GPUs."
+            transformers_fp8.replace_with_fp8_linear = oot_replace_with_fp8_linear
+            auto_round_logger.debug("Applied FP8 expert replacement patch to transformers.")
+            OriginalFineGrainedFP8HfQuantizer.validate_environment = oot_validate_environment
+            auto_round_logger.debug(
+                (
+                    "Patched FineGrainedFP8HfQuantizer.validate_environment to bypass device "
+                    "capability check for loading FP8 models on unsupported GPUs."
+                )
             )
-        )
+        except ImportError as e:
+            auto_round_logger.warning(f"Could not apply FP8 expert replacement patch as {e}.")
 
 
 apply_fp8_expert_replacement_patch()
