@@ -456,7 +456,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
     device=["xpu"],
-    sym=[True],
+    sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
     bits=[4, 8],
     group_size=None,
@@ -486,7 +486,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
     device=["xpu"],
-    sym=[True],
+    sym=[True, False],
     packing_format=GPTQ_FORMAT,
     bits=[4, 8],
     group_size=None,
@@ -500,23 +500,8 @@ BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
 )
 
 BackendInfos["auto_round_kernel_awq"] = BackendInfo(
-    device=["cpu"],
+    device=["cpu", "xpu"],
     sym=[True, False],
-    packing_format=AWQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=6,
-    checkers=[ark_feature_checker],
-    alias=["ark"],
-    compute_dtype=["float32", "float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
-)
-
-BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
-    device=["xpu"],
-    sym=[True],
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=None,
