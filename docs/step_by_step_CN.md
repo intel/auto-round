@@ -24,7 +24,7 @@
     - [超参方案推荐](#超参方案推荐)
   + [AutoScheme 自动混合精度量化方案](#AutoScheme-自动混合精度量化方案)
     - [命令行用法](#命令行用法-1)
-    - [API-用法](#API-用法)
+    - [API 用法](#API-用法)
     - [AutoScheme 中的超参数](#AutoScheme-超参数说明)
   + [OPT RTN 模式](#OPT-RTN-模式)
   + [GGUF 格式](#GGUF-格式量化)
