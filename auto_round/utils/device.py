@@ -15,7 +15,7 @@ import functools
 import gc
 import os
 import re
-from contextlib import contextmanager
+from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
@@ -315,17 +315,28 @@ def set_cuda_visible_devices(device):
             os.environ["CUDA_VISIBLE_DEVICES"] = device
 
 
-def set_fake_cuda_device_capability(func=None):
-    if func is not None:
-        torch.cuda.get_device_capability = func
-        return func
+class override_cuda_device_capability(ContextDecorator):
+    """Context manager/decorator to temporarily override CUDA capability checks."""
 
-    def fake_cuda():
-        return 100, 1
+    def __init__(self, major: int = 100, minor: int = 1) -> None:
+        self.major = major
+        self.minor = minor
+        self._orig_func = None
 
-    orig_func = torch.cuda.get_device_capability
-    torch.cuda.get_device_capability = fake_cuda
-    return orig_func
+    def __enter__(self):
+        self._orig_func = torch.cuda.get_device_capability
+
+        def _override_capability(*_args, **_kwargs):
+            return self.major, self.minor
+
+        torch.cuda.get_device_capability = _override_capability
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        if self._orig_func is not None:
+            torch.cuda.get_device_capability = self._orig_func
+            self._orig_func = None
+        return False
 
 
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
