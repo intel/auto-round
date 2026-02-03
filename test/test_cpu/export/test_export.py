@@ -418,21 +418,13 @@ class TestAutoRound:
 
         autoround = AutoRound(
             model=self.model_name,
-            bits=8,
-            data_type="int",
-            group_size=-1,
-            sym=True,
-            act_bits=8,
-            act_data_type="int",
-            act_sym=True,
-            act_dynamic=True,
-            act_group_size=0,
+            scheme="INT8_W8A8",
         )
         format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
         assert format_list[0].output_format == "llm_compressor"
-        assert format_list[0].get_backend_name() == "llm_compressor:int"
+        assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list[1].output_format == "auto_round"
-        assert format_list[1].get_backend_name() == "auto_round:llm_compressor:int"
+        assert format_list[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
 
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
         from auto_round.formats import get_formats
@@ -477,15 +469,7 @@ class TestAutoRound:
             iters=0,
             nsamples=2,
             seqlen=2,
-            bits=8,
-            data_type="int",
-            group_size=-1,
-            sym=True,
-            act_bits=8,
-            act_data_type="int",
-            act_sym=True,
-            act_dynamic=True,
-            act_group_size=-1,
+            scheme="INT8_W8A8",
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
