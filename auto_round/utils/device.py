@@ -358,7 +358,6 @@ class override_cuda_device_capability(ContextDecorator):
             self._orig_func = None
         return False
 
-
 class fake_cuda_for_hpu(ContextDecorator):
     """Context manager/decorator to fake CUDA availability for HPU devices."""
 
@@ -423,8 +422,6 @@ class fake_triton_for_hpu(ContextDecorator):
                 del sys.modules["triton.language"]
         return False
 
-
-def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
     """
     Selects the packing device.
     - "auto": choose best available (CUDA > XPU > CPU).
