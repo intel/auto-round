@@ -14,7 +14,10 @@
 
 import copy
 import os
+import re
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 from collections import defaultdict
@@ -77,6 +80,7 @@ from auto_round.utils import (
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
+    clear_module_weights,
     compile_func,
     convert_dtype_str2torch,
     convert_module_to_hp_if_necessary,
@@ -95,8 +99,10 @@ from auto_round.utils import (
     is_moe_model,
     is_quantized_input_module,
     llm_load_model,
+    load_module_weights,
     memory_monitor,
     mv_module_from_gpu,
+    save_module_weights,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -345,6 +351,10 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.cpu_stream_offload_blocks = kwargs.pop("cpu_stream_offload_blocks", False)
+        self.cpu_stream_loss = kwargs.pop("cpu_stream_loss", False)
+        self._cpu_offload_tempdir = None
+        self._offloaded_blocks = {}
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -917,7 +927,6 @@ class BaseCompressor(object):
             output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs
         )
         memory_monitor.log_summary()
-
         return model, folders
 
     def _get_save_folder_name(self, format: OutputFormat) -> str:
@@ -1499,6 +1508,8 @@ class BaseCompressor(object):
                 if not self.is_immediate_saving:
                     # some modules may have been flushed and set to meta, so we could not  move to gpu
                     mv_module_from_gpu(block)
+                if self.low_cpu_mem_usage:
+                    self._offload_block_weights(block_name, block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1516,6 +1527,194 @@ class BaseCompressor(object):
             # clear_memory(device_list=self.device_list)
         # if self.is_immediate_saving:
         #     shard_writer(self, is_finalize=True)
+
+    def _estimate_tensor_size_gb(self, tensor) -> float:
+        """Estimate the size of a tensor in GB."""
+        if tensor is None:
+            return 0.0
+        if isinstance(tensor, torch.Tensor):
+            return tensor.numel() * tensor.element_size() / (1024 ** 3)
+        elif isinstance(tensor, list):
+            return sum(self._estimate_tensor_size_gb(t) for t in tensor)
+        elif isinstance(tensor, dict):
+            return sum(self._estimate_tensor_size_gb(v) for v in tensor.values())
+        return 0.0
+
+    def _estimate_inputs_size_gb(self, all_inputs: dict) -> float:
+        """Estimate the total size of calibration inputs in GB."""
+        total = 0.0
+        for name, inputs in all_inputs.items():
+            total += self._estimate_tensor_size_gb(inputs)
+        return total
+
+    def _estimate_model_size_gb(self) -> float:
+        """Estimate the model weights size in GB."""
+        total = 0.0
+        for param in self.model.parameters():
+            if param.numel() > 0:  # Skip empty tensors
+                total += param.numel() * param.element_size() / (1024 ** 3)
+        return total
+
+    def _estimate_block_size_gb(self, block: torch.nn.Module) -> float:
+        """Estimate a block's weights size in GB."""
+        total = 0.0
+        for param in block.parameters():
+            if param.numel() > 0:
+                total += param.numel() * param.element_size() / (1024 ** 3)
+        return total
+
+    def _init_cpu_offload_dir(self) -> Optional[str]:
+        if not self.low_cpu_mem_usage:
+            return None
+        if self._cpu_offload_tempdir is None:
+            self._cpu_offload_tempdir = tempfile.mkdtemp(prefix="autoround_cpu_offload_")
+        return self._cpu_offload_tempdir
+
+    def _offload_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
+        if not self.low_cpu_mem_usage:
+            return
+        offload_dir = self._init_cpu_offload_dir()
+        if offload_dir is None:
+            return
+        safe_name = block_name.replace(".", "_")
+        save_path = os.path.join(offload_dir, f"{safe_name}.pt")
+        metadata = save_module_weights(block, save_path)
+        self._offloaded_blocks[block_name] = metadata
+        clear_module_weights(block)
+
+    def _stream_offload_blocks(self, all_blocks: list[list[str]]) -> None:
+        """Offload all block weights to disk and clear from memory."""
+        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
+            return
+        offload_dir = self._init_cpu_offload_dir()
+        if offload_dir is None:
+            return
+        logger.info("stream offloading block weights to disk...")
+        total_offloaded_gb = 0.0
+        for block_names in all_blocks:
+            for block_name in block_names:
+                if block_name in self._offloaded_blocks:
+                    continue
+                block = get_module(self.model, block_name)
+                if block is None:
+                    continue
+                block_size_gb = self._estimate_block_size_gb(block)
+                total_offloaded_gb += block_size_gb
+                safe_name = block_name.replace(".", "_")
+                save_path = os.path.join(offload_dir, f"{safe_name}.pt")
+                # Save entire block state_dict (all submodule weights)
+                state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
+                torch.save(state_dict, save_path)
+                self._offloaded_blocks[block_name] = {"save_path": save_path}
+                # Clear all submodule weights
+                for submodule in block.modules():
+                    if hasattr(submodule, "weight") and submodule.weight is not None:
+                        clear_module_weights(submodule)
+                    if hasattr(submodule, "bias") and submodule.bias is not None:
+                        clear_module_weights(submodule)
+        clear_memory(device_list=self.device_list)
+        logger.info(f"stream offload done, offloaded {total_offloaded_gb:.2f} GB of block weights")
+
+    def _load_offloaded_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
+        """Load block weights from disk back into memory."""
+        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
+            return
+        metadata = self._offloaded_blocks.get(block_name)
+        if not metadata:
+            return
+        save_path = metadata.get("save_path")
+        if not save_path or not os.path.exists(save_path):
+            logger.warning(f"Cannot load block weights: file {save_path} does not exist")
+            return
+        try:
+            state_dict = torch.load(save_path, map_location="cpu")
+            # Manually assign parameters to handle empty tensor replacement
+            for name, param in state_dict.items():
+                parts = name.split(".")
+                target = block
+                for part in parts[:-1]:
+                    target = getattr(target, part)
+                param_name = parts[-1]
+                if hasattr(target, param_name):
+                    old_param = getattr(target, param_name)
+                    if isinstance(old_param, torch.nn.Parameter):
+                        setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
+                    else:
+                        setattr(target, param_name, param)
+        except Exception as e:
+            logger.warning(f"Failed to load block weights from {save_path}: {e}")
+
+    def _discard_offloaded_block(self, block_name: str) -> None:
+        """Discard the original offload file and re-offload quantized weights."""
+        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
+            return
+        metadata = self._offloaded_blocks.pop(block_name, None)
+        if not metadata:
+            return
+        save_path = metadata.get("save_path")
+        if save_path and os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove offloaded block file {save_path}: {e}")
+
+        # Re-offload the quantized block weights to disk
+        block = get_module(self.model, block_name)
+        if block is None:
+            return
+        offload_dir = self._init_cpu_offload_dir()
+        if offload_dir is None:
+            return
+        safe_name = block_name.replace(".", "_")
+        new_save_path = os.path.join(offload_dir, f"{safe_name}_quantized.pt")
+        try:
+            state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
+            torch.save(state_dict, new_save_path)
+            self._offloaded_blocks[block_name] = {"save_path": new_save_path, "quantized": True}
+            # Clear all submodule weights
+            for submodule in block.modules():
+                if hasattr(submodule, "weight") and submodule.weight is not None:
+                    clear_module_weights(submodule)
+                if hasattr(submodule, "bias") and submodule.bias is not None:
+                    clear_module_weights(submodule)
+        except Exception as e:
+            logger.warning(f"Failed to re-offload quantized block {block_name}: {e}")
+
+    def _restore_offloaded_blocks(self) -> None:
+        """Restore all offloaded block weights back to memory."""
+        if not self._offloaded_blocks:
+            return
+        for block_name, metadata in list(self._offloaded_blocks.items()):
+            try:
+                block = get_module(self.model, block_name)
+                save_path = metadata.get("save_path")
+                if not save_path or not os.path.exists(save_path):
+                    logger.warning(f"Cannot restore block {block_name}: file {save_path} does not exist")
+                    continue
+                state_dict = torch.load(save_path, map_location="cpu")
+                # Manually assign parameters to handle empty tensor replacement
+                for name, param in state_dict.items():
+                    parts = name.split(".")
+                    target = block
+                    for part in parts[:-1]:
+                        target = getattr(target, part)
+                    param_name = parts[-1]
+                    if hasattr(target, param_name):
+                        old_param = getattr(target, param_name)
+                        if isinstance(old_param, torch.nn.Parameter):
+                            setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
+                        else:
+                            setattr(target, param_name, param)
+            except Exception as e:
+                logger.warning(f"Failed to restore offloaded block {block_name}: {e}")
+
+    def _cleanup_cpu_offload_dir(self) -> None:
+        if self._cpu_offload_tempdir and os.path.isdir(self._cpu_offload_tempdir):
+            try:
+                shutil.rmtree(self._cpu_offload_tempdir)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup cpu offload dir {self._cpu_offload_tempdir}: {e}")
+        self._cpu_offload_tempdir = None
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1652,6 +1851,9 @@ class BaseCompressor(object):
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
+        if self.low_cpu_mem_usage:
+            self._offloaded_blocks = {}
+
         def _should_disable_inplace_due_to_layers_outside_block() -> bool:
             return self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn))
 
@@ -1689,9 +1891,14 @@ class BaseCompressor(object):
             )
         else:
             logger.info("start to cache block inputs")
+
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
+        # Log memory breakdown for calibration inputs
+        if self.low_cpu_mem_usage:
+            inputs_size_gb = self._estimate_inputs_size_gb(all_inputs)
+            logger.info(f"[Memory] calibration inputs size: {inputs_size_gb:.2f} GB")
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
@@ -1704,6 +1911,12 @@ class BaseCompressor(object):
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         logger.info("caching done")
+        # Log memory breakdown for model weights
+        if self.low_cpu_mem_usage:
+            model_size_gb = self._estimate_model_size_gb()
+            logger.info(f"[Memory] model weights size: {model_size_gb:.2f} GB")
+        if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
+            self._stream_offload_blocks(all_blocks)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1748,6 +1961,10 @@ class BaseCompressor(object):
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
+
+        if self.low_cpu_mem_usage:
+            self._restore_offloaded_blocks()
+            self._cleanup_cpu_offload_dir()
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -1829,6 +2046,7 @@ class BaseCompressor(object):
             memory_monitor.update()
             memory_monitor.log_summary()
             return
+
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
         has_gguf = False
@@ -2657,6 +2875,29 @@ class BaseCompressor(object):
         current_output = torch.cat(current_output, dim=self.batch_dim)
         return current_output
 
+    def _get_current_output_stream(
+        self,
+        block: torch.nn.Module,
+        input_ids: list[torch.Tensor],
+        input_others: dict,
+        indices: list[int],
+        device: str,
+        cache_device: str = "cpu",
+    ) -> torch.Tensor:
+        current_input_ids, current_input_others = self._sampling_inputs(
+            input_ids,
+            input_others,
+            indices,
+            seqlen=self.seqlen,
+            batch_dim=self.batch_dim,
+            share_cache_keys=self.shared_cache_keys,
+        )
+        with torch.no_grad():
+            output = self.block_forward(
+                block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
+            )
+        return output.to(cache_device)
+
     def _get_current_q_output(
         self,
         block: torch.nn.Module,
@@ -2792,24 +3033,51 @@ class BaseCompressor(object):
                 hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                 add_hook_to_module(m, hook, True)
 
+        stream_loss = self.cpu_stream_loss and self.nblocks == 1
+        if self.cpu_stream_loss and self.nblocks != 1:
+            logger.warning("cpu_stream_loss only supports nblocks=1; falling back to cached outputs.")
+            stream_loss = False
+
         if q_input is None:
             hook_handles = self._register_act_max_hook(block)
 
-            output = self._get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
-            )
+            if stream_loss:
+                output = None
+                self._get_block_outputs(
+                    block,
+                    input_ids,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    device,
+                    self.cache_device,
+                    save_output=False,
+                )
+            else:
+                output = self._get_block_outputs(
+                    block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
+                )
+
+                # Log output cache size for first block
+                if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks and not hasattr(self, "_logged_output_size"):
+                    output_size = self._estimate_tensor_size_gb(output)
+                    logger.info(f"[Memory] block output cache size: {output_size:.2f} GB")
+                    self._logged_output_size = True
 
             for handle in hook_handles:
                 handle.remove()
         else:
-            output = self._get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
-            )
+            if stream_loss:
+                output = None
+                # Skip pre-computation in stream_loss mode - targets will be computed on-the-fly with frozen_block
+            else:
+                output = self._get_block_outputs(
+                    block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
+                )
             hook_handles = self._register_act_max_hook(block)
             if hook_handles:
                 self._get_block_outputs(
                     block,
-                    q_input,
+                    q_input if q_input is not None else input_ids,
                     input_others,
                     self.batch_size * self.infer_bs_coeff,
                     device,
@@ -2826,6 +3094,13 @@ class BaseCompressor(object):
             else:
                 clear_memory(device_list=self.device_list)
             input_ids = q_input
+
+        frozen_block = None
+        if stream_loss:
+            frozen_block = copy.deepcopy(block).to(device)
+            frozen_block.eval()
+            for p in frozen_block.parameters():
+                p.requires_grad_(False)
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -2923,7 +3198,12 @@ class BaseCompressor(object):
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
-                current_output = self._get_current_output(output, indices)
+                if stream_loss:
+                    current_output = self._get_current_output_stream(
+                        frozen_block, input_ids, input_others, indices, loss_device, cache_device=loss_device
+                    )
+                else:
+                    current_output = self._get_current_output(output, indices)
                 current_output = to_device(current_output, loss_device)
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
@@ -3006,6 +3286,16 @@ class BaseCompressor(object):
 
             return q_outputs, output
         else:
+            # When stream_loss is enabled, output is None, so we need to compute it for the next block
+            if stream_loss and output is None:
+                output = self._get_block_outputs(
+                    block,
+                    input_ids,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    device,
+                    cache_device=self.cache_device,
+                )
             if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
             if auto_offload:
@@ -3070,6 +3360,12 @@ class BaseCompressor(object):
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
 
+        # Log detailed memory breakdown for first block
+        if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
+            input_ids_size = self._estimate_tensor_size_gb(input_ids)
+            input_others_size = self._estimate_tensor_size_gb(input_others)
+            logger.info(f"[Memory] input_ids size: {input_ids_size:.2f} GB, input_others size: {input_others_size:.2f} GB")
+
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -3086,7 +3382,18 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
+            if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
+                if nblocks == 1:
+                    self._load_offloaded_block_weights(n, get_module(model, n))
+                    if i == 0:  # Log only for first block
+                        block_size = self._estimate_block_size_gb(get_module(model, n))
+                        logger.info(f"[Memory] loaded block weights size: {block_size:.2f} GB")
+                else:
+                    for name in names:
+                        self._load_offloaded_block_weights(name, get_module(model, name))
+
             m.config = model.config if hasattr(model, "config") else None
+
             q_input, input_ids = self._quantize_block(
                 m,
                 input_ids,
@@ -3094,6 +3401,19 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
+
+            if self.low_cpu_mem_usage and not self.cpu_stream_offload_blocks:
+                if nblocks == 1:
+                    self._offload_block_weights(n, get_module(model, n))
+                else:
+                    for name in names:
+                        self._offload_block_weights(name, get_module(model, name))
+            if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
+                if nblocks == 1:
+                    self._discard_offloaded_block(n)
+                else:
+                    for name in names:
+                        self._discard_offloaded_block(name)
             if hasattr(model, "config"):
                 del m.config
             if self.is_immediate_packing:
