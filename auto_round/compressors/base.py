@@ -509,7 +509,7 @@ class BaseCompressor(object):
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
-        if is_quantized_input_module(model):
+        if is_quantized_input_module(self.model):
             logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
             sys.exit(-1)
 
