@@ -26,7 +26,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model
+from auto_round.utils import check_to_quantized
 
 
 class BackendDataType(str, Enum):
@@ -118,19 +118,6 @@ def block_forward(
     if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[output_return_id]
     return output
-
-
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if is_fp8_model(model):
-        return True
-    for n, m in model.named_modules():
-        if is_fp8_linear(m):
-            m.is_fp8_linear = True
-            if not hasattr(model, "is_fp8"):
-                model.is_fp8 = True
-    if hasattr(model, "is_fp8"):
-        return True
-    return False
 
 
 def check_skippable_keywords(key):
