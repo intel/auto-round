@@ -796,6 +796,7 @@ class BaseCompressor(object):
             self.act_bits <= 8
             and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
             and not is_mx_fp(self.act_data_type)
+            and not is_static_wfp8afp8(self.act_data_type)
         ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
