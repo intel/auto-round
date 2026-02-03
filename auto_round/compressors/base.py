@@ -796,6 +796,7 @@ class BaseCompressor(object):
             self.act_bits <= 8
             and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
             and not is_mx_fp(self.act_data_type)
+            and not is_static_wfp8afp8(self.act_data_type)
         ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
@@ -2149,6 +2150,8 @@ class BaseCompressor(object):
                                     device = int(device.split(":")[-1])
                                 elif device == "cpu":
                                     device = "cpu"
+                                elif isinstance(device, str):
+                                    device = 0
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
                                 # Use 90% of the reported max memory to leave headroom for activations,
