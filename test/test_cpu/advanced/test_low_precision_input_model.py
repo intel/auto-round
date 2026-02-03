@@ -11,7 +11,7 @@ from auto_round.utils.weight_handler import (
 from ...helpers import get_model_path, get_tiny_model
 
 
-class TestCompresseTensor:
+class TestCompressedTensor:
     nvfp4_model_path = "kaitchup/Qwen3-0.6B-NVFP4"
     mxfp4_model_path = "QuixiAI/Llama-3.2-1B-MXFP4"
     fp8_block_model_path = "RedHatAI/Qwen3-0.6B-FP8-BLOCK"
