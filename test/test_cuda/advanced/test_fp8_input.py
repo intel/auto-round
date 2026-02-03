@@ -59,7 +59,7 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_small_model_rtn_generation(self):
+    def test_small_model_rtn_generation(self, mock_fp8_capable_device):
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         ar.quantize_and_save(output_dir=self.save_dir)
@@ -73,7 +73,7 @@ class TestAutoRound:
         reason="GGUF format saving and loading failed in transformers v5, \
             https://github.com/huggingface/transformers/issues/43482",
     )
-    def test_gguf_imatrix(self):
+    def test_gguf_imatrix(self, mock_fp8_capable_device):
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
         ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
@@ -90,28 +90,28 @@ class TestAutoRound:
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    def test_small_model_rtn(self):
+    def test_small_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_small_model_iters1(self):
+    def test_small_model_iters1(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_medium_model_rtn(self):
+    def test_medium_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.33)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_medium_model_rtn_with_lm_head(self):
+    def test_medium_model_rtn_with_lm_head(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
@@ -124,7 +124,7 @@ class TestAutoRound:
         reason="GGUF format saving and loading failed in transformers v5, \
             https://github.com/huggingface/transformers/issues/43482",
     )
-    def test_fp8_model_gguf(self):
+    def test_fp8_model_gguf(self, mock_fp8_capable_device):
         from llama_cpp import Llama
 
         model, tokenizer = self.tiny_fp8_model()
@@ -154,7 +154,7 @@ class TestAutoRound:
         reason="We need this patch for fp8 model loading without dequantization."
         "https://github.com/intel/auto-round/blob/72e1cecb4a984db101e26700618266115029b9ac/test/test_cuda/quantization/test_mxfp_nvfp.py#L19C5-L19C25",
     )
-    def test_diff_datatype(self):
+    def test_diff_datatype(self, mock_fp8_capable_device):
         for scheme in ["NVFP4", "MXFP4"]:
             model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
             for iters in [0, 1]:
@@ -166,7 +166,7 @@ class TestAutoRound:
 
 # requires GPU to load FP8Linear
 class TestFP8Linear:
-    def test_fp8_input(self):
+    def test_fp8_input(self, mock_fp8_capable_device):
         model = get_tiny_model(get_model_path("qwen/Qwen3-0.6B-FP8"))
         assert isinstance(model.model.layers[0].mlp.up_proj, FP8Linear), "Model does not contain FP8Linear layers"
         detected_types = check_and_mark_quantized_module(model)
