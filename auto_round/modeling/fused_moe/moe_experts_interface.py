@@ -55,11 +55,11 @@ LINEAR_LOOP_IMPL = "linear_loop"
 KNOWN_PROJECTION_PATTERNS = {
     # Transformers 5.0+ standard (Qwen3-MoE, etc.)
     "gate_up_proj": {"is_input_proj": True, "output_multiplier": 2},  # hidden -> 2*intermediate
-    "down_proj": {"is_input_proj": False, "output_multiplier": 1},    # intermediate -> hidden
+    "down_proj": {"is_input_proj": False, "output_multiplier": 1},  # intermediate -> hidden
     # Mixtral-style
-    "w1": {"is_input_proj": True, "output_multiplier": 1},   # gate: hidden -> intermediate
+    "w1": {"is_input_proj": True, "output_multiplier": 1},  # gate: hidden -> intermediate
     "w2": {"is_input_proj": False, "output_multiplier": 1},  # down: intermediate -> hidden
-    "w3": {"is_input_proj": True, "output_multiplier": 1},   # up: hidden -> intermediate
+    "w3": {"is_input_proj": True, "output_multiplier": 1},  # up: hidden -> intermediate
     # DBRX-style
     "v1": {"is_input_proj": True, "output_multiplier": 1},
     "w1_proj": {"is_input_proj": True, "output_multiplier": 1},
@@ -347,9 +347,7 @@ def _unfuse_experts_weights_inplace(
     # Detect available projections
     if projection_names:
         detected_projections = {
-            name: config
-            for name, config in KNOWN_PROJECTION_PATTERNS.items()
-            if name in projection_names
+            name: config for name, config in KNOWN_PROJECTION_PATTERNS.items() if name in projection_names
         }
     else:
         detected_projections = _detect_expert_projections(module)
@@ -380,16 +378,13 @@ def _unfuse_experts_weights_inplace(
     # Unfuse each projection
     unfused_count = 0
     for proj_name in detected_projections:
-        linears = _unfuse_single_projection(
-            module, proj_name, num_experts, is_transposed, dtype, target_device
-        )
+        linears = _unfuse_single_projection(module, proj_name, num_experts, is_transposed, dtype, target_device)
         if linears is not None:
             # Delete original parameter and set new ModuleList
             delattr(module, proj_name)
             setattr(module, proj_name, linears)
             unfused_count += 1
             logger.debug(f"Unfused {proj_name}: {num_experts} experts")
-
 
     # Ensure num_experts is set
     if not hasattr(module, "num_experts"):

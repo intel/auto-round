@@ -1456,7 +1456,7 @@ def set_amax_for_uncalibrated_experts(
         uncalibrated_experts: a list of uncalibrated experts
     """
     uncalibrated_experts = []
-    
+
     def _get_attr(module, name):
         """Get attribute from module or its orig_layer."""
         if hasattr(module, name):
@@ -1464,7 +1464,7 @@ def set_amax_for_uncalibrated_experts(
         if hasattr(module, "orig_layer") and hasattr(module.orig_layer, name):
             return getattr(module.orig_layer, name)
         return None
-    
+
     def _get_amax_value(module):
         value = get_nested_attr(module, attr_name)
         if value is None and hasattr(module, "orig_layer"):
@@ -1482,10 +1482,7 @@ def set_amax_for_uncalibrated_experts(
                 act_dynamic = _get_attr(sample, "act_dynamic")
                 is_quantized = "Quant" in sample.__class__.__name__ or hasattr(sample, "is_mx")
                 needs_warning = (
-                    not is_quantized 
-                    and isinstance(act_bits, (int, float)) 
-                    and act_bits < 8 
-                    and not act_dynamic
+                    not is_quantized and isinstance(act_bits, (int, float)) and act_bits < 8 and not act_dynamic
                 )
                 if needs_warning:
                     logger.warning_once(

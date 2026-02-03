@@ -98,7 +98,6 @@ def test_unfuse_experts_weights():
         ), f"down weight mismatch for expert {i}"
 
 
-
 def test_unfuse_experts_weights_transposed():
     """Test unfusing transposed expert weights (Llama4/GptOss style)."""
     from auto_round.modeling.fused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
@@ -146,7 +145,6 @@ def test_unfuse_experts_weights_transposed():
         ), f"down weight mismatch for expert {i}"
 
 
-
 def test_linear_loop_forward():
     """Test that linear_loop forward produces correct results."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
@@ -189,7 +187,6 @@ def test_linear_loop_forward():
 
     # Verify output is not all zeros (sanity check)
     assert not torch.allclose(output, torch.zeros_like(output)), "Output is all zeros"
-
 
 
 def test_prepare_model_for_moe_quantization():
@@ -240,6 +237,3 @@ def test_prepare_model_for_moe_quantization():
     assert model.config._experts_implementation == "linear_loop"
     assert len(unfused) == 1
     assert isinstance(model.layer["experts"].gate_up_proj, nn.ModuleList)
-
-
-

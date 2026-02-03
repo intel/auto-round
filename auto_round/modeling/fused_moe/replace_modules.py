@@ -20,10 +20,9 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
-
 # Import constant for expert implementation name
 from auto_round.modeling.fused_moe.moe_experts_interface import LINEAR_LOOP_IMPL
+from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
 
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
