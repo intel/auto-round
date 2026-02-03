@@ -693,33 +693,7 @@ def tune(args):
         trust_remote_code=not args.disable_trust_remote_code,
     )
 
-    model_name = args.model.rstrip("/")
-
-    if model_name.split("/")[-1].strip(".") == "" and "gguf" not in args.format:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
-        else:
-            suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}{suffix}")
-    elif model_name.split("/")[-1].strip(".") == "" and "gguf" in args.format:
-        export_dir = args.output_dir
-    elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
-    else:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
-        else:
-            suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
-
-    # ======================= Quantize and save model =======================
-    model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
+    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
     model.eval()

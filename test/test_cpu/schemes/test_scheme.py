@@ -33,13 +33,13 @@ class TestAutoRound:
 
     def test_w4a16(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
-        assert ar.bits == 4
         ar.quantize()
+        assert ar.bits == 4
 
     def test_w2a16_rtn(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
-        assert ar.bits == 2
         ar.quantize()
+        assert ar.bits == 2
 
     def test_w4a16_mixed(self, tiny_qwen_moe_model_path, dataloader):
 
@@ -85,26 +85,27 @@ class TestAutoRound:
 
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.quantize()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
         assert ar.act_data_type == "mx_fp"
-        ar.quantize()
 
     def test_vllm(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
 
         ar = AutoRoundMLLM(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar._post_init()
         assert ar.bits == 2
         assert ar.act_bits == 16
 
     def test_nvfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.quantize()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "nv_fp"
         assert ar.act_data_type == "nv_fp4_with_static_gs"
-        ar.quantize()
 
     def test_all_scheme(self, tiny_opt_model_path, tiny_qwen_model_path, dataloader):
         import copy

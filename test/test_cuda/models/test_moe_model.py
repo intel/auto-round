@@ -186,7 +186,8 @@ def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
         iters=1,
         ignore_layers="self_attn,lm_head,mlp.gate",
     )
-    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, output_dir = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    output_dir = output_dir[0]
     assert quantized_model is not None, "Quantized model should not be None."
     loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(output_dir)
     loaded_model.to("cuda")

@@ -304,20 +304,18 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
-        # should be set after loading model and set layer_config, cause some special scheme need these.
-        # Preserve the original, unparsed scheme for later use in auto scheme generation
-        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        self.scheme = scheme
         self.orig_scheme = copy.deepcopy(scheme)
-        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
-
-        gguf_scheme_name = get_gguf_scheme(self.scheme)
-        # GGUF uses fp32 scale dtype as default
-        scale_dtype = kwargs.pop("scale_dtype", None)
-        if scale_dtype is None:
-            scale_dtype = "fp32" if gguf_scheme_name else "fp16"
+        self.is_auto_scheme = True if isinstance(scheme, AutoScheme) else False
+        self.scale_dtype = kwargs.pop("scale_dtype", None)
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        scheme_keys = [f.name for f in fields(QuantizationScheme)]
+        for key in scheme_keys:
+            if key in kwargs and kwargs[key] is not None:
+                setattr(self, key, kwargs.pop(key))
+
         amp = kwargs.pop("amp", True)
         lr = kwargs.pop("lr", None)
         enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
@@ -341,10 +339,9 @@ class BaseCompressor(object):
         self.platform = platform
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
-        self.supported_types = SUPPORTED_LAYER_TYPES
-        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-        self.scale_dtype = convert_dtype_str2torch(scale_dtype)
+
         self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.block_forward = block_forward
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -376,16 +373,10 @@ class BaseCompressor(object):
         self.device_map = device_map
         if isinstance(self.device_map, str):
             self.device_map = self.device_map.replace(" ", "")
-
-        self.device_list = parse_available_devices(device_map)
-
-        # Set device, must place after model loading
-        self.device = get_major_device(device_map)
-        set_non_auto_device_map(self.model, self.device_map)
+        self.device = get_major_device(self.device_map)
 
         # Tuning hyperparameters
         self.seed = seed
-        set_seed(self.seed)
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -420,24 +411,7 @@ class BaseCompressor(object):
         if enable_opt_rtn:
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
-
-        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
-            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
-            disable_opt_rtn = True
-        if (
-            self.bits >= 8
-            and self.act_bits >= 16
-            and self.iters == 0
-            and self.data_type == "int"
-            and disable_opt_rtn is None
-        ):
-            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
-            disable_opt_rtn = True
-        if disable_opt_rtn is None and self.iters == 0:
-            logger.info(
-                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
-            )
-            disable_opt_rtn = False
+        self.disable_opt_rtn = disable_opt_rtn
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -448,7 +422,6 @@ class BaseCompressor(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self._get_optimizer(None)
-        self.disable_opt_rtn = disable_opt_rtn
 
         # Whether to pack the layer immediately after tuning
         self.is_immediate_packing = False
@@ -464,8 +437,78 @@ class BaseCompressor(object):
         if self.static_attention_dtype is not None:
             logger.warning("The static attention dtype is experimental and currently has limited support.")
 
-        self._set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
+
+        self.batch_dim = None
+        self.infer_bs_coeff = 1
+
+        # after setting iters
+        self.enable_torch_compile = enable_torch_compile
+
+        self.attention_mask = []
+        self.wrapper_block = wrapper_block
+
+        torch.set_printoptions(precision=3, sci_mode=True)
+
+        self._post_inited = False
+
+    def _post_init(self) -> None:
+        """Post-initialization for AutoRound."""
+        if self._post_inited:
+            return
+
+        # should be set after loading model and set layer_config, cause some special scheme need these.
+        # Preserve the original, unparsed scheme for later use in auto scheme generation
+        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(self.scheme)
+
+        # GGUF uses fp32 scale dtype as default
+        if self.scale_dtype is None:
+            gguf_scheme_name = get_gguf_scheme(self.scheme)
+            scale_dtype = "fp32" if gguf_scheme_name else "fp16"
+        else:
+            scale_dtype = self.scale_dtype
+        self.scale_dtype = convert_dtype_str2torch(scale_dtype)
+
+        predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+
+        if predefined_ignore_layers:
+            logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+            tmp_str = ",".join(predefined_ignore_layers)
+            if self.ignore_layers == "":
+                self.ignore_layers = tmp_str
+            else:
+                self.ignore_layers += "," + tmp_str
+
+        # Set device, must place after model loading
+        self._set_device(self.device_map)
+        set_non_auto_device_map(self.model, self.device_map)
+        self.device_list = parse_available_devices(self.device_map)
+
+        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
+            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
+            self.disable_opt_rtn = True
+        if (
+            self.bits >= 8
+            and self.act_bits >= 16
+            and self.iters == 0
+            and self.data_type == "int"
+            and self.disable_opt_rtn is None
+        ):
+            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
+            self.disable_opt_rtn = True
+        if self.disable_opt_rtn is None and self.iters == 0:
+            logger.info(
+                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+            )
+            self.disable_opt_rtn = False
+
+        set_seed(self.seed)
+        self._set_amp_dtype()
+        self._adjust_torch_compile(self.enable_torch_compile)
+        if self.enable_torch_compile:
+            self.block_forward = compile_func(self.block_forward, self.device)
+
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
             logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
@@ -477,24 +520,16 @@ class BaseCompressor(object):
         # Some helpers
         if "hpu" in str(self.device):
             self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
-        self.batch_dim = None
-        self.infer_bs_coeff = 1
 
-        # after setting iters
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
-
-        self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
-        torch.set_printoptions(precision=3, sci_mode=True)
+
+        if isinstance(self.scheme, AutoScheme):
+            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
 
-        self.attention_mask = []
-
-        self.wrapper_block = wrapper_block
         if self.enable_alg_ext:
             try:
                 logger.warning_once("using algorithm extension for quantization.")
@@ -503,6 +538,7 @@ class BaseCompressor(object):
                 wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
+        self._post_inited = True
 
     def _gen_auto_scheme(
         self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
@@ -609,18 +645,18 @@ class BaseCompressor(object):
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
     def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme], kwargs
+        self,
+        scheme: Union[str, dict, QuantizationScheme],
     ) -> tuple[QuantizationScheme, bool]:
         """Parse and set the quantization scheme."""
 
-        def _parse_and_set(scheme, kwargs):
-            if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
-                if "bits" not in kwargs:
-                    data_type = kwargs["data_type"]
+        def _parse_and_set(scheme):
+            if getattr(self, "data_type", None) and self.data_type.endswith("_dq") and not scheme.startswith("gguf"):
+                if not hasattr(self, "bits") or self.bits is None:
                     raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
+                        f"please set bits when setting data_type={self.data_type}, or using scheme as an alternative."
                     )
-                bits = kwargs["bits"]
+                bits = self.bits
                 scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
             res = None
             if isinstance(scheme, QuantizationScheme):
@@ -646,11 +682,10 @@ class BaseCompressor(object):
                 scheme = asdict(preset_name_to_scheme(scheme))
             scheme_keys = [f.name for f in fields(QuantizationScheme)]
             for key in scheme_keys:
-                if key in kwargs and kwargs[key] is not None:
-                    setattr(self, key, kwargs[key])
+                if hasattr(self, key) and getattr(self, key) is not None:
+                    continue
                 else:
                     setattr(self, key, scheme.get(key, None))
-                # kwargs.pop(key, None)
             if self.act_dynamic is None:
                 self.act_dynamic = True
 
@@ -706,7 +741,7 @@ class BaseCompressor(object):
                 raise ValueError("options of AutoScheme must not be empty")
             options = []
             for option in scheme.options:
-                new_option = _parse_and_set(option, kwargs)
+                new_option = _parse_and_set(option)
                 options.append(new_option)
             scheme.options = options
             for opt in options:
@@ -718,15 +753,11 @@ class BaseCompressor(object):
                 self.scheme = opt  # Choose the first one that not 16 bits
                 break
             # apply scheme to set default bits
-            scheme = _parse_and_set(self.scheme, kwargs)
+            scheme = _parse_and_set(self.scheme)
             is_auto_scheme = True
         else:
-            scheme = _parse_and_set(scheme, kwargs)
+            scheme = _parse_and_set(scheme)
             is_auto_scheme = False
-
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key in scheme_keys:
-            kwargs.pop(key, None)
 
         return scheme, is_auto_scheme
 
@@ -886,6 +917,29 @@ class BaseCompressor(object):
         Raises:
             ValueError: If an unsupported format is specified.
         """
+        # post init
+        self._post_init()
+
+        name_or_path = self.model.name_or_path.rstrip("/")
+        model_name = name_or_path.split("/")[-1]
+        if model_name.strip(".") == "" and "gguf" not in format:
+            if self.group_size <= 0:
+                suffix = f"afp{self.act_bits}" if "fp" in self.act_data_type else f"a{self.act_bits}"
+            else:
+                suffix = f"g{self.group_size}"
+            export_dir = os.path.join(output_dir, f"w{self.bits}{suffix}")
+        elif model_name.strip(".") == "" and "gguf" in format:
+            export_dir = output_dir
+        elif model_name.strip(".") != "" and "gguf" in format:
+            export_dir = os.path.join(output_dir, model_name + "-gguf")
+        else:
+            if self.group_size <= 0:
+                suffix = f"afp{self.act_bits}" if "fp" in self.act_data_type else f"a{self.act_bits}"
+            else:
+                suffix = f"g{self.group_size}"
+            export_dir = os.path.join(output_dir, model_name + f"-w{self.bits}{suffix}")
+
+        output_dir = export_dir
         # Validate and process the specified formats
         self.orig_output_dir = output_dir
 
@@ -1631,6 +1685,8 @@ class BaseCompressor(object):
         Returns:
         The quantized model and layer configurations.
         """
+        # post init
+        self._post_init()
 
         self._check_compatibility()
         formats = self.formats if hasattr(self, "formats") else None
@@ -2707,6 +2763,7 @@ class BaseCompressor(object):
         """
 
         # TODO: release below assertion after supporting MLLM and diffusion model quantization with quantize_block
+        self._post_init()
         assert self.__class__.__name__ not in [
             "DiffusionCompressor",
             "MLLMCompressor",
@@ -3125,7 +3182,7 @@ class BaseCompressor(object):
         output_dir: str = None,
         format: Union[str, list[OutputFormat]] = "auto_round",
         inplace: bool = True,
-        return_folders=False,
+        return_folders=True,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
@@ -3139,6 +3196,7 @@ class BaseCompressor(object):
         Returns:
             object: The compressed model object.
         """
+
         self.orig_output_dir = output_dir
         if isinstance(format, str) and getattr(self, "formats", None) is None:
             formats = get_formats(format, self)
@@ -3178,7 +3236,7 @@ class BaseCompressor(object):
             folders.append(save_folder)
 
         if return_folders:
-            return compressed_model, folders
+            return compressed_model, folders[0] if len(folders) == 1 else folders
         else:
             return compressed_model
 

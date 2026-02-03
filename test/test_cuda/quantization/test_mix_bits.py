@@ -52,7 +52,8 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+
         from gptqmodel import GPTQModel
 
         model = GPTQModel.load(quantized_model_path)
@@ -79,7 +80,8 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", quantization_config=quantization_config
@@ -107,7 +109,8 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "self.save_dir"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         assert model.model.decoder.layers[0].self_attn.k_proj.bits == 8
         assert model.model.decoder.layers[0].self_attn.q_proj.bits == 3
@@ -133,7 +136,8 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "self.save_dir"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", quantization_config=quantization_config
@@ -221,7 +225,10 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=False, format="auto_round"
+        )
+
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
             torch_dtype="auto",
@@ -295,9 +302,10 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        compressed, _ = autoround.quantize_and_save(
+        compressed, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=False, format="llm_compressor"
         )
+
         from vllm import LLM, SamplingParams
 
         # Sample prompts.

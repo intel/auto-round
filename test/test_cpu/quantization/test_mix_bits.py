@@ -25,6 +25,7 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         self.model_name = opt_name_or_path
@@ -55,7 +56,8 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+
         # test original GPTQModel inference
         from gptqmodel import GPTQModel
 
@@ -84,7 +86,8 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="cpu", quantization_config=quantization_config
@@ -112,7 +115,10 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "./saved"
-        compressed_model = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert model.model.decoder.layers[0].self_attn.k_proj.bits == 8
         assert model.model.decoder.layers[0].self_attn.q_proj.bits == 3
@@ -136,7 +142,8 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="cpu", quantization_config=quantization_config
@@ -223,7 +230,10 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=False, format="auto_round"
+        )
+
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
             torch_dtype="auto",
