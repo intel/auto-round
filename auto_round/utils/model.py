@@ -1177,10 +1177,9 @@ def set_amax_for_uncalibrated_experts(
                 uncalibrated_experts.append(module)
 
     if uncalibrated_experts:
-        logger.warning_once(
+        logger.info_once(
             f"Found {len(uncalibrated_experts)} uncalibrated expert layers. "
             "Using max amax from calibrated experts to fill missing values. "
-            "This occurs when some MoE experts are not activated during calibration."
         )
 
     return uncalibrated_experts
@@ -1338,7 +1337,7 @@ def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: s
             if not isinstance(reference_amax, torch.Tensor):
                 reference_amax = torch.tensor(reference_amax, dtype=torch.float32)
             set_nested_attr(layer, attr_name, reference_amax.clone())
-        logger.warning_once(
+        logger.info_once(
             f"Set act_max for {len(layers_needing_amax)} MOE auxiliary layers (gate/shared_experts) "
             f"using reference value from calibrated experts."
         )

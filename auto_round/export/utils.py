@@ -132,34 +132,6 @@ def save_model(
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
-    # Save _experts_implementation to config.json if set (for MOE models with unfused experts)
-    # Check main config and nested configs (e.g., text_config for VLM models)
-    if hasattr(model, "config") and os.path.exists(config_path):
-        experts_impl = None
-        nested_config_name = None
-
-        # Check main config first
-        if hasattr(model.config, "_experts_implementation"):
-            experts_impl = model.config._experts_implementation
-
-        # Check nested configs (text_config, llm_config, etc.)
-        for attr in ["text_config", "llm_config", "language_config"]:
-            nested_cfg = getattr(model.config, attr, None)
-            if nested_cfg and hasattr(nested_cfg, "_experts_implementation"):
-                experts_impl = nested_cfg._experts_implementation
-                nested_config_name = attr
-                break
-
-        if experts_impl:
-            with open(config_path, "r") as file:
-                data = json.load(file)
-            if nested_config_name and nested_config_name in data:
-                data[nested_config_name]["experts_implementation"] = experts_impl
-            else:
-                data["experts_implementation"] = experts_impl
-            with open(config_path, "w") as file:
-                json.dump(data, file, indent=2)
-
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
