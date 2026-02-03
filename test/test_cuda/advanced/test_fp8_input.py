@@ -4,14 +4,37 @@ import shutil
 import pytest
 import torch
 import transformers
+from compressed_tensors.linear.compressed_linear import CompressedLinear
 from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.integrations import FP8Linear
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import llm_load_model
+from auto_round.utils.weight_handler import (
+    ModuleWeightType,
+    check_and_mark_quantized_module,
+    convert_module_to_hp_if_necessary,
+)
 
 from ...helpers import get_model_path, get_tiny_model, transformers_version
+
+
+def generate_prompt(model, tokenizer):
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
+
+def evaluate_accuracy(save_dir, task="lambada_openai", threshold=0.25):
+    """Helper function to evaluate model accuracy on a given task."""
+    model_args = f"pretrained={save_dir}"
+    result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size="auto")
+    acc = result["results"][task]["acc,none"]
+    print(f"{task} accuracy: {acc}")
+    assert acc > threshold, f"Accuracy {acc} is below threshold {threshold}"
+    return acc
 
 
 class TestAutoRound:
@@ -42,9 +65,7 @@ class TestAutoRound:
         ar.quantize_and_save(output_dir=self.save_dir)
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        generate_prompt(model, tokenizer)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skipif(
@@ -73,33 +94,21 @@ class TestAutoRound:
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
-
+        evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_small_model_iters1(self):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
-
+        evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_medium_model_rtn(self):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.33
-
+        evaluate_accuracy(self.save_dir, threshold=0.33)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_medium_model_rtn_with_lm_head(self):
@@ -107,11 +116,7 @@ class TestAutoRound:
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.33
-
+        evaluate_accuracy(self.save_dir, threshold=0.33)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skipif(
@@ -157,3 +162,57 @@ class TestAutoRound:
                 ar = AutoRound(model_name, iters=iters, scheme=scheme)
                 ar.quantize_and_save(output_dir=self.save_dir)
                 shutil.rmtree(self.save_dir, ignore_errors=True)
+
+
+class TestFP8Linear:
+    def test_fp8_input(self):
+        model = get_tiny_model(get_model_path("qwen/Qwen3-0.6B-FP8"))
+        assert isinstance(model.model.layers[0].mlp.up_proj, FP8Linear), "Model does not contain FP8Linear layers"
+        detected_types = check_and_mark_quantized_module(model)
+        assert ModuleWeightType.FP8 in detected_types
+        model = convert_module_to_hp_if_necessary(model)
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        ), "FP8Linear layer was not converted to Linear"
+
+
+class TestCompresseTensor:
+    nvfp4_model_path = "kaitchup/Qwen3-0.6B-NVFP4"
+    mxfp4_model_path = "QuixiAI/Llama-3.2-1B-MXFP4"
+    fp8_block_model_path = "RedHatAI/Qwen3-0.6B-FP8-BLOCK"
+
+    def test_fp8_block(self):
+        model = get_tiny_model(get_model_path(self.fp8_block_model_path))
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, CompressedLinear
+        ), "Model does not contain CompressedLinear layers"
+        detected_types = check_and_mark_quantized_module(model)
+        assert ModuleWeightType.FP8 in detected_types
+        model = convert_module_to_hp_if_necessary(model)
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        ), "CompressedLinear layer was not converted to Linear"
+
+    def test_nvfp4(self):
+        model = get_tiny_model(get_model_path(self.nvfp4_model_path))
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, CompressedLinear
+        ), "Model does not contain CompressedLinear layers"
+        detected_types = check_and_mark_quantized_module(model)
+        assert ModuleWeightType.NVFP4 in detected_types
+        model = convert_module_to_hp_if_necessary(model)
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        ), "CompressedLinear layer was not converted to Linear"
+
+    def test_mxfp4(self):
+        model = get_tiny_model(get_model_path(self.mxfp4_model_path))
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, CompressedLinear
+        ), "Model does not contain CompressedLinear layers"
+        detected_types = check_and_mark_quantized_module(model)
+        assert ModuleWeightType.MXFP4 in detected_types
+        model = convert_module_to_hp_if_necessary(model)
+        assert isinstance(
+            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        ), "CompressedLinear layer was not converted to Linear"
