@@ -21,27 +21,31 @@ This verifies that:
 3. The forward pass produces correct results
 """
 
+import pytest
 import torch
 from torch import nn
+
+
+def _skip_if_no_linear_loop():
+    from auto_round.modeling.fused_moe.moe_experts_interface import is_linear_loop_available
+
+    if not is_linear_loop_available():
+        pytest.skip("transformers MOE integration not available")
 
 
 def test_linear_loop_registration():
     """Test that linear_loop is registered with transformers."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
-        is_linear_loop_available,
         register_linear_loop_experts,
     )
 
-    if not is_linear_loop_available():
-        print("SKIP: transformers MOE integration not available")
-        return
+    _skip_if_no_linear_loop()
     success = register_linear_loop_experts()
     assert success, "Failed to register linear_loop"
 
     from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS
 
     assert "linear_loop" in ALL_EXPERTS_FUNCTIONS._global_mapping
-    print("✓ linear_loop registered with transformers")
 
 
 def test_unfuse_experts_weights():
@@ -93,7 +97,6 @@ def test_unfuse_experts_weights():
             module.down_proj[i].weight.data, original_down[i], atol=1e-6
         ), f"down weight mismatch for expert {i}"
 
-    print("✓ Unfused weights correctly (Mixtral style)")
 
 
 def test_unfuse_experts_weights_transposed():
@@ -142,7 +145,6 @@ def test_unfuse_experts_weights_transposed():
             module.down_proj[i].weight.data, original_down[i].t(), atol=1e-6
         ), f"down weight mismatch for expert {i}"
 
-    print("✓ Unfused weights correctly (transposed style)")
 
 
 def test_linear_loop_forward():
@@ -188,19 +190,15 @@ def test_linear_loop_forward():
     # Verify output is not all zeros (sanity check)
     assert not torch.allclose(output, torch.zeros_like(output)), "Output is all zeros"
 
-    print("✓ linear_loop forward works correctly")
 
 
 def test_prepare_model_for_moe_quantization():
     """Test the full prepare_model_for_moe_quantization flow."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
-        is_linear_loop_available,
         prepare_model_for_moe_quantization,
     )
 
-    if not is_linear_loop_available():
-        print("SKIP: transformers MOE integration not available")
-        return
+    _skip_if_no_linear_loop()
 
     num_experts = 4
     hidden_dim = 64
@@ -243,16 +241,5 @@ def test_prepare_model_for_moe_quantization():
     assert len(unfused) == 1
     assert isinstance(model.layer["experts"].gate_up_proj, nn.ModuleList)
 
-    print("✓ prepare_model_for_moe_quantization works correctly")
 
 
-if __name__ == "__main__":
-    print("Testing moe_experts_interface.py...\n")
-
-    test_unfuse_experts_weights()
-    test_unfuse_experts_weights_transposed()
-    test_linear_loop_forward()
-    test_linear_loop_registration()
-    test_prepare_model_for_moe_quantization()
-
-    print("\n✓ All tests passed!")

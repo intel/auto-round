@@ -22,12 +22,35 @@ from transformers import PreTrainedModel
 
 from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
 
+# Import constant for expert implementation name
+from auto_round.modeling.fused_moe.moe_experts_interface import LINEAR_LOOP_IMPL
+
 BUILTIN_MODULES = {
     "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
     "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
     "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
     "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
 }
+
+
+def _has_custom_replacement_only(model: torch.nn.Module) -> bool:
+    """Check if all MOE-like modules in model have custom replacements registered.
+
+    If all MOE modules are covered by BUILTIN_MODULES, we can skip the linear_loop path entirely.
+    """
+    for _, module in model.named_modules():
+        class_name = module.__class__.__name__
+        # Check if this looks like an MOE experts module (has fused 3D weights)
+        if (
+            hasattr(module, "gate_up_proj")
+            and isinstance(module.gate_up_proj, torch.nn.Parameter)
+            and module.gate_up_proj.dim() == 3
+        ):
+            # This is a fused experts module - check if it has a custom replacement
+            if class_name not in BUILTIN_MODULES and not ReplacementModuleBase.is_registered(class_name):
+                # Found a fused experts module without custom replacement - need linear_loop
+                return False
+    return True
 
 
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
@@ -45,7 +68,10 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     )
 
     if not is_linear_loop_available():
-        logger.warning("MOE handling requires transformers 5.0+. " "MOE modules will not be handled.")
+        logger.warning(
+            "transformers' linear_loop experts interface not available (requires transformers 5.0+). "
+            "MOE modules with @use_experts_implementation decorator will fall back to custom replacements if registered."
+        )
         return []
 
     # Use transformers' experts interface
@@ -81,7 +107,7 @@ def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module
     """
     if not hasattr(model, "config"):
         return False
-    if getattr(model.config, "_experts_implementation", None) != "linear_loop":
+    if getattr(model.config, "_experts_implementation", None) != LINEAR_LOOP_IMPL:
         return False
     experts = getattr(module, "experts", None)
     if experts is None:
@@ -89,7 +115,7 @@ def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module
     gate_up = getattr(experts, "gate_up_proj", None)
     down = getattr(experts, "down_proj", None)
     result = isinstance(gate_up, torch.nn.ModuleList) and isinstance(down, torch.nn.ModuleList)
-    logger.info(
+    logger.debug(
         f"_should_skip_moe_replacement for {module.__class__.__name__}: "
         f"gate_up type={type(gate_up).__name__}, down type={type(down).__name__}, skip={result}"
     )
@@ -292,7 +318,8 @@ def apply_replacements(
     _import_required_replacements(model)
 
     # Auto-detect and handle fused MOE modules if enabled
-    if auto_detect_moe:
+    # Skip if all MOE modules already have custom replacements registered
+    if auto_detect_moe and not _has_custom_replacement_only(model):
         _handle_moe_modules(model)
 
     replaced = []

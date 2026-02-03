@@ -31,8 +31,6 @@ Usage:
     # Now the model uses linear_loop forward which supports quantized nn.Linear layers
 """
 
-from typing import Callable
-
 import torch
 from torch import nn
 
@@ -46,8 +44,27 @@ except ImportError:
     HAS_EXPERTS_INTERFACE = False
     ALL_EXPERTS_FUNCTIONS = None
 
-# Track if we've logged linear_loop usage (to avoid spamming logs)
-_linear_loop_logged = False
+# Expert implementation name - change this if transformers want to use a different name
+LINEAR_LOOP_IMPL = "linear_loop"
+
+# Known expert projection patterns for reference
+# These are used as hints when auto-detection needs to infer projection properties
+# Format: proj_name -> {"is_input_proj": bool, "output_multiplier": int}
+#   is_input_proj: True if takes hidden_dim as input, False if takes intermediate_dim
+#   output_multiplier: output dimension multiplier (e.g., 2 for fused gate+up projection)
+KNOWN_PROJECTION_PATTERNS = {
+    # Transformers 5.0+ standard (Qwen3-MoE, etc.)
+    "gate_up_proj": {"is_input_proj": True, "output_multiplier": 2},  # hidden -> 2*intermediate
+    "down_proj": {"is_input_proj": False, "output_multiplier": 1},    # intermediate -> hidden
+    # Mixtral-style
+    "w1": {"is_input_proj": True, "output_multiplier": 1},   # gate: hidden -> intermediate
+    "w2": {"is_input_proj": False, "output_multiplier": 1},  # down: intermediate -> hidden
+    "w3": {"is_input_proj": True, "output_multiplier": 1},   # up: hidden -> intermediate
+    # DBRX-style
+    "v1": {"is_input_proj": True, "output_multiplier": 1},
+    "w1_proj": {"is_input_proj": True, "output_multiplier": 1},
+    "w2_proj": {"is_input_proj": False, "output_multiplier": 1},
+}
 
 
 def linear_loop_experts_forward(
@@ -78,21 +95,27 @@ def linear_loop_experts_forward(
     Returns:
         final_hidden_states: Output tensor of shape (num_tokens, hidden_dim)
     """
-    global _linear_loop_logged
-    if not _linear_loop_logged:
-        logger.info(f"Using linear_loop experts forward for {self.__class__.__name__}")
-        _linear_loop_logged = True
+    logger.debug(f"Using {LINEAR_LOOP_IMPL} experts forward for {self.__class__.__name__}")
+
+    # Handle [batch_size, seq_len, hidden_dim] input format
+    if hidden_states.dim() == 3:
+        batch_size, seq_len, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)  # [bs * seq_len, hidden_dim]
+        top_k_index = top_k_index.view(-1, top_k_index.size(-1))  # [bs * seq_len, top_k]
+        top_k_weights = top_k_weights.view(-1, top_k_weights.size(-1))  # [bs * seq_len, top_k]
+    else:
+        batch_size, seq_len = None, None
+        hidden_dim = hidden_states.size(-1)
 
     device = hidden_states.device
     num_top_k = top_k_index.size(-1)
     num_tokens = hidden_states.size(0)
-    hidden_dim = hidden_states.size(-1)
     num_experts = self.num_experts
 
     # Reshape for easier indexing
     # S is the number of selected token-expert pairs (S = num_tokens * num_top_k)
     token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, num_top_k).reshape(-1)  # (S,)
-    sample_weights = top_k_weights.reshape(-1)  # (S,)
+    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
     expert_ids = top_k_index.reshape(-1)  # (S,)
 
     # Get current hidden states for selected samples
@@ -133,7 +156,11 @@ def linear_loop_experts_forward(
     # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
     final_hidden_states = out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
 
-    return final_hidden_states.to(hidden_states.dtype)
+    # Reshape back to original format if input was [batch_size, seq_len, hidden_dim]
+    if batch_size is not None:
+        final_hidden_states = final_hidden_states.view(batch_size, seq_len, hidden_dim)
+
+    return final_hidden_states
 
 
 def register_linear_loop_experts() -> bool:
@@ -150,9 +177,9 @@ def register_linear_loop_experts() -> bool:
         )
         return False
 
-    if "linear_loop" not in ALL_EXPERTS_FUNCTIONS._global_mapping:
-        ALL_EXPERTS_FUNCTIONS._global_mapping["linear_loop"] = linear_loop_experts_forward
-        logger.debug("Registered 'linear_loop' experts implementation")
+    if LINEAR_LOOP_IMPL not in ALL_EXPERTS_FUNCTIONS._global_mapping:
+        ALL_EXPERTS_FUNCTIONS._global_mapping[LINEAR_LOOP_IMPL] = linear_loop_experts_forward
+        logger.debug(f"Registered '{LINEAR_LOOP_IMPL}' experts implementation")
 
     return True
 
@@ -170,117 +197,208 @@ def _experts_supports_decorator(module: nn.Module) -> bool:
     return hasattr(forward_method, "__wrapped__")
 
 
-def _unfuse_experts_weights_inplace(module: nn.Module, check_decorator: bool = True) -> bool:
+def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
+    """Detect which expert projections exist in the module.
+
+    This function scans the module for any 3D nn.Parameter attributes.
+    It first checks known projection names, then discovers any unknown 3D parameters.
+
+    Returns:
+        Dict mapping projection names to their config, only for projections that exist
+        as 3D nn.Parameter in the module.
+    """
+    detected = {}
+
+    # First, check known projection patterns
+    for proj_name, config in KNOWN_PROJECTION_PATTERNS.items():
+        param = getattr(module, proj_name, None)
+        if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
+            detected[proj_name] = config
+
+    # If no known patterns found, scan for any 3D Parameter (future-proofing)
+    if not detected:
+        for attr_name in dir(module):
+            if attr_name.startswith("_"):
+                continue
+            param = getattr(module, attr_name, None)
+            if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
+                # Use default config for unknown projections
+                logger.debug(f"Discovered unknown 3D projection: {attr_name}")
+                detected[attr_name] = {"is_input_proj": True, "output_multiplier": 1}
+
+    return detected
+
+
+def _infer_dimensions(param: nn.Parameter, config: dict, is_transposed: bool) -> tuple[int, int]:
+    """Infer input and output dimensions for a projection.
+
+    Args:
+        param: The 3D parameter (num_experts, dim1, dim2)
+        config: Projection config with is_input_proj and output_multiplier
+        is_transposed: Whether weights are stored transposed
+
+    Returns:
+        (in_features, out_features) for the Linear layer
+    """
+    dim1, dim2 = param.shape[1], param.shape[2]
+    multiplier = config.get("output_multiplier", 1)
+
+    if is_transposed:
+        # transposed: (num_experts, in_features, out_features)
+        in_features, out_features = dim1, dim2
+    else:
+        # not transposed: (num_experts, out_features, in_features)
+        out_features, in_features = dim1, dim2
+
+    # Adjust for multiplier (e.g., gate_up has 2x intermediate)
+    if multiplier > 1:
+        out_features = out_features // multiplier * multiplier  # ensure divisible
+
+    return in_features, out_features
+
+
+def _unfuse_single_projection(
+    module: nn.Module,
+    proj_name: str,
+    num_experts: int,
+    is_transposed: bool,
+    dtype: torch.dtype,
+    target_device: torch.device,
+) -> nn.ModuleList | None:
+    """Unfuse a single projection from 3D Parameter to ModuleList of Linear layers.
+
+    Args:
+        module: The experts module
+        proj_name: Name of the projection attribute
+        num_experts: Number of experts
+        is_transposed: Whether weights are stored transposed
+        dtype: Data type for the Linear layers
+        target_device: Device for the Linear layers
+
+    Returns:
+        ModuleList of Linear layers, or None if projection doesn't exist
+    """
+    param = getattr(module, proj_name, None)
+    if param is None or not isinstance(param, nn.Parameter) or param.dim() != 3:
+        return None
+
+    # Get projection config
+    config = KNOWN_PROJECTION_PATTERNS.get(proj_name, {"is_input_proj": True, "output_multiplier": 1})
+
+    # Infer dimensions
+    in_features, out_features = _infer_dimensions(param, config, is_transposed)
+
+    # Check for bias
+    bias_name = f"{proj_name}_bias"
+    bias_param = getattr(module, bias_name, None)
+    has_bias = bias_param is not None
+
+    # Create ModuleList
+    linears = nn.ModuleList()
+    source_device = param.device
+
+    for i in range(num_experts):
+        linear = nn.Linear(in_features, out_features, bias=has_bias, dtype=dtype, device=target_device)
+
+        # Copy weights if not on meta device
+        if source_device.type != "meta":
+            if is_transposed:
+                linear.weight.data.copy_(param[i].t())
+            else:
+                linear.weight.data.copy_(param[i])
+
+            if has_bias:
+                linear.bias.data.copy_(bias_param[i])
+
+        linears.append(linear)
+
+    # Release original parameter memory using to_empty
+    if source_device.type != "meta":
+        try:
+            param.data = param.data.to_empty(device="meta")
+            logger.debug(f"Released memory for {proj_name} using to_empty(device='meta')")
+        except Exception:
+            # Fallback: just delete
+            pass
+
+    return linears
+
+
+def _unfuse_experts_weights_inplace(
+    module: nn.Module,
+    check_decorator: bool = True,
+    projection_names: list[str] | None = None,
+) -> bool:
     """Convert fused 3D expert weights to nn.ModuleList of nn.Linear layers.
 
-    This function modifies the module in-place, replacing:
-    - gate_up_proj: nn.Parameter(num_experts, ...) -> nn.ModuleList[nn.Linear]
-    - down_proj: nn.Parameter(num_experts, ...) -> nn.ModuleList[nn.Linear]
+    This function modifies the module in-place, replacing fused 3D Parameters
+    with nn.ModuleList[nn.Linear] for each detected projection.
 
     Args:
         module: The experts module to unfuse
         check_decorator: If True, only unfuse if the module supports
             @use_experts_implementation decorator. Default is True.
+        projection_names: Optional list of projection names to unfuse.
+            If None, auto-detects from KNOWN_PROJECTION_PATTERNS.
 
     Returns:
         True if unfusing was successful, False if module doesn't match pattern
     """
-    # Check if this is a fused experts module
-    if not hasattr(module, "gate_up_proj") or not isinstance(module.gate_up_proj, nn.Parameter):
-        return False
-    if not hasattr(module, "down_proj") or not isinstance(module.down_proj, nn.Parameter):
-        return False
-    if module.gate_up_proj.dim() != 3 or module.down_proj.dim() != 3:
+    # Detect available projections
+    if projection_names:
+        detected_projections = {
+            name: config
+            for name, config in KNOWN_PROJECTION_PATTERNS.items()
+            if name in projection_names
+        }
+    else:
+        detected_projections = _detect_expert_projections(module)
+
+    if not detected_projections:
         return False
 
     # Only unfuse if the module supports the decorator (unless check_decorator is False)
-    # Modules that don't support the decorator (like Llama4TextExperts) should be
-    # handled by full module replacement instead
     if check_decorator and not _experts_supports_decorator(module):
         logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
-    gate_up_proj = module.gate_up_proj
-    down_proj = module.down_proj
-    num_experts = gate_up_proj.shape[0]
+    # Get first projection to determine num_experts and layout
+    first_proj_name = next(iter(detected_projections))
+    first_param = getattr(module, first_proj_name)
+    num_experts = first_param.shape[0]
 
-    # Detect if transposed (from decorator attributes or shape analysis)
+    # Detect if transposed
     is_transposed = getattr(module, "is_transposed", None)
-    has_bias = getattr(module, "has_bias", False)
-
     if is_transposed is None:
-        # Infer from shape: gate_up has 2*intermediate in one dimension
-        dim1, dim2 = gate_up_proj.shape[1], gate_up_proj.shape[2]
-        is_transposed = dim1 < dim2  # transposed: (num_experts, hidden, 2*intermediate)
+        # Infer from shape: typically hidden_dim < intermediate_dim
+        dim1, dim2 = first_param.shape[1], first_param.shape[2]
+        is_transposed = dim1 < dim2
 
-    if is_transposed:
-        # Transposed: gate_up_proj(num_experts, hidden, 2*intermediate)
-        hidden_dim = gate_up_proj.shape[1]
-        intermediate_dim = gate_up_proj.shape[2] // 2
-    else:
-        # Not transposed: gate_up_proj(num_experts, 2*intermediate, hidden)
-        intermediate_dim = gate_up_proj.shape[1] // 2
-        hidden_dim = gate_up_proj.shape[2]
+    dtype = first_param.dtype
+    target_device = first_param.device if first_param.device.type != "meta" else "cpu"
 
-    # Get bias if present
-    gate_up_bias = getattr(module, "gate_up_proj_bias", None)
-    down_bias = getattr(module, "down_proj_bias", None)
-
-    # Create nn.ModuleList of nn.Linear layers
-    gate_up_linears = nn.ModuleList()
-    down_linears = nn.ModuleList()
-
-    dtype = gate_up_proj.dtype
-    device = gate_up_proj.device if gate_up_proj.device.type != "meta" else "cpu"
-
-    for i in range(num_experts):
-        # Create gate_up linear (hidden_dim -> 2*intermediate_dim)
-        gate_up_linear = nn.Linear(
-            hidden_dim, 2 * intermediate_dim, bias=has_bias and gate_up_bias is not None, dtype=dtype, device=device
+    # Unfuse each projection
+    unfused_count = 0
+    for proj_name in detected_projections:
+        linears = _unfuse_single_projection(
+            module, proj_name, num_experts, is_transposed, dtype, target_device
         )
+        if linears is not None:
+            # Delete original parameter and set new ModuleList
+            delattr(module, proj_name)
+            setattr(module, proj_name, linears)
+            unfused_count += 1
+            logger.debug(f"Unfused {proj_name}: {num_experts} experts")
 
-        # Create down linear (intermediate_dim -> hidden_dim)
-        down_linear = nn.Linear(
-            intermediate_dim, hidden_dim, bias=has_bias and down_bias is not None, dtype=dtype, device=device
-        )
-
-        # Copy weights if not on meta device
-        if gate_up_proj.device.type != "meta":
-            if is_transposed:
-                # gate_up: (hidden, 2*intermediate) -> need transpose for Linear (out, in)
-                gate_up_linear.weight.data.copy_(gate_up_proj[i].t())
-                # down: (intermediate, hidden) -> need transpose for Linear (out, in)
-                down_linear.weight.data.copy_(down_proj[i].t())
-            else:
-                # gate_up: (2*intermediate, hidden) -> already (out, in) format
-                gate_up_linear.weight.data.copy_(gate_up_proj[i])
-                # down: (hidden, intermediate) -> already (out, in) format
-                down_linear.weight.data.copy_(down_proj[i])
-
-            if has_bias and gate_up_bias is not None:
-                gate_up_linear.bias.data.copy_(gate_up_bias[i])
-                down_linear.bias.data.copy_(down_bias[i])
-
-        gate_up_linears.append(gate_up_linear)
-        down_linears.append(down_linear)
-
-    # Replace the fused parameters with ModuleLists
-    # First, remove the old parameters
-    del module.gate_up_proj
-    del module.down_proj
-
-    # Set the new ModuleLists
-    module.gate_up_proj = gate_up_linears
-    module.down_proj = down_linears
 
     # Ensure num_experts is set
     if not hasattr(module, "num_experts"):
         module.num_experts = num_experts
 
-    return True
+    return unfused_count > 0
 
 
-def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = "linear_loop") -> list[str]:
+def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = LINEAR_LOOP_IMPL) -> list[str]:
     """Prepare a model for MOE quantization using transformers' experts interface.
 
     This function:
@@ -324,7 +442,7 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = "
             saved_impl = getattr(model.config, "experts_implementation", None)
             impl_to_set = saved_impl if saved_impl else implementation
             model.config._experts_implementation = impl_to_set
-            logger.info(f"Set model.config._experts_implementation = '{impl_to_set}'")
+            logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
 
     return unfused_modules
 

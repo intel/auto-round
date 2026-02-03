@@ -1456,21 +1456,43 @@ def set_amax_for_uncalibrated_experts(
         uncalibrated_experts: a list of uncalibrated experts
     """
     uncalibrated_experts = []
+    
+    def _get_attr(module, name):
+        """Get attribute from module or its orig_layer."""
+        if hasattr(module, name):
+            return getattr(module, name)
+        if hasattr(module, "orig_layer") and hasattr(module.orig_layer, name):
+            return getattr(module.orig_layer, name)
+        return None
+    
+    def _get_amax_value(module):
+        value = get_nested_attr(module, attr_name)
+        if value is None and hasattr(module, "orig_layer"):
+            value = get_nested_attr(module.orig_layer, attr_name)
+        return value
+
     # get the max amax value from all experts
     if set_amax_value is None:
-        amax_values = [
-            get_nested_attr(module, attr_name) for module in experts if get_nested_attr(module, attr_name) is not None
-        ]
+        amax_values = [_get_amax_value(m) for m in experts if _get_amax_value(m) is not None]
         if len(amax_values) == 0:
-            # All experts are uncalibrated - this indicates insufficient calibration data
-            # We cannot proceed without any reference act_max values
-            logger.warning_once(
-                "All expert layers are missing amax values. "
-                "This typically occurs in MoE models when the calibration dataset is too small "
-                "and no experts are activated. Consider increasing nsamples or seqlen "
-                "to ensure at least some experts are exercised during calibration."
-            )
-            return uncalibrated_experts  # Return empty list, no act_max can be set
+            # Check if any expert actually needs act_max (act_bits < 8, not dynamic, not already quantized)
+            sample = next((m for m in experts if m is not None), None)
+            if sample is not None:
+                act_bits = _get_attr(sample, "act_bits")
+                act_dynamic = _get_attr(sample, "act_dynamic")
+                is_quantized = "Quant" in sample.__class__.__name__ or hasattr(sample, "is_mx")
+                needs_warning = (
+                    not is_quantized 
+                    and isinstance(act_bits, (int, float)) 
+                    and act_bits < 8 
+                    and not act_dynamic
+                )
+                if needs_warning:
+                    logger.warning_once(
+                        f"All {len(experts)} expert layers are missing '{attr_name}' values. "
+                        f"This may indicate calibration hooks were not attached to expert layers."
+                    )
+            return uncalibrated_experts
         else:
             # Flatten all tensors to 1D before concatenation
             flat_values = [t.reshape(-1) for t in amax_values]
@@ -1478,7 +1500,7 @@ def set_amax_for_uncalibrated_experts(
             set_amax_value = torch.max(all_values)
 
     for module in experts:
-        current_amax = get_nested_attr(module, attr_name)
+        current_amax = _get_amax_value(module)
 
         # Set amax if it's None (uncalibrated) OR if unify_all is True
         if current_amax is None or unify_all:
