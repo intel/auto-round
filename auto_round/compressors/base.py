@@ -107,9 +107,6 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
-    estimate_inputs_size_gb,
-    estimate_model_size_gb,
-    estimate_tensor_size_gb,
     get_major_device,
     parse_available_devices,
     set_auto_device_map_for_block_with_tuning,
@@ -375,8 +372,6 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        self.cpu_stream_offload_blocks = kwargs.pop("cpu_stream_offload_blocks", False)
-        self.cpu_stream_loss = kwargs.pop("cpu_stream_loss", False)
         self._offloader = BlockOffloadManager(enabled=low_cpu_mem_usage, prefix="compressor")
 
         if kwargs:
@@ -972,6 +967,7 @@ class BaseCompressor(object):
             output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs
         )
         memory_monitor.log_summary()
+
         return model, folders
 
     def _get_save_folder_name(self, format: OutputFormat) -> str:
@@ -1450,27 +1446,6 @@ class BaseCompressor(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def _stream_offload_blocks(self, all_blocks: list[list[str]]) -> None:
-        """Offload all block weights to disk upfront to minimize peak CPU RAM.
-
-        Each block's full ``state_dict`` is saved and then cleared from memory.
-        """
-        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
-            return
-        logger.info("stream offloading block weights to disk...")
-        total_offloaded_gb = 0.0
-        for block_names in all_blocks:
-            for block_name in block_names:
-                if self._offloader.has(block_name):
-                    continue
-                block = get_module(self.model, block_name)
-                if block is None:
-                    continue
-                total_offloaded_gb += BlockOffloadManager.estimate_block_size_gb(block)
-                self._offloader.save_and_clear(block_name, block)
-        clear_memory(device_list=self.device_list)
-        logger.info(f"stream offload done, offloaded {total_offloaded_gb:.2f} GB of block weights")
-
     def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
 
@@ -1797,14 +1772,12 @@ class BaseCompressor(object):
             )
         else:
             logger.info("start to cache block inputs")
-
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
         # Log memory breakdown for calibration inputs
         if self.low_cpu_mem_usage:
-            inputs_size_gb = estimate_inputs_size_gb(all_inputs)
-            logger.info(f"[Memory] calibration inputs size: {inputs_size_gb:.2f} GB")
+            inputs_size_gb = BlockOffloadManager.estimate_inputs_size_gb(all_inputs)
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
@@ -1812,17 +1785,18 @@ class BaseCompressor(object):
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 all_first_block_names, self.nsamples, layer_names=layer_names
             )
+        # Remove accelerate dispatch hooks before moving parameters.
+        # hf_device_map is kept for reference but hooks are no longer needed.
+        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+            accelerate.hooks.remove_hook_from_submodules(self.model)
         self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.device_list)
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         logger.info("caching done")
         # Log memory breakdown for model weights
         if self.low_cpu_mem_usage:
-            model_size_gb = estimate_model_size_gb(self.model)
-            logger.info(f"[Memory] model weights size: {model_size_gb:.2f} GB")
-        if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
-            self._stream_offload_blocks(all_blocks)
+            model_size_gb = BlockOffloadManager.estimate_model_size_gb(self.model)
+        if self.low_cpu_mem_usage:
+            self._offloader.stream_offload_all_blocks(self.model, all_blocks, self.device_list)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1952,7 +1926,6 @@ class BaseCompressor(object):
             memory_monitor.update()
             memory_monitor.log_summary()
             return
-
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
         has_gguf = False
@@ -2803,29 +2776,6 @@ class BaseCompressor(object):
         current_output = torch.cat(current_output, dim=self.batch_dim)
         return current_output
 
-    def _get_current_output_stream(
-        self,
-        block: torch.nn.Module,
-        input_ids: list[torch.Tensor],
-        input_others: dict,
-        indices: list[int],
-        device: str,
-        cache_device: str = "cpu",
-    ) -> torch.Tensor:
-        current_input_ids, current_input_others = self._sampling_inputs(
-            input_ids,
-            input_others,
-            indices,
-            seqlen=self.seqlen,
-            batch_dim=self.batch_dim,
-            share_cache_keys=self.shared_cache_keys,
-        )
-        with torch.no_grad():
-            output = self.block_forward(
-                block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
-            )
-        return output.to(cache_device)
-
     def _get_current_q_output(
         self,
         block: torch.nn.Module,
@@ -2961,50 +2911,27 @@ class BaseCompressor(object):
                 hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                 add_hook_to_module(m, hook, True)
 
-        stream_loss = self.cpu_stream_loss and self.nblocks == 1
-        if self.cpu_stream_loss and self.nblocks != 1:
-            logger.warning("cpu_stream_loss only supports nblocks=1; falling back to cached outputs.")
-            stream_loss = False
-
         if q_input is None:
             hook_handles = self._register_act_max_hook(block)
 
-            if stream_loss:
-                output = None
-                self._get_block_outputs(
-                    block,
-                    input_ids,
-                    input_others,
-                    self.batch_size * self.infer_bs_coeff,
-                    device,
-                    self.cache_device,
-                    save_output=False,
-                )
-            else:
-                output = self._get_block_outputs(
-                    block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
-                )
+            output = self._get_block_outputs(
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
+            )
 
-                # Log output cache size for first block
-                if (
-                    self.low_cpu_mem_usage
-                    and self.cpu_stream_offload_blocks
-                    and not hasattr(self, "_logged_output_size")
-                ):
-                    output_size = estimate_tensor_size_gb(output)
-                    logger.info(f"[Memory] block output cache size: {output_size:.2f} GB")
-                    self._logged_output_size = True
+            # Log output cache size for first block
+            if (
+                self.low_cpu_mem_usage
+                and not hasattr(self, "_logged_output_size")
+            ):
+                output_size = BlockOffloadManager.estimate_tensor_size_gb(output)
+                self._logged_output_size = True
 
             for handle in hook_handles:
                 handle.remove()
         else:
-            if stream_loss:
-                output = None
-                # Skip pre-computation in stream_loss mode - targets will be computed on-the-fly with frozen_block
-            else:
-                output = self._get_block_outputs(
-                    block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
-                )
+            output = self._get_block_outputs(
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
+            )
             hook_handles = self._register_act_max_hook(block)
             if hook_handles:
                 self._get_block_outputs(
@@ -3026,13 +2953,6 @@ class BaseCompressor(object):
             else:
                 clear_memory(device_list=self.device_list)
             input_ids = q_input
-
-        frozen_block = None
-        if stream_loss:
-            frozen_block = copy.deepcopy(block).to(device)
-            frozen_block.eval()
-            for p in frozen_block.parameters():
-                p.requires_grad_(False)
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -3131,12 +3051,7 @@ class BaseCompressor(object):
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
-                if stream_loss:
-                    current_output = self._get_current_output_stream(
-                        frozen_block, input_ids, input_others, indices, loss_device, cache_device=loss_device
-                    )
-                else:
-                    current_output = self._get_current_output(output, indices)
+                current_output = self._get_current_output(output, indices)
                 current_output = to_device(current_output, loss_device)
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
@@ -3219,16 +3134,6 @@ class BaseCompressor(object):
 
             return q_outputs, output
         else:
-            # When stream_loss is enabled, output is None, so we need to compute it for the next block
-            if stream_loss and output is None:
-                output = self._get_block_outputs(
-                    block,
-                    input_ids,
-                    input_others,
-                    self.batch_size * self.infer_bs_coeff,
-                    device,
-                    cache_device=self.cache_device,
-                )
             if len(self.device_list) > 1 and auto_offload:
                 accelerate.hooks.remove_hook_from_submodules(block)
             if auto_offload:
@@ -3294,12 +3199,9 @@ class BaseCompressor(object):
         input_ids, input_others = self._preprocess_block_inputs(inputs)
 
         # Log detailed memory breakdown for first block
-        if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
-            input_ids_size = estimate_tensor_size_gb(input_ids)
-            input_others_size = estimate_tensor_size_gb(input_others)
-            logger.info(
-                f"[Memory] input_ids size: {input_ids_size:.2f} GB, input_others size: {input_others_size:.2f} GB"
-            )
+        if self.low_cpu_mem_usage:
+            input_ids_size = BlockOffloadManager.estimate_tensor_size_gb(input_ids)
+            input_others_size = BlockOffloadManager.estimate_tensor_size_gb(input_others)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
@@ -3317,18 +3219,16 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
+            if self.low_cpu_mem_usage:
                 if nblocks == 1:
                     self._offloader.load_block(n, get_module(model, n))
                     if i == 0:  # Log only for first block
                         block_size = BlockOffloadManager.estimate_block_size_gb(get_module(model, n))
-                        logger.info(f"[Memory] loaded block weights size: {block_size:.2f} GB")
                 else:
                     for name in names:
                         self._offloader.load_block(name, get_module(model, name))
 
             m.config = model.config if hasattr(model, "config") else None
-
             q_input, input_ids = self._quantize_block(
                 m,
                 input_ids,
@@ -3337,13 +3237,7 @@ class BaseCompressor(object):
                 device=device,
             )
 
-            if self.low_cpu_mem_usage and not self.cpu_stream_offload_blocks:
-                if nblocks == 1:
-                    self._offloader.save_and_clear(n, get_module(model, n))
-                else:
-                    for name in names:
-                        self._offloader.save_and_clear(name, get_module(model, name))
-            if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
+            if self.low_cpu_mem_usage:
                 if nblocks == 1:
                     self._offloader.discard_and_resave(n, get_module(model, n))
                 else:
