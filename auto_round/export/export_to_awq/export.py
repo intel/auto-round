@@ -71,10 +71,9 @@ def _collect_modules_to_not_convert(
         List of module names to not convert
     """
     modules_to_not_convert = set()
-
+    all_blocks = get_block_names(model, quant_vision=True)
     # 1. add non-quantized block directly
     if to_quant_block_names:
-        all_blocks = get_block_names(model, quant_vision=True)
         all_block_names = extract_block_names_to_str(all_blocks).split(",")
         to_quant_set = set(
             to_quant_block_names.split(",") if isinstance(to_quant_block_names, str) else to_quant_block_names
