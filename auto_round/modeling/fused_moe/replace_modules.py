@@ -69,7 +69,8 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     if not is_linear_loop_available():
         logger.warning(
             "transformers' linear_loop experts interface not available (requires transformers 5.0+). "
-            "MOE modules with @use_experts_implementation decorator will fall back to custom replacements if registered."
+            "MOE modules with @use_experts_implementation decorator will fall back to custom replacements "
+            "if registered."
         )
         return []
 
