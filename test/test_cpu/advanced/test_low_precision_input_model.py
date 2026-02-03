@@ -24,8 +24,8 @@ class TestCompressedTensor:
         detected_types = check_and_mark_quantized_module(model)
         assert ModuleWeightType.FP8 in detected_types
         model = convert_module_to_hp_if_necessary(model)
-        assert isinstance(
-            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        assert (
+            type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear
         ), "CompressedLinear layer was not converted to Linear"
 
     def test_nvfp4(self):
@@ -36,8 +36,8 @@ class TestCompressedTensor:
         detected_types = check_and_mark_quantized_module(model)
         assert ModuleWeightType.NVFP4 in detected_types
         model = convert_module_to_hp_if_necessary(model)
-        assert isinstance(
-            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        assert (
+            type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear
         ), "CompressedLinear layer was not converted to Linear"
 
     def test_mxfp4(self):
@@ -48,6 +48,6 @@ class TestCompressedTensor:
         detected_types = check_and_mark_quantized_module(model)
         assert ModuleWeightType.MXFP4 in detected_types
         model = convert_module_to_hp_if_necessary(model)
-        assert isinstance(
-            model.model.layers[0].mlp.up_proj, torch.nn.Linear
+        assert (
+            type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear
         ), "CompressedLinear layer was not converted to Linear"

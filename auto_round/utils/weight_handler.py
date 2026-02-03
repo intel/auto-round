@@ -595,6 +595,7 @@ class MXFP4Handler(WeightTypeHandler):
         if weight_packed is None:
             weight_packed = getattr(layer, "weight", None)
         weight_scale = getattr(layer, "weight_scale", None)
+        weight_scale = weight_scale.to(torch.uint8)
 
         if weight_packed is None or weight_scale is None:
             raise ValueError("MXFP4 layer must have weight_packed and weight_scale attributes")
