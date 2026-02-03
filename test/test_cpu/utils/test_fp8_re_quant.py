@@ -4,7 +4,11 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig
 
-from auto_round.utils.model import _dequant_fp8_linear_weight, convert_fp8_layer_to_linear
+from auto_round.utils.model import (
+    _dequant_fp8_linear_weight,
+    check_and_mark_quantized_module,
+    convert_module_to_hp_if_necessary,
+)
 
 
 class MockFP8Layer:
@@ -85,7 +89,8 @@ class TestFP8ReQuant(unittest.TestCase):
         mock_layer = FP8Linear(in_features, out_features)
 
         # This should now pass without AttributeError for 'block_size'
-        new_layer = convert_fp8_layer_to_linear(mock_layer, dtype=torch.bfloat16)
+        check_and_mark_quantized_module(mock_layer)
+        new_layer = convert_module_to_hp_if_necessary(mock_layer, dtype=torch.bfloat16)
 
         self.assertIsInstance(new_layer, nn.Linear)
         self.assertEqual(new_layer.in_features, in_features)
