@@ -654,7 +654,9 @@ class BaseCompressor(object):
         """
         # 1. GGUF special handling: map data_type suffix to GGUF scheme names
         dt_override = user_scheme_overrides.get("data_type", "")
-        if isinstance(scheme, str) and dt_override.endswith("_dq") and not scheme.startswith("gguf"):
+        if (
+            isinstance(scheme, QuantizationScheme) or (isinstance(scheme, str) and not scheme.startswith("gguf"))
+        ) and dt_override.endswith("_dq"):
             if "bits" not in user_scheme_overrides:
                 raise KeyError(f"Must specify 'bits' when using data_type={dt_override}")
 
@@ -668,7 +670,7 @@ class BaseCompressor(object):
         elif isinstance(scheme, str):
             normalized_name = scheme.strip("'\" ").upper()
             if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
-                logger.warning(
+                logger.warning_once(
                     "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
                 )
                 user_scheme_overrides = {}
