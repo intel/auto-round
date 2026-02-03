@@ -241,6 +241,8 @@ def dispatch_model_by_all_available_devices(
             device = int(device.split(":")[-1])
         elif device == "cpu":
             device = "cpu"
+        elif isinstance(device, str):
+            device = 0
         else:
             raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
         new_max_memory[device] = max_memory[device]
