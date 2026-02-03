@@ -447,6 +447,7 @@ def llm_load_model(
     device: str = "cpu",
     **kwargs,
 ):
+
     assert platform.lower() in [
         "hf",
         "model_scope",
@@ -460,11 +461,10 @@ def llm_load_model(
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
-
     from auto_round.utils.device import (
         _use_hpu_compile_mode,
         get_device_and_parallelism,
-        set_fake_cuda_device_capability,
+        override_cuda_device_capability,
     )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
@@ -497,14 +497,13 @@ def llm_load_model(
             )
         except ValueError as e:
             if "FP8 quantized" in str(e):
-                orig_func = set_fake_cuda_device_capability()
-                model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=trust_remote_code,
-                    device_map="auto" if use_auto_mapping else None,
-                )
-                torch.cuda.get_device_capability = orig_func
+                with override_cuda_device_capability():
+                    model = model_cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        torch_dtype=torch_dtype,
+                        trust_remote_code=trust_remote_code,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
@@ -557,7 +556,7 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
+    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -630,14 +629,13 @@ def mllm_load_model(
                 )
             except ValueError as e:
                 if "FP8 quantized" in str(e):
-                    orig_func = set_fake_cuda_device_capability()
-                    model = cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        trust_remote_code=trust_remote_code,
-                        torch_dtype=torch_dtype,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
-                    torch.cuda.get_device_capability = orig_func
+                    with override_cuda_device_capability():
+                        model = cls.from_pretrained(
+                            pretrained_model_name_or_path,
+                            trust_remote_code=trust_remote_code,
+                            torch_dtype=torch_dtype,
+                            device_map="auto" if use_auto_mapping else None,
+                        )
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 else:
                     raise
