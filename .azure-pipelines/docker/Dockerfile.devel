@@ -34,7 +34,6 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 ARG USER_ID=1000
 ARG GROUP_ID=1000
-ENV username=hostuser
 
 RUN set -eux; \
 if getent group "${GROUP_ID}" >/dev/null; then \
@@ -46,19 +45,19 @@ if id -u "${USER_ID}" >/dev/null 2>&1; then \
   echo "UID ${USER_ID} already exists; using existing user"; \
   EXISTING_USER=$(getent passwd "${USER_ID}" | cut -d: -f1); \
   usermod -g "${GROUP_ID}" "${EXISTING_USER}"; \
-  username="${EXISTING_USER}"; \
 else \
-  useradd -m -u "${USER_ID}" -g "${GROUP_ID}" ${username}; \
+  useradd -m -u "${USER_ID}" -g "${GROUP_ID}" hostuser; \
 fi
 
-USER ${username}
+RUN mkdir -p /workspace && chown ${USER_ID}:${GROUP_ID} /workspace
+USER ${USER_ID}
 
-ENV PATH="/home/${username}/.venv/bin:$PATH"
-ENV VIRTUAL_ENV="/home/${username}/.venv"
+ENV PATH="/workspace/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/workspace/.venv"
 ENV UV_NO_PROGRESS=1 \
     UV_LINK_MODE=copy
 
-RUN uv venv --python=3.12 /home/${username}/.venv
+RUN uv venv --python=3.12 /workspace/.venv
 RUN which python && python --version
 
-WORKDIR /home/${username}
+WORKDIR /workspace
