@@ -71,7 +71,7 @@ def save_module_weights(module: torch.nn.Module, save_path: str) -> dict:
 
     Args:
         module (torch.nn.Module): The module whose weights should be saved.
-        save_path (str): Path where the weights should be saved. 
+        save_path (str): Path where the weights should be saved.
                         This should be a unique path for each module.
 
     Returns:
@@ -97,36 +97,36 @@ def save_module_weights(module: torch.nn.Module, save_path: str) -> dict:
     if module is None:
         return {}
 
-    metadata = {'save_path': save_path}
+    metadata = {"save_path": save_path}
     tensors_to_save = {}
 
     # Save weight if it exists
-    if hasattr(module, 'weight') and module.weight is not None:
+    if hasattr(module, "weight") and module.weight is not None:
         weight = module.weight
-        if weight.device.type != 'meta' and weight.numel() > 0:
-            tensors_to_save['weight'] = weight.detach().cpu()
-            metadata['has_weight'] = True
-            metadata['weight_shape'] = tuple(weight.shape)
-            metadata['weight_dtype'] = weight.dtype
-            metadata['weight_device'] = str(weight.device)
+        if weight.device.type != "meta" and weight.numel() > 0:
+            tensors_to_save["weight"] = weight.detach().cpu()
+            metadata["has_weight"] = True
+            metadata["weight_shape"] = tuple(weight.shape)
+            metadata["weight_dtype"] = weight.dtype
+            metadata["weight_device"] = str(weight.device)
         else:
-            metadata['has_weight'] = False
+            metadata["has_weight"] = False
     else:
-        metadata['has_weight'] = False
+        metadata["has_weight"] = False
 
     # Save bias if it exists
-    if hasattr(module, 'bias') and module.bias is not None:
+    if hasattr(module, "bias") and module.bias is not None:
         bias = module.bias
-        if bias.device.type != 'meta' and bias.numel() > 0:
-            tensors_to_save['bias'] = bias.detach().cpu()
-            metadata['has_bias'] = True
-            metadata['bias_shape'] = tuple(bias.shape)
-            metadata['bias_dtype'] = bias.dtype
-            metadata['bias_device'] = str(bias.device)
+        if bias.device.type != "meta" and bias.numel() > 0:
+            tensors_to_save["bias"] = bias.detach().cpu()
+            metadata["has_bias"] = True
+            metadata["bias_shape"] = tuple(bias.shape)
+            metadata["bias_dtype"] = bias.dtype
+            metadata["bias_device"] = str(bias.device)
         else:
-            metadata['has_bias'] = False
+            metadata["has_bias"] = False
     else:
-        metadata['has_bias'] = False
+        metadata["has_bias"] = False
 
     # Save to disk
     if tensors_to_save:
@@ -155,48 +155,48 @@ def load_module_weights(module: torch.nn.Module, metadata: dict) -> None:
         >>> load_module_weights(module, metadata)
         >>> # Now module's weights are restored
     """
-    if module is None or not metadata or 'save_path' not in metadata:
+    if module is None or not metadata or "save_path" not in metadata:
         return
 
-    save_path = metadata['save_path']
+    save_path = metadata["save_path"]
     if not os.path.exists(save_path):
         logger.warning(f"Cannot load weights: file {save_path} does not exist")
         return
 
     # Load tensors from disk
     try:
-        tensors = torch.load(save_path, map_location='cpu')
+        tensors = torch.load(save_path, map_location="cpu")
     except Exception as e:
         logger.warning(f"Failed to load weights from {save_path}: {e}")
         return
 
     # Restore weight
-    if metadata.get('has_weight', False) and 'weight' in tensors:
-        weight = tensors['weight']
-        target_device = metadata.get('weight_device', 'cpu')
-        target_dtype = metadata.get('weight_dtype', weight.dtype)
+    if metadata.get("has_weight", False) and "weight" in tensors:
+        weight = tensors["weight"]
+        target_device = metadata.get("weight_device", "cpu")
+        target_dtype = metadata.get("weight_dtype", weight.dtype)
 
         # Move to target device and dtype
         weight = weight.to(device=target_device, dtype=target_dtype)
 
         # Set the weight back to the module
-        if hasattr(module, 'weight'):
+        if hasattr(module, "weight"):
             if isinstance(module.weight, torch.nn.Parameter):
                 module.weight = torch.nn.Parameter(weight, requires_grad=module.weight.requires_grad)
             else:
                 module.weight = weight
 
     # Restore bias
-    if metadata.get('has_bias', False) and 'bias' in tensors:
-        bias = tensors['bias']
-        target_device = metadata.get('bias_device', 'cpu')
-        target_dtype = metadata.get('bias_dtype', bias.dtype)
+    if metadata.get("has_bias", False) and "bias" in tensors:
+        bias = tensors["bias"]
+        target_device = metadata.get("bias_device", "cpu")
+        target_dtype = metadata.get("bias_dtype", bias.dtype)
 
         # Move to target device and dtype
         bias = bias.to(device=target_device, dtype=target_dtype)
 
         # Set the bias back to the module
-        if hasattr(module, 'bias'):
+        if hasattr(module, "bias"):
             if isinstance(module.bias, torch.nn.Parameter):
                 module.bias = torch.nn.Parameter(bias, requires_grad=module.bias.requires_grad)
             else:
@@ -211,11 +211,11 @@ def clear_module_weights(module: torch.nn.Module, to_meta: bool = False) -> None
 
     Args:
         module (torch.nn.Module): The module whose weights should be cleared.
-        to_meta (bool): If True, move tensors to meta device. 
+        to_meta (bool): If True, move tensors to meta device.
                        If False, set them to empty tensors. Default is False.
 
     Note:
-        This function should typically be called after save_module_weights() 
+        This function should typically be called after save_module_weights()
         to preserve the ability to restore weights later.
 
     Example:
@@ -230,30 +230,28 @@ def clear_module_weights(module: torch.nn.Module, to_meta: bool = False) -> None
 
     with torch.no_grad():
         # Clear weight
-        if hasattr(module, 'weight') and module.weight is not None:
+        if hasattr(module, "weight") and module.weight is not None:
             if to_meta:
                 # Move to meta device
-                if module.weight.device.type != 'meta':
+                if module.weight.device.type != "meta":
                     module.weight = torch.nn.Parameter(
-                        torch.empty_like(module.weight, device='meta'),
-                        requires_grad=module.weight.requires_grad
+                        torch.empty_like(module.weight, device="meta"), requires_grad=module.weight.requires_grad
                     )
             else:
                 # Use clean_module_parameter for safety
-                clean_module_parameter(module, 'weight')
+                clean_module_parameter(module, "weight")
 
         # Clear bias
-        if hasattr(module, 'bias') and module.bias is not None:
+        if hasattr(module, "bias") and module.bias is not None:
             if to_meta:
                 # Move to meta device
-                if module.bias.device.type != 'meta':
+                if module.bias.device.type != "meta":
                     module.bias = torch.nn.Parameter(
-                        torch.empty_like(module.bias, device='meta'),
-                        requires_grad=module.bias.requires_grad
+                        torch.empty_like(module.bias, device="meta"), requires_grad=module.bias.requires_grad
                     )
             else:
                 # Use clean_module_parameter for safety
-                clean_module_parameter(module, 'bias')
+                clean_module_parameter(module, "bias")
 
 
 def convert_dtype_str2torch(str_dtype):
