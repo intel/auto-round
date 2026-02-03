@@ -176,7 +176,7 @@ MXFP4 = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp",
         "act_group_size": 32,
         "act_sym": True,
-        "act_dynamic":True,
+        "act_dynamic": True,
     }
 )
 
@@ -189,7 +189,7 @@ MXFP4_RCEIL = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
         "act_sym": True,
-        "act_dynamic":True,
+        "act_dynamic": True,
     }
 )
 
@@ -203,7 +203,7 @@ MXFP8 = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp",
         "act_group_size": 32,
         "act_sym": True,
-        "act_dynamic":True,
+        "act_dynamic": True,
     }
 )
 
@@ -216,7 +216,7 @@ MXFP8_RCEIL = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
         "act_sym": True,
-        "act_dynamic":True,
+        "act_dynamic": True,
     }
 )
 
@@ -230,7 +230,7 @@ NVFP4 = QuantizationScheme.from_dict(
         "act_data_type": "nv_fp4_with_static_gs",
         "act_group_size": 16,
         "act_sym": True,
-        "act_dynamic":True,
+        "act_dynamic": True,
     }
 )
 
