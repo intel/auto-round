@@ -1451,6 +1451,7 @@ class BaseCompressor(object):
                 materialize_model_(block)
                 block.to("cpu")
                 convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+                self._register_act_max_hook(block)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
