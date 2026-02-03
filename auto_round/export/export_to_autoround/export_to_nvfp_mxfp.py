@@ -77,6 +77,7 @@ def pack_layer(name, model, backend, device=None):
         if input_global_scale is None:
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
+
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")
             setattr(layer, "input_global_scale", input_global_scale)
             delattr(layer, "act_max")
