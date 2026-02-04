@@ -248,6 +248,32 @@ def _check_accelerate_version():
         )
 
 
+_MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+
+
+def _is_mxfp4_model(model_path, trust_remote_code=True):
+    """Check if a model is an MXFP4 quantized model supported for direct loading.
+
+    Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
+    adding zero overhead to non-MXFP4 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        return False
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    model_type = getattr(config, "model_type", "")
+    return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -284,6 +310,18 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    load_kwargs = {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": trust_remote_code,
+        "device_map": "auto" if use_auto_mapping else None,
+    }
+    if is_mxfp4:
+        from transformers import Mxfp4Config
+
+        load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
+        logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
+
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -295,29 +333,14 @@ def llm_load_model(
     if is_hpex_available():
         # For loading FP8 model on HPU
         with fake_cuda_for_hpu(), fake_triton_for_hpu(), override_cuda_device_capability():
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
     else:
         try:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
         except ValueError as e:
             if "FP8 quantized" in str(e):
                 with override_cuda_device_capability():
-                    model = model_cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
+                    model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
@@ -325,10 +348,7 @@ def llm_load_model(
         except OSError as e:
             logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=False,
-                device_map="auto" if use_auto_mapping else None,
+                pretrained_model_name_or_path, **{**load_kwargs, "trust_remote_code": False}
             )
 
     model = model.eval()
