@@ -296,12 +296,12 @@ def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[s
     return device, parallelism
 
 
-def set_cuda_visible_devices(device:str):
-    if device=="cuda":
+def set_cuda_visible_devices(device: str):
+    if device == "cuda":
         devices = ["0"]
     else:
         devices = device.replace(" ", "").split(",")
-    devices = [ device.split(":")[-1] for device in devices]
+    devices = [device.split(":")[-1] for device in devices]
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]

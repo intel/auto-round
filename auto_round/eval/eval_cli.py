@@ -20,10 +20,11 @@ import torch.nn
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
+    dispatch_model_block_wise,
     get_device_and_parallelism,
     get_device_str,
     get_model_dtype,
-    set_cuda_visible_devices, dispatch_model_block_wise,
+    set_cuda_visible_devices,
 )
 
 
@@ -297,7 +298,7 @@ def eval_task_by_task(
         if is_gguf_file:
             parallelism = False
     if isinstance(model, torch.nn.Module):
-        dispatch_model_block_wise(model,device_map="auto") # As we set visible device before, so explcits
+        dispatch_model_block_wise(model, device_map="auto")  # As we set visible device before, so explcits
 
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if mllm:
