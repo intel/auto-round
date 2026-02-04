@@ -23,7 +23,7 @@ uv pip list
 rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
-export LD_LIBRARY_PATH=/workspace/.venv/lib/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export FORCE_BF16=1
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
