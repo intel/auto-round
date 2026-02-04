@@ -397,6 +397,30 @@ def mllm_load_model(
     else:
         model_type = None
 
+    if model_type == "qwen3_omni_moe":
+        # TODO: remove once transformers fix the bug
+        # https://github.com/huggingface/transformers/issues/43684
+        # https://github.com/huggingface/transformers/pull/43593
+        # Workaround for transformers bug: Qwen3OmniMoeTalkerCodePredictorConfig.__init__
+        # accesses self.use_sliding_window before it's set as an attribute.
+        # Monkey-patch the config class to fix the initialization order.
+        try:
+            from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+                Qwen3OmniMoeTalkerCodePredictorConfig,
+            )
+
+            _original_code_predictor_init = Qwen3OmniMoeTalkerCodePredictorConfig.__init__
+
+            def _patched_code_predictor_init(self, *args, **kwargs):
+                # Pre-set use_sliding_window before calling original __init__
+                use_sliding_window = kwargs.get("use_sliding_window", False)
+                object.__setattr__(self, "use_sliding_window", use_sliding_window)
+                _original_code_predictor_init(self, *args, **kwargs)
+
+            Qwen3OmniMoeTalkerCodePredictorConfig.__init__ = _patched_code_predictor_init
+        except Exception:
+            pass
+
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
         from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401
