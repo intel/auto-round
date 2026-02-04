@@ -228,11 +228,9 @@ class TestAutoRound:
             device_map="auto",
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        from auto_round.eval.evaluation import simple_evaluate_user_model
+        from ...helpers import evaluate_accuracy
 
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.32
+        evaluate_accuracy(model, tokenizer, threshold=0.32, batch_size=16)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_autoround_format_vllm(self, tiny_opt_model_path, dataloader):

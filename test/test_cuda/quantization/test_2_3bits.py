@@ -1,5 +1,4 @@
 import copy
-import re
 import shutil
 
 import pytest
@@ -9,25 +8,13 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
 from auto_round.testing_utils import require_autogptq, require_greater_than_050, require_greater_than_051
 
-from ...helpers import get_model_path, model_infer
-
-
-def get_accuracy(data):
-    match = re.search(r"\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|", data)
-
-    if match:
-        accuracy = float(match.group(1))
-        return accuracy
-    else:
-        return 0.0
+from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRound:
     save_dir = "./saved"
-    tasks = "lambada_openai"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -56,9 +43,7 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.3
+        evaluate_accuracy(model, tokenizer, threshold=0.3, batch_size=16)
 
     @require_greater_than_051
     def test_3bits_asym_autoround(self):
@@ -67,17 +52,7 @@ class TestAutoRound:
         autoround = AutoRound(model_name, bits=bits, sym=sym)
         autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(
-            model="hf",
-            model_args=model_args,
-            #   tasks="arc_easy",
-            tasks=self.tasks,
-            batch_size="auto",
-        )
-
-        ## 0.3423
-        accuracy = res["results"]["lambada_openai"]["acc,none"]
-        assert accuracy > 0.32
+        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.32, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_greater_than_050
@@ -89,10 +64,7 @@ class TestAutoRound:
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(model="hf", model_args=model_args, tasks=self.tasks, batch_size="auto")
-        res = make_table(res)  ##0.2212 0.1844
-        accuracy = get_accuracy(res)
-        assert accuracy > 0.18
+        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.18, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_greater_than_050
@@ -104,16 +76,10 @@ class TestAutoRound:
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(model="hf", model_args=model_args, tasks=self.tasks, batch_size="auto")
-        res = make_table(res)  ##0.1745
-        accuracy = get_accuracy(res)
-        assert accuracy > 0.17
+        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.17, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
         autoround.save_quantized(self.save_dir, format="auto_gptq", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(model="hf", model_args=model_args, tasks=self.tasks, batch_size="auto")
-        res = make_table(res)  ##0.1745
-        accuracy = get_accuracy(res)
-        assert accuracy > 0.17
+        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.17, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
