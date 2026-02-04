@@ -85,7 +85,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     return tensor
 
 
-def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs):
+def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", tensor_max=None, **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -113,11 +113,21 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
-    max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    # max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+
     if isinstance(max_scale, torch.Tensor):
-        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+        max_scale = max_scale.to(tensor.device)
+    if isinstance(v, torch.Tensor):
+        v = v.to(tensor.device)
+
+    if tensor_max is None:
+        max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
+    elif isinstance(tensor_max, torch.Tensor):
+        max_tensor = tensor_max.to(tensor.device) * max_scale
     else:
-        max_val *= max_scale
+        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+
+    max_val = max_tensor.unsqueeze(dim=-1)
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
@@ -136,7 +146,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
 
 
 def quant_mx_rceil(
-    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", tensor_max=None, **kwargs
 ):
     """Quantize the given tensor using the specified parameters.
 
@@ -165,11 +175,21 @@ def quant_mx_rceil(
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
-    max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    # max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+
     if isinstance(max_scale, torch.Tensor):
-        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+        max_scale = max_scale.to(tensor.device)
+    if isinstance(v, torch.Tensor):
+        v = v.to(tensor.device)
+
+    if tensor_max is None:
+        max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
+    elif isinstance(tensor_max, torch.Tensor):
+        max_tensor = tensor_max.to(tensor.device) * max_scale
     else:
-        max_val *= max_scale
+        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+
+    max_val = max_tensor.unsqueeze(dim=-1)
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / max_norm)))
