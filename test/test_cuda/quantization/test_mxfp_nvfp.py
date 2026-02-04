@@ -28,8 +28,7 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, mock_cuda_capability):
-        # mock_cuda_capability is not used but needed to enable fp8 support in torch
+    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         tiny_model_path = "./tmp/tiny_qwen3_fp8"
         save_tiny_model(model_name, tiny_model_path)
