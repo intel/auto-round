@@ -3,11 +3,8 @@ import shutil
 
 import pytest
 import torch
-import transformers
-from compressed_tensors.linear.compressed_linear import CompressedLinear
 from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.integrations import FP8Linear
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
@@ -168,10 +165,10 @@ class TestAutoRound:
 class TestFP8Linear:
     def test_fp8_input(self, mock_fp8_capable_device):
         model = get_tiny_model(get_model_path("qwen/Qwen3-0.6B-FP8"))
-        assert isinstance(model.model.layers[0].mlp.up_proj, FP8Linear), "Model does not contain FP8Linear layers"
+        assert (
+            type(model.model.layers[0].mlp.up_proj).__name__ == "FP8Linear"
+        ), "Model does not contain FP8Linear layers"
         detected_types = check_and_mark_quantized_module(model)
         assert ModuleWeightType.FP8 in detected_types
         model = convert_module_to_hp_if_necessary(model)
-        assert isinstance(
-            model.model.layers[0].mlp.up_proj, torch.nn.Linear
-        ), "FP8Linear layer was not converted to Linear"
+        assert type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear, "FP8Linear layer was not converted to Linear"

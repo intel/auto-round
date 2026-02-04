@@ -664,6 +664,7 @@ class MXFP8Handler(WeightTypeHandler):
         # Get weight and scale from layer
         weight = layer.weight
         weight_scale = getattr(layer, "weight_scale", None)
+        weight_scale = weight_scale.to(torch.uint8)
 
         if weight is None or weight_scale is None:
             raise ValueError("MXFP8 layer must have weight and weight_scale attributes")
