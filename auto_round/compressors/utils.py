@@ -990,6 +990,7 @@ def rank_in_ddp() -> int:
         return 0
     return torch.distributed.get_rank()
 
+
 class DDPIndexSampler(IndexSampler):
 
     def __init__(self, nsamples: int, batch_size: int, iters: int) -> None:
