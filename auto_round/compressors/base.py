@@ -104,21 +104,23 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import (
-    cleanup_cpu_offload_dir,
     clear_memory_if_reached_threshold,
-    discard_offloaded_block,
-    estimate_block_size_gb,
     estimate_inputs_size_gb,
     estimate_model_size_gb,
     estimate_tensor_size_gb,
     get_major_device,
+    parse_available_devices,
+    set_auto_device_map_for_block_with_tuning,
+    set_non_auto_device_map,
+)
+from auto_round.utils.model import (
+    cleanup_cpu_offload_dir,
+    discard_offloaded_block,
+    estimate_block_size_gb,
     init_cpu_offload_dir,
     load_offloaded_block_weights,
     offload_block_weights,
-    parse_available_devices,
     restore_offloaded_blocks,
-    set_auto_device_map_for_block_with_tuning,
-    set_non_auto_device_map,
     stream_offload_blocks,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
@@ -1548,7 +1550,7 @@ class BaseCompressor(object):
                     # some modules may have been flushed and set to meta, so we could not  move to gpu
                     mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage:
-                    self._offload_block_weights(block_name, block)
+                    offload_block_weights(self, block_name, block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1566,47 +1568,6 @@ class BaseCompressor(object):
             # clear_memory(device_list=self.device_list)
         # if self.is_immediate_saving:
         #     shard_writer(self, is_finalize=True)
-
-    def _estimate_tensor_size_gb(self, tensor) -> float:
-        """Estimate the size of a tensor in GB."""
-        return estimate_tensor_size_gb(tensor)
-
-    def _estimate_inputs_size_gb(self, all_inputs: dict) -> float:
-        """Estimate the total size of calibration inputs in GB."""
-        return estimate_inputs_size_gb(all_inputs)
-
-    def _estimate_model_size_gb(self) -> float:
-        """Estimate the model weights size in GB."""
-        return estimate_model_size_gb(self.model)
-
-    def _estimate_block_size_gb(self, block: torch.nn.Module) -> float:
-        """Estimate a block's weights size in GB."""
-        return estimate_block_size_gb(block)
-
-    def _init_cpu_offload_dir(self) -> Optional[str]:
-        return init_cpu_offload_dir(self)
-
-    def _offload_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        offload_block_weights(self, block_name, block)
-
-    def _stream_offload_blocks(self, all_blocks: list[list[str]]) -> None:
-        """Offload all block weights to disk and clear from memory."""
-        stream_offload_blocks(self, all_blocks)
-
-    def _load_offloaded_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        """Load block weights from disk back into memory."""
-        load_offloaded_block_weights(self, block_name, block)
-
-    def _discard_offloaded_block(self, block_name: str) -> None:
-        """Discard the original offload file and re-offload quantized weights."""
-        discard_offloaded_block(self, block_name)
-
-    def _restore_offloaded_blocks(self) -> None:
-        """Restore all offloaded block weights back to memory."""
-        restore_offloaded_blocks(self)
-
-    def _cleanup_cpu_offload_dir(self) -> None:
-        cleanup_cpu_offload_dir(self)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1799,7 +1760,7 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         # Log memory breakdown for calibration inputs
         if self.low_cpu_mem_usage:
-            inputs_size_gb = self._estimate_inputs_size_gb(all_inputs)
+            inputs_size_gb = estimate_inputs_size_gb(all_inputs)
             logger.info(f"[Memory] calibration inputs size: {inputs_size_gb:.2f} GB")
         all_q_inputs = None
         if is_quantized_embedding:
@@ -1815,10 +1776,10 @@ class BaseCompressor(object):
         logger.info("caching done")
         # Log memory breakdown for model weights
         if self.low_cpu_mem_usage:
-            model_size_gb = self._estimate_model_size_gb()
+            model_size_gb = estimate_model_size_gb(self.model)
             logger.info(f"[Memory] model weights size: {model_size_gb:.2f} GB")
         if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
-            self._stream_offload_blocks(all_blocks)
+            stream_offload_blocks(self, all_blocks)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1865,8 +1826,8 @@ class BaseCompressor(object):
             shard_writer(self, is_finalize=True)
 
         if self.low_cpu_mem_usage:
-            self._restore_offloaded_blocks()
-            self._cleanup_cpu_offload_dir()
+            restore_offloaded_blocks(self)
+            cleanup_cpu_offload_dir(self)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -2966,7 +2927,7 @@ class BaseCompressor(object):
                     and self.cpu_stream_offload_blocks
                     and not hasattr(self, "_logged_output_size")
                 ):
-                    output_size = self._estimate_tensor_size_gb(output)
+                    output_size = estimate_tensor_size_gb(output)
                     logger.info(f"[Memory] block output cache size: {output_size:.2f} GB")
                     self._logged_output_size = True
 
@@ -3269,8 +3230,8 @@ class BaseCompressor(object):
 
         # Log detailed memory breakdown for first block
         if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
-            input_ids_size = self._estimate_tensor_size_gb(input_ids)
-            input_others_size = self._estimate_tensor_size_gb(input_others)
+            input_ids_size = estimate_tensor_size_gb(input_ids)
+            input_others_size = estimate_tensor_size_gb(input_others)
             logger.info(
                 f"[Memory] input_ids size: {input_ids_size:.2f} GB, input_others size: {input_others_size:.2f} GB"
             )
@@ -3293,13 +3254,13 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
                 if nblocks == 1:
-                    self._load_offloaded_block_weights(n, get_module(model, n))
+                    load_offloaded_block_weights(self, n, get_module(model, n))
                     if i == 0:  # Log only for first block
-                        block_size = self._estimate_block_size_gb(get_module(model, n))
+                        block_size = estimate_block_size_gb(get_module(model, n))
                         logger.info(f"[Memory] loaded block weights size: {block_size:.2f} GB")
                 else:
                     for name in names:
-                        self._load_offloaded_block_weights(name, get_module(model, name))
+                        load_offloaded_block_weights(self, name, get_module(model, name))
 
             m.config = model.config if hasattr(model, "config") else None
 
@@ -3313,16 +3274,16 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.cpu_stream_offload_blocks:
                 if nblocks == 1:
-                    self._offload_block_weights(n, get_module(model, n))
+                    offload_block_weights(self, n, get_module(model, n))
                 else:
                     for name in names:
-                        self._offload_block_weights(name, get_module(model, name))
+                        offload_block_weights(self, name, get_module(model, name))
             if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
                 if nblocks == 1:
-                    self._discard_offloaded_block(n)
+                    discard_offloaded_block(self, n)
                 else:
                     for name in names:
-                        self._discard_offloaded_block(name)
+                        discard_offloaded_block(self, name)
             if hasattr(model, "config"):
                 del m.config
             if self.is_immediate_packing:

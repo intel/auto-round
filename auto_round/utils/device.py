@@ -15,8 +15,6 @@ import functools
 import gc
 import os
 import re
-import shutil
-import tempfile
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
@@ -30,11 +28,9 @@ import torch
 from auto_round.logger import logger
 from auto_round.utils.model import (
     check_to_quantized,
-    clear_module_weights,
     get_block_names,
     get_layer_features,
     get_module,
-    save_module_weights,
 )
 
 # Note on HPU usage:
@@ -538,175 +534,6 @@ def estimate_model_size_gb(model: torch.nn.Module) -> float:
         if param.numel() > 0:  # Skip empty tensors
             total += param.numel() * param.element_size() / (1024**3)
     return total
-
-
-def estimate_block_size_gb(block: torch.nn.Module) -> float:
-    """Estimate a block's weights size in GB."""
-    total = 0.0
-    for param in block.parameters():
-        if param.numel() > 0:
-            total += param.numel() * param.element_size() / (1024**3)
-    return total
-
-
-def init_cpu_offload_dir(compressor: Any) -> Optional[str]:
-    if not compressor.low_cpu_mem_usage:
-        return None
-    if compressor._cpu_offload_tempdir is None:
-        compressor._cpu_offload_tempdir = tempfile.mkdtemp(prefix="autoround_cpu_offload_")
-    return compressor._cpu_offload_tempdir
-
-
-def offload_block_weights(compressor: Any, block_name: str, block: torch.nn.Module) -> None:
-    if not compressor.low_cpu_mem_usage:
-        return
-    offload_dir = init_cpu_offload_dir(compressor)
-    if offload_dir is None:
-        return
-    safe_name = block_name.replace(".", "_")
-    save_path = os.path.join(offload_dir, f"{safe_name}.pt")
-    metadata = save_module_weights(block, save_path)
-    compressor._offloaded_blocks[block_name] = metadata
-    clear_module_weights(block)
-
-
-def stream_offload_blocks(compressor: Any, all_blocks: list[list[str]]) -> None:
-    """Offload all block weights to disk and clear from memory."""
-    if not (compressor.low_cpu_mem_usage and compressor.cpu_stream_offload_blocks):
-        return
-    offload_dir = init_cpu_offload_dir(compressor)
-    if offload_dir is None:
-        return
-    logger.info("stream offloading block weights to disk...")
-    total_offloaded_gb = 0.0
-    for block_names in all_blocks:
-        for block_name in block_names:
-            if block_name in compressor._offloaded_blocks:
-                continue
-            block = get_module(compressor.model, block_name)
-            if block is None:
-                continue
-            block_size_gb = estimate_block_size_gb(block)
-            total_offloaded_gb += block_size_gb
-            safe_name = block_name.replace(".", "_")
-            save_path = os.path.join(offload_dir, f"{safe_name}.pt")
-            # Save entire block state_dict (all submodule weights)
-            state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
-            torch.save(state_dict, save_path)
-            compressor._offloaded_blocks[block_name] = {"save_path": save_path}
-            # Clear all submodule weights
-            for submodule in block.modules():
-                if hasattr(submodule, "weight") and submodule.weight is not None:
-                    clear_module_weights(submodule)
-                if hasattr(submodule, "bias") and submodule.bias is not None:
-                    clear_module_weights(submodule)
-    clear_memory(device_list=compressor.device_list)
-    logger.info(f"stream offload done, offloaded {total_offloaded_gb:.2f} GB of block weights")
-
-
-def load_offloaded_block_weights(compressor: Any, block_name: str, block: torch.nn.Module) -> None:
-    """Load block weights from disk back into memory."""
-    if not (compressor.low_cpu_mem_usage and compressor.cpu_stream_offload_blocks):
-        return
-    metadata = compressor._offloaded_blocks.get(block_name)
-    if not metadata:
-        return
-    save_path = metadata.get("save_path")
-    if not save_path or not os.path.exists(save_path):
-        logger.warning(f"Cannot load block weights: file {save_path} does not exist")
-        return
-    try:
-        state_dict = torch.load(save_path, map_location="cpu")
-        # Manually assign parameters to handle empty tensor replacement
-        for name, param in state_dict.items():
-            parts = name.split(".")
-            target = block
-            for part in parts[:-1]:
-                target = getattr(target, part)
-            param_name = parts[-1]
-            if hasattr(target, param_name):
-                old_param = getattr(target, param_name)
-                if isinstance(old_param, torch.nn.Parameter):
-                    setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
-                else:
-                    setattr(target, param_name, param)
-    except Exception as e:
-        logger.warning(f"Failed to load block weights from {save_path}: {e}")
-
-
-def discard_offloaded_block(compressor: Any, block_name: str) -> None:
-    """Discard the original offload file and re-offload quantized weights."""
-    if not (compressor.low_cpu_mem_usage and compressor.cpu_stream_offload_blocks):
-        return
-    metadata = compressor._offloaded_blocks.pop(block_name, None)
-    if not metadata:
-        return
-    save_path = metadata.get("save_path")
-    if save_path and os.path.exists(save_path):
-        try:
-            os.remove(save_path)
-        except Exception as e:
-            logger.warning(f"Failed to remove offloaded block file {save_path}: {e}")
-
-    # Re-offload the quantized block weights to disk
-    block = get_module(compressor.model, block_name)
-    if block is None:
-        return
-    offload_dir = init_cpu_offload_dir(compressor)
-    if offload_dir is None:
-        return
-    safe_name = block_name.replace(".", "_")
-    new_save_path = os.path.join(offload_dir, f"{safe_name}_quantized.pt")
-    try:
-        state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
-        torch.save(state_dict, new_save_path)
-        compressor._offloaded_blocks[block_name] = {"save_path": new_save_path, "quantized": True}
-        # Clear all submodule weights
-        for submodule in block.modules():
-            if hasattr(submodule, "weight") and submodule.weight is not None:
-                clear_module_weights(submodule)
-            if hasattr(submodule, "bias") and submodule.bias is not None:
-                clear_module_weights(submodule)
-    except Exception as e:
-        logger.warning(f"Failed to re-offload quantized block {block_name}: {e}")
-
-
-def restore_offloaded_blocks(compressor: Any) -> None:
-    """Restore all offloaded block weights back to memory."""
-    if not compressor._offloaded_blocks:
-        return
-    for block_name, metadata in list(compressor._offloaded_blocks.items()):
-        try:
-            block = get_module(compressor.model, block_name)
-            save_path = metadata.get("save_path")
-            if not save_path or not os.path.exists(save_path):
-                logger.warning(f"Cannot restore block {block_name}: file {save_path} does not exist")
-                continue
-            state_dict = torch.load(save_path, map_location="cpu")
-            # Manually assign parameters to handle empty tensor replacement
-            for name, param in state_dict.items():
-                parts = name.split(".")
-                target = block
-                for part in parts[:-1]:
-                    target = getattr(target, part)
-                param_name = parts[-1]
-                if hasattr(target, param_name):
-                    old_param = getattr(target, param_name)
-                    if isinstance(old_param, torch.nn.Parameter):
-                        setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
-                    else:
-                        setattr(target, param_name, param)
-        except Exception as e:
-            logger.warning(f"Failed to restore offloaded block {block_name}: {e}")
-
-
-def cleanup_cpu_offload_dir(compressor: Any) -> None:
-    if compressor._cpu_offload_tempdir and os.path.isdir(compressor._cpu_offload_tempdir):
-        try:
-            shutil.rmtree(compressor._cpu_offload_tempdir)
-        except Exception as e:
-            logger.warning(f"Failed to cleanup cpu offload dir {compressor._cpu_offload_tempdir}: {e}")
-    compressor._cpu_offload_tempdir = None
 
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
