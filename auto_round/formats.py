@@ -48,6 +48,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     logger,
+    unsupported_meta_device,
 )
 
 
@@ -307,8 +308,12 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
+        if not unsupported_meta_device(model):
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+        elif hasattr(model, "config") and model.config is not None:
+            model.config.save_pretrained(output_dir)
+
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
         processor = kwargs.get("processor", None)
