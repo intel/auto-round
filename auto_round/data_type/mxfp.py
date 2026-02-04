@@ -140,7 +140,7 @@ def quant_mx(
     if max_val.dim() < tensor.dim():
         max_val = max_val.unsqueeze(dim=-1)
 
-    max_val *= max_scale
+    max_val = max_val * max_scale.unsqueeze(dim=-1)
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
