@@ -20,14 +20,24 @@ parameters:
   - name: imageSource
     type: string
     default: "build"
+  - name: imageName
+    type: string
+    default: "auto-round"
+  - name: imageTag
+    type: string
+    default: "py312"
+  - name: dockerFileName
+    type: string
+    default: "Dockerfile"
+
 
 steps:
   - template: docker-template.yml
     parameters:
       dockerConfigName: ${{ parameters.dockerConfigName }}
-      repoName: "auto-round"
-      repoTag: "py312"
-      dockerFileName: "Dockerfile"
+      repoName: ${{ parameters.imageName }}
+      repoTag: ${{ parameters.imageTag }}
+      dockerFileName: ${{ parameters.dockerFileName }}
       containerName: ${{ parameters.utContainerName }}
       repo: ${{ parameters.repo }}
       imageSource: ${{ parameters.imageSource }}

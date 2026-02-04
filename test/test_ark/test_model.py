@@ -1,5 +1,5 @@
 import shutil
-import sys
+import os
 
 import pytest
 import torch
@@ -31,6 +31,13 @@ class TestAutoRoundARKBackend:
                 pytest.skip("No XPU device")
             if sym is False:
                 pytest.skip("No asym support for XPU")
+
+        # Skip tests in CI based on environment variables, workaround for ark LD_PRELOAD issue
+        if device == "cpu" and os.environ.get("SKIP_CPU"):
+            pytest.skip("Skip CPU test in CI")
+        if device == "xpu" and os.environ.get("SKIP_XPU"):
+            pytest.skip("Skip XPU test in CI")
+
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if fast_cfg:

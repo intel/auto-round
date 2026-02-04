@@ -27,8 +27,6 @@ pr:
 pool: GAUDI
 
 variables:
-  IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"

@@ -26,7 +26,8 @@ pool: B60
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312"
+  IMAGE_TAG: "py312-xpu"
+  DOCKERFILE_NAME: "Dockerfile_xpu"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
@@ -46,6 +47,8 @@ stages:
               utScriptFileName: "run_ut_xpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
+              imageTag: $(IMAGE_TAG)
+              dockerFileName: $(DOCKERFILE_NAME)
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'

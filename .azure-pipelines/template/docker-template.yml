@@ -7,7 +7,7 @@ parameters:
     default: "auto-round"
   - name: repoTag
     type: string
-    default: "py310"
+    default: "py312"
   - name: dockerFileName
     type: string
     default: "Dockerfile"
