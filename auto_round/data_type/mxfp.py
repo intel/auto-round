@@ -131,13 +131,16 @@ def quant_mx(
         v = v.to(tensor.device)
 
     if tensor_max is None:
-        max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
+        max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     elif isinstance(tensor_max, torch.Tensor):
-        max_tensor = tensor_max.to(tensor.device) * max_scale
+        max_val = tensor_max.to(tensor.device)
     else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+        max_val = torch.tensor(tensor_max, device=tensor.device)
 
-    max_val = max_tensor.unsqueeze(dim=-1)
+    if max_val.dim() < tensor.dim():
+        max_val = max_val.unsqueeze(-1)
+
+    max_val *= max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
@@ -201,13 +204,16 @@ def quant_mx_rceil(
         v = v.to(tensor.device)
 
     if tensor_max is None:
-        max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
+        max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     elif isinstance(tensor_max, torch.Tensor):
-        max_tensor = tensor_max.to(tensor.device) * max_scale
+        max_val = tensor_max.to(tensor.device)
     else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+        max_val = torch.tensor(tensor_max, device=tensor.device)
 
-    max_val = max_tensor.unsqueeze(dim=-1)
+    if max_val.dim() < tensor.dim():
+        max_val = max_val.unsqueeze(-1)
+
+    max_val *= max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / max_norm)))
