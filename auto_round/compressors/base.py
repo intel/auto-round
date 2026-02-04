@@ -15,9 +15,7 @@
 import copy
 import os
 import re
-import shutil
 import sys
-import tempfile
 import time
 import traceback
 from collections import defaultdict
@@ -28,13 +26,11 @@ from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
-import transformers
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
-from packaging import version
 from torch import autocast
 from tqdm import tqdm
-from transformers import AutoConfig, set_seed
+from transformers import set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -80,7 +76,6 @@ from auto_round.utils import (
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
-    clear_module_weights,
     compile_func,
     convert_dtype_str2torch,
     convert_module_to_hp_if_necessary,
@@ -102,7 +97,6 @@ from auto_round.utils import (
     load_module_weights,
     memory_monitor,
     mv_module_from_gpu,
-    save_module_weights,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -110,11 +104,22 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import (
+    cleanup_cpu_offload_dir,
     clear_memory_if_reached_threshold,
+    discard_offloaded_block,
+    estimate_block_size_gb,
+    estimate_inputs_size_gb,
+    estimate_model_size_gb,
+    estimate_tensor_size_gb,
     get_major_device,
+    init_cpu_offload_dir,
+    load_offloaded_block_weights,
+    offload_block_weights,
     parse_available_devices,
+    restore_offloaded_blocks,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
+    stream_offload_blocks,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -259,6 +264,16 @@ class BaseCompressor(object):
             ...     # ...
             ... }
         """
+        scheme_fields = [f.name for f in fields(QuantizationScheme)]
+
+        # 1. Pre-extract user-specified overrides from kwargs
+        # This ensures we know exactly what the user wants to "force"
+        self.user_scheme_overrides = {}
+        for k in scheme_fields:
+            if k in kwargs:
+                value = kwargs.pop(k)
+                if value is not None:
+                    self.user_scheme_overrides[k] = value
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -313,8 +328,9 @@ class BaseCompressor(object):
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        default_scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, self.user_scheme_overrides)
         self.orig_scheme = copy.deepcopy(scheme)
-        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
+        self.scheme = default_scheme
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -616,127 +632,152 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme], kwargs
-    ) -> tuple[QuantizationScheme, bool]:
-        """Parse and set the quantization scheme."""
+    def _reconcile_bits_and_dtype(self, config: dict, prefix: str = ""):
+        """
+        Harmonizes 'bits' and 'data_type' for weights or activations.
+        Ensures internal consistency by prioritizing data_type inference.
+        """
+        dt_key = f"{prefix}data_type"
+        bits_key = f"{prefix}bits"
 
-        def _parse_and_set(scheme, kwargs):
-            if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
-                if "bits" not in kwargs:
-                    data_type = kwargs["data_type"]
-                    raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
-                    )
-                bits = kwargs["bits"]
-                scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
-            res = None
-            if isinstance(scheme, QuantizationScheme):
-                scheme = asdict(scheme)
-            elif isinstance(scheme, dict):
-                scheme = scheme
-            elif isinstance(scheme, str):
-                # We’d better keep the string scheme instead of the dict config,
-                # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
-                # even though they share the same scheme dict.
-                scheme = scheme.strip("'\" ")
-                res = scheme
-                scheme = scheme.upper()
-                self.layer_config = _handle_special_schemes(
-                    scheme,
-                    self.layer_config,
-                    self.model,
-                    supported_types=self.supported_types,
-                    inner_supported_types=self.inner_supported_types,
-                    quant_lm_head=self.quant_lm_head,
-                    mllm=getattr(self, "mllm", False),
-                )
-                scheme = asdict(preset_name_to_scheme(scheme))
-            scheme_keys = [f.name for f in fields(QuantizationScheme)]
-            for key in scheme_keys:
-                if key in kwargs and kwargs[key] is not None:
-                    setattr(self, key, kwargs[key])
-                else:
-                    setattr(self, key, scheme.get(key, None))
-                # kwargs.pop(key, None)
-            if self.act_dynamic is None:
-                self.act_dynamic = True
+        if config.get(dt_key) is None:
+            return
 
-            tmp_bits = infer_bits_by_data_type(self.data_type)
-            if tmp_bits is not None and tmp_bits < 16 and tmp_bits != self.bits:
+        # Infer the correct bit-width based on the data_type string
+        inferred_bits = infer_bits_by_data_type(config[dt_key])
+
+        if inferred_bits is not None and inferred_bits < 16:
+            # Check for conflict between user-specified bits and inferred bits
+            if inferred_bits != config.get(bits_key):
                 logger.warning(
-                    f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
+                    f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}."
                 )
-                self.bits = tmp_bits
-            if tmp_bits is not None and tmp_bits < 16:
-                for (
-                    supported_dtype
-                ) in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                    if self.data_type.startswith(supported_dtype):
-                        if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
-                            self.data_type = supported_dtype
-                        break
+                config[bits_key] = inferred_bits
 
-            self.act_group_size = self.act_group_size if self.act_group_size is not None else self.group_size
-            self.act_bits = self.act_bits if self.act_bits is not None else 16
-            self.act_sym = self.act_sym if self.act_sym is not None else self.sym
+            # Normalize data_type (e.g., 'mx_fp4' -> 'mx')
+            for supported in SUPPORTED_DTYPES:
+                if config[dt_key] == f"{supported}{inferred_bits}":
+                    config[dt_key] = supported
+                    break
 
-            if self.act_data_type is None:
-                if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
-                    self.act_data_type = self.data_type
-                    logger.info(f"activation adopts {self.data_type}")
-                else:
-                    self.act_data_type = "float"
-            tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-            if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
-                self.act_bits = tmp_act_bits
-                logger.warning(
-                    f"`act_data_type` do not"
-                    f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
+    def _override_scheme_with_user_specify(
+        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
+    ) -> Union[str, QuantizationScheme]:
+        """
+        Updates a base quantization scheme with user-provided overrides.
+        Handles GGUF formatting and synchronizes weight/activation parameters.
+        """
+        # 1. GGUF special handling: map data_type suffix to GGUF scheme names
+        dt_override = user_scheme_overrides.get("data_type", "")
+        if (
+            isinstance(scheme, QuantizationScheme) or (isinstance(scheme, str) and not scheme.startswith("gguf"))
+        ) and dt_override.endswith("_dq"):
+            if "bits" not in user_scheme_overrides:
+                raise KeyError(f"Must specify 'bits' when using data_type={dt_override}")
+
+            bits = user_scheme_overrides["bits"]
+            suffix = "k" if bits == 6 else "k_s"
+            scheme = f"gguf:q{bits}_{suffix}"
+
+        # 2. Convert input scheme to a dictionary for processing
+        if isinstance(scheme, QuantizationScheme):
+            scheme_dict = asdict(scheme)
+        elif isinstance(scheme, str):
+            normalized_name = scheme.strip("'\" ").upper()
+            if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
+                logger.warning_once(
+                    "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
                 )
-            if tmp_act_bits is not None and tmp_act_bits < 16:
-                for (
-                    supported_dtype
-                ) in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                    if self.act_data_type.startswith(supported_dtype):
-                        if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # Could not replace FP8_e4m3
-                            self.act_data_type = supported_dtype
-                        break
-            for key in scheme_keys:
-                scheme[key] = getattr(self, key)
-            if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
-                return res
+                user_scheme_overrides = {}
+            # If no overrides exist, return the normalized string immediately
+            if not user_scheme_overrides and return_str:
+                return normalized_name
+            scheme_dict = asdict(preset_name_to_scheme(normalized_name))
+        else:
+            scheme_dict = scheme.copy()
+
+        # 3. Apply overrides and define default behaviors
+        scheme_dict.update(user_scheme_overrides)
+
+        if scheme_dict.get("act_dynamic") is None:
+            scheme_dict["act_dynamic"] = True
+
+        # 4. Reconcile weight settings (bits vs data_type)
+        self._reconcile_bits_and_dtype(scheme_dict)
+
+        # 5. Fallback logic: Inherit activation settings from weight settings
+        scheme_dict["act_group_size"] = (
+            scheme_dict.get("act_group_size")
+            if scheme_dict.get("act_group_size") is not None
+            else scheme_dict.get("group_size")
+        )
+        scheme_dict["act_bits"] = scheme_dict.get("act_bits") or 16
+        scheme_dict["act_sym"] = (
+            scheme_dict.get("act_sym") if scheme_dict.get("act_sym") is not None else scheme_dict.get("sym")
+        )
+
+        # 6. Activation data_type logic
+        if scheme_dict.get("act_data_type") is None:
+            is_supported = scheme_dict["data_type"] in SUPPORTED_DTYPES
+            if is_supported and scheme_dict["act_bits"] < 16:
+                scheme_dict["act_data_type"] = scheme_dict["data_type"]
+                logger.info(f"Activation adopting weight data_type: {scheme_dict['data_type']}")
             else:
-                return QuantizationScheme.from_dict(scheme)
+                scheme_dict["act_data_type"] = "float"
 
-        if isinstance(scheme, AutoScheme):
-            if len(scheme.options) <= 0:
-                raise ValueError("options of AutoScheme must not be empty")
-            options = []
-            for option in scheme.options:
-                new_option = _parse_and_set(option, kwargs)
-                options.append(new_option)
-            scheme.options = options
-            for opt in options:
-                if isinstance(opt, str) and opt == "BF16":
+        # 7. Reconcile activation settings
+        self._reconcile_bits_and_dtype(scheme_dict, prefix="act_")
+
+        return QuantizationScheme.from_dict(scheme_dict)
+
+    def _parse_and_set_scheme(
+        self, scheme: Union[str, dict, QuantizationScheme, AutoScheme], user_scheme_overrides: dict[str, Any]
+    ) -> tuple[Union[str, QuantizationScheme], bool]:
+        """
+        Parses the final scheme and binds all resulting attributes to 'self'.
+        """
+
+        is_auto_scheme = isinstance(scheme, AutoScheme)
+
+        if is_auto_scheme:
+            if not scheme.options:
+                raise ValueError("AutoScheme options cannot be empty")
+            else:
+                for option in scheme.options:
+                    if isinstance(option, str):
+                        if "mixed" in option:
+                            raise ValueError(f"Mixed option {option} is not supported")
+
+            # Map user overrides across all auto-scheme options
+            scheme.options = [
+                self._override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options
+            ]
+
+            # Select the primary scheme for attribute binding (skipping BF16)
+            default_scheme = scheme.options[0]
+            for opt in scheme.options:
+                if opt == "BF16":
                     continue
                 if isinstance(opt, QuantizationScheme):
-                    if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
-                        continue
-                self.scheme = opt  # Choose the first one that not 16 bits
-                break
-            # apply scheme to set default bits
-            scheme = _parse_and_set(self.scheme, kwargs)
-            is_auto_scheme = True
+                    if opt.bits < 16 or (opt.act_bits and opt.act_bits < 16):
+                        default_scheme = opt
+                        break
         else:
-            scheme = _parse_and_set(scheme, kwargs)
-            is_auto_scheme = False
+            default_scheme = self._override_scheme_with_user_specify(scheme, user_scheme_overrides)
 
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key in scheme_keys:
-            kwargs.pop(key, None)
+        # Extract attributes from the chosen default_scheme
+        if isinstance(default_scheme, str):
+            final_attrs = self._override_scheme_with_user_specify(
+                default_scheme, user_scheme_overrides, return_str=False
+            )
+        else:
+            final_attrs = asdict(default_scheme)
 
-        return scheme, is_auto_scheme
+        # Bind attributes to self for easy instance-level access
+        for key, value in final_attrs.items():
+            setattr(self, key, value)
+
+        return default_scheme, is_auto_scheme
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
@@ -1528,193 +1569,44 @@ class BaseCompressor(object):
 
     def _estimate_tensor_size_gb(self, tensor) -> float:
         """Estimate the size of a tensor in GB."""
-        if tensor is None:
-            return 0.0
-        if isinstance(tensor, torch.Tensor):
-            return tensor.numel() * tensor.element_size() / (1024**3)
-        elif isinstance(tensor, list):
-            return sum(self._estimate_tensor_size_gb(t) for t in tensor)
-        elif isinstance(tensor, dict):
-            return sum(self._estimate_tensor_size_gb(v) for v in tensor.values())
-        return 0.0
+        return estimate_tensor_size_gb(tensor)
 
     def _estimate_inputs_size_gb(self, all_inputs: dict) -> float:
         """Estimate the total size of calibration inputs in GB."""
-        total = 0.0
-        for name, inputs in all_inputs.items():
-            total += self._estimate_tensor_size_gb(inputs)
-        return total
+        return estimate_inputs_size_gb(all_inputs)
 
     def _estimate_model_size_gb(self) -> float:
         """Estimate the model weights size in GB."""
-        total = 0.0
-        for param in self.model.parameters():
-            if param.numel() > 0:  # Skip empty tensors
-                total += param.numel() * param.element_size() / (1024**3)
-        return total
+        return estimate_model_size_gb(self.model)
 
     def _estimate_block_size_gb(self, block: torch.nn.Module) -> float:
         """Estimate a block's weights size in GB."""
-        total = 0.0
-        for param in block.parameters():
-            if param.numel() > 0:
-                total += param.numel() * param.element_size() / (1024**3)
-        return total
+        return estimate_block_size_gb(block)
 
     def _init_cpu_offload_dir(self) -> Optional[str]:
-        if not self.low_cpu_mem_usage:
-            return None
-        if self._cpu_offload_tempdir is None:
-            self._cpu_offload_tempdir = tempfile.mkdtemp(prefix="autoround_cpu_offload_")
-        return self._cpu_offload_tempdir
+        return init_cpu_offload_dir(self)
 
     def _offload_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        if not self.low_cpu_mem_usage:
-            return
-        offload_dir = self._init_cpu_offload_dir()
-        if offload_dir is None:
-            return
-        safe_name = block_name.replace(".", "_")
-        save_path = os.path.join(offload_dir, f"{safe_name}.pt")
-        metadata = save_module_weights(block, save_path)
-        self._offloaded_blocks[block_name] = metadata
-        clear_module_weights(block)
+        offload_block_weights(self, block_name, block)
 
     def _stream_offload_blocks(self, all_blocks: list[list[str]]) -> None:
         """Offload all block weights to disk and clear from memory."""
-        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
-            return
-        offload_dir = self._init_cpu_offload_dir()
-        if offload_dir is None:
-            return
-        logger.info("stream offloading block weights to disk...")
-        total_offloaded_gb = 0.0
-        for block_names in all_blocks:
-            for block_name in block_names:
-                if block_name in self._offloaded_blocks:
-                    continue
-                block = get_module(self.model, block_name)
-                if block is None:
-                    continue
-                block_size_gb = self._estimate_block_size_gb(block)
-                total_offloaded_gb += block_size_gb
-                safe_name = block_name.replace(".", "_")
-                save_path = os.path.join(offload_dir, f"{safe_name}.pt")
-                # Save entire block state_dict (all submodule weights)
-                state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
-                torch.save(state_dict, save_path)
-                self._offloaded_blocks[block_name] = {"save_path": save_path}
-                # Clear all submodule weights
-                for submodule in block.modules():
-                    if hasattr(submodule, "weight") and submodule.weight is not None:
-                        clear_module_weights(submodule)
-                    if hasattr(submodule, "bias") and submodule.bias is not None:
-                        clear_module_weights(submodule)
-        clear_memory(device_list=self.device_list)
-        logger.info(f"stream offload done, offloaded {total_offloaded_gb:.2f} GB of block weights")
+        stream_offload_blocks(self, all_blocks)
 
     def _load_offloaded_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
         """Load block weights from disk back into memory."""
-        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
-            return
-        metadata = self._offloaded_blocks.get(block_name)
-        if not metadata:
-            return
-        save_path = metadata.get("save_path")
-        if not save_path or not os.path.exists(save_path):
-            logger.warning(f"Cannot load block weights: file {save_path} does not exist")
-            return
-        try:
-            state_dict = torch.load(save_path, map_location="cpu")
-            # Manually assign parameters to handle empty tensor replacement
-            for name, param in state_dict.items():
-                parts = name.split(".")
-                target = block
-                for part in parts[:-1]:
-                    target = getattr(target, part)
-                param_name = parts[-1]
-                if hasattr(target, param_name):
-                    old_param = getattr(target, param_name)
-                    if isinstance(old_param, torch.nn.Parameter):
-                        setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
-                    else:
-                        setattr(target, param_name, param)
-        except Exception as e:
-            logger.warning(f"Failed to load block weights from {save_path}: {e}")
+        load_offloaded_block_weights(self, block_name, block)
 
     def _discard_offloaded_block(self, block_name: str) -> None:
         """Discard the original offload file and re-offload quantized weights."""
-        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
-            return
-        metadata = self._offloaded_blocks.pop(block_name, None)
-        if not metadata:
-            return
-        save_path = metadata.get("save_path")
-        if save_path and os.path.exists(save_path):
-            try:
-                os.remove(save_path)
-            except Exception as e:
-                logger.warning(f"Failed to remove offloaded block file {save_path}: {e}")
-
-        # Re-offload the quantized block weights to disk
-        block = get_module(self.model, block_name)
-        if block is None:
-            return
-        offload_dir = self._init_cpu_offload_dir()
-        if offload_dir is None:
-            return
-        safe_name = block_name.replace(".", "_")
-        new_save_path = os.path.join(offload_dir, f"{safe_name}_quantized.pt")
-        try:
-            state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
-            torch.save(state_dict, new_save_path)
-            self._offloaded_blocks[block_name] = {"save_path": new_save_path, "quantized": True}
-            # Clear all submodule weights
-            for submodule in block.modules():
-                if hasattr(submodule, "weight") and submodule.weight is not None:
-                    clear_module_weights(submodule)
-                if hasattr(submodule, "bias") and submodule.bias is not None:
-                    clear_module_weights(submodule)
-        except Exception as e:
-            logger.warning(f"Failed to re-offload quantized block {block_name}: {e}")
+        discard_offloaded_block(self, block_name)
 
     def _restore_offloaded_blocks(self) -> None:
         """Restore all offloaded block weights back to memory."""
-        if not self._offloaded_blocks:
-            return
-        for block_name, metadata in list(self._offloaded_blocks.items()):
-            try:
-                block = get_module(self.model, block_name)
-                save_path = metadata.get("save_path")
-                if not save_path or not os.path.exists(save_path):
-                    logger.warning(f"Cannot restore block {block_name}: file {save_path} does not exist")
-                    continue
-                state_dict = torch.load(save_path, map_location="cpu")
-                # Manually assign parameters to handle empty tensor replacement
-                for name, param in state_dict.items():
-                    parts = name.split(".")
-                    target = block
-                    for part in parts[:-1]:
-                        target = getattr(target, part)
-                    param_name = parts[-1]
-                    if hasattr(target, param_name):
-                        old_param = getattr(target, param_name)
-                        if isinstance(old_param, torch.nn.Parameter):
-                            setattr(
-                                target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad)
-                            )
-                        else:
-                            setattr(target, param_name, param)
-            except Exception as e:
-                logger.warning(f"Failed to restore offloaded block {block_name}: {e}")
+        restore_offloaded_blocks(self)
 
     def _cleanup_cpu_offload_dir(self) -> None:
-        if self._cpu_offload_tempdir and os.path.isdir(self._cpu_offload_tempdir):
-            try:
-                shutil.rmtree(self._cpu_offload_tempdir)
-            except Exception as e:
-                logger.warning(f"Failed to cleanup cpu offload dir {self._cpu_offload_tempdir}: {e}")
-        self._cpu_offload_tempdir = None
+        cleanup_cpu_offload_dir(self)
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         keys = inputs.keys()
@@ -1743,6 +1635,16 @@ class BaseCompressor(object):
 
         if self.is_auto_scheme:
             self.layer_config = self._gen_auto_scheme()
+        else:
+            self.layer_config = _handle_special_schemes(
+                self.orig_scheme,
+                self.layer_config,
+                self.model,
+                supported_types=self.supported_types,
+                inner_supported_types=self.inner_supported_types,
+                quant_lm_head=self.quant_lm_head,
+                mllm=getattr(self, "mllm", False),
+            )
 
         fill_default_value = True
         if self.is_auto_scheme:
@@ -2652,9 +2554,8 @@ class BaseCompressor(object):
             else:
                 act_max = act_max.to(module.act_max.device)
                 if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    module.act_max = torch.max(
-                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
-                    )
+                    max_val = torch.max(act_max.max(), module.act_max.max())
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
                 else:
                     module.act_max = torch.max(act_max, module.act_max)
 

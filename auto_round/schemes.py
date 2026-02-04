@@ -176,6 +176,7 @@ MXFP4 = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp",
         "act_group_size": 32,
         "act_sym": True,
+        "act_dynamic": True,
     }
 )
 
@@ -188,6 +189,7 @@ MXFP4_RCEIL = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
         "act_sym": True,
+        "act_dynamic": True,
     }
 )
 
@@ -201,6 +203,7 @@ MXFP8 = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp",
         "act_group_size": 32,
         "act_sym": True,
+        "act_dynamic": True,
     }
 )
 
@@ -213,6 +216,7 @@ MXFP8_RCEIL = QuantizationScheme.from_dict(
         "act_data_type": "mx_fp_rceil",
         "act_group_size": 32,
         "act_sym": True,
+        "act_dynamic": True,
     }
 )
 
@@ -226,6 +230,7 @@ NVFP4 = QuantizationScheme.from_dict(
         "act_data_type": "nv_fp4_with_static_gs",
         "act_group_size": 16,
         "act_sym": True,
+        "act_dynamic": True,
     }
 )
 
@@ -312,6 +317,8 @@ def _handle_special_schemes(
     Provide some special auto_round recipes.
 
     """
+    if not isinstance(scheme_name, str):
+        return layer_config
     if layer_config is None:
         layer_config = {}
     if scheme_name.lower() == "gguf:q2_k_mixed":
@@ -340,13 +347,13 @@ def _handle_special_schemes(
                 continue
             if type(m) in supported_types or type(m) in inner_supported_types:
                 if "expert" in n and "shared" not in n:
-                    layer_config[n] = {"bits": 4}
+                    layer_config[n] = {"bits": 4, "data_type": "int"}
                 elif n != lm_head_name and mllm:
                     layer_config[n] = {"bits": 16}
                 elif n != lm_head_name:
-                    layer_config[n] = {"bits": 8}
+                    layer_config[n] = {"bits": 8, "data_type": "int"}
                 elif n == lm_head_name and quant_lm_head:
-                    layer_config[n] = {"bits": 8}
+                    layer_config[n] = {"bits": 8, "data_type": "int"}
     return layer_config
 
 

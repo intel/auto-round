@@ -22,6 +22,7 @@ import torch
 
 from auto_round import AutoRound
 from auto_round.compressors import base as base_module
+from auto_round.utils import device as device_module
 
 
 class TestCpuStreamOffloadBlocks:
@@ -112,10 +113,10 @@ class TestCpuStreamOffloadBlocks:
         )
 
         dummy_block = torch.nn.Linear(4, 4)
-        monkeypatch.setattr(base_module, "get_module", lambda _model, _name: dummy_block)
-        monkeypatch.setattr(autoround, "_init_cpu_offload_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(device_module, "get_module", lambda _model, _name: dummy_block)
+        monkeypatch.setattr(device_module, "init_cpu_offload_dir", lambda _compressor: str(tmp_path))
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
-        monkeypatch.setattr(base_module, "clear_module_weights", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(device_module, "clear_module_weights", lambda *_args, **_kwargs: None)
 
         autoround._stream_offload_blocks([["model.layers.0"]])
         assert "model.layers.0" in autoround._offloaded_blocks
