@@ -412,3 +412,36 @@ class TestAutoRound:
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+
+    def test_autogtq_qwen3_vl_vllm_infer(self, dataloader):
+        pytest.importorskip("vllm")
+        from vllm import LLM, SamplingParams
+        from vllm.platforms import current_platform
+
+        if not current_platform.is_cuda():
+            pytest.skip("only supports CUDA backend for this test")
+
+        model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
+        autoround = AutoRound(
+            model=model_path,
+            scheme="W4A16",
+            iters=0,
+            seqlen=2,
+            batch_size=1,
+            dataset=dataloader,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=20)
+        llm = LLM(
+            model=quantized_model_path,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+        )
+        outputs = llm.generate(["Tell me a short joke."], sampling_params)
+        generated_text = outputs[0].outputs[0].text
+        print(generated_text)
+        assert "!!!" not in generated_text
+        shutil.rmtree("./saved", ignore_errors=True)
