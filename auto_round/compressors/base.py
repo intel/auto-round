@@ -1589,7 +1589,6 @@ class BaseCompressor(object):
                 mllm=getattr(self, "mllm", False),
             )
 
-
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False

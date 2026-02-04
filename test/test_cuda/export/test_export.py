@@ -413,7 +413,6 @@ class TestAutoRound:
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_autogtq_qwen3_vl_vllm_infer(self, dataloader):
         pytest.importorskip("vllm")
         from vllm import LLM, SamplingParams

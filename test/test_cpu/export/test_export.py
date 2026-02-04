@@ -462,7 +462,6 @@ class TestAutoRound:
         )
         get_formats("auto_round:auto_awq", ar)
 
-        
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
         autoround = AutoRound(
@@ -491,7 +490,6 @@ class TestAutoRound:
             "model.visual.blocks" in modules_to_not_convert
         ), f"'model.visual.blocks' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
 
-        
     def test_llmc_dynamic_wint8aint8_export(self):
         from safetensors import safe_open
 
