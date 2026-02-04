@@ -514,20 +514,18 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-    def _gen_auto_scheme(
-        self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
-    ) -> dict[str, dict]:
+    def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
-        if is_quantized_input_module(model):
+        if is_quantized_input_module(self.model):
             logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
             sys.exit(-1)
 
         all_dtypes = []
         all_gguf = True
-        for option in scheme.options:
+        for option in self.orig_scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
@@ -579,15 +577,15 @@ class BaseCompressor(object):
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if not self.enable_torch_compile and self.super_bits is None and not scheme.low_gpu_mem_usage:
+        if not self.enable_torch_compile and self.super_bits is None and not self.orig_scheme.low_gpu_mem_usage:
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         self.scheme_generator = GenScheme(
-            scheme,
+            self.orig_scheme,
             self.model,
             quant_layer_names,
             fixed_layer_scheme_new,
-            dataset,
-            device_map=device_map,
+            self.dataset,
+            device_map=self.device_map,
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
         )
@@ -1744,7 +1742,7 @@ class BaseCompressor(object):
                     self.ignore_layers += "," + tmp_str
 
         if self.is_auto_scheme:
-            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+            self.layer_config = self._gen_auto_scheme()
 
         fill_default_value = True
         if self.is_auto_scheme:
