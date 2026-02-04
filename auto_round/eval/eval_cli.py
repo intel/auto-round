@@ -16,13 +16,14 @@ import importlib.util
 import os
 import time
 
+import torch.nn
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
     get_device_and_parallelism,
     get_device_str,
     get_model_dtype,
-    set_cuda_visible_devices,
+    set_cuda_visible_devices, dispatch_model_block_wise,
 )
 
 
@@ -270,6 +271,7 @@ def eval_task_by_task(
     retry_times=3,
     mllm=False,
     add_bos_token=False,
+    device_map=None,
 ):
     require_version(
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
@@ -294,6 +296,8 @@ def eval_task_by_task(
         model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(model, eval_model_dtype)
         if is_gguf_file:
             parallelism = False
+    if isinstance(model, torch.nn.Module):
+        dispatch_model_block_wise(model,args.device_map)
 
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if mllm:
