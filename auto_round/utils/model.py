@@ -649,6 +649,8 @@ def get_block_names(model, quant_vision=False):
             return [(name, module)]
         target_modules = []
         for n, m in module.named_children():
+            if hasattr(type(m), "__name__") and "NgramEmbedding" in type(m).__name__:
+                continue
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
                 target_modules.append((".".join(filter(None, (name, n))), m))
             else:
