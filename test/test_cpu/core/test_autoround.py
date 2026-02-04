@@ -688,6 +688,8 @@ class TestAutoRound:
         mock_layer.block_size = block_size
         mock_layer.data_type = "fp8_e4m3fn"
         mock_layer.__class__.__name__ = "FP8Linear"
+        # Explicitly set compressor to None to prevent MagicMock auto-creating it
+        mock_layer.compressor = None
 
         # mock_layer.to should return a mock layer that we can check
         mock_layer.to.return_value = mock_layer

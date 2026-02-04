@@ -31,10 +31,10 @@ Table of Contents:
        - convert_module_to_hp_if_necessary(): Main conversion function
 
     3. HANDLER IMPLEMENTATIONS
-       - FP8BlockHandler: Fully implemented for FP8 block-wise quantization
-       - MXFP8Handler: Placeholder (TODO)
-       - MXFP4Handler: Placeholder (TODO)
-       - NVFP4Handler: Placeholder (TODO)
+       - FP8Handler: Fully implemented for FP8 block-wise quantization
+       - MXFP8Handler: CompressedLinear with MXFP8PackedCompressor
+       - MXFP4Handler: CompressedLinear with MXFP4PackedCompressor
+       - NVFP4Handler: CompressedLinear with NVFP4PackedCompressor
 
 Quick Start Guide:
     Usage - Detect and Convert:
@@ -154,10 +154,10 @@ class ModuleWeightType(Enum):
     3. Register with @register_weight_type_handler decorator
     """
 
-    FP8_BLOCK = auto()  # FP8 with block-wise scaling (fully implemented)
-    MXFP8 = auto()  # MX FP8 (placeholder)
-    MXFP4 = auto()  # MX FP4 (placeholder)
-    NVFP4 = auto()  # NV FP4 (placeholder)
+    FP8 = auto()  # FP8 with block-wise scaling (FP8Linear/CompressedLinear from transformers)
+    MXFP8 = auto()  # MX FP8 (CompressedLinear with MXFP8PackedCompressor)
+    MXFP4 = auto()  # MX FP4 (CompressedLinear with MXFP4PackedCompressor)
+    NVFP4 = auto()  # NV FP4 (CompressedLinear with NVFP4PackedCompressor)
 
 
 class WeightTypeHandler(ABC):
@@ -463,62 +463,27 @@ def _dequant_fp8_linear_weight(
 # ----------------------------------------------------------------------------
 # FP8 Block Handler - Full Implementation (Reference Example)
 # ----------------------------------------------------------------------------
-@register_weight_type_handler(ModuleWeightType.FP8_BLOCK)
-class FP8BlockHandler(WeightTypeHandler):
+@register_weight_type_handler(ModuleWeightType.FP8)
+class FP8Handler(WeightTypeHandler):
     """Handler for FP8 block-wise quantized layers.
 
     This handler supports:
         - FP8Linear layers with block-wise scaling
-        - CompressedLinear layers with FP8 compression
+        - CompressedLinear layers with compressor
         - torch.nn.Linear layers with FP8 dtype weights
     """
 
-    # Registry mapping FP8 layer class names to their dequantization handlers
-    FP8_DEQUANT_REGISTRY: Dict[str, Callable] = {}
-
-    @classmethod
-    def register_fp8_layer(cls, layer_name: str):
-        """Register a dequantization handler for an FP8 layer type.
-
-        Args:
-            layer_name: The class name of the FP8 layer type.
-
-        Returns:
-            Decorator function that registers the handler.
-        """
-
-        def decorator(fn: Callable):
-            cls.FP8_DEQUANT_REGISTRY[layer_name] = fn
-            return fn
-
-        return decorator
-
-    def _dequant_layer(self, layer: torch.nn.Module, dtype: torch.dtype, device: str) -> torch.Tensor:
-        """Dequantize an FP8 layer using the internal registry.
-
-        Args:
-            layer: The FP8 layer to dequantize.
-            dtype: Target dtype for dequantized weights.
-            device: Target device for dequantization.
-
-        Returns:
-            Dequantized weight tensor.
-
-        Raises:
-            NotImplementedError: If the layer type is not registered.
-        """
-        name = layer.__class__.__name__
-        if name not in self.FP8_DEQUANT_REGISTRY:
-            raise NotImplementedError(
-                f"Unsupported FP8 layer type: {name}. " f"Supported types: {list(self.FP8_DEQUANT_REGISTRY.keys())}"
-            )
-        return self.FP8_DEQUANT_REGISTRY[name](layer, dtype=dtype, device=device)
-
     def detect_layer(self, module: torch.nn.Module) -> bool:
         """Check if a module is an FP8 linear layer based on actual characteristics."""
-        # Check registry for supported FP8 layer types
-        layer_name = module.__class__.__name__
-        if layer_name in self.FP8_DEQUANT_REGISTRY:
+        # Check for CompressedLinear layer type (exclude MXFP4, MXFP8, NVFP4)
+        if module.__class__.__name__ == "CompressedLinear":
+            if hasattr(module, "compressor") and module.compressor is not None:
+                compressor_name = module.compressor.__class__.__name__
+                return "Float" in compressor_name
+            return True
+
+        # Check for FP8Linear layer type
+        if module.__class__.__name__ == "FP8Linear":
             return True
 
         # Fallback: Check for FP8 dtype (for torch.nn.Linear with FP8 weights)
@@ -535,10 +500,9 @@ class FP8BlockHandler(WeightTypeHandler):
         device: str = "cpu",
         to_cpu: bool = False,
     ) -> torch.nn.Module:
-        """Convert a single FP8 layer to a standard Linear layer."""
+        """Convert a single FP8/CompressedLinear layer to a standard Linear layer."""
         from auto_round.schemes import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
-        from auto_round.utils.model import set_module
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
         if layer.bias is not None:
@@ -553,8 +517,25 @@ class FP8BlockHandler(WeightTypeHandler):
         if is_gaudi2():
             device = "cpu"
 
-        # Use registry-based dequantization
-        dq_weight = self._dequant_layer(layer, dtype=dtype, device=device)
+        layer = layer.to(device)
+
+        # Check if layer has compressor.decompress_module method
+        if hasattr(layer, "compressor") and hasattr(layer.compressor, "decompress_module"):
+            dq_weight = layer.compressor.decompress_module(layer)
+        else:
+            # Use FP8 block-based dequantization
+            weight_scale = getattr(layer, "weight_scale", None)
+            block_size = getattr(layer, "block_size", None)
+            data_type = getattr(layer, "data_type", None)
+            if weight_scale is None:
+                weight_scale = getattr(layer, "weight_scale_inv", None)
+            if weight_scale is None:
+                raise AttributeError(
+                    "FP8 layer is missing both 'weight_scale' and 'weight_scale_inv' "
+                    "attributes required for dequantization."
+                )
+            dq_weight = _dequant_fp8_linear_weight(layer.weight, weight_scale, block_size, data_type=data_type)
+
         new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
 
         if to_cpu:
@@ -563,81 +544,193 @@ class FP8BlockHandler(WeightTypeHandler):
         return new_layer
 
 
-# --- FP8 Layer Dequantization Handlers ---
-# Register specific dequantization logic for different FP8 layer types
-
-
-@FP8BlockHandler.register_fp8_layer("CompressedLinear")
-def _dequant_compressed_linear(
-    layer: torch.nn.Module, dtype: torch.dtype = torch.bfloat16, device: str = "cpu"
-) -> torch.Tensor:
-    """Dequantize CompressedLinear layer using compressor.
-
-    Args:
-        layer: The CompressedLinear layer to dequantize.
-        dtype: Target dtype for dequantized weights.
-        device: Target device for dequantization.
-
-    Returns:
-        Dequantized weight tensor.
-    """
-    layer = layer.to(device)
-    return layer.compressor.decompress_module(layer)
-
-
-@FP8BlockHandler.register_fp8_layer("FP8Linear")
-def _dequant_fp8_linear(
-    layer: torch.nn.Module, dtype: torch.dtype = torch.bfloat16, device: str = "cpu"
-) -> torch.Tensor:
-    """Dequantize FP8Linear layer using block-based dequantization.
-
-    Args:
-        layer: The FP8Linear layer to dequantize.
-        dtype: Target dtype for dequantized weights.
-        device: Target device for dequantization.
-
-    Returns:
-        Dequantized weight tensor.
-    """
-    layer = layer.to(device)
-    weight_scale = getattr(layer, "weight_scale", None)
-    block_size = getattr(layer, "block_size", None)
-    data_type = getattr(layer, "data_type", None)
-    if weight_scale is None:
-        weight_scale = getattr(layer, "weight_scale_inv", None)
-    if weight_scale is None:
-        raise AttributeError(
-            "FP8Linear layer is missing both 'weight_scale' and 'weight_scale_inv' "
-            "attributes required for dequantization."
-        )
-    return _dequant_fp8_linear_weight(layer.weight, weight_scale, block_size, data_type=data_type)
-
-
 # ----------------------------------------------------------------------------
-# Placeholder Handlers for Unimplemented Types
+# MXFP4 Handler - CompressedLinear with MXFP4PackedCompressor
 # ----------------------------------------------------------------------------
+@register_weight_type_handler(ModuleWeightType.MXFP4)
+class MXFP4Handler(WeightTypeHandler):
+    """Handler for MXFP4 quantized layers (CompressedLinear with MXFP4PackedCompressor)."""
 
-
-def _create_placeholder_handler(weight_type_name: str) -> Type[WeightTypeHandler]:
-    """Factory function to create placeholder handlers for unimplemented weight types."""
-
-    class PlaceholderHandler(WeightTypeHandler):
-        """Placeholder handler - detection always returns False."""
-
-        def detect_layer(self, module: torch.nn.Module) -> bool:
+    def detect_layer(self, module: torch.nn.Module) -> bool:
+        """Check if a module is an MXFP4 CompressedLinear layer."""
+        if module.__class__.__name__ != "CompressedLinear":
             return False
+        if hasattr(module, "compressor") and module.compressor is not None:
+            compressor_name = module.compressor.__class__.__name__
+            return "MXFP4" in compressor_name
+        return False
 
-        def convert_layer(self, layer, dtype=torch.bfloat16, device="cpu", to_cpu=False):
-            raise NotImplementedError(f"{weight_type_name} layer conversion not yet implemented")
+    def convert_layer(
+        self,
+        layer: torch.nn.Module,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str = "cpu",
+        to_cpu: bool = False,
+    ) -> torch.nn.Module:
+        """Convert an MXFP4 CompressedLinear layer to a standard Linear layer."""
+        from auto_round.schemes import QuantizationScheme
+        from auto_round.utils.device import is_gaudi2
 
-    PlaceholderHandler.__name__ = f"{weight_type_name}Handler"
-    PlaceholderHandler.__doc__ = (
-        f"Placeholder handler for {weight_type_name}. TODO: Implement detection and conversion."
-    )
-    return PlaceholderHandler
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+        if layer.bias is not None:
+            new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
+        # Copy quantization scheme attributes
+        scheme_keys = (f.name for f in fields(QuantizationScheme))
+        for key in tuple(scheme_keys) + ("global_name", "scale_dtype"):
+            setattr(new_layer, key, getattr(layer, key, None))
+
+        # Handle Gaudi2 device compatibility
+        if is_gaudi2():
+            device = "cpu"
+
+        layer = layer.to(device)
+
+        # MXFP4 dequantization using to_dtype from mxfp4_qdq_utils
+        from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
+
+        # Get packed weight and scale from layer
+        # MXFP4 weights are stored as packed uint8 in weight_packed
+        weight_packed = getattr(layer, "weight_packed", None)
+        if weight_packed is None:
+            weight_packed = getattr(layer, "weight", None)
+        weight_scale = getattr(layer, "weight_scale", None)
+        weight_scale = weight_scale.to(torch.uint8)
+
+        if weight_packed is None or weight_scale is None:
+            raise ValueError("MXFP4 layer must have weight_packed and weight_scale attributes")
+
+        # Dequantize using to_dtype function
+        dq_weight = to_dtype(
+            data_lp=weight_packed,
+            scale_e8m0=weight_scale,
+            elem_dtype="fp4_e2m1",
+            block_size=32,
+            target_dtype=dtype,
+        )
+        new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+
+        if to_cpu:
+            new_layer = new_layer.to("cpu")
+
+        return new_layer
 
 
-# Register placeholder handlers for unimplemented types
-register_weight_type_handler(ModuleWeightType.MXFP8)(_create_placeholder_handler("MXFP8"))
-register_weight_type_handler(ModuleWeightType.MXFP4)(_create_placeholder_handler("MXFP4"))
-register_weight_type_handler(ModuleWeightType.NVFP4)(_create_placeholder_handler("NVFP4"))
+# ----------------------------------------------------------------------------
+# MXFP8 Handler - CompressedLinear with MXFP8PackedCompressor
+# ----------------------------------------------------------------------------
+@register_weight_type_handler(ModuleWeightType.MXFP8)
+class MXFP8Handler(WeightTypeHandler):
+    """Handler for MXFP8 quantized layers (CompressedLinear with MXFP8PackedCompressor)."""
+
+    def detect_layer(self, module: torch.nn.Module) -> bool:
+        """Check if a module is an MXFP8 CompressedLinear layer."""
+        if module.__class__.__name__ != "CompressedLinear":
+            return False
+        if hasattr(module, "compressor") and module.compressor is not None:
+            compressor_name = module.compressor.__class__.__name__
+            return "MXFP8" in compressor_name
+        return False
+
+    def convert_layer(
+        self,
+        layer: torch.nn.Module,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str = "cpu",
+        to_cpu: bool = False,
+    ) -> torch.nn.Module:
+        """Convert an MXFP8 CompressedLinear layer to a standard Linear layer."""
+        from auto_round.schemes import QuantizationScheme
+        from auto_round.utils.device import is_gaudi2
+
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+        if layer.bias is not None:
+            new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
+        # Copy quantization scheme attributes
+        scheme_keys = (f.name for f in fields(QuantizationScheme))
+        for key in tuple(scheme_keys) + ("global_name", "scale_dtype"):
+            setattr(new_layer, key, getattr(layer, key, None))
+
+        # Handle Gaudi2 device compatibility
+        if is_gaudi2():
+            device = "cpu"
+
+        layer = layer.to(device)
+
+        # MXFP8 dequantization using dequant_mx_fp8 from mxfp8_qdq_utils
+        from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
+
+        # Get weight and scale from layer
+        weight = layer.weight
+        weight_scale = getattr(layer, "weight_scale", None)
+        weight_scale = weight_scale.to(torch.uint8)
+
+        if weight is None or weight_scale is None:
+            raise ValueError("MXFP8 layer must have weight and weight_scale attributes")
+
+        # Dequantize using dequant_mx_fp8 function
+        dq_weight = dequant_mx_fp8(
+            weight_fp8=weight,
+            scale_e8m0=weight_scale,
+            block_size=32,
+            target_dtype=dtype,
+        )
+        new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+
+        if to_cpu:
+            new_layer = new_layer.to("cpu")
+
+        return new_layer
+
+
+# ----------------------------------------------------------------------------
+# NVFP4 Handler - CompressedLinear with NVFP4PackedCompressor
+# ----------------------------------------------------------------------------
+@register_weight_type_handler(ModuleWeightType.NVFP4)
+class NVFP4Handler(WeightTypeHandler):
+    """Handler for NVFP4 quantized layers (CompressedLinear with NVFP4PackedCompressor)."""
+
+    def detect_layer(self, module: torch.nn.Module) -> bool:
+        """Check if a module is an NVFP4 CompressedLinear layer."""
+        if module.__class__.__name__ != "CompressedLinear":
+            return False
+        if hasattr(module, "compressor") and module.compressor is not None:
+            compressor_name = module.compressor.__class__.__name__
+            return "NVFP4" in compressor_name
+        return False
+
+    def convert_layer(
+        self,
+        layer: torch.nn.Module,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str = "cpu",
+        to_cpu: bool = False,
+    ) -> torch.nn.Module:
+        """Convert an NVFP4 CompressedLinear layer to a standard Linear layer."""
+        from auto_round.schemes import QuantizationScheme
+        from auto_round.utils.device import is_gaudi2
+
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+        if layer.bias is not None:
+            new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
+        # Copy quantization scheme attributes
+        scheme_keys = (f.name for f in fields(QuantizationScheme))
+        for key in tuple(scheme_keys) + ("global_name", "scale_dtype"):
+            setattr(new_layer, key, getattr(layer, key, None))
+
+        # Handle Gaudi2 device compatibility
+        if is_gaudi2():
+            device = "cpu"
+
+        layer = layer.to(device)
+
+        # Use compressor.decompress_module for dequantization
+        dq_weight = layer.compressor.decompress_module(layer)
+        new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+
+        if to_cpu:
+            new_layer = new_layer.to("cpu")
+
+        return new_layer
