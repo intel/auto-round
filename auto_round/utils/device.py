@@ -299,6 +299,8 @@ def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[s
 def set_cuda_visible_devices(device: str):
     if device == "cuda":
         devices = ["0"]
+    elif device=="auto":
+        return
     else:
         devices = device.replace(" ", "").split(",")
     devices = [device.split(":")[-1] for device in devices]
