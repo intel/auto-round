@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import functools
 import gc
 import os
 import re
+from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
@@ -313,17 +315,28 @@ def set_cuda_visible_devices(device):
             os.environ["CUDA_VISIBLE_DEVICES"] = device
 
 
-def set_fake_cuda_device_capability(func=None):
-    if func is not None:
-        torch.cuda.get_device_capability = func
-        return func
+class override_cuda_device_capability(ContextDecorator):
+    """Context manager/decorator to temporarily override CUDA capability checks."""
 
-    def fake_cuda():
-        return 100, 1
+    def __init__(self, major: int = 100, minor: int = 1) -> None:
+        self.major = major
+        self.minor = minor
+        self._orig_func = None
 
-    orig_func = torch.cuda.get_device_capability
-    torch.cuda.get_device_capability = fake_cuda
-    return orig_func
+    def __enter__(self):
+        self._orig_func = torch.cuda.get_device_capability
+
+        def _override_capability(*_args, **_kwargs):
+            return self.major, self.minor
+
+        torch.cuda.get_device_capability = _override_capability
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        if self._orig_func is not None:
+            torch.cuda.get_device_capability = self._orig_func
+            self._orig_func = None
+        return False
 
 
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
@@ -1448,13 +1461,58 @@ class MemoryMonitor:
                 summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
-    def log_summary(self):
+    def log_summary(self, msg: str = "", level: str = "info"):
         """Log memory usage summary."""
         summary = self.get_summary()
-        logger.info(summary)
+        logger_method = getattr(logger, level.lower(), logger.info)
+        logger_method(f"{msg} {summary}")
 
         return summary
 
 
+def get_device_str():
+    """Get a string representation of the automatically detected device."""
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.xpu.is_available():  # pragma: no cover
+        return "xpu"
+    elif is_hpex_available():  # pragma: no cover
+        return "hpu"
+    else:  # pragma: no cover
+        return "cpu"
+
+
 # Global singleton instance
 memory_monitor = MemoryMonitor()
+
+
+@contextmanager
+def dump_memory_usage_ctx(msg: str = "", log_level: str = "info"):
+    """Context manager to dump memory usage before and after a code block."""
+    memory_monitor.update_cpu()
+    logger_method = getattr(logger, log_level.lower(), logger.info)
+    logger_method(f"[Memory Monitor] Before {msg}: {memory_monitor.get_summary()}")
+    try:
+        yield
+    finally:
+        memory_monitor.update_cpu()
+        logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
+
+
+def dump_mem_usage(msg: str = "", log_level: str = "info"):
+    """Decorator to dump memory usage before and after a function call."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            memory_monitor.update_cpu()
+            logger_method = getattr(logger, log_level.lower(), logger.info)
+            logger_method(f"[Memory Monitor] Before {msg}: {memory_monitor.get_summary()}")
+            result = func(*args, **kwargs)
+            memory_monitor.update_cpu()
+            logger_method(f"[Memory Monitor] After {msg}: {memory_monitor.get_summary()}")
+            return result
+
+        return wrapper
+
+    return decorator

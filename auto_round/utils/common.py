@@ -17,6 +17,7 @@ import importlib
 import os
 import re
 import sys
+from dataclasses import dataclass
 from functools import lru_cache, wraps
 from typing import Any
 
@@ -105,6 +106,11 @@ def monkey_patch_transformers():
             exc,
         )
         return
+
+    if parsed_version >= version.parse("5.0.0"):
+        from transformers.initialization import no_init_weights
+
+        setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
     if parsed_version >= version.parse("4.56.0"):
         transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(torch_dtype="dtype")(
             transformers.AutoModelForCausalLM.from_pretrained
@@ -376,3 +382,19 @@ def get_reciprocal(tensor):
     recip[mask] = 0.0
 
     return recip
+
+
+@dataclass
+class GlobalState:
+    replaced_module_count = 0
+
+
+global_state = GlobalState()
+
+
+@lru_cache(None)
+def is_transformers_version_greater_or_equal_5():
+    import transformers
+    from packaging import version
+
+    return version.parse(transformers.__version__) >= version.parse("5.0.0")

@@ -108,6 +108,18 @@ class TestAutoRound:
         )
         quantized_model_path = "self.save_dir"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        config_file = Path(quantized_model_path) / "config.json"
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        quant_config = config.get("quantization_config", {})
+        extra_config = quant_config.get("extra_config", {})
+        # check extra_config only saved attributes differing from Scheme values
+        assert "act_bits" not in extra_config[".*fc1.*"].keys()  ## TODO refine this assert
+        assert "group_size" not in extra_config[".*fc1.*"].keys()
+        assert "act_bits" not in extra_config["model.decoder.layers.0.self_attn.k_proj"].keys()
+        assert "group_size" not in extra_config["model.decoder.layers.0.self_attn.k_proj"].keys()
+        assert "group_size" not in extra_config["model.decoder.layers.1.self_attn.q_proj"].keys()
+        assert "bits" in extra_config["model.decoder.layers.1.self_attn.q_proj"].keys()
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         assert model.model.decoder.layers[0].self_attn.k_proj.bits == 8
         assert model.model.decoder.layers[0].self_attn.q_proj.bits == 3
@@ -164,26 +176,10 @@ class TestAutoRound:
         # remove old extra_config(which contains full name layer configs), only test regex config loading
         new_extra_config = {
             ".*fc1.*": {  # standard regex
-                "act_bits": 16,
-                "act_data_type": "float",
-                "act_dynamic": True,
-                "act_group_size": 128,
-                "act_sym": True,
                 "bits": 16,
-                "data_type": "int",
-                "group_size": 128,
-                "sym": True,
             },
             "k_proj": {  # part name
-                "act_bits": 16,
-                "act_data_type": "float",
-                "act_dynamic": True,
-                "act_group_size": 128,
-                "act_sym": True,
                 "bits": 8,
-                "data_type": "int",
-                "group_size": 128,
-                "sym": True,
             },
         }
         config_file = Path(quantized_model_path) / "config.json"
@@ -191,6 +187,10 @@ class TestAutoRound:
             config = json.load(f)
         quant_config = config.get("quantization_config", {})
         old_extra_config = quant_config.get("extra_config", {})
+        # check extra_config only saved attributes differing from Scheme values
+        assert "sym" not in old_extra_config[".*fc1.*"].keys()
+        assert "act_dynamic" not in old_extra_config[".*fc1.*"].keys()
+        assert "group_size" not in old_extra_config[".*fc1.*"].keys()
         quant_config["extra_config"] = new_extra_config
         config["quantization_config"] = quant_config
         with open(config_file, "w", encoding="utf-8") as f:
@@ -263,7 +263,13 @@ class TestAutoRound:
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
         # Create an LLM.
         QUANTIZATION = "auto-round"  # quantized_model_path
-        llm = LLM(model=quantized_model_path, quantization=QUANTIZATION, trust_remote_code=True, tensor_parallel_size=1)
+        llm = LLM(
+            model=quantized_model_path,
+            quantization=QUANTIZATION,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+        )
         outputs = llm.generate(prompts, sampling_params)
         # Print the outputs.
         for output in outputs:
@@ -302,8 +308,12 @@ class TestAutoRound:
         # Create a sampling params object.
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
         # Create an LLM.
-        QUANTIZATION = "auto-round"  # quantized_model_path
-        llm = LLM(model=quantized_model_path, trust_remote_code=True, tensor_parallel_size=1)
+        llm = LLM(
+            model=quantized_model_path,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+        )
         outputs = llm.generate(prompts, sampling_params)
         # Print the outputs.
         for output in outputs:

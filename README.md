@@ -10,11 +10,16 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.9.5-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.9.6-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+
+&nbsp;&nbsp;&nbsp;&nbsp;English | [简体中文](README_CN.md)
+
+[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
+
 ---
 <div align="left">
 
@@ -96,7 +101,7 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 pip install auto-round
 
 # HPU
-pip install auto-round-lib
+pip install auto-round-hpu
 ```
 
 <details>
@@ -107,17 +112,20 @@ pip install auto-round-lib
   pip install .
 
   # HPU
-  python setup.py install lib
+  python setup.py install hpu
   ```
 
 </details>
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
+>If you encounter issues during quantization, try using pure RTN mode with iters=0, disable_opt_rtn=True. Additionally, using group_size=32 or mixed bits is recommended for better results..
+
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 > **ModelScope is supported for model downloads, simply set `AR_USE_MODELSCOPE=1`.**
+
 
 ```bash
 auto-round \
@@ -263,10 +271,6 @@ ar.quantize_and_save()
 </details>
 
 ### API Usage for VLMs
-
-If you encounter issues during quantization, try setting iters=0 (to enable RTN) and group_size=32 for better
-results.
-
 
 <details>
   <summary>Click to expand</summary>

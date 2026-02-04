@@ -4,12 +4,13 @@ import shutil
 import pytest
 import torch
 import transformers
+from packaging import version
 from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
 class TestAutoRound:
@@ -124,7 +125,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", trust_remote_code=True, quantization_config=AutoRoundConfig()
@@ -219,7 +220,7 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved/test_export"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", quantization_config=AutoRoundConfig()
@@ -256,7 +257,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:gptqmodel")
 
         device = "auto"  ##cpu, hpu, cuda
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -282,7 +283,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
         device = "auto"  ##cpu, hpu, cuda
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         quantization_config = AutoRoundConfig(backend=device)
         model = AutoModelForCausalLM.from_pretrained(
@@ -294,6 +295,10 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-2")
@@ -321,7 +326,11 @@ class TestAutoRound:
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_gptq_lmhead_export(self, tiny_qwen_model_path, dataloader):
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
+    def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         model_name = get_model_path("microsoft/phi-2")
         tiny_model = get_tiny_model(model_name)
