@@ -1156,11 +1156,11 @@ def set_amax_for_uncalibrated_experts(
                         f"This may indicate calibration hooks were not attached to expert layers."
                     )
             return uncalibrated_experts
-        else:
-            # Flatten all tensors to 1D before concatenation
-            flat_values = [t.reshape(-1) for t in amax_values]
-            all_values = torch.cat(flat_values)
-            set_amax_value = torch.max(all_values)
+        # Flatten all tensors to 1D before concatenation
+        flat_values = [t.reshape(-1) for t in amax_values]
+        all_values = torch.cat(flat_values)
+        set_amax_value = torch.max(all_values)
+        set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value
 
     for module in experts:
         current_amax = _get_amax_value(module)
