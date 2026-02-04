@@ -24,6 +24,8 @@ from typing import Callable, Union
 import cpuinfo
 import psutil
 import torch
+from accelerate import infer_auto_device_map, dispatch_model
+from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
@@ -1194,6 +1196,53 @@ def partition_dict_numbers(number_dict, n):
 
     return result
 
+def dispatch_model_block_wise(model: torch.nn.Module, device_map:str, max_mem_ratio=0.9):
+    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+        import accelerate
+
+        accelerate.hooks.remove_hook_from_submodules(model)
+    no_split_modules = getattr(model, "_no_split_modules", [])
+    devices = parse_available_devices(device_map)
+    if len(devices)==1:
+        model.to(devices[0])
+        return model
+
+    max_memory = get_max_memory()
+    new_max_memory = {}
+    if "cpu" not in devices:
+        devices.append("cpu")
+    for device in devices:
+        if ":" in device:
+            device = int(device.split(":")[-1])
+        elif device == "cpu":
+            device = "cpu"
+        elif isinstance(device, str):
+            device = 0
+        else:
+            raise f"Unsupported device {device} in device_map: {device_map}"
+        # Use 90% of the reported max memory to leave headroom for activations,
+        # temporary tensors, other processes, and allocator fragmentation, reducing
+        # the chance of runtime OOM while still utilizing most available memory.
+        new_max_memory[device] = max_memory[device] * max_mem_ratio
+    new_max_memory = get_balanced_memory(
+        model,
+        max_memory=new_max_memory,
+        no_split_module_classes=no_split_modules,
+    )
+    model.tie_weights()
+    device_map = infer_auto_device_map(
+        model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
+    )
+    if len(devices) > 1 and "cpu" in device_map.values():
+        logger.warning(
+            "Some layers are offloaded to cpu, which may severely impact calibration speed."
+            " Please consider using more cards."
+        )
+
+
+    model = dispatch_model(model, device_map=device_map)
+
+    return model
 
 def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     block_name_list = get_block_names(model)

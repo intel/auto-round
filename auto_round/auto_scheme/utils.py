@@ -246,7 +246,7 @@ def dispatch_model_by_all_available_devices(
         else:
             raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
         new_max_memory[device] = max_memory[device]
-
+    model.tie_weights()
     device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
     model = dispatch_model(model, device_map=device_map)
     return model
