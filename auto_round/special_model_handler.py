@@ -103,9 +103,7 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     if quant_vision:
         # Vision encoder blocks
         if hasattr(model, "thinker") and hasattr(model.thinker, "visual") and hasattr(model.thinker.visual, "blocks"):
-            block_names.append(
-                [f"thinker.visual.blocks.{i}" for i in range(len(model.thinker.visual.blocks))]
-            )
+            block_names.append([f"thinker.visual.blocks.{i}" for i in range(len(model.thinker.visual.blocks))])
         # Audio encoder layers
         if hasattr(model, "thinker") and hasattr(model.thinker, "audio_tower"):
             if hasattr(model.thinker.audio_tower, "layers"):
@@ -115,15 +113,11 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     # Thinker text model layers (main LLM decoder)
     if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
-        block_names.append(
-            [f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))]
-        )
+        block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
 
     # Talker model layers (if available)
     if hasattr(model, "talker") and hasattr(model.talker, "model") and hasattr(model.talker.model, "layers"):
-        block_names.append(
-            [f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))]
-        )
+        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
 
     return block_names
 
@@ -249,8 +243,11 @@ def _qwen3_omni_moe_forward(
                 else:
                     # Fallback: create zero embeddings of correct size
                     talker_inputs_embeds = torch.zeros(
-                        batch_size, seq_len, talker_hidden_size,
-                        device=thinker_hidden.device, dtype=thinker_hidden.dtype
+                        batch_size,
+                        seq_len,
+                        talker_hidden_size,
+                        device=thinker_hidden.device,
+                        dtype=thinker_hidden.dtype,
                     )
 
                 # Run talker model forward
