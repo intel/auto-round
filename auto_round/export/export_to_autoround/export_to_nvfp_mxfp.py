@@ -73,7 +73,8 @@ def pack_layer(name, model, backend, device=None):
     sym = layer.sym
 
     if is_nv_fp(act_data_type) and act_bits <= 8:
-        if not getattr(layer, "input_global_scale", None):
+        input_global_scale = getattr(layer, "input_global_scale", None)
+        if input_global_scale is None:
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
 
@@ -175,6 +176,12 @@ def save_quantized_as_fp(
                 set_module(model, n, orig_layer)
 
     if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
+        # Ensure all MOE layers have act_max set (needed after deep copy or for uncalibrated layers)
+        from auto_round.utils.model import is_moe_model, set_amax_for_all_moe_layers
+
+        if is_moe_model(model):
+            set_amax_for_all_moe_layers(model)
+
         # generate static input_global_scale
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:

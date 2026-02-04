@@ -141,6 +141,14 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.orig_forward = self.linear_forward if type(self.orig_layer) == torch.nn.Linear else self.conv1d_forward
 
+    @property
+    def weight(self):
+        return self.orig_layer.weight
+
+    @property
+    def bias(self):
+        return self.orig_layer.bias
+
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
 
@@ -501,6 +509,16 @@ class WrapperWALayer(torch.nn.Module):
         if self.enable_torch_compile:
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
+
+    @property
+    def weight(self):
+        """Exposes the weight of the wrapped layer for external access."""
+        return self.orig_layer.weight
+
+    @property
+    def bias(self):
+        """Exposes the bias of the wrapped layer for external access."""
+        return self.orig_layer.bias
 
     def forward(self, x):
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
