@@ -64,7 +64,7 @@ def tiny_phi2_model_path():
 def tiny_deepseek_v2_model_path():
     model_name_or_path = deepseek_v2_name_or_path
     tiny_model_path = "./tmp/tiny_deepseek_v2_model_path"
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, trust_remote_code=False)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
@@ -121,6 +121,15 @@ def tiny_qwen_2_5_vl_model_path():
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
+@pytest.fixture()
+def mock_fp8_capable_device():
+    from unittest.mock import patch
+
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+        yield
 
 
 @pytest.fixture(autouse=True, scope="session")

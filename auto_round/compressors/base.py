@@ -43,6 +43,7 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
     is_static_wfp8afp8,
@@ -52,10 +53,11 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG, ModelType
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modelling.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -70,14 +72,13 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    check_and_mark_fp8_model,
+    check_and_mark_quantized_module,
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
     compile_func,
     convert_dtype_str2torch,
-    convert_fp8_layer_to_linear,
-    convert_fp8_module_to_16b,
+    convert_module_to_hp_if_necessary,
     detect_device,
     find_matching_blocks,
     flatten_list,
@@ -89,10 +90,9 @@ from auto_round.utils import (
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
-    is_fp8_linear,
-    is_fp8_model,
     is_hpex_available,
     is_moe_model,
+    is_quantized_input_module,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
@@ -252,6 +252,16 @@ class BaseCompressor(object):
             ...     # ...
             ... }
         """
+        scheme_fields = [f.name for f in fields(QuantizationScheme)]
+
+        # 1. Pre-extract user-specified overrides from kwargs
+        # This ensures we know exactly what the user wants to "force"
+        self.user_scheme_overrides = {}
+        for k in scheme_fields:
+            if k in kwargs:
+                value = kwargs.pop(k)
+                if value is not None:
+                    self.user_scheme_overrides[k] = value
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
@@ -259,7 +269,25 @@ class BaseCompressor(object):
         self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
         self.quantized = False
+        self.is_model_patched = False
         if isinstance(model, str):
+            try:
+                # config = AutoConfig.from_pretrained(model)
+                self.is_model_patched = apply_model_monkey_patches(model_name=model)
+
+                # TODO excluded  ori_params_moe
+                # if (
+                #     not self.is_model_patched
+                #     and is_moe_model_via_config(config)
+                #     and version.parse(transformers.__version__) >= version.parse("5.0.0")
+                # ):
+                #     logger.warning(
+                #         "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                #         "please submit an issue to https://github.com/intel/auto-round/issues"
+                #     )
+
+            except:
+                pass
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,
@@ -274,18 +302,23 @@ class BaseCompressor(object):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
-        check_and_mark_fp8_model(model)
+        check_and_mark_quantized_module(model)
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
         self.layer_config = layer_config
 
+        self.supported_types = SUPPORTED_LAYER_TYPES
+        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
+
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
         # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+        default_scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, self.user_scheme_overrides)
         self.orig_scheme = copy.deepcopy(scheme)
-        self.scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, kwargs)
+        self.scheme = default_scheme
 
         gguf_scheme_name = get_gguf_scheme(self.scheme)
         # GGUF uses fp32 scale dtype as default
@@ -316,7 +349,6 @@ class BaseCompressor(object):
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
-        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
 
         self.ignore_layers = kwargs.pop("ignore_layers", "")
         self.supported_types = SUPPORTED_LAYER_TYPES
@@ -404,12 +436,12 @@ class BaseCompressor(object):
             disable_opt_rtn = True
         if (
             self.bits >= 8
-            and self.act_bits >= 16
+            and self.act_bits >= 8
             and self.iters == 0
             and self.data_type == "int"
             and disable_opt_rtn is None
         ):
-            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
+            logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
             disable_opt_rtn = True
         if disable_opt_rtn is None and self.iters == 0:
             logger.info(
@@ -469,7 +501,6 @@ class BaseCompressor(object):
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
         self.attention_mask = []
 
@@ -483,20 +514,18 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-    def _gen_auto_scheme(
-        self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
-    ) -> dict[str, dict]:
+    def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
-        if getattr(model, "is_fp8", False):
-            logger.info("AutoScheme does not currently support FP8 models.")
+        if is_quantized_input_module(self.model):
+            logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
             sys.exit(-1)
 
         all_dtypes = []
         all_gguf = True
-        for option in scheme.options:
+        for option in self.orig_scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
@@ -548,15 +577,15 @@ class BaseCompressor(object):
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if not self.enable_torch_compile and self.super_bits is None and not scheme.low_gpu_mem_usage:
+        if not self.enable_torch_compile and self.super_bits is None and not self.orig_scheme.low_gpu_mem_usage:
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         self.scheme_generator = GenScheme(
-            scheme,
+            self.orig_scheme,
             self.model,
             quant_layer_names,
             fixed_layer_scheme_new,
-            dataset,
-            device_map=device_map,
+            self.dataset,
+            device_map=self.device_map,
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
         )
@@ -587,119 +616,152 @@ class BaseCompressor(object):
         else:
             raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
 
-    def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme], kwargs
-    ) -> tuple[QuantizationScheme, bool]:
-        """Parse and set the quantization scheme."""
+    def _reconcile_bits_and_dtype(self, config: dict, prefix: str = ""):
+        """
+        Harmonizes 'bits' and 'data_type' for weights or activations.
+        Ensures internal consistency by prioritizing data_type inference.
+        """
+        dt_key = f"{prefix}data_type"
+        bits_key = f"{prefix}bits"
 
-        def _parse_and_set(scheme, kwargs):
-            if kwargs.get("data_type", None) and kwargs["data_type"].endswith("_dq") and not scheme.startswith("gguf"):
-                if "bits" not in kwargs:
-                    data_type = kwargs["data_type"]
-                    raise KeyError(
-                        f"please set bits when setting data_type={data_type}, or using scheme as an alternative."
-                    )
-                bits = kwargs["bits"]
-                scheme = f"gguf:q{bits}_k" if bits == 6 else f"gguf:q{bits}_k_s"
-            res = None
-            if isinstance(scheme, QuantizationScheme):
-                scheme = asdict(scheme)
-            elif isinstance(scheme, dict):
-                scheme = scheme
-            elif isinstance(scheme, str):
-                # We’d better keep the string scheme instead of the dict config,
-                # since GGUF uses different mixed-bit strategies for q4_k_s and q4_k_m
-                # even though they share the same scheme dict.
-                scheme = scheme.strip("'\" ")
-                res = scheme
-                scheme = scheme.upper()
-                self.layer_config = _handle_special_schemes(scheme, self.layer_config, self.model)
-                scheme = asdict(preset_name_to_scheme(scheme))
-            scheme_keys = [f.name for f in fields(QuantizationScheme)]
-            for key in scheme_keys:
-                if key in kwargs and kwargs[key] is not None:
-                    setattr(self, key, kwargs[key])
-                else:
-                    setattr(self, key, scheme.get(key, None))
-                # kwargs.pop(key, None)
-            if self.act_dynamic is None:
-                self.act_dynamic = True
+        if config.get(dt_key) is None:
+            return
 
-            tmp_bits = infer_bits_by_data_type(self.data_type)
-            if tmp_bits is not None and tmp_bits < 16 and tmp_bits != self.bits:
+        # Infer the correct bit-width based on the data_type string
+        inferred_bits = infer_bits_by_data_type(config[dt_key])
+
+        if inferred_bits is not None and inferred_bits < 16:
+            # Check for conflict between user-specified bits and inferred bits
+            if inferred_bits != config.get(bits_key):
                 logger.warning(
-                    f"'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
+                    f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}."
                 )
-                self.bits = tmp_bits
-            if tmp_bits is not None and tmp_bits < 16:
-                for (
-                    supported_dtype
-                ) in SUPPORTED_DTYPES:  # to easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                    if self.data_type.startswith(supported_dtype):
-                        if supported_dtype + str(tmp_bits) == self.data_type:  # could not replace FP8_e4m3
-                            self.data_type = supported_dtype
-                        break
+                config[bits_key] = inferred_bits
 
-            self.act_group_size = self.act_group_size if self.act_group_size is not None else self.group_size
-            self.act_bits = self.act_bits if self.act_bits is not None else 16
-            self.act_sym = self.act_sym if self.act_sym is not None else self.sym
+            # Normalize data_type (e.g., 'mx_fp4' -> 'mx')
+            for supported in SUPPORTED_DTYPES:
+                if config[dt_key] == f"{supported}{inferred_bits}":
+                    config[dt_key] = supported
+                    break
 
-            if self.act_data_type is None:
-                if self.data_type in SUPPORTED_DTYPES and self.act_bits < 16:
-                    self.act_data_type = self.data_type
-                    logger.info(f"activation adopts {self.data_type}")
-                else:
-                    self.act_data_type = "float"
-            tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-            if tmp_act_bits is not None and tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
-                self.act_bits = tmp_act_bits
-                logger.warning(
-                    f"`act_data_type` do not"
-                    f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
+    def _override_scheme_with_user_specify(
+        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
+    ) -> Union[str, QuantizationScheme]:
+        """
+        Updates a base quantization scheme with user-provided overrides.
+        Handles GGUF formatting and synchronizes weight/activation parameters.
+        """
+        # 1. GGUF special handling: map data_type suffix to GGUF scheme names
+        dt_override = user_scheme_overrides.get("data_type", "")
+        if (
+            isinstance(scheme, QuantizationScheme) or (isinstance(scheme, str) and not scheme.startswith("gguf"))
+        ) and dt_override.endswith("_dq"):
+            if "bits" not in user_scheme_overrides:
+                raise KeyError(f"Must specify 'bits' when using data_type={dt_override}")
+
+            bits = user_scheme_overrides["bits"]
+            suffix = "k" if bits == 6 else "k_s"
+            scheme = f"gguf:q{bits}_{suffix}"
+
+        # 2. Convert input scheme to a dictionary for processing
+        if isinstance(scheme, QuantizationScheme):
+            scheme_dict = asdict(scheme)
+        elif isinstance(scheme, str):
+            normalized_name = scheme.strip("'\" ").upper()
+            if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
+                logger.warning_once(
+                    "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
                 )
-            if tmp_act_bits is not None and tmp_act_bits < 16:
-                for (
-                    supported_dtype
-                ) in SUPPORTED_DTYPES:  # To easily handle dtype mx_fp4 and layer_config={xxx:{bits:8}}
-                    if self.act_data_type.startswith(supported_dtype):
-                        if supported_dtype + str(tmp_act_bits) == self.act_data_type:  # Could not replace FP8_e4m3
-                            self.act_data_type = supported_dtype
-                        break
-            for key in scheme_keys:
-                scheme[key] = getattr(self, key)
-            if res and QuantizationScheme.from_dict(scheme) == preset_name_to_scheme(res):
-                return res
+                user_scheme_overrides = {}
+            # If no overrides exist, return the normalized string immediately
+            if not user_scheme_overrides and return_str:
+                return normalized_name
+            scheme_dict = asdict(preset_name_to_scheme(normalized_name))
+        else:
+            scheme_dict = scheme.copy()
+
+        # 3. Apply overrides and define default behaviors
+        scheme_dict.update(user_scheme_overrides)
+
+        if scheme_dict.get("act_dynamic") is None:
+            scheme_dict["act_dynamic"] = True
+
+        # 4. Reconcile weight settings (bits vs data_type)
+        self._reconcile_bits_and_dtype(scheme_dict)
+
+        # 5. Fallback logic: Inherit activation settings from weight settings
+        scheme_dict["act_group_size"] = (
+            scheme_dict.get("act_group_size")
+            if scheme_dict.get("act_group_size") is not None
+            else scheme_dict.get("group_size")
+        )
+        scheme_dict["act_bits"] = scheme_dict.get("act_bits") or 16
+        scheme_dict["act_sym"] = (
+            scheme_dict.get("act_sym") if scheme_dict.get("act_sym") is not None else scheme_dict.get("sym")
+        )
+
+        # 6. Activation data_type logic
+        if scheme_dict.get("act_data_type") is None:
+            is_supported = scheme_dict["data_type"] in SUPPORTED_DTYPES
+            if is_supported and scheme_dict["act_bits"] < 16:
+                scheme_dict["act_data_type"] = scheme_dict["data_type"]
+                logger.info(f"Activation adopting weight data_type: {scheme_dict['data_type']}")
             else:
-                return QuantizationScheme.from_dict(scheme)
+                scheme_dict["act_data_type"] = "float"
 
-        if isinstance(scheme, AutoScheme):
-            if len(scheme.options) <= 0:
-                raise ValueError("options of AutoScheme must not be empty")
-            options = []
-            for option in scheme.options:
-                new_option = _parse_and_set(option, kwargs)
-                options.append(new_option)
-            scheme.options = options
-            for opt in options:
-                if isinstance(opt, str) and opt == "BF16":
+        # 7. Reconcile activation settings
+        self._reconcile_bits_and_dtype(scheme_dict, prefix="act_")
+
+        return QuantizationScheme.from_dict(scheme_dict)
+
+    def _parse_and_set_scheme(
+        self, scheme: Union[str, dict, QuantizationScheme, AutoScheme], user_scheme_overrides: dict[str, Any]
+    ) -> tuple[Union[str, QuantizationScheme], bool]:
+        """
+        Parses the final scheme and binds all resulting attributes to 'self'.
+        """
+
+        is_auto_scheme = isinstance(scheme, AutoScheme)
+
+        if is_auto_scheme:
+            if not scheme.options:
+                raise ValueError("AutoScheme options cannot be empty")
+            else:
+                for option in scheme.options:
+                    if isinstance(option, str):
+                        if "mixed" in option:
+                            raise ValueError(f"Mixed option {option} is not supported")
+
+            # Map user overrides across all auto-scheme options
+            scheme.options = [
+                self._override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options
+            ]
+
+            # Select the primary scheme for attribute binding (skipping BF16)
+            default_scheme = scheme.options[0]
+            for opt in scheme.options:
+                if opt == "BF16":
                     continue
                 if isinstance(opt, QuantizationScheme):
-                    if opt.bits >= 16 and (opt.act_bits is None or opt.act_bits >= 16):
-                        continue
-                self.scheme = opt  # Choose the first one that not 16 bits
-                break
-            # apply scheme to set default bits
-            scheme = _parse_and_set(self.scheme, kwargs)
-            is_auto_scheme = True
+                    if opt.bits < 16 or (opt.act_bits and opt.act_bits < 16):
+                        default_scheme = opt
+                        break
         else:
-            scheme = _parse_and_set(scheme, kwargs)
-            is_auto_scheme = False
+            default_scheme = self._override_scheme_with_user_specify(scheme, user_scheme_overrides)
 
-        scheme_keys = [f.name for f in fields(QuantizationScheme)]
-        for key in scheme_keys:
-            kwargs.pop(key, None)
+        # Extract attributes from the chosen default_scheme
+        if isinstance(default_scheme, str):
+            final_attrs = self._override_scheme_with_user_specify(
+                default_scheme, user_scheme_overrides, return_str=False
+            )
+        else:
+            final_attrs = asdict(default_scheme)
 
-        return scheme, is_auto_scheme
+        # Bind attributes to self for easy instance-level access
+        for key, value in final_attrs.items():
+            setattr(self, key, value)
+
+        return default_scheme, is_auto_scheme
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
@@ -767,6 +829,8 @@ class BaseCompressor(object):
             self.act_bits <= 8
             and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
             and not is_mx_fp(self.act_data_type)
+            and not is_dynamic_wint8aint8(self)
+            and not is_static_wfp8afp8(self.act_data_type)
         ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
@@ -1113,9 +1177,8 @@ class BaseCompressor(object):
         if dtype is not None:
             m = m.to(dtype)
 
-        if is_fp8_linear(m):
-            m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
-            set_module(self.model, name, m)
+        m = convert_module_to_hp_if_necessary(m, self.amp_dtype, self.device)
+        set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
         if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
@@ -1222,9 +1285,8 @@ class BaseCompressor(object):
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
                 m = get_module(self.model, name)
-                if is_fp8_linear(m):
-                    m = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
-                    set_module(self.model, name, m)
+                m = convert_module_to_hp_if_necessary(m, self.amp_dtype, self.device)
+                set_module(self.model, name, m)
                 weight_global_scale = calculate_gparam(m.weight, self.group_size)
                 setattr(m, "weight_global_scale", weight_global_scale)
 
@@ -1351,8 +1413,7 @@ class BaseCompressor(object):
                         m.to("meta")
 
         # Convert remaining fp8
-        if is_fp8_model(self.model):
-            convert_fp8_module_to_16b(self.model, self.amp_dtype, self.device)
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1423,8 +1484,7 @@ class BaseCompressor(object):
                 block = get_module(self.model, block_name)
                 materialize_model_(block)
                 block.to("cpu")
-                if is_fp8_model(self.model):
-                    convert_fp8_module_to_16b(block, dtype=self.amp_dtype, device=self.device)
+                convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -1517,7 +1577,17 @@ class BaseCompressor(object):
                     self.ignore_layers += "," + tmp_str
 
         if self.is_auto_scheme:
-            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+            self.layer_config = self._gen_auto_scheme()
+        else:
+            self.layer_config = _handle_special_schemes(
+                self.orig_scheme,
+                self.layer_config,
+                self.model,
+                supported_types=self.supported_types,
+                inner_supported_types=self.inner_supported_types,
+                quant_lm_head=self.quant_lm_head,
+                mllm=getattr(self, "mllm", False),
+            )
 
         fill_default_value = True
         if self.is_auto_scheme:
@@ -1598,6 +1668,9 @@ class BaseCompressor(object):
 
         if self.is_immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.is_immediate_saving = False
+
+        if self.orig_output_dir is None:
             self.is_immediate_saving = False
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -1719,11 +1792,7 @@ class BaseCompressor(object):
         pbar.close()
         self._quantize_layers(layer_names, all_inputs)
 
-        if is_fp8_model(self.model):
-            for n, m in self.model.named_modules():
-                if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to("cpu")
-                    set_module(self.model, n, new_layer)
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1787,10 +1856,8 @@ class BaseCompressor(object):
 
                 layer = get_module(self.model, layer_name)
                 layer = layer.to(self.device)
-                if is_fp8_linear(layer):
-                    new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype, self.device).to(self.device)
-                    set_module(self.model, layer_name, new_layer)
-                    layer = new_layer
+                layer = convert_module_to_hp_if_necessary(layer, self.amp_dtype, self.device)
+                set_module(self.model, layer_name, layer)
 
                 wrapper_layer = WrapperLinear(
                     layer,
@@ -2097,7 +2164,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
-        if is_fp8_model(self.model):
+        if is_quantized_input_module(self.model):
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -2130,6 +2197,8 @@ class BaseCompressor(object):
                                     device = int(device.split(":")[-1])
                                 elif device == "cpu":
                                     device = "cpu"
+                                elif isinstance(device, str):
+                                    device = 0
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
                                 # Use 90% of the reported max memory to leave headroom for activations,
@@ -2412,9 +2481,8 @@ class BaseCompressor(object):
             else:
                 act_max = act_max.to(module.act_max.device)
                 if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    module.act_max = torch.max(
-                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
-                    )
+                    max_val = torch.max(act_max.max(), module.act_max.max())
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
                 else:
                     module.act_max = torch.max(act_max, module.act_max)
 
@@ -2748,11 +2816,7 @@ class BaseCompressor(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         materialize_model_(block)
-        if is_fp8_model(self.model):
-            for n, m in block.named_modules():
-                if is_fp8_linear(m):
-                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype, self.device).to(device)
-                    set_module(block, n, new_layer)
+        convert_module_to_hp_if_necessary(block, self.amp_dtype, device)
 
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights

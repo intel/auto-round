@@ -14,14 +14,22 @@
 
 
 import torch
+import transformers
+from packaging import version
 from torch import nn
-from transformers.modeling_utils import no_init_weights as skip_weights_initialize
+
+transformers_version = version.parse(transformers.__version__)
+if transformers_version < version.parse("5.0.0"):
+    from transformers.modeling_utils import no_init_weights
+else:
+    from transformers.initialization import no_init_weights
+
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.modelling.utils import _update_parameter
-from auto_round.utils import LazyImport, clear_memory, logger, unsupported_meta_device
+from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.utils import clear_memory, unsupported_meta_device
 
 
 class GPTOssSingleExpert(nn.Module):
@@ -71,7 +79,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         # Build per-expert MLPs
         self.experts = nn.ModuleList()
         target_device = next(original.experts.parameters()).device
-        with skip_weights_initialize(), torch.device("meta"):
+        with no_init_weights(), torch.device("meta"):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
 

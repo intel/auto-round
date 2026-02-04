@@ -26,7 +26,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, is_fp8_linear, is_fp8_model
+from auto_round.utils import check_to_quantized
 
 
 class BackendDataType(str, Enum):
@@ -68,12 +68,31 @@ def is_wfp8afp8(ar):
         return False
 
 
+def is_wint8aint8(ar):
+    if ("int8" in ar.act_data_type or ("int" in ar.act_data_type and ar.act_bits == 8)) and (
+        "int8" in ar.data_type or ("int" in ar.data_type and ar.bits == 8)
+    ):
+        return True
+    else:
+        return False
+
+
 def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
-        return "fp8_static" in ar_or_format
+        return "fp8_static" in ar_or_format.lower()
     if ar_or_format.act_dynamic:
         return False
     if is_wfp8afp8(ar_or_format):
+        return True
+    return False
+
+
+def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
+    if isinstance(ar_or_format, str):
+        return "int8_w8a8" in ar_or_format.lower()
+    if not ar_or_format.act_dynamic:
+        return False
+    if is_wint8aint8(ar_or_format):
         return True
     return False
 
@@ -118,19 +137,6 @@ def block_forward(
     if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[output_return_id]
     return output
-
-
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if is_fp8_model(model):
-        return True
-    for n, m in model.named_modules():
-        if is_fp8_linear(m):
-            m.is_fp8_linear = True
-            if not hasattr(model, "is_fp8"):
-                model.is_fp8 = True
-    if hasattr(model, "is_fp8"):
-        return True
-    return False
 
 
 def check_skippable_keywords(key):
