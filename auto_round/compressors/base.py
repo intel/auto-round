@@ -43,6 +43,7 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
     is_static_wfp8afp8,
@@ -435,12 +436,12 @@ class BaseCompressor(object):
             disable_opt_rtn = True
         if (
             self.bits >= 8
-            and self.act_bits >= 16
+            and self.act_bits >= 8
             and self.iters == 0
             and self.data_type == "int"
             and disable_opt_rtn is None
         ):
-            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
+            logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
             disable_opt_rtn = True
         if disable_opt_rtn is None and self.iters == 0:
             logger.info(
@@ -513,20 +514,18 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-    def _gen_auto_scheme(
-        self, model: torch.nn.Module, scheme: AutoScheme, dataset: str, device_map: Union[str, int, dict, torch.device]
-    ) -> dict[str, dict]:
+    def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
-        if is_quantized_input_module(model):
+        if is_quantized_input_module(self.model):
             logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
             sys.exit(-1)
 
         all_dtypes = []
         all_gguf = True
-        for option in scheme.options:
+        for option in self.orig_scheme.options:
             # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
@@ -578,15 +577,15 @@ class BaseCompressor(object):
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if not self.enable_torch_compile and self.super_bits is None and not scheme.low_gpu_mem_usage:
+        if not self.enable_torch_compile and self.super_bits is None and not self.orig_scheme.low_gpu_mem_usage:
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         self.scheme_generator = GenScheme(
-            scheme,
+            self.orig_scheme,
             self.model,
             quant_layer_names,
             fixed_layer_scheme_new,
-            dataset,
-            device_map=device_map,
+            self.dataset,
+            device_map=self.device_map,
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
         )
@@ -830,6 +829,7 @@ class BaseCompressor(object):
             self.act_bits <= 8
             and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
             and not is_mx_fp(self.act_data_type)
+            and not is_dynamic_wint8aint8(self)
             and not is_static_wfp8afp8(self.act_data_type)
         ):
             logger.warning(
@@ -1577,7 +1577,7 @@ class BaseCompressor(object):
                     self.ignore_layers += "," + tmp_str
 
         if self.is_auto_scheme:
-            self.layer_config = self._gen_auto_scheme(self.model, self.orig_scheme, self.dataset, self.device_map)
+            self.layer_config = self._gen_auto_scheme()
         else:
             self.layer_config = _handle_special_schemes(
                 self.orig_scheme,
@@ -1588,6 +1588,8 @@ class BaseCompressor(object):
                 quant_lm_head=self.quant_lm_head,
                 mllm=getattr(self, "mllm", False),
             )
+
+
         fill_default_value = True
         if self.is_auto_scheme:
             fill_default_value = False
@@ -1667,6 +1669,9 @@ class BaseCompressor(object):
 
         if self.is_immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.is_immediate_saving = False
+
+        if self.orig_output_dir is None:
             self.is_immediate_saving = False
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -2193,6 +2198,8 @@ class BaseCompressor(object):
                                     device = int(device.split(":")[-1])
                                 elif device == "cpu":
                                     device = "cpu"
+                                elif isinstance(device, str):
+                                    device = 0
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
                                 # Use 90% of the reported max memory to leave headroom for activations,

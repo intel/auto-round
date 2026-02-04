@@ -175,6 +175,12 @@ def save_quantized_as_fp(
                 set_module(model, n, orig_layer)
 
     if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
+        # Ensure all MOE layers have act_max set (needed after deep copy or for uncalibrated layers)
+        from auto_round.utils.model import is_moe_model, set_amax_for_all_moe_layers
+
+        if is_moe_model(model):
+            set_amax_for_all_moe_layers(model)
+
         # generate static input_global_scale
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:

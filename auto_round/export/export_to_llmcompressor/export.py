@@ -18,33 +18,89 @@ from typing import Callable, Union
 
 import torch
 
-from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp, is_static_wfp8afp8
-from auto_round.export.export_to_llmcompressor.config import quantization_config
-from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
-from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
+from auto_round.export.utils import save_model
 from auto_round.logger import logger
 from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
     copy_python_files_from_model_cache,
     detect_device,
     get_module,
     set_module,
+    unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperWALayer
 
 
-@torch.no_grad()
-def recover_qweight(qdq_weight, scale):
-    """
-    Recover the quantized weight to its original floating-point representation.
+def construct_ct_scheme(layer):
+    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme  # pylint: disable=E0401
 
-    Args:
-        qdq_weight (torch.Tensor): The quantized weight tensor.
-        scale (float): The scale factor used for quantization.
+    weights_args = QuantizationArgs(
+        num_bits=layer.bits,
+        type=layer.data_type.split("_")[-2],  # int_sym, rtn_int_sym
+        symmetric=layer.sym,
+        dynamic=False,
+        group_size=None,
+        strategy="tensor" if layer.act_group_size == 0 else "channel" if layer.act_group_size == -1 else None,
+    )
+    activations_args = QuantizationArgs(
+        num_bits=layer.act_bits,
+        type=layer.act_data_type.split("_")[-2],  # int_sym, rtn_int_sym
+        symmetric=layer.act_sym,
+        dynamic=layer.act_dynamic,
+        group_size=None,
+        strategy="tensor" if layer.act_group_size == 0 else "token" if layer.act_group_size == -1 else None,
+    )
+    scheme = QuantizationScheme(
+        targets=[layer.__class__.__name__],
+        weights=weights_args,
+        input_activations=activations_args,
+    )
+    return scheme
 
-    Returns:
-        torch.Tensor: The recovered floating-point weight tensor.
-    """
-    return (qdq_weight / scale).to(torch.int8)
+
+def pack_layer(name, model, device=None):
+    from compressed_tensors.compressors import IntQuantizationCompressor  # pylint: disable=E0401
+    from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
+    from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter  # pylint: disable=E0401
+
+    layer = get_module(model, name)
+    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
+        return
+
+    if not check_to_quantized(layer):
+        return
+
+    if hasattr(layer, "quantization_status") and layer.quantization_status == QuantizationStatus.COMPRESSED:
+        return
+
+    scheme = construct_ct_scheme(layer)
+    setattr(layer, "quantization_scheme", scheme)
+    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(device)))
+    if not isinstance(layer.zp, torch.Tensor):
+        if layer.sym:
+            zp = torch.full_like(layer.weight_scale, 0).to(torch.int8)
+        else:
+            zp = torch.full_like(layer.weight_scale, layer.zp).to(torch.int8)
+    else:
+        zp = layer.zp
+
+    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(device), requires_grad=False))
+    delattr(layer, "scale")
+
+    compressor = IntQuantizationCompressor()
+    q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
+
+    # remove any existing parameters
+    for name, _ in list(layer.named_parameters(recurse=False)):
+        delete_offload_parameter(layer, name)
+
+    # replace with compressed parameters
+    for name, value in q_state_dict.items():
+        param = torch.nn.Parameter(value, requires_grad=False)
+        register_offload_parameter(layer, name, param, device)
+
+    layer.quantization_status = QuantizationStatus.COMPRESSED
 
 
 @torch.no_grad()
@@ -81,6 +137,7 @@ def save_quantized_as_llmcompressor(
     Returns:
         torch.nn.Module: The quantized model that was saved.
     """
+    from compressed_tensors.quantization import QuantizationConfig  # pylint: disable=E0401
 
     safe_serialization = kwargs.get("safe_serialization", True)
     processor = kwargs.get("processor", None)
@@ -97,31 +154,24 @@ def save_quantized_as_llmcompressor(
 
     # generate q_weight
     device = detect_device(device)
-    for n, m in model.named_modules():
-        if isinstance(m, WrapperWALayer):
-            m = m.orig_layer
-            q_weight = recover_qweight(m.weight.to(device), m.scale.to(device)).to("cpu")
-            delattr(m, "weight")
-            setattr(m, "weight", torch.nn.Buffer(q_weight))
-            setattr(m, "weight_scale", torch.nn.Buffer(m.scale))
+    if not unsupported_meta_device(model):
+        for n, m in model.named_modules():
+            pack_layer(n, model, device)
 
-    # replace WrapperWALayer with orig_layer
-    candidates = []
-    for n, m in model.named_modules():
-        if isinstance(m, WrapperWALayer):
-            candidates.append(n)
-    for n in candidates:
-        set_module(model, n, get_module(model, n).orig_layer)
+    if output_dir is None:
+        return model
 
+    quantization_config = QuantizationConfig.from_pretrained(model)
     # save model.config, model.state_dict()
-    model.config.quantization_config = quantization_config
+    model.config.quantization_config = quantization_config.to_dict()
     model.config.save_pretrained(output_dir)
+
     try:
-        model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+        save_model(model, output_dir, safe_serialization=safe_serialization)
     except ValueError as e:
         if hasattr(model, "generation_config"):
             setattr(model.generation_config, "do_sample", True)
-        model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+        save_model(model, output_dir, safe_serialization=safe_serialization)
 
     try:
         copy_python_files_from_model_cache(model, output_dir)
