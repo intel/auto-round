@@ -133,7 +133,7 @@ def quant_mx(
     if tensor_max is None:
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[0]
     elif isinstance(tensor_max, torch.Tensor):
-        max_val = tensor_max.to(tensor.device)
+        max_tensor = tensor_max.to(tensor.device)
         if max_tensor.dim() > 1 and max_tensor.size(-1) == 1:
             max_tensor = max_tensor.squeeze(-1)
     else:
@@ -206,7 +206,7 @@ def quant_mx_rceil(
     if tensor_max is None:
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[0]
     elif isinstance(tensor_max, torch.Tensor):
-        max_val = tensor_max.to(tensor.device)
+        max_tensor = tensor_max.to(tensor.device)
         if max_tensor.dim() > 1 and max_tensor.size(-1) == 1:
             max_tensor = max_tensor.squeeze(-1)
     else:
