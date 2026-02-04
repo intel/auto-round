@@ -290,11 +290,15 @@ def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[s
         parallelism = True
     else:
         device = detect_device(device)
-        parallelism = False
+        if detect_device_count() > 1:
+            parallelism = True
+        else:
+            parallelism = False
     return device, parallelism
 
 
 def set_cuda_visible_devices(device):
+    device = device.replace("cuda:", "").replace("hpu:", "").replace("xpu:", "")
     devices = device.replace(" ", "").split(",")
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:

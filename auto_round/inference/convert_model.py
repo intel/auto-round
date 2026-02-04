@@ -504,30 +504,39 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     # GPTQModel post-init
     if need_gptqmodel_init:
+        from gptqmodel import __version__ as gptqmodel_version  # pylint: disable=E0401
         from gptqmodel.quantization import METHOD  # pylint: disable=E0401
         from gptqmodel.utils.importer import hf_select_quant_linear_v2  # pylint: disable=E0401
-        from gptqmodel.utils.model import hf_convert_gptq_v1_to_v2_format  # pylint: disable=E0401
+        from gptqmodel.utils.model import (  # pylint: disable=E0401
+            hf_convert_gptq_v1_to_v2_format,
+            hf_convert_gptq_v2_to_v1_format,
+        )
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
+        from packaging import version
 
-        quant_linear = hf_select_quant_linear_v2(
-            bits=model.config.quantization_config.bits,
-            group_size=model.config.quantization_config.group_size,
-            desc_act=False,
-            sym=model.config.quantization_config.sym,
-            format="gptq_v2",
-            quant_method=METHOD.GPTQ,
-            backend="EXLLAMA_V2",
-            pack=True,
-            device_map="auto",
-        )
-        model, _ = hf_convert_gptq_v1_to_v2_format(
-            model,
-            bits=model.config.quantization_config.bits,
-            qlinear_kernel=quant_linear,
-            checkpoint_format="gptq",
-            meta=None,
-        )
-        model = gptq_post_init(model, use_act_order=False)
+        if version.parse(gptqmodel_version) <= version.parse("5.6.0"):
+            model = gptq_post_init(model, use_act_order=False)
+        else:
+            quant_linear = hf_select_quant_linear_v2(
+                bits=model.config.quantization_config.bits,
+                group_size=model.config.quantization_config.group_size,
+                desc_act=False,
+                sym=model.config.quantization_config.sym,
+                format="gptq",
+                quant_method=METHOD.GPTQ,
+                backend="EXLLAMA_V2",
+                pack=True,
+                device_map="auto",
+            )
+            model, _ = hf_convert_gptq_v2_to_v1_format(
+                model,
+                sym=model.config.quantization_config.sym,
+                bits=model.config.quantization_config.bits,
+                qlinear_kernel=quant_linear,
+                checkpoint_format="gptq",
+                meta=None,
+            )
+            model = gptq_post_init(model, use_act_order=False)
 
     # IPEX post-init
     if need_ipex_init:
