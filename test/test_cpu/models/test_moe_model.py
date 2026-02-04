@@ -10,7 +10,7 @@ from auto_round import AutoRound
 
 from ...helpers import get_model_path, transformers_version
 
-gpt_oss_name_or_path = get_model_path("unsloth/gpt-oss-20b-BF16")
+gpt_oss_name_or_path = get_model_path("openai/gpt-oss-20b")
 llama4_name_or_path = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
 qwen3_vl_moe_name_or_path = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
 # local path for debug

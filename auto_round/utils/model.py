@@ -248,6 +248,27 @@ def _check_accelerate_version():
         )
 
 
+def _is_mxfp4_model(model_path: str) -> bool:
+    """Check if the model is quantized with MXFP4."""
+    supported_model_types = ["gpt_oss"]
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        quant_config = getattr(config, "quantization_config", None)
+        if quant_config is None:
+            return False
+        quant_method = (
+            quant_config.get("quant_method", "")
+            if isinstance(quant_config, dict)
+            else getattr(quant_config, "quant_method", "")
+        )
+        model_type = getattr(config, "model_type", "")
+        return quant_method == "mxfp4" and model_type in supported_model_types
+    except Exception:
+        return False
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -289,12 +310,24 @@ def llm_load_model(
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
+    # Check if model is MXFP4 quantized and needs dequantization
+    quantization_config = None
+    if _is_mxfp4_model(pretrained_model_name_or_path):
+        try:
+            from transformers import Mxfp4Config
+
+            quantization_config = Mxfp4Config(dequantized=True)
+            logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
+        except ImportError:
+            logger.warning("Mxfp4Config not available in current transformers version, loading without dequantization.")
+
     if _use_hpu_compile_mode():
         model = model_cls.from_pretrained(
             pretrained_model_name_or_path,
             torch_dtype=torch_dtype,
             trust_remote_code=trust_remote_code,
             device_map="auto" if use_auto_mapping else None,
+            quantization_config=quantization_config,
         )
     else:
         try:
@@ -303,6 +336,7 @@ def llm_load_model(
                 torch_dtype=torch_dtype,
                 trust_remote_code=trust_remote_code,
                 device_map="auto" if use_auto_mapping else None,
+                quantization_config=quantization_config,
             )
         except ValueError as e:
             if "FP8 quantized" in str(e):
@@ -312,6 +346,7 @@ def llm_load_model(
                         torch_dtype=torch_dtype,
                         trust_remote_code=trust_remote_code,
                         device_map="auto" if use_auto_mapping else None,
+                        quantization_config=quantization_config,
                     )
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
@@ -324,6 +359,7 @@ def llm_load_model(
                 torch_dtype=torch_dtype,
                 trust_remote_code=False,
                 device_map="auto" if use_auto_mapping else None,
+                quantization_config=quantization_config,
             )
 
     model = model.eval()
