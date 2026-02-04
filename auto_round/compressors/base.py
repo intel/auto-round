@@ -1586,7 +1586,6 @@ class BaseCompressor(object):
                 quant_lm_head=self.quant_lm_head,
                 mllm=getattr(self, "mllm", False),
             )
-           
 
         fill_default_value = True
         if self.is_auto_scheme:
