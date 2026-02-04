@@ -297,7 +297,7 @@ def eval_task_by_task(
         if is_gguf_file:
             parallelism = False
     if isinstance(model, torch.nn.Module):
-        dispatch_model_block_wise(model,args.device_map)
+        dispatch_model_block_wise(model,device_map="auto") # As we set visible device before, so explcits
 
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if mllm:
