@@ -165,7 +165,7 @@ class TestAutoRound:
         assert not is_pure_text_model(model)
 
     def test_Mistral3(self):
-        model_name = "/models/Mistral-Small-3.1-24B-Instruct-2503"
+        model_name = "/models/Mistral-Small-3.2-24B-Instruct-2506"
         model = Mistral3ForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [40])
