@@ -109,6 +109,7 @@ from auto_round.utils.device import (
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
 )
+from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 SERIALIZATION_KEYS = (
@@ -2957,7 +2958,7 @@ class BaseCompressor(object):
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
-
+        setup_ddp_if_needed_(self, block, self.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
