@@ -130,17 +130,17 @@ def quant_mx(
     elif isinstance(tensor_max, torch.Tensor):
         max_val = tensor_max.to(tensor.device)
         if max_val.dim() == 1:
-            max_val = max_val.unsqueeze(-1)  
+            max_val = max_val.unsqueeze(-1)
     else:
         max_val = torch.tensor(tensor_max, device=tensor.device)
         if max_val.dim() == 0:
-            max_val = max_val.view(1, 1) 
+            max_val = max_val.view(1, 1)
 
     if isinstance(max_scale, torch.Tensor):
         ms = max_scale.to(tensor.device)
         if ms.dim() == 1:
             ms = ms.unsqueeze(-1)
-        max_val = max_val * ms  
+        max_val = max_val * ms
     else:
         max_val = max_val * max_scale
 
@@ -214,7 +214,7 @@ def quant_mx_rceil(
     if isinstance(max_scale, torch.Tensor):
         ms = max_scale.to(tensor.device)
         if ms.dim() == 1:
-            ms = ms.unsqueeze(-1) 
+            ms = ms.unsqueeze(-1)
         max_val = max_val * ms
     else:
         max_val = max_val * max_scale
