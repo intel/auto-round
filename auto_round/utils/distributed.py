@@ -14,6 +14,10 @@
 
 from functools import lru_cache
 
+import torch
+
+from auto_round.logger import logger
+
 
 @lru_cache(maxsize=None)
 def is_distributed():
@@ -22,9 +26,20 @@ def is_distributed():
     return dist.is_initialized() and dist.get_world_size() > 1
 
 
-def setup_ddp_if_needed_(ar, block, device_list):
+def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
+    """Wrap ``block`` with DDP when distributed execution is enabled.
+
+    This experimental hook coordinates AutoRound with the
+    LLM-Compressor distributed workflow for DDP quantization.
+
+    Args:
+        ar: AutoRound instance invoking the helper.
+        block: Model block that may need DDP wrapping.
+        device_list: Device identifiers to pass through to DDP.
+    """
     if not is_distributed():
         return
     from torch.nn.parallel import DistributedDataParallel as DDP
 
+    logger.warning_once("AutoRound DDP is an experimental feature, please use with caution.")
     block = DDP(block, device_ids=[device_list], find_unused_parameters=True)
