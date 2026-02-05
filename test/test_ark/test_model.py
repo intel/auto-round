@@ -80,6 +80,7 @@ class TestAutoRoundARKBackend:
     @pytest.mark.parametrize("bits, group_size, sym", [(2, 32, False)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
     @pytest.mark.parametrize("device", ["cpu"])
+    @pytest.mark.skip(reason="temp skip, this test can't work with ark 0.9 without oneapi toolkit")
     def test_other_bits(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device, False, 0.2)
 
