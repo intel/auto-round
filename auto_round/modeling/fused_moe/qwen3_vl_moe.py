@@ -102,8 +102,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
                     weighted_output = expert_out * routing_weights[token_idx, idx, None]
                     next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         else:
-            with torch.no_grad():
-                expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
             for expert_idx in expert_hit:
                 expert_idx = expert_idx[0]
                 if expert_idx == self.num_experts:
