@@ -97,9 +97,7 @@ class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
             weight_bits=cls.get_from_keys(config, ["bits"]),
             group_size=cls.get_from_keys(config, ["group_size"]),
             sym=cls.get_from_keys(config, ["sym"]),
-            packing_format=cls.get_from_keys_or(
-                config, ["packing_format"], "auto_round:auto_gptq"
-            ),
+            packing_format=cls.get_from_keys_or(config, ["packing_format"], "auto_round:auto_gptq"),
             block_name_to_quantize=cls.get_from_keys_or(
                 config, ["block_name_to_quantize", "to_quant_block_names"], None
             ),
