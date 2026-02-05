@@ -309,7 +309,7 @@ def _replace_by_quant_layers(
     backend: str,
     target_device: str,
     packing_format: str,
-) -> list:
+) -> dict:
     """Replaces linear layers in a module with quantized layers according to configs.
 
     This function iterates over each layer in `layer_configs`, checks if it requires
@@ -324,12 +324,13 @@ def _replace_by_quant_layers(
         packing_format (str): Packing format for the quantized layers.
 
     Returns:
-        list: List of backends actually used for the layers.
+        dict: A dictionary mapping backend names to their quantization configs.
+              e.g., {"gptqmodel:marlin": {"bits": 4, "group_size": 128, "sym": True}, ...}
     Raises:
         ValueError: If no compatible backend is found for a layer and `backend` is not "auto".
     """
 
-    used_backends = []
+    used_backends = {}  # {backend_name: config}
     backend_cache = {}
 
     for layer_name, config in layer_configs.items():
@@ -350,7 +351,7 @@ def _replace_by_quant_layers(
             logger.trace(f"Got backend {layer_backend} for {layer_name}.")
             backend_cache[key] = layer_backend
             if layer_backend not in used_backends:
-                used_backends.append(layer_backend)
+                used_backends[layer_backend] = dict(config)
 
         if not layer_backend:
             if backend != "auto":
@@ -469,7 +470,7 @@ def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
     return get_available_devices()[0]
 
 
-def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
+def post_init(model: torch.nn.Module, used_backends: dict[str, dict]) -> None:
     """Performs post-initialization for different quantization backends.
 
     This function handles backend-specific post-init steps, including AutoGPTQ,
@@ -478,21 +479,24 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     Args:
         model (torch.nn.Module): The model to initialize.
-        used_backends (List[str]): List of backend names used for quantization.
+        used_backends (dict[str, dict]): A dictionary mapping backend names to their quantization configs.
+            e.g., {"gptqmodel:marlin": {"bits": 4, "group_size": 128, "sym": True}, ...}
 
     """
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ipex_init = False
     used_gptq_exllamav2 = False
+    gptqmodel_config = None  # Store the config for gptqmodel backend
     # Determine which backends require post-init
-    for backend in used_backends:
+    for backend, config in used_backends.items():
         if backend.startswith("auto_gptq"):
             need_autogptq_init = True
             if backend == "auto_gptq:exllamav2":
                 used_gptq_exllamav2 = True
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
+            gptqmodel_config = config  # Save the actual config
         elif backend.startswith(("ipex", "auto_round_kernel")):
             need_ipex_init = True
 
@@ -509,20 +513,21 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         from gptqmodel.utils.model import hf_convert_gptq_v1_to_v2_format  # pylint: disable=E0401
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
 
+        # Use actual config from the gptqmodel backend (captured during layer replacement)
         quant_linear = hf_select_quant_linear_v2(
-            bits=model.config.quantization_config.bits,
-            group_size=model.config.quantization_config.group_size,
+            bits=gptqmodel_config["bits"],
+            group_size=gptqmodel_config["group_size"],
             desc_act=False,
-            sym=model.config.quantization_config.sym,
+            sym=gptqmodel_config["sym"],
             format="gptq_v2",
             quant_method=METHOD.GPTQ,
-            backend="EXLLAMA_V2",
+            backend="torch",
             pack=True,
             device_map="auto",
         )
         model, _ = hf_convert_gptq_v1_to_v2_format(
             model,
-            bits=model.config.quantization_config.bits,
+            bits=gptqmodel_config["bits"],
             qlinear_kernel=quant_linear,
             checkpoint_format="gptq",
             meta=None,
@@ -545,7 +550,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         _import_exllamav2_kernels()
 
     # Determine common data type across backends
-    data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
+    data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends.keys()]
     common_dtypes = set.intersection(*data_types) if data_types else set()
 
     # Force model dtype if needed
@@ -562,7 +567,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             logger.warning(f"Forced model to {target_dtype}")
 
 
-def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.Module, list]:
+def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.Module, dict]:
     """Converts a HuggingFace model into an AutoRound model by replacing layers with quantized layers.
 
     This function extracts the quantization configuration from the model and updates its layers
@@ -575,8 +580,9 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             One of {"cuda", "cpu", "hpu", "xpu"}. Defaults to "cpu".
 
     Returns:
-        Tuple[nn.Module, list]:
-            The converted AutoRound model and a list of used backends.
+        Tuple[nn.Module, dict]:
+            The converted AutoRound model and a dictionary mapping backend names to their configs.
+            e.g., {"gptqmodel:marlin": {"bits": 4, "group_size": 128, "sym": True}, ...}
 
     Raises:
         NotImplementedError: If the GPTQ model uses an unsupported `g_idx`.
