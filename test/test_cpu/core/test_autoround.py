@@ -7,10 +7,16 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path, transformers_version
+from ...helpers import (
+    evaluate_accuracy,
+    get_model_path,
+    model_infer,
+    opt_name_or_path,
+    qwen_name_or_path,
+    transformers_version,
+)
 
 
 class TestAutoRound:
@@ -117,11 +123,7 @@ class TestAutoRound:
             act_data_type="mx_fp_rceil",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(
-            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
-        )
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.3  # 0.375
+        evaluate_accuracy(model, self.tokenizer, threshold=0.3, batch_size="auto:8", limit=32)
 
     def test_nv_fp4(self, dataloader):
         model_name = opt_name_or_path
@@ -137,11 +139,7 @@ class TestAutoRound:
             data_type="nv_fp4",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(
-            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
-        )
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.35
+        evaluate_accuracy(model, self.tokenizer, threshold=0.35, batch_size="auto:8", limit=32)
 
     def test_w4g1(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -172,11 +170,7 @@ class TestAutoRound:
         )
         model, _ = autoround.quantize()
         if bits > 2:
-            result = simple_evaluate_user_model(
-                model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
-            )
-            print(result["results"]["lambada_openai"]["acc,none"])
-            assert result["results"]["lambada_openai"]["acc,none"] > 0.3
+            evaluate_accuracy(model, self.tokenizer, threshold=0.3, batch_size="auto:8", limit=32)
 
     def test_disable_quanted_input(self, dataloader):
         bits, group_size, sym = 4, -1, True

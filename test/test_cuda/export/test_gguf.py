@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_gguf
 
-from ...helpers import get_model_path, get_tiny_model, save_tiny_model, transformers_version
+from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, save_tiny_model, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -123,10 +123,7 @@ class TestAutoRound:
         inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
         print(autoround.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
-        from auto_round.eval.evaluation import simple_evaluate_user_model
-
-        result = simple_evaluate_user_model(model, autoround.tokenizer, batch_size=16, tasks="piqa")
-        assert result["results"]["piqa"]["acc,none"] > 0.54
+        evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_gguf

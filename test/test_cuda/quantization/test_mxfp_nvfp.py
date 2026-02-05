@@ -156,9 +156,7 @@ class TestAutoRound:
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        from auto_round.eval.evaluation import simple_evaluate_user_model
+        from ...helpers import evaluate_accuracy
 
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="piqa", limit=10)
-        print(result["results"]["piqa"]["acc,none"])
-        assert result["results"]["piqa"]["acc,none"] > 0.49
+        evaluate_accuracy(model, tokenizer, threshold=0.49, batch_size=16, task="piqa", limit=10)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
