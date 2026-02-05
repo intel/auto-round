@@ -40,8 +40,8 @@ def get_auto_round_minor():
 # Map torch minor version to kernel version
 auto_round_minor = "0.9" if get_auto_round_minor() is None else get_auto_round_minor()
 KERNEL_MAP = {
-    "2.8": f"auto-round-kernel~={auto_round_minor}.1.0",
-    "2.9": f"auto-round-kernel~={auto_round_minor}.2.0",
+    "2.8": f"auto-round-lib~={auto_round_minor}.1.0",
+    "2.9": f"auto-round-lib~={auto_round_minor}.2.0",
 }
 
 
@@ -52,8 +52,8 @@ def main():
         print(f"Detected torch {torch_minor}, installing {pkg} ...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--upgrade-strategy", "only-if-needed"])
     else:
-        print("torch not found or no mapping for your version. Installing the latest auto-round-kernel ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "auto-round-kernel"])
+        print("torch not found or no mapping for your version. Installing the latest auto-round-lib ...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "auto-round-lib"])
 
 
 if __name__ == "__main__":
