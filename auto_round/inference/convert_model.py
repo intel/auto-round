@@ -30,6 +30,7 @@ from auto_round.inference.backend import (
 )
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
+from auto_round.modeling.unfused_moe import apply_modeling_patch
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
@@ -503,9 +504,18 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     # GPTQModel post-init
     if need_gptqmodel_init:
+        from gptqmodel import __version__ as gptqmodel_version  # pylint: disable=E0401
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
+        from packaging import version
 
-        model = gptq_post_init(model, use_act_order=False)
+        if version.parse(gptqmodel_version) <= version.parse("5.6.0"):
+            model = gptq_post_init(model, use_act_order=False)
+        else:
+            # for new version of gptqmodel, use validate_once to import kernels
+            for n, m in model.named_modules():
+                if hasattr(m, "validate_once"):
+                    m.validate_once()
+            model = gptq_post_init(model, use_act_order=False)
 
     # IPEX post-init
     if need_ipex_init:
@@ -591,9 +601,10 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
-
-    # Preprocess model before replace layers
-    model = update_module(model, cleanup_original=True)
+    is_applied = apply_modeling_patch(model)
+    if not is_applied:
+        # Preprocess model before replace layers
+        model = update_module(model, cleanup_original=True)
 
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)

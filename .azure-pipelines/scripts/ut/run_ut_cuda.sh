@@ -95,13 +95,14 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
-    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v5.6.12 --no-build-isolation
+    uv pip install https://github.com/ModelCloud/GPTQModel/releases/download/v5.6.0/gptqmodel-5.6.0+cu126torch2.9-cp310-cp310-linux_x86_64.whl --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -r test_cuda/requirements_sglang.txt
+    uv pip install transformers==4.57.6
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage

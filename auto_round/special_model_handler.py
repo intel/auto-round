@@ -17,10 +17,9 @@ from typing import Any, Callable
 
 import torch
 
-import auto_round.modelling as auto_round_modelling
 from auto_round.formats import OutputFormat
-from auto_round.modelling.replace_modules import apply_replacements, materialize_model_, release_original_module_
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
+from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
+from auto_round.utils import logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -179,6 +178,28 @@ class ArchitectureMatcher:
             raise ValueError(f"unsupported mode {self.mode}")
 
 
+class ModelTypeMatcher:
+    """match config.architectures"""
+
+    def __init__(self, model_type: str, mode="in"):
+        self.model_type = model_type
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        model_type = getattr(model.config, "model_type", None)
+        if model_type is None:
+            return False
+
+        if self.mode == "full":
+            return model_type == self.model_type
+        elif self.mode == "in":
+            return self.model_type in model_type
+        elif self.mode == "regex":
+            return re.search(self.model_type, model_type) is not None
+        else:
+            raise ValueError(f"unsupported mode {self.mode}")
+
+
 @dataclass
 class PreDefinedIgnoreLayers:
     matchers: list[Callable[[Any], bool]]
@@ -233,6 +254,16 @@ register_ignore_layers(
         get_glm_flash_ignore_layers,  # vllm issue
     ],
 )
+
+# # qwen3_next
+# register_ignore_layers(
+#     matchers=[
+#         ModelTypeMatcher(r"qwen3_next", mode="full"),
+#     ],
+#     ignore_layers=[
+#         "mlp.gate",  # vllm issue
+#     ],
+# )
 
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:

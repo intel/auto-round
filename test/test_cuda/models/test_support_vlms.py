@@ -4,10 +4,13 @@ import sys
 
 import pytest
 import requests
+from packaging import version
 from PIL import Image
 from transformers import AutoRoundConfig  # # must import for auto-round format
 
 from auto_round.testing_utils import require_gptqmodel, require_package_version_ut, require_vlm_env
+
+from ...helpers import transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -177,6 +180,10 @@ class TestSupportVLMS:
         print(response)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("4.57.0"),
+        reason="transformers api changed",
+    )
     def test_glm(self):
         model_path = "/models/glm-4v-9b/"
         ## test tune

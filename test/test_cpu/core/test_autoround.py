@@ -3,13 +3,14 @@ import shutil
 
 import pytest
 import torch
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path
+from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path, transformers_version
 
 
 class TestAutoRound:
@@ -72,6 +73,10 @@ class TestAutoRound:
         )
         autoround.quantize()
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_consecutive_quant(self, tiny_opt_model_path, tiny_phi2_model_path, dataloader):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
@@ -456,8 +461,12 @@ class TestAutoRound:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
         )
-        assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-        assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
+        if transformers_version < version.parse("5.0.0"):
+            assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+            assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
+        else:
+            assert isinstance(model.model.visual.blocks[0].attn.qkv, torch.nn.Linear)
+            assert not isinstance(model.model.visual.merger.mlp[0], QuantLinear)
         if hasattr(model.model, "language_model"):
             assert isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear)
         else:
@@ -625,47 +634,51 @@ class TestAutoRound:
             autoround.quantize()
 
     def test_dequant_fp8_weight(self):
-        from auto_round.utils import dequant_block_fp8_weight
+        from auto_round.utils.model import _dequant_fp8_linear_weight
 
         # test high precision weight (should skip LUT and not crash)
         weight = torch.randn(587, 7168)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
         # test low precision weight (should use LUT)
         weight = torch.randint(0, 255, (587, 7168), dtype=torch.uint8)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
         # test experts are stacked.
         weight = torch.randint(0, 255, [32, 5760, 1440], dtype=torch.uint8)
         weight_scale = torch.randn([32, 5760, 90])
         block_size = [1, 16]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert len(dequant_weight.shape) == 3
         assert dequant_weight.shape[0] == 32
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
 
     def test_dequant_g2_fp8_weight(self):
-        """Test Gaudi2-specific dequantization redirection logic in convert_fp8_layer_to_linear."""
+        """Test Gaudi2-specific dequantization redirection logic in convert_module_to_hp_if_necessary."""
         from unittest.mock import MagicMock, patch
 
-        from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
+        from auto_round.utils.model import (
+            _dequant_fp8_linear_weight,
+            check_and_mark_quantized_module,
+            convert_module_to_hp_if_necessary,
+        )
 
         # Test 1: Verify Standard e4m3fn native dequantization result
         weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)
         weight_scale = torch.ones(1, 1, dtype=torch.bfloat16)
         block_size = [1, 2]
 
-        dq_weight = dequant_block_fp8_weight(weight_uint8, weight_scale, block_size)
+        dq_weight = _dequant_fp8_linear_weight(weight_uint8, weight_scale, block_size)
         assert dq_weight.dtype == torch.bfloat16
         assert abs(dq_weight[0, 0].item() - 448.0) < 1e-3
 
-        # Test 2: Verify Gaudi2 redirection in convert_fp8_layer_to_linear
+        # Test 2: Verify Gaudi2 redirection in convert_module_to_hp_if_necessary
         mock_layer = MagicMock()
         mock_layer.in_features = 2
         mock_layer.out_features = 1
@@ -675,19 +688,23 @@ class TestAutoRound:
         mock_layer.block_size = block_size
         mock_layer.data_type = "fp8_e4m3fn"
         mock_layer.__class__.__name__ = "FP8Linear"
+        # Explicitly set compressor to None to prevent MagicMock auto-creating it
+        mock_layer.compressor = None
 
         # mock_layer.to should return a mock layer that we can check
         mock_layer.to.return_value = mock_layer
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=True):
-            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            check_and_mark_quantized_module(mock_layer)
+            convert_module_to_hp_if_necessary(mock_layer, device="hpu")
             # Verify it was moved to CPU
             mock_layer.to.assert_called_with("cpu")
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=False):
             # Reset mock
             mock_layer.to.reset_mock()
-            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            check_and_mark_quantized_module(mock_layer)
+            convert_module_to_hp_if_necessary(mock_layer, device="hpu")
             # Verify it was moved to HPU (as requested in device arg)
             mock_layer.to.assert_called_with("hpu")
 

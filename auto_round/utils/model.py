@@ -16,20 +16,24 @@ import json
 import os
 import re
 from collections import UserDict
-from contextlib import ContextDecorator, contextmanager
-from dataclasses import asdict, fields
-from functools import wraps
 from pathlib import Path
 from typing import Union
 
 import psutil
 import torch
 import transformers
+from packaging import version
 
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.weight_handler import (
+    _dequant_fp8_linear_weight,
+    check_and_mark_quantized_module,
+    convert_module_to_hp_if_necessary,
+    is_quantized_input_module,
+)
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -137,19 +141,6 @@ def convert_dtype_torch2str_hf(dtype):
         raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
-
-
-def check_and_mark_fp8_model(model: torch.nn.Module) -> bool:
-    if is_fp8_model(model):
-        return True
-    for n, m in model.named_modules():
-        if is_fp8_linear(m):
-            m.is_fp8_linear = True
-            if not hasattr(model, "is_fp8"):
-                model.is_fp8 = True
-    if hasattr(model, "is_fp8"):
-        return True
-    return False
 
 
 def check_diffusers_installed():  # pragma: no cover
@@ -265,6 +256,7 @@ def llm_load_model(
     device: str = "cpu",
     **kwargs,
 ):
+
     assert platform.lower() in [
         "hf",
         "model_scope",
@@ -278,11 +270,10 @@ def llm_load_model(
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
-
     from auto_round.utils.device import (
         _use_hpu_compile_mode,
         get_device_and_parallelism,
-        set_fake_cuda_device_capability,
+        override_cuda_device_capability,
     )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
@@ -315,14 +306,13 @@ def llm_load_model(
             )
         except ValueError as e:
             if "FP8 quantized" in str(e):
-                orig_func = set_fake_cuda_device_capability()
-                model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=trust_remote_code,
-                    device_map="auto" if use_auto_mapping else None,
-                )
-                torch.cuda.get_device_capability = orig_func
+                with override_cuda_device_capability():
+                    model = model_cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        torch_dtype=torch_dtype,
+                        trust_remote_code=trust_remote_code,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
@@ -337,7 +327,7 @@ def llm_load_model(
             )
 
     model = model.eval()
-    check_and_mark_fp8_model(model)
+    check_and_mark_quantized_module(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
@@ -375,7 +365,7 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, set_fake_cuda_device_capability
+    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -448,14 +438,13 @@ def mllm_load_model(
                 )
             except ValueError as e:
                 if "FP8 quantized" in str(e):
-                    orig_func = set_fake_cuda_device_capability()
-                    model = cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        trust_remote_code=trust_remote_code,
-                        torch_dtype=torch_dtype,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
-                    torch.cuda.get_device_capability = orig_func
+                    with override_cuda_device_capability():
+                        model = cls.from_pretrained(
+                            pretrained_model_name_or_path,
+                            trust_remote_code=trust_remote_code,
+                            torch_dtype=torch_dtype,
+                            device_map="auto" if use_auto_mapping else None,
+                        )
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 else:
                     raise
@@ -487,7 +476,7 @@ def mllm_load_model(
                 pass
 
     model = model.eval()
-    check_and_mark_fp8_model(model)
+    check_and_mark_quantized_module(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -620,26 +609,6 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
     )
 
 
-def is_fp8_model(model: torch.nn.Module) -> bool:
-    if not hasattr(model, "is_fp8"):
-        return False
-    else:
-        return model.is_fp8
-
-
-def is_fp8_linear(module: torch.nn.Module) -> bool:
-    if hasattr(module, "is_fp8_linear"):
-        return module.is_fp8_linear
-    if not (type(module) == torch.nn.Linear or module.__class__.__name__ == "FP8Linear"):
-        return False
-    if module.weight is None:
-        return False
-    if str(module.weight.dtype).startswith("torch.float8"):
-        return True
-    else:
-        return False
-
-
 def get_block_names(model, quant_vision=False):
     """Get the block names for transformers-like networks.
 
@@ -656,6 +625,8 @@ def get_block_names(model, quant_vision=False):
             return [(name, module)]
         target_modules = []
         for n, m in module.named_children():
+            if hasattr(type(m), "__name__") and "NgramEmbedding" in type(m).__name__:
+                continue
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
                 target_modules.append((".".join(filter(None, (name, n))), m))
             else:
@@ -876,130 +847,6 @@ def set_nested_attr(module, attr_name: str, value):
     setattr(module, attrs[-1], value)
 
 
-def _pad_weight(weight: torch.Tensor, block_size: list) -> tuple[torch.Tensor, int, int]:
-    """Pads a matrix to make its dimensions multiples of block_size."""
-    M, N = weight.shape[-2:]
-    block_size_m, block_size_n = block_size
-    pad_M = (block_size_m - M % block_size_m) % block_size_m
-    pad_N = (block_size_n - N % block_size_n) % block_size_n
-
-    if pad_M == 0 and pad_N == 0:
-        return weight, M, N  # No padding needed
-    padded_weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
-    return padded_weight, M, N  # Return original dimensions for unpadding
-
-
-def _unpad_weight(weight: torch.Tensor, original_M: int, original_N: int, keep_first_dim: bool = False) -> torch.Tensor:
-    """Removes padding from the matrix to restore its original shape."""
-    if (weight.shape[-2] == original_M) and (weight.shape[-1] == original_N):
-        return weight
-    if keep_first_dim:
-        return weight[:, :original_M, :original_N]
-    else:
-        return weight[:original_M, :original_N]
-
-
-def pad_block_fp8_weight_naive(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list
-) -> tuple[torch.Tensor, int, int]:
-    assert len(block_size) == 2
-
-    block_size_m, block_size_n = block_size
-    weight_scale_m, weight_scale_n = weight_scale.shape[-2:]
-
-    weight, orig_M, orig_N = _pad_weight(weight, block_size)
-    M, N = weight.shape[-2:]
-
-    assert weight_scale_m == M // block_size_m
-    assert weight_scale_n == N // block_size_n
-
-    return weight, orig_M, orig_N
-
-
-class with_thread_limits(ContextDecorator):
-    """
-    Context manager and decorator to temporarily set AR_OMP_NUM_THREADS and PyTorch threads.
-    Inspired by vLLM's thread limit decorator.
-    https://github.com/HabanaAI/vllm-fork/blob/f943a89a20e0e57bca64e1cca05469bfcaaec6f8/vllm/worker/hpu_model_runner.py#L1063-L1115
-    """
-
-    def __init__(self, div=1):
-        self.div = div
-        self.old_omp = None
-        self.old_torch = None
-
-    def __enter__(self):
-        # Save original settings
-        self.old_omp = envs.AR_OMP_NUM_THREADS
-        self.old_torch = torch.get_num_threads()
-
-        try:
-            if psutil is not None:
-                num_cores = len(psutil.Process().cpu_affinity() or [])
-                if num_cores == 0:
-                    num_cores = os.cpu_count() or 1
-            else:
-                num_cores = os.cpu_count() or 1
-
-            # Set new limits
-            new_threads = max(1, num_cores // self.div)
-            os.environ["AR_OMP_NUM_THREADS"] = str(new_threads)
-            torch.set_num_threads(new_threads)
-        except Exception:
-            pass
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # Restore original settings
-        if self.old_omp is None:
-            os.environ.pop("AR_OMP_NUM_THREADS", None)
-        else:
-            os.environ["AR_OMP_NUM_THREADS"] = self.old_omp
-        torch.set_num_threads(self.old_torch)
-
-
-@with_thread_limits()
-def dequant_block_fp8_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list, data_type: str = None
-) -> torch.Tensor:
-    """Core dequantization logic for block-wise FP8 weights."""
-    dtype = torch.bfloat16
-    if weight_scale is None:
-        return weight
-    assert len(block_size) == 2
-
-    # If weight is stored as uint8, view it as float8_e4m3fn
-    if weight.element_size() == 1 and weight.dtype != torch.float8_e4m3fn:
-        weight = weight.view(torch.float8_e4m3fn)
-
-    weight, orig_M, orig_N = pad_block_fp8_weight_naive(weight, weight_scale, block_size)
-
-    weight_shape_len = len(weight.shape)
-    block_size_m, block_size_n = block_size
-
-    # mul scale
-    if weight_shape_len == 2:
-        weight_scale_m, weight_scale_n = weight_scale.shape
-        weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
-        weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
-        keep_first_dim = False
-    elif weight_shape_len == 3:
-        fd, weight_scale_m, weight_scale_n = weight_scale.shape
-        weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
-        weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
-        keep_first_dim = True
-    else:
-        raise ValueError("Only support original weight shape is either 2 or 3")
-
-    dequant_weight = _unpad_weight(dequant_weight, orig_M, orig_N, keep_first_dim=keep_first_dim)
-
-    return dequant_weight
-
-
 def check_to_quantized(config):
     """Checks if the configuration is valid for quantization.
 
@@ -1055,51 +902,6 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
             f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). "
             "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length."
         )
-
-
-def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16, device: str = "cpu"):
-    """ """
-    from auto_round.schemes import QuantizationScheme
-
-    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
-    if layer.bias is not None:
-        new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-    scheme_keys = (f.name for f in fields(QuantizationScheme))
-    keys = tuple(scheme_keys) + ("global_name", "scale_dtype")
-    for key in keys:
-        setattr(new_layer, key, getattr(layer, key, None))
-
-    from auto_round.utils.device import is_gaudi2
-
-    if is_gaudi2():
-        device = "cpu"
-    layer = layer.to(device)
-    if layer.__class__.__name__ == "CompressedLinear":
-        dq_weight = layer.compressor.decompress_module(layer)
-    else:
-        weight_scale = layer.weight_scale if hasattr(layer, "weight_scale") else layer.weight_scale_inv
-        data_type = getattr(layer, "data_type", None)
-        dq_weight = dequant_block_fp8_weight(layer.weight, weight_scale, layer.block_size, data_type=data_type)
-    new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
-    return new_layer
-
-
-def convert_fp8_module_to_16b(model, dtype=torch.bfloat16, device: str = "cpu"):
-    """
-    Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
-    This is useful for compatibility with other frameworks or for further processing.
-    """
-    from auto_round.utils.device import clear_memory
-
-    cnt = 0
-    for n, m in model.named_modules():
-        if m.__class__.__name__ == "FP8Linear":
-            new_module = convert_fp8_layer_to_linear(m, dtype=dtype, device=device)
-            set_module(model, n, new_module)
-            cnt += 1
-            if cnt % 10 == 0:  # Tricky setting
-                clear_memory()
-    return model
 
 
 def _to_model_dtype(model, model_dtype):
@@ -1266,6 +1068,14 @@ def is_moe_model(model: torch.nn.Module) -> bool:
     return False
 
 
+def is_moe_model_via_config(config) -> bool:
+    if hasattr(config, "to_dict"):
+        for key in config.to_dict().keys():
+            if "moe" in key or "expert" in key:
+                return True
+    return False
+
+
 def to_dtype(input, dtype=torch.float32):
     """Moves input data to the specified data type.
 
@@ -1314,34 +1124,65 @@ def set_amax_for_uncalibrated_experts(
         uncalibrated_experts: a list of uncalibrated experts
     """
     uncalibrated_experts = []
+
+    def _get_attr(module, name):
+        """Get attribute from module or its orig_layer."""
+        if hasattr(module, name):
+            return getattr(module, name)
+        if hasattr(module, "orig_layer") and hasattr(module.orig_layer, name):
+            return getattr(module.orig_layer, name)
+        return None
+
+    def _get_amax_value(module):
+        value = get_nested_attr(module, attr_name)
+        if value is None and hasattr(module, "orig_layer"):
+            value = get_nested_attr(module.orig_layer, attr_name)
+        return value
+
     # get the max amax value from all experts
     if set_amax_value is None:
-        amax_values = [
-            get_nested_attr(module, attr_name) for module in experts if get_nested_attr(module, attr_name) is not None
-        ]
+        amax_values = [_get_amax_value(m) for m in experts if _get_amax_value(m) is not None]
         if len(amax_values) == 0:
+            # Check if any expert actually needs act_max (act_bits < 8, not dynamic, not already quantized)
+            sample = next((m for m in experts if m is not None), None)
+            if sample is not None:
+                act_bits = _get_attr(sample, "act_bits")
+                act_dynamic = _get_attr(sample, "act_dynamic")
+                is_quantized = "Quant" in sample.__class__.__name__ or hasattr(sample, "is_mx")
+                needs_warning = (
+                    not is_quantized and isinstance(act_bits, (int, float)) and act_bits < 8 and not act_dynamic
+                )
+                if needs_warning:
+                    logger.warning_once(
+                        f"All {len(experts)} expert layers are missing '{attr_name}' values. "
+                        f"This may indicate calibration hooks were not attached to expert layers."
+                    )
             return uncalibrated_experts
         # Flatten all tensors to 1D before concatenation
         flat_values = [t.reshape(-1) for t in amax_values]
         all_values = torch.cat(flat_values)
         set_amax_value = torch.max(all_values)
+        set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value
 
     for module in experts:
-        current_amax = get_nested_attr(module, attr_name)
+        current_amax = _get_amax_value(module)
 
         # Set amax if it's None (uncalibrated) OR if unify_all is True
         if current_amax is None or unify_all:
-            if current_amax is None:
-                logger.warning_once(
-                    "Missing amax value of expert layers."
-                    "This typically occurs in MoE models when certain experts are not activated during calibration. "
-                    "Consider increasing your calibration dataset size to ensure all experts are exercised."
-                )
             # Use float32 dtype explicitly to ensure we create a floating point tensor
             if not isinstance(set_amax_value, torch.Tensor):
                 set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
-            set_nested_attr(module, attr_name, set_amax_value)
-            # uncalibrated_experts.append(module)
+            set_nested_attr(module, attr_name, set_amax_value.clone())
+            if current_amax is None:
+                uncalibrated_experts.append(module)
+
+    if uncalibrated_experts:
+        logger.info_once(
+            f"Found {len(uncalibrated_experts)} uncalibrated expert layers. "
+            "Using max amax from calibrated experts to fill missing values. "
+        )
+
+    return uncalibrated_experts
 
 
 # Please refer to: https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/
@@ -1358,13 +1199,31 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
     for name, sub_module in model.named_modules():
         if not (is_moe_layer(sub_module) and hasattr(sub_module, "experts")):
             continue
+
+        # Handle router (gate) layer - it's a Linear layer used for token routing
+        # It needs act_max for quantization but may not be calibrated if it wasn't exercised
+        _set_amax_for_moe_auxiliary_layers(sub_module, attr_name=attr_name)
+
         expert_linear_names = get_expert_linear_names(sub_module)
         # Get input projection names for FP8 dispatch unification
         expert_input_proj_names = get_expert_input_proj_names(sub_module)
 
-        for linear_name in expert_linear_names:
-            if isinstance(sub_module.experts, collections.abc.Iterable):
-                # For other MoE models (like Mixtral) with iterable experts
+        # Check experts structure and handle accordingly
+        if _is_unfused_experts_module(sub_module.experts):
+            # Unfused experts: gate_up_proj/down_proj are nn.ModuleList
+            _set_amax_for_unfused_experts(sub_module.experts, attr_name=attr_name)
+        elif _is_fused_experts_module(sub_module.experts):
+            # Fused experts: 3D Parameters (e.g., DeepseekV2Experts)
+            # For fused experts, act_max is set on the parent MOE module, not individual experts
+            # Skip processing here as they don't have individual Linear layers to calibrate
+            logger.debug(
+                f"Skipping act_max setting for fused experts module '{name}': "
+                f"fused experts use parent module's act_max"
+            )
+            continue
+        elif isinstance(sub_module.experts, collections.abc.Iterable):
+            # Iterable experts: list of expert modules (e.g., Mixtral)
+            for linear_name in expert_linear_names:
                 try:
                     # Determine if this is an input projection that needs scale unification
                     unify_scale = linear_name in expert_input_proj_names and envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
@@ -1386,12 +1245,153 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                         f"to be updated for this model architecture. "
                         f"Original error: {e}"
                     ) from e
-            else:
-                # Unsupported MoE model structure
-                raise NotImplementedError(
-                    f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
-                    f"Please file an issue or add support for this model architecture."
-                )
+        else:
+            # Unknown experts structure
+            logger.warning(
+                f"Unknown experts structure in '{name}': type={type(sub_module.experts).__name__}. "
+                f"Skipping act_max setting. This may cause issues during export."
+            )
+
+
+def _is_unfused_experts_module(module: torch.nn.Module) -> bool:
+    """Check if the module is an unfused experts module (has ModuleList gate_up_proj/down_proj)."""
+    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
+        return False
+    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(module.down_proj, torch.nn.ModuleList)
+
+
+def _is_fused_experts_module(module: torch.nn.Module) -> bool:
+    """Check if the module is a fused experts module (has 3D Parameter gate_up_proj/down_proj)."""
+    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
+        return False
+    return (
+        isinstance(module.gate_up_proj, torch.nn.Parameter)
+        and isinstance(module.down_proj, torch.nn.Parameter)
+        and module.gate_up_proj.dim() == 3
+        and module.down_proj.dim() == 3
+    )
+
+
+def _set_amax_for_unfused_experts(experts_module: torch.nn.Module, attr_name: str = "act_max"):
+    """Set amax for unfused experts module with ModuleList attributes.
+
+    This handles experts modules that have been unfused to have:
+    - gate_up_proj: nn.ModuleList of nn.Linear (input projections, unified scale)
+    - down_proj: nn.ModuleList of nn.Linear (output projections)
+    """
+    if hasattr(experts_module, "gate_up_proj") and isinstance(experts_module.gate_up_proj, torch.nn.ModuleList):
+        unify_scale = envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
+        set_amax_for_uncalibrated_experts(
+            list(experts_module.gate_up_proj),
+            attr_name=attr_name,
+            unify_all=unify_scale,
+        )
+
+    if hasattr(experts_module, "down_proj") and isinstance(experts_module.down_proj, torch.nn.ModuleList):
+        set_amax_for_uncalibrated_experts(
+            list(experts_module.down_proj),
+            attr_name=attr_name,
+            unify_all=False,
+        )
+
+
+def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: str = "act_max"):
+    """Set amax for auxiliary layers in MOE modules (gate/router, shared_experts).
+
+    These layers are not part of the experts structure but are siblings in the MOE module.
+    They need act_max for quantization but may be missing if not all paths were exercised
+    during calibration.
+
+    Args:
+        moe_module: The MOE module (e.g., DeepseekV2MoE)
+        attr_name: The attribute name for amax (default: "act_max")
+    """
+    # Collect all Linear layers that have act_bits set but missing act_max
+    layers_needing_amax = []
+
+    # Check gate (router) layer - it's typically a Linear layer for token routing
+    if hasattr(moe_module, "gate") and isinstance(moe_module.gate, torch.nn.Linear):
+        gate = moe_module.gate
+        if hasattr(gate, "act_bits") and gate.act_bits < 8:
+            if get_nested_attr(gate, attr_name) is None:
+                layers_needing_amax.append(gate)
+
+    # Check shared_experts - may have Linear layers that need act_max
+    if hasattr(moe_module, "shared_experts"):
+        shared_experts = moe_module.shared_experts
+        if shared_experts is not None:
+            for child_name, child in shared_experts.named_modules():
+                if isinstance(child, torch.nn.Linear):
+                    if hasattr(child, "act_bits") and child.act_bits < 8:
+                        if get_nested_attr(child, attr_name) is None:
+                            layers_needing_amax.append(child)
+
+    if not layers_needing_amax:
+        return
+
+    # Try to get reference amax from calibrated experts
+    reference_amax = _get_reference_amax_from_experts(moe_module, attr_name)
+
+    if reference_amax is not None:
+        for layer in layers_needing_amax:
+            if not isinstance(reference_amax, torch.Tensor):
+                reference_amax = torch.tensor(reference_amax, dtype=torch.float32)
+            set_nested_attr(layer, attr_name, reference_amax.clone())
+        logger.info_once(
+            f"Set act_max for {len(layers_needing_amax)} MOE auxiliary layers (gate/shared_experts) "
+            f"using reference value from calibrated experts."
+        )
+    else:
+        logger.warning_once(
+            f"Cannot set act_max for {len(layers_needing_amax)} MOE auxiliary layers: "
+            f"no calibrated experts found to use as reference."
+        )
+
+
+def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str = "act_max"):
+    """Get a reference amax value from calibrated expert layers.
+
+    Args:
+        moe_module: The MOE module containing experts
+        attr_name: The attribute name for amax
+
+    Returns:
+        A reference amax tensor, or None if no calibrated experts found
+    """
+    amax_values = []
+
+    if not hasattr(moe_module, "experts"):
+        return None
+
+    experts = moe_module.experts
+
+    # Handle unfused experts (ModuleList)
+    if _is_unfused_experts_module(experts):
+        for proj_list in [getattr(experts, "gate_up_proj", None), getattr(experts, "down_proj", None)]:
+            if proj_list is not None and isinstance(proj_list, torch.nn.ModuleList):
+                for layer in proj_list:
+                    amax = get_nested_attr(layer, attr_name)
+                    if amax is not None:
+                        amax_values.append(amax)
+
+    # Handle iterable experts (list of modules)
+    elif isinstance(experts, collections.abc.Iterable):
+        expert_linear_names = get_expert_linear_names(moe_module)
+        for expert in experts:
+            for linear_name in expert_linear_names:
+                layer = getattr(expert, linear_name, None)
+                if layer is not None:
+                    amax = get_nested_attr(layer, attr_name)
+                    if amax is not None:
+                        amax_values.append(amax)
+
+    if not amax_values:
+        return None
+
+    # Return max of all amax values
+    flat_values = [t.reshape(-1) for t in amax_values]
+    all_values = torch.cat(flat_values)
+    return torch.max(all_values)
 
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
@@ -1404,7 +1404,16 @@ def copy_python_files_from_model_cache(model, save_path: str):
         import shutil
 
         from huggingface_hub import hf_hub_download
-        from transformers import TRANSFORMERS_CACHE
+
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            from transformers import TRANSFORMERS_CACHE
+
+            cache_dir = TRANSFORMERS_CACHE
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
+
+            cache_dir = os.environ.get("HF_HOME", None)
         from transformers.utils import http_user_agent
 
         cache_path = config._name_or_path
@@ -1413,7 +1422,7 @@ def copy_python_files_from_model_cache(model, save_path: str):
             config_file_path = hf_hub_download(
                 repo_id=cache_path,
                 filename="config.json",
-                cache_dir=TRANSFORMERS_CACHE,
+                cache_dir=cache_dir,
                 force_download=False,
                 user_agent=user_agent,
             )
