@@ -264,7 +264,6 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             batch_size=args.eval_bs,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
-            device_map=args.device_map,
         )
     else:
         # Batch evaluation
