@@ -34,6 +34,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import itertools
+import threading
 
 import torch
 import triton
@@ -48,6 +49,18 @@ def make_dequant_configs(block_sizes, num_warps):
 
 
 DEFAULT_DEQUANT_CONFIGS = make_dequant_configs([128, 256, 512, 1024], [4, 8])
+
+# Patch Autotuner if it's missing _cache_lock (compatibility fix for older triton versions)
+try:
+    from triton.runtime.autotuner import Autotuner
+
+    if not hasattr(Autotuner, "_cache_lock"):
+        # Add missing attributes to make autotune work
+        Autotuner._cache_lock = threading.Lock()
+        if not hasattr(Autotuner, "cache"):
+            Autotuner.cache = {}
+except (ImportError, AttributeError):
+    pass
 
 
 @triton.autotune(DEFAULT_DEQUANT_CONFIGS, key=["numels"])
