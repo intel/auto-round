@@ -511,6 +511,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         if version.parse(gptqmodel_version) <= version.parse("5.6.0"):
             model = gptq_post_init(model, use_act_order=False)
         else:
+            # for new version of gptqmodel, use validate_once to import kernels
             for n, m in model.named_modules():
                 if hasattr(m, "validate_once"):
                     m.validate_once()

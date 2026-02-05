@@ -307,6 +307,8 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
             if handler.detect_layer(m):
                 # Mark the layer itself
                 m.quantized_weight_type = weight_type
+                # for gguf format, gguf format need to mark the quantized input module
+                # in order to skip weight_scale_inv, etc. (extra tensor from file)
                 if not getattr(model, "_is_quantized_input_module", False):
                     model._is_quantized_input_module = True
                 # Record detected types
