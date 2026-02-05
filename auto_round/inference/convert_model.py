@@ -511,21 +511,9 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         if version.parse(gptqmodel_version) <= version.parse("5.6.0"):
             model = gptq_post_init(model, use_act_order=False)
         else:
-            from gptqmodel.quantization import METHOD  # pylint: disable=E0401
-            from gptqmodel.utils.importer import hf_select_quant_linear_v2  # pylint: disable=E0401
-
-            # get kernel for backend
-            quant_linear = hf_select_quant_linear_v2(
-                bits=model.config.quantization_config.bits,
-                group_size=model.config.quantization_config.group_size,
-                desc_act=False,
-                sym=model.config.quantization_config.sym,
-                format="gptq",
-                quant_method=METHOD.GPTQ,
-                backend="EXLLAMA_V2",
-                pack=True,
-                device_map="auto",
-            )
+            for n, m in model.named_modules():
+                if hasattr(m, "validate_once"):
+                    m.validate_once()
             model = gptq_post_init(model, use_act_order=False)
 
     # IPEX post-init

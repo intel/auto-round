@@ -290,6 +290,7 @@ def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[s
         parallelism = True
     else:
         device = detect_device(device)
+        parallelism = False
     return device, parallelism
 
 
