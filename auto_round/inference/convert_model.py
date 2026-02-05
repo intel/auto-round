@@ -505,6 +505,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     # GPTQModel post-init
     if need_gptqmodel_init:
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
+
         model = gptq_post_init(model, use_act_order=False)
 
     # IPEX post-init
