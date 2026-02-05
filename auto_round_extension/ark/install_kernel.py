@@ -42,6 +42,7 @@ auto_round_minor = "0.9" if get_auto_round_minor() is None else get_auto_round_m
 KERNEL_MAP = {
     "2.8": f"auto-round-lib~={auto_round_minor}.1.0",
     "2.9": f"auto-round-lib~={auto_round_minor}.2.0",
+    "2.10": f"auto-round-lib~={auto_round_minor}.3.0",
 }
 
 
