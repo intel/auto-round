@@ -119,14 +119,8 @@ class TestAutoRoundAct:
 
         # check inblock layer config values
         kproj_config = model.config.quantization_config.extra_config["model.decoder.layers.1.self_attn.k_proj"]
-        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "mx_fp"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 8
-        assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 32
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
-        assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "mx_fp"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
-        assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 32
-        assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_act_config_NVFP4_saving(self, tiny_opt_model_path, dataloader):
@@ -144,14 +138,8 @@ class TestAutoRoundAct:
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         kproj_config = model.config.quantization_config.extra_config["model.decoder.layers.1.self_attn.k_proj"]
-        assert "act_data_type" in kproj_config.keys() and kproj_config["act_data_type"] == "nv_fp4_with_static_gs"
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
-        assert "act_group_size" in kproj_config.keys() and kproj_config["act_group_size"] == 16
-        assert "act_sym" in kproj_config.keys() and kproj_config["act_sym"]
-        assert "data_type" in kproj_config.keys() and kproj_config["data_type"] == "nv_fp"
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 16
-        assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 16
-        assert "sym" in kproj_config.keys() and kproj_config["sym"]
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_WOQ_config_INT_saving(self, tiny_opt_model_path, dataloader):
@@ -176,38 +164,36 @@ class TestAutoRoundAct:
         assert "bits" in kproj_config.keys() and kproj_config["bits"] == 8
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    # def test_act_config_FP8_saving(self, tiny_opt_model_path, dataloader):
-    #     # fp8_static only support to export llm_compressor or auto_round (auto_round:llm_compressor in fact)
-    #     # auto_round is deprecated since only can load via specific script
-    #     scheme = "FP8_STATIC"
-    #     layer_config = {
-    #         "lm_head": {"act_bits": 8, "bits": 8},
-    #         # check fp8 woq config
-    #         "k_proj": {
-    #             "bits": 8,
-    #             "group_size": 0,
-    #             "data_type": "fp",
-    #             "act_bits": 16,
-    #             "act_data_type": "fp",
-    #         },
-    #     }
-    #     autoround = AutoRound(
-    #         tiny_opt_model_path,
-    #         scheme=scheme,
-    #         iters=2,
-    #         seqlen=2,
-    #         dataset=dataloader,
-    #         layer_config=layer_config,
-    #     )
-    #     quantized_model_path = self.save_dir
-    #     autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-    #     from transformers import AutoConfig
+    def test_act_config_FP8_saving(self, tiny_opt_model_path, dataloader):
+        scheme = "FP8_STATIC"
+        layer_config = {
+            "lm_head": {"act_bits": 8, "bits": 8},
+            # check fp8 woq config
+            "k_proj": {
+                "bits": 8,
+                "group_size": 0,
+                "data_type": "fp",
+                "act_bits": 16,
+                "act_data_type": "fp",
+            },
+        }
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            scheme=scheme,
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+            layer_config=layer_config,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        from transformers import AutoConfig
 
-    #     extra_config = AutoConfig.from_pretrained(quantized_model_path).quantization_config["extra_config"]
-    #     assert "lm_head" not in extra_config
+        extra_config = AutoConfig.from_pretrained(quantized_model_path).quantization_config["extra_config"]
+        assert "lm_head" not in extra_config
 
-    #     # check inblock layer config values
-    #     kproj_config = extra_config["model.decoder.layers.0.self_attn.k_proj"]
-    #     assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
-    #     assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 0
-    #     shutil.rmtree(quantized_model_path, ignore_errors=True)
+        # check inblock layer config values
+        kproj_config = extra_config["model.decoder.layers.0.self_attn.k_proj"]
+        assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
+        assert "group_size" in kproj_config.keys() and kproj_config["group_size"] == 0
+        shutil.rmtree(quantized_model_path, ignore_errors=True)

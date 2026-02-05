@@ -66,7 +66,7 @@ class TestAutoRound:
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
-            f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
+            f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device cuda"
         )
         print(save_dir)
         assert not (res > 0 or res == -1), "qwen2 tuning fail"

@@ -241,6 +241,8 @@ def dispatch_model_by_all_available_devices(
             device = int(device.split(":")[-1])
         elif device == "cpu":
             device = "cpu"
+        elif isinstance(device, str):
+            device = 0
         else:
             raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
         new_max_memory[device] = max_memory[device]
@@ -264,7 +266,7 @@ def merge_lists_unionfind(list_of_lists):
         if root_x != root_y:
             parent[root_y] = root_x
 
-    # 初始化并查集
+    # Initialize Union-Find
     for lst in list_of_lists:
         for item in lst:
             if item not in parent:
@@ -272,7 +274,7 @@ def merge_lists_unionfind(list_of_lists):
         for i in range(1, len(lst)):
             union(lst[0], lst[i])
 
-    # 收集结果
+    # Collect results
     groups = {}
     for item in parent:
         root = find(item)

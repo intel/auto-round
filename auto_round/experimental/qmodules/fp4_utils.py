@@ -65,7 +65,7 @@ def _unpack_fp4_from_uint8_cpu(
     return _unpack_fp4_from_uint8(a, m, n, dtype)
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+# @torch.compile(fullgraph=True, dynamic=True)
 def _unpack_fp4_from_uint8_cuda(
     a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
 ) -> torch.Tensor:

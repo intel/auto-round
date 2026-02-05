@@ -36,7 +36,11 @@ class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
         from vllm.attention.layer import Attention, MLAAttention
 
         if isinstance(layer, (Attention, MLAAttention)):
-            from auto_round_extension.vllm_ext.kv_cache import AutoRoundKVCacheMethod
+
+            from auto_round_extension.vllm_ext.kv_cache import AutoRoundKVCacheMethod, AutoRoundKVCacheMethodForMLA
+
+            if isinstance(layer, MLAAttention):
+                return AutoRoundKVCacheMethodForMLA(self)
 
             return AutoRoundKVCacheMethod(self)
         if isinstance(layer, FusedMoE):

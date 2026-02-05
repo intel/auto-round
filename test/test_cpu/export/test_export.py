@@ -416,6 +416,16 @@ class TestAutoRound:
         assert format_list[1].output_format == "auto_gptq"
         assert format_list[1].get_backend_name() == "auto_gptq"
 
+        autoround = AutoRound(
+            model=self.model_name,
+            scheme="INT8_W8A8",
+        )
+        format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
+        assert format_list[0].output_format == "llm_compressor"
+        assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
+        assert format_list[1].output_format == "auto_round"
+        assert format_list[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
+
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
         from auto_round.formats import get_formats
 
@@ -450,3 +460,20 @@ class TestAutoRound:
             sym=True,
         )
         get_formats("auto_round:auto_awq", ar)
+
+    def test_llmc_dynamic_wint8aint8_export(self):
+        from safetensors import safe_open
+
+        autoround = AutoRound(
+            self.model_name,
+            iters=0,
+            nsamples=2,
+            seqlen=2,
+            scheme="INT8_W8A8",
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
+        assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
+        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
