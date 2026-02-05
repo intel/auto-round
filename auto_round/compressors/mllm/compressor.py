@@ -183,12 +183,16 @@ class MLLMCompressor(BaseCompressor):
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         if quant_nontext_module and iters > 0:
+            logger.warning(
+                "quant_nontext_module is experimental feature and not work well for all models,"
+                "please remove --quant_nontext_module and retry if you meet some errors."
+            )
             import importlib.util
 
             missing_libs = []
-            for require_lib in ["pillow", "torchvision"]:
+            for require_lib in ["PIL", "torchvision"]:
                 if importlib.util.find_spec(require_lib) is None:
-                    missing_libs.append(require_lib)
+                    missing_libs.append(require_lib.replace("PIL", "pillow"))
             if len(missing_libs) > 0:
                 logger.error(
                     f"{', '.join(missing_libs)} are required for quantizing non-text modules,"
@@ -213,21 +217,22 @@ class MLLMCompressor(BaseCompressor):
             # TODO: Remove after fixing https://github.com/huggingface/transformers/issues/43005
             model.config.model_type = model.config.to_dict()["model_type"]
 
+            # try default template if model_type not in preset templates
             if template is None and model.config.model_type not in TEMPLATES:
-                self.template = None
+                self.template = "default"
             else:
                 self.template = template if template is not None else model.config.model_type
-                if not isinstance(dataset, torch.utils.data.DataLoader):
-                    self.template = get_template(
-                        self.template,
-                        model=model,
-                        tokenizer=tokenizer,
-                        processor=processor,
-                        image_processor=image_processor,
-                        use_rtn=iters == 0,
-                        quiet=not self.quant_nontext_module,
-                    )
-                    dataset = self.template.default_dataset if dataset is None else dataset
+            if not isinstance(dataset, torch.utils.data.DataLoader):
+                self.template = get_template(
+                    self.template,
+                    model=model,
+                    tokenizer=tokenizer,
+                    processor=processor,
+                    image_processor=image_processor,
+                    use_rtn=iters == 0,
+                    quiet=not self.quant_nontext_module,
+                )
+                dataset = self.template.default_dataset if dataset is None else dataset
         else:
             self.template = None
 
