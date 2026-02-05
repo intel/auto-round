@@ -286,11 +286,7 @@ def eval_task_by_task(
     if batch_size is None:
         batch_size = "auto:8"
 
-    if not isinstance(model, str) and parallelism:
-        from accelerate import dispatch_model, infer_auto_device_map
-
-        device_map = infer_auto_device_map(model)
-        model = dispatch_model(model, device_map=device_map)
+    if not isinstance(model, str):
         parallelism = False
         is_gguf_file = False
         gguf_file = None
