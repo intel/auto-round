@@ -997,3 +997,34 @@ class IndexSampler:
         batch = self.indices[self.index : self.index + self.batch_size]
         self.index += self.batch_size
         return batch
+
+
+def rank_in_ddp() -> int:
+    """Returns the rank of the current process in a DDP setup.
+
+    Returns:
+        int: The rank of the current process. Returns 0 if not in DDP.
+    """
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return 0
+    return torch.distributed.get_rank()
+
+
+class DDPIndexSampler(IndexSampler):
+
+    def __init__(self, nsamples: int, batch_size: int, iters: int) -> None:
+        self.iters = iters
+        super().__init__(nsamples, batch_size)
+        rank = rank_in_ddp()
+        # run next_batch() for `rank` times to sync different rank's sampler
+        for _ in range(rank * iters):
+            self.next_batch()
+
+    def next_batch(self) -> list[int]:
+        if self.index + self.batch_size > self.nsamples:
+            random.shuffle(self.indices)
+            self.index = 0
+
+        batch = self.indices[self.index : self.index + self.batch_size]
+        self.index += self.batch_size
+        return batch
