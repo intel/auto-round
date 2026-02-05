@@ -84,6 +84,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     return tensor
 
+
 def _align_1d_to_num_groups(x, num_groups: int, pad_value: float):
     """
     Align a 1D tensor/scalar to length = num_groups.
