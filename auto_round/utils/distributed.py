@@ -42,4 +42,5 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     from torch.nn.parallel import DistributedDataParallel as DDP
 
     logger.warning_once("AutoRound DDP is an experimental feature, please use with caution.")
-    block = DDP(block, device_ids=[device_list], find_unused_parameters=True)
+    logger.trace("[Rank: %d] Using device list: %s", torch.distributed.get_rank(), device_list)
+    block = DDP(block, device_ids=device_list, find_unused_parameters=True)
