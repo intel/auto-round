@@ -84,6 +84,25 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     return tensor
 
+def _align_1d_to_num_groups(x, num_groups: int, pad_value: float):
+    """
+    Align a 1D tensor/scalar to length = num_groups.
+    - If x is scalar: return scalar (no alignment needed).
+    - If x is 1D tensor: pad or truncate to num_groups.
+    """
+    if not isinstance(x, torch.Tensor):
+        return x  # scalar
+
+    x = x.detach().flatten()
+    n = x.numel()
+    if n == num_groups:
+        return x
+    if n < num_groups:
+        pad = num_groups - n
+        pad_t = torch.full((pad,), pad_value, device=x.device, dtype=x.dtype)
+        return torch.cat([x, pad_t], dim=0)
+    return x[:num_groups]
+
 
 def quant_mx(
     tensor,
@@ -124,25 +143,30 @@ def quant_mx(
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
     # max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    # if isinstance(max_scale, torch.Tensor):
+    #     max_scale = max_scale.to(tensor.device)
+    # if isinstance(v, torch.Tensor):
+    #     v = v.to(tensor.device)
 
+    num_groups = tensor.shape[0]
+
+    # ---- tensor_max -> max_tensor (1D, length=num_groups) ----
     if tensor_max is None:
-        max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    elif isinstance(tensor_max, torch.Tensor):
-        max_val = tensor_max.to(tensor.device)
-        if max_val.dim() == 1:
-            max_val = max_val.unsqueeze(-1)
+        max_tensor = torch.max(torch.abs(tensor), dim=-1)[0]  # [num_groups]
     else:
-        max_val = torch.tensor(tensor_max, device=tensor.device)
-        if max_val.dim() == 0:
-            max_val = max_val.view(1, 1)
+        if isinstance(tensor_max, torch.Tensor):
+            max_tensor = tensor_max.to(tensor.device)
+        else:
+            max_tensor = torch.tensor(tensor_max, device=tensor.device)
+        max_tensor = _align_1d_to_num_groups(max_tensor, num_groups, pad_value=0.0)
 
+    # ---- max_scale align (if tensor) ----
     if isinstance(max_scale, torch.Tensor):
-        ms = max_scale.to(tensor.device)
-        if ms.dim() == 1:
-            ms = ms.unsqueeze(-1)
-        max_val = max_val * ms
-    else:
-        max_val = max_val * max_scale
+        max_scale = max_scale.to(tensor.device)
+        max_scale = _align_1d_to_num_groups(max_scale, num_groups, pad_value=1.0)
+
+    max_tensor = max_tensor * max_scale
+    max_val = max_tensor.unsqueeze(-1)
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
@@ -199,25 +223,30 @@ def quant_mx_rceil(
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
     # max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    # if isinstance(max_scale, torch.Tensor):
+    #     max_scale = max_scale.to(tensor.device)
+    # if isinstance(v, torch.Tensor):
+    #     v = v.to(tensor.device)
 
+    num_groups = tensor.shape[0]
+
+    # ---- tensor_max -> max_tensor (1D, length=num_groups) ----
     if tensor_max is None:
-        max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    elif isinstance(tensor_max, torch.Tensor):
-        max_val = tensor_max.to(tensor.device)
-        if max_val.dim() == 1:
-            max_val = max_val.unsqueeze(-1)
+        max_tensor = torch.max(torch.abs(tensor), dim=-1)[0]  # [num_groups]
     else:
-        max_val = torch.tensor(tensor_max, device=tensor.device)
-        if max_val.dim() == 0:
-            max_val = max_val.view(1, 1)
+        if isinstance(tensor_max, torch.Tensor):
+            max_tensor = tensor_max.to(tensor.device)
+        else:
+            max_tensor = torch.tensor(tensor_max, device=tensor.device)
+        max_tensor = _align_1d_to_num_groups(max_tensor, num_groups, pad_value=0.0)
 
+    # ---- max_scale align (if tensor) ----
     if isinstance(max_scale, torch.Tensor):
-        ms = max_scale.to(tensor.device)
-        if ms.dim() == 1:
-            ms = ms.unsqueeze(-1)
-        max_val = max_val * ms
-    else:
-        max_val = max_val * max_scale
+        max_scale = max_scale.to(tensor.device)
+        max_scale = _align_1d_to_num_groups(max_scale, num_groups, pad_value=1.0)
+
+    max_tensor = max_tensor * max_scale
+    max_val = max_tensor.unsqueeze(-1)
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / max_norm)))
