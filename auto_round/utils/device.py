@@ -275,7 +275,13 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
 
 def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[str, bool]:
     if isinstance(device, str):
-        devices = device.replace(" ", "").split(",")
+        if device in ["cuda", "xpu", "hpu"]:
+            device = detect_device(device)
+            parallelism = False
+            return device, parallelism
+        else:
+            device = re.sub("xpu:|hpu:|cuda:", "", device)
+            devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
         devices = [str(device)]
     else:
