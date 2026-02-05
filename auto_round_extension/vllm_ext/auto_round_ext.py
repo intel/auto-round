@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from copy import deepcopy
 from typing import Any
 
 import torch
@@ -30,6 +31,38 @@ logger = init_logger(__name__)
 class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
     SUPPORTED_DTYPES = _BaseAutoRoundConfig.SUPPORTED_DTYPES.union({"mx_fp"})
     SUPPORTED_FORMATS = _BaseAutoRoundConfig.SUPPORTED_FORMATS.union({"auto_round:llm_compressor"})
+
+    def __init__(
+        self,
+        weight_bits: int,
+        group_size: int,
+        sym: bool = True,
+        packing_format: str = "auto_round:auto_gptq",
+        block_name_to_quantize: str | list[str] | None = None,
+        extra_config: dict[str, Any] | None = None,
+        data_type: str = "int",
+        backend: str = "auto",
+        act_bits: int = None,
+        act_data_type: int = None,
+        act_dynamic: bool = None,
+        act_group_size: int = None,
+        act_sym: bool = None,
+    ) -> None:
+        super().__init__(
+            weight_bits=weight_bits,
+            group_size=group_size,
+            sym=sym,
+            packing_format=packing_format,
+            block_name_to_quantize=block_name_to_quantize,
+            extra_config=extra_config,
+            data_type=data_type,
+            backend=backend,
+        )
+        self.act_bits = act_bits
+        self.act_data_type = act_data_type
+        self.act_dynamic = act_dynamic
+        self.act_group_size = act_group_size
+        self.act_sym = act_sym
 
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         # FIXME: (yi) make it compatible with `AutoRoundConfig`
@@ -56,7 +89,25 @@ class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> _BaseAutoRoundConfig:
-        ar_config = super().from_config(config)
+        ar_config = cls(
+            weight_bits=cls.get_from_keys(config, ["bits"]),
+            group_size=cls.get_from_keys(config, ["group_size"]),
+            sym=cls.get_from_keys(config, ["sym"]),
+            packing_format=cls.get_from_keys_or(
+                config, ["packing_format"], "auto_round:auto_gptq"
+            ),
+            block_name_to_quantize=cls.get_from_keys_or(
+                config, ["block_name_to_quantize", "to_quant_block_names"], None
+            ),
+            extra_config=cls.get_from_keys_or(config, ["extra_config"], None),
+            data_type=cls.get_from_keys_or(config, ["data_type"], "int"),
+            backend=cls.get_from_keys_or(config, ["backend", "vllm_backend"], "auto"),
+            act_bits=cls.get_from_keys(config, ["act_bits"]),
+            act_data_type=cls.get_from_keys(config, ["act_data_type"]),
+            act_dynamic=cls.get_from_keys(config, ["act_dynamic"]),
+            act_group_size=cls.get_from_keys(config, ["act_group_size"]),
+            act_sym=cls.get_from_keys(config, ["act_sym"]),
+        )
         # TODO: (yi) refine below implementation
         quant_scheme = AutoRoundExtensionConfig._parse_quant_scheme(config)
         layer_schemes = {}
@@ -64,7 +115,11 @@ class AutoRoundExtensionConfig(_BaseAutoRoundConfig):
         extra_config = getattr(ar_config, "extra_config", None)
         if extra_config is not None:
             for layer_name, layer_config in extra_config.items():
-                layer_schemes[layer_name] = AutoRoundExtensionConfig._parse_quant_scheme(layer_config)
+                layer_scheme = deepcopy(quant_scheme)
+                for key, val in layer_config.items():
+                    if key in layer_scheme.keys() and val != layer_scheme[key]:
+                        layer_scheme[key] = val
+                layer_schemes[layer_name] = layer_scheme
         ar_config.quant_scheme = quant_scheme
         ar_config.layer_schemes = layer_schemes
         return ar_config
