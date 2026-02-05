@@ -272,13 +272,12 @@ def eval_task_by_task(
     retry_times=3,
     mllm=False,
     add_bos_token=False,
-    device_map=None,
 ):
     require_version(
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
-    set_cuda_visible_devices(device_map)
+    set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
