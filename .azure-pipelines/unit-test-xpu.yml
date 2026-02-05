@@ -8,9 +8,8 @@ pr:
       - main
   paths:
     include:
-      - auto_round/utils
-      - auto_round_extension/ark
-      - auto_round/inference
+      - auto_round
+      - auto_round_extension
       - test/test_ark
       - test/test_xpu
       - setup.py
