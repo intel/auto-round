@@ -119,7 +119,7 @@ pip install auto-round-hpu
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
->If you encounter issues during quantization, try using pure RTN mode with iters=0, disable_opt_rtn=True. Additionally, using group_size=32 or mixed bits is recommended for better results..
+>If you encounter issues during quantization, try using pure RTN mode with iters=0, disable_opt_rtn=True. Additionally, using group_size=32 or mixed bits is recommended for better results.
 
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
