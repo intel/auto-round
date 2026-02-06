@@ -310,57 +310,41 @@ def llm_load_model(
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
+    # Build common kwargs for from_pretrained
+    load_kwargs = {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": trust_remote_code,
+        "device_map": "auto" if use_auto_mapping else None,
+    }
+
     # Check if model is MXFP4 quantized and needs dequantization
-    quantization_config = None
+    # Only set quantization_config when explicitly needed, to avoid overriding model's built-in config
     if _is_mxfp4_model(pretrained_model_name_or_path):
         try:
             from transformers import Mxfp4Config
 
-            quantization_config = Mxfp4Config(dequantized=True)
+            load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
             logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
         except ImportError:
             logger.warning("Mxfp4Config not available in current transformers version, loading without dequantization.")
 
     if _use_hpu_compile_mode():
-        model = model_cls.from_pretrained(
-            pretrained_model_name_or_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
-            device_map="auto" if use_auto_mapping else None,
-            quantization_config=quantization_config,
-        )
+        model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
     else:
         try:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-                quantization_config=quantization_config,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
         except ValueError as e:
             if "FP8 quantized" in str(e):
                 with override_cuda_device_capability():
-                    model = model_cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        device_map="auto" if use_auto_mapping else None,
-                        quantization_config=quantization_config,
-                    )
+                    model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
 
         except OSError as e:
             logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=False,
-                device_map="auto" if use_auto_mapping else None,
-                quantization_config=quantization_config,
-            )
+            load_kwargs["trust_remote_code"] = False
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
 
     model = model.eval()
     check_and_mark_quantized_module(model)
