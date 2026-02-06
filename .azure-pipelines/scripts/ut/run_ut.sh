@@ -2,14 +2,7 @@
 set -xe
 
 test_part=$1
-
-# install requirements
-echo "##[group]set up UT env..."
 export TQDM_MININTERVAL=60
-uv pip install pytest-cov pytest-html
-uv pip install -r /auto-round/test/test_cpu/requirements.txt \
-    --extra-index-url https://download.pytorch.org/whl/cpu
-uv pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # install latest gguf for ut test
 cd ~ || exit 1
@@ -24,7 +17,6 @@ rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
-export LD_PRELOAD=libintelocl.so:libcommon_clang.so:libocl_svml_z1.so
 export FORCE_BF16=1
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
