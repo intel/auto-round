@@ -281,8 +281,8 @@ def get_layer_config(model, quantization_config):
         regex_config=extra_config, base_config=extra_config, layer_names=layer_names, model=model
     )
 
-    # Merge and deduplicate, use sorted to ensure consistent order
-    layer_names = sorted(set(layer_names).union(extra_config.keys()))
+    # Merge and deduplicate
+    layer_names = list(set(layer_names).union(extra_config.keys()))
 
     # Build final layer configs
     layer_configs = {}
