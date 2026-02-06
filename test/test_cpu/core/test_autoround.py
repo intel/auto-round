@@ -438,10 +438,9 @@ class TestAutoRound:
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
-        quantization_config = AutoRoundConfig(backend="ipex")
 
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", quantization_config=quantization_config
+            quantized_model_path, device_map="cpu"
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"

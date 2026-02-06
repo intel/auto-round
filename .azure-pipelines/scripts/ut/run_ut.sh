@@ -6,6 +6,9 @@ export TQDM_MININTERVAL=60
 echo "##[group]set up UT env..."
 uv pip install pytest-cov pytest-html
 uv pip list
+# workaround for ark test, remove auto_round_kernel_xpu
+package_path=$(uv pip show auto-round-lib | grep Location:|cut -d: -f2)
+rm -rf $package_path/auto_round_kernel/auto_round_kernel_xpu*
 echo "##[endgroup]"
 
 # install latest gguf for ut test
