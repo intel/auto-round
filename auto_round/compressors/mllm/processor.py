@@ -196,6 +196,41 @@ class Qwen2VLProcessor(HFProcessor):
         return ret
 
 
+@register_processor("qwen3_omni")
+class Qwen3OmniProcessor(HFProcessor):
+    """Processor for Qwen3-Omni multimodal models.
+
+    Qwen3-Omni supports text, image, video, and audio inputs.
+    This processor handles proper tokenization and preprocessing for calibration.
+    """
+
+    @staticmethod
+    def squeeze_result(ret):
+        for key in ret:
+            # Skip squeezing for multi-modal data that may have special dimensions
+            if key in ["pixel_values", "pixel_values_videos", "input_features"]:
+                continue
+            ret[key] = ret[key][0]
+        return ret
+
+    def _process_v1(self, messages, image):
+        """Process messages for Qwen3-Omni model."""
+        conversation = []
+        for content in messages:
+            conversation.append(
+                {
+                    "role": content["role"],
+                    "content": [{"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}],
+                }
+            )
+            if self.IMAGE_TOKEN in content["content"]:
+                conversation[-1]["content"].append({"image": image, "type": "image"})
+        ret = self.processor.apply_chat_template(
+            conversation, add_generation_prompt=True, tokenize=True, return_dict=True
+        )
+        return ret
+
+
 @register_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(self, text, images, truncation=False, squeeze=True, max_length=None, **kwargs):

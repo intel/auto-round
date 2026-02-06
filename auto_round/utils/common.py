@@ -184,6 +184,8 @@ MM_KEYS = [
     "audio",
     "talker",
     "token2wav",
+    "code2wav",
+    "code_predictor",
     "vision_model",
     "audio_tower",
     "vision_encoder",
