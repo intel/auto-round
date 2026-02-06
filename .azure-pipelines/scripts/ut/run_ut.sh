@@ -3,6 +3,10 @@ set -xe
 
 test_part=$1
 export TQDM_MININTERVAL=60
+echo "##[group]set up UT env..."
+uv pip install pytest-cov pytest-html
+uv pip list
+echo "##[endgroup]"
 
 # install latest gguf for ut test
 cd ~ || exit 1
