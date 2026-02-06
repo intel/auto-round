@@ -1,7 +1,6 @@
 #!/bin/bash
 set -xe
 
-# install requirements
 echo "##[group]set up UT env..."
 uv pip install pytest-cov pytest-html
 uv pip list
