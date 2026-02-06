@@ -27,15 +27,7 @@ cat run_xpu.sh
 
 bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
 
-# run ark tests on xpu only
-export SKIP_CPU=1
-bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
-
-# run ark tests on cpu only
-unset SKIP_CPU
-export SKIP_XPU=1
-export LD_PRELOAD=libintelocl.so:libcommon_clang.so:libocl_svml_z1.so
-bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
+numactl -C "0-27" bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/

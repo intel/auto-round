@@ -46,7 +46,7 @@ steps:
     - script: |
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/xpu \
             && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
             && cd /auto-round && uv pip install . \
