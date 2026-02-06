@@ -56,7 +56,7 @@ try:
 
     if not hasattr(Autotuner, "_cache_lock"):
         # Add missing attributes to make autotune work
-        Autotuner._cache_lock = threading.Lock()
+        Autotuner._cache_lock = threading.RLock()
         if not hasattr(Autotuner, "cache"):
             Autotuner.cache = {}
 except (ImportError, AttributeError):
