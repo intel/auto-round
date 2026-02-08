@@ -15,7 +15,7 @@ from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 @pytest.fixture
 def setup_gpt_oss():
     """Fixture to set up the GPT-OSS model and tokenizer."""
-    model_name = "/models/gpt-oss-20b-BF16"
+    model_name = "openai/gpt-oss-20b"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.num_hidden_layers = 1  # Reduce layers for testing
