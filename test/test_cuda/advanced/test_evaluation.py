@@ -45,6 +45,7 @@ class TestVllmEvaluation:
         python_path = sys.executable
 
         os.environ["VLLM_SKIP_WARMUP"] = "true"
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
         # Test with custom vllm_args
@@ -59,6 +60,7 @@ class TestVllmEvaluation:
         python_path = sys.executable
 
         os.environ["VLLM_SKIP_WARMUP"] = "true"
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
         cmd = f"{python_path} -m auto_round --model {opt_name_or_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 100"

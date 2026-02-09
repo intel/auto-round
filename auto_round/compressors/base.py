@@ -44,6 +44,7 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
     is_static_wfp8afp8,
@@ -123,6 +124,7 @@ from auto_round.utils.model import (
     restore_offloaded_blocks,
     stream_offload_blocks,
 )
+from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 SERIALIZATION_KEYS = (
@@ -454,12 +456,12 @@ class BaseCompressor(object):
             disable_opt_rtn = True
         if (
             self.bits >= 8
-            and self.act_bits >= 16
+            and self.act_bits >= 8
             and self.iters == 0
             and self.data_type == "int"
             and disable_opt_rtn is None
         ):
-            logger.warning("`disable_opt_rtn` is turned on for W8A16 quantization to improve efficiency.")
+            logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
             disable_opt_rtn = True
         if disable_opt_rtn is None and self.iters == 0:
             logger.info(
@@ -847,6 +849,7 @@ class BaseCompressor(object):
             self.act_bits <= 8
             and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
             and not is_mx_fp(self.act_data_type)
+            and not is_dynamic_wint8aint8(self)
             and not is_static_wfp8afp8(self.act_data_type)
         ):
             logger.warning(
@@ -1686,6 +1689,9 @@ class BaseCompressor(object):
 
         if self.is_immediate_saving and "int" not in self.data_type:
             logger.warning("immediate_saving is only supported for int quantization, set to False")
+            self.is_immediate_saving = False
+
+        if self.orig_output_dir is None:
             self.is_immediate_saving = False
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -3052,7 +3058,7 @@ class BaseCompressor(object):
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
-
+        setup_ddp_if_needed_(self, block, self.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):

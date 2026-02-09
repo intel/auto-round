@@ -68,12 +68,31 @@ def is_wfp8afp8(ar):
         return False
 
 
+def is_wint8aint8(ar):
+    if ("int8" in ar.act_data_type or ("int" in ar.act_data_type and ar.act_bits == 8)) and (
+        "int8" in ar.data_type or ("int" in ar.data_type and ar.bits == 8)
+    ):
+        return True
+    else:
+        return False
+
+
 def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
         return "fp8_static" in ar_or_format.lower()
     if ar_or_format.act_dynamic:
         return False
     if is_wfp8afp8(ar_or_format):
+        return True
+    return False
+
+
+def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
+    if isinstance(ar_or_format, str):
+        return "int8_w8a8" in ar_or_format.lower()
+    if not ar_or_format.act_dynamic:
+        return False
+    if is_wint8aint8(ar_or_format):
         return True
     return False
 

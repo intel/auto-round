@@ -7,7 +7,7 @@ import transformers
 from packaging import version
 from transformers import (
     AutoModelForCausalLM,
-    AutoModelForVision2Seq,
+    AutoModelForImageTextToText,
     AutoTokenizer,
     Gemma3ForConditionalGeneration,
     Mistral3ForConditionalGeneration,
@@ -113,7 +113,7 @@ class TestAutoRound:
 
     def test_Llama32(self):
         model_name = "/models/Llama-3.2-11B-Vision-Instruct"
-        model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForImageTextToText.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [40])
 
@@ -132,7 +132,7 @@ class TestAutoRound:
 
     def test_SmolVLM(self):
         model_name = "/models/SmolVLM-Instruct"
-        model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        model = AutoModelForImageTextToText.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.text_model.layers"], [24])
 
