@@ -1,14 +1,73 @@
 import copy
 import os
+import re
 
 import pytest
 import torch
 import transformers
 from packaging import version
 
+from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
 from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
+
+
+def generate_prompt(model, tokenizer, text="There is a girl who likes adventure,", max_new_tokens=50):
+    """Generate text using a model and tokenizer.
+
+    Args:
+        model: The model to use for generation.
+        tokenizer: The tokenizer for the model.
+        text: The input prompt text.
+        max_new_tokens: Maximum number of new tokens to generate.
+
+    Returns:
+        str: The generated text.
+    """
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    output = tokenizer.decode(model.generate(**inputs, max_new_tokens=max_new_tokens)[0])
+    print(output)
+    return output
+
+
+def evaluate_accuracy(
+    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None
+):
+    """Helper function to evaluate model accuracy on a given task.
+
+    Supports both saved model directory and in-memory model object.
+
+    Args:
+        model_or_save_dir: Either a path to the saved model directory (str) or a model object.
+        tokenizer: The tokenizer for the model (required when model_or_save_dir is a model object).
+        task: The evaluation task.
+        threshold: The minimum accuracy threshold.
+        batch_size: Batch size for evaluation.
+        limit: Limit the number of samples to evaluate (only for model object).
+
+    Returns:
+        float: The accuracy value.
+
+    Raises:
+        AssertionError: If accuracy is below threshold.
+    """
+    if isinstance(model_or_save_dir, str):
+        # save_dir mode
+        model_args = f"pretrained={model_or_save_dir}"
+        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size)
+    else:
+        # model object mode
+        if tokenizer is None:
+            raise ValueError("tokenizer is required when model_or_save_dir is a model object")
+        result = simple_evaluate_user_model(
+            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit
+        )
+
+    acc = result["results"][task]["acc,none"]
+    print(f"{task} accuracy: {acc}")
+    assert acc > threshold, f"Accuracy {acc} is below threshold {threshold}"
+    return acc
 
 
 # Automatic choose local path or model name.

@@ -7,7 +7,6 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import llm_load_model
 from auto_round.utils.weight_handler import (
     ModuleWeightType,
@@ -15,23 +14,7 @@ from auto_round.utils.weight_handler import (
     convert_module_to_hp_if_necessary,
 )
 
-from ...helpers import get_model_path, get_tiny_model, transformers_version
-
-
-def generate_prompt(model, tokenizer):
-    text = "There is a girl who likes adventure,"
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-
-
-def evaluate_accuracy(save_dir, task="lambada_openai", threshold=0.25):
-    """Helper function to evaluate model accuracy on a given task."""
-    model_args = f"pretrained={save_dir}"
-    result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size="auto")
-    acc = result["results"][task]["acc,none"]
-    print(f"{task} accuracy: {acc}")
-    assert acc > threshold, f"Accuracy {acc} is below threshold {threshold}"
-    return acc
+from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, get_tiny_model, transformers_version
 
 
 class TestAutoRound:

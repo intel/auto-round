@@ -6,9 +6,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 
-from ...helpers import get_model_path
+from ...helpers import evaluate_accuracy, get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -40,10 +39,7 @@ class TestAlgExt:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        # wo alg ext 0.2078, with 0.2371
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.22
+        evaluate_accuracy(model, tokenizer, threshold=0.22, batch_size=64)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_cli(self, tiny_opt_model_path):
