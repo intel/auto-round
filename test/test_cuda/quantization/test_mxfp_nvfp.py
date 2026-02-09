@@ -84,7 +84,7 @@ class TestAutoRound:
             quantization_config["format"] == "nvfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
-        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
         # from vllm import LLM, SamplingParams
         # prompts = [
         #     "The capital of France is",
@@ -122,6 +122,7 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         scheme = "nvfp4"
@@ -136,6 +137,7 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_qwen_moe_quant_infer(self, dataloader):
         model_name = get_model_path("qwen/Qwen1.5-MoE-A2.7B")
