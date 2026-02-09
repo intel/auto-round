@@ -930,7 +930,7 @@ def get_attr(module, key):
     Args:
         module (torch.nn.Module): original model
         key (str): attribute name (e.g., "layer.weight", "layer.bias")
-    
+
     Returns:
         The attribute value, or None if not found
     """
