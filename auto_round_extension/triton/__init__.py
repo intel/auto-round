@@ -12,16 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Patch Autotuner if it's missing _cache_lock (compatibility fix for older triton versions)
-try:
-    import threading
-    from triton.runtime.autotuner import Autotuner
 
-    if not hasattr(Autotuner, "_cache_lock"):
-        # Add missing attributes to make autotune work
-        Autotuner._cache = {}
-        Autotuner.cache = {}
-        Autotuner._cache_lock = threading.RLock()
-        Autotuner._cache_futures = {}
-except (ImportError, AttributeError):
-    pass
+def patch_triton_autotuner_if_needed():
+    """Patch Autotuner if it's missing _cache_lock (compatibility fix for older triton versions)."""
+    try:
+        import threading
+        from triton.runtime.autotuner import Autotuner
+
+        if not hasattr(Autotuner, "_cache_lock"):
+            Autotuner._cache_lock = threading.RLock()
+        if not hasattr(Autotuner, "_cache_futures"):
+            Autotuner._cache_futures = {}
+        if not hasattr(Autotuner, "_cache"):
+            Autotuner._cache = {}
+        if not hasattr(Autotuner, "cache"):
+            Autotuner.cache = {}
+    except (ImportError, AttributeError):
+        pass
+
+
+patch_triton_autotuner_if_needed()
