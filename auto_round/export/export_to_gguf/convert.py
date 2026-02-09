@@ -159,7 +159,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         yield name, tensor
 
     def is_extra_tensor(tensor_name):
-        if is_quantized_input_module(cls.model) and "scale" in tensor_name.split(".")[-1]:
+        if getattr(cls.model, "_is_quantized_input_module", False) and "scale" in tensor_name.split(".")[-1]:
             return False
         if tensor_name not in cls.model.tensor_name_list:
             return True

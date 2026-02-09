@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 
@@ -460,6 +461,34 @@ class TestAutoRound:
             sym=True,
         )
         get_formats("auto_round:auto_awq", ar)
+
+    def test_autoawq_qwen3_vl_infer(self, dataloader):
+        model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
+        autoround = AutoRound(
+            model=model_path,
+            scheme="W4A16",
+            iters=0,
+            seqlen=2,
+            batch_size=1,
+            dataset=dataloader,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_awq")
+
+        # Check items of modules_to_not_convert in quantization config
+        quantization_config_path = f"{quantized_model_path}/quantization_config.json"
+        with open(quantization_config_path, "r") as f:
+            quantization_config = json.load(f)
+        modules_to_not_convert = quantization_config.get("modules_to_not_convert", [])
+        assert (
+            "model.visual.merger.linear_fc2" in modules_to_not_convert
+        ), f"'model.visual.merger.linear_fc2' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
+        assert (
+            "model.visual.merger.linear_fc1" in modules_to_not_convert
+        ), f"'model.visual.merger.linear_fc1' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
+        assert (
+            "model.visual.blocks" in modules_to_not_convert
+        ), f"'model.visual.blocks' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
 
     def test_llmc_dynamic_wint8aint8_export(self):
         from safetensors import safe_open
