@@ -88,7 +88,7 @@ class TestAutoSchemeOffloadContext:
             metadata = ctx._offloaded_blocks["test_block"]
             assert "save_path" in metadata
             assert os.path.exists(metadata["save_path"])
-            
+
             # Verify weight was cleared
             assert module.weight.numel() == 0
         finally:
@@ -297,8 +297,7 @@ class TestGroupLayersByBlock:
     """Tests for _group_layers_by_block helper."""
 
     def test_basic_grouping(self):
-        layers = ["model.layers.0.attn.q", "model.layers.0.attn.k",
-                  "model.layers.1.mlp.fc1", "lm_head"]
+        layers = ["model.layers.0.attn.q", "model.layers.0.attn.k", "model.layers.1.mlp.fc1", "lm_head"]
         blocks = ["model.layers.0", "model.layers.1"]
         groups, non_block = _group_layers_by_block(layers, blocks)
         assert groups["model.layers.0"] == ["model.layers.0.attn.q", "model.layers.0.attn.k"]
@@ -447,4 +446,3 @@ class TestAutoSchemeOffloadContextWithModel:
                 assert block_params == 0 or block_params < 100  # Allow for some edge cases
         finally:
             ctx.cleanup()
-

@@ -17,14 +17,13 @@ import gc
 import os
 import shutil
 import tempfile
-
-from safetensors.torch import load_file, save_file
 from dataclasses import asdict
 from functools import wraps
 from typing import Any, Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model
+from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -161,8 +160,7 @@ class AutoSchemeOffloadContext:
             if hasattr(target, param_name):
                 old_param = getattr(target, param_name)
                 if isinstance(old_param, torch.nn.Parameter):
-                    setattr(target, param_name,
-                            torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
+                    setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
                 else:
                     setattr(target, param_name, param)
         del state_dict
@@ -183,9 +181,7 @@ class AutoSchemeOffloadContext:
         except Exception as e:
             logger.warning(f"Failed to load original block {block_name}: {e}")
 
-    def save_and_clear_all_original_blocks(
-        self, model: torch.nn.Module, block_names: list[str]
-    ) -> None:
+    def save_and_clear_all_original_blocks(self, model: torch.nn.Module, block_names: list[str]) -> None:
         """Save all original block weights to disk and clear them from RAM."""
         if not self.low_cpu_mem_usage:
             return
@@ -200,9 +196,7 @@ class AutoSchemeOffloadContext:
         clear_memory()
         logger.info("AutoScheme: original weights saved and cleared")
 
-    def load_all_original_blocks(
-        self, model: torch.nn.Module, block_names: list[str]
-    ) -> None:
+    def load_all_original_blocks(self, model: torch.nn.Module, block_names: list[str]) -> None:
         """Load all original block weights back into RAM."""
         if not self.low_cpu_mem_usage:
             return
@@ -311,16 +305,14 @@ def _clear_module_weights(module: torch.nn.Module) -> None:
                 module._cached_weight_shape = tuple(module.weight.shape)
             if isinstance(module.weight, torch.nn.Parameter):
                 module.weight = torch.nn.Parameter(
-                    torch.empty(0, dtype=module.weight.dtype, device="cpu"),
-                    requires_grad=module.weight.requires_grad
+                    torch.empty(0, dtype=module.weight.dtype, device="cpu"), requires_grad=module.weight.requires_grad
                 )
             else:
                 module.weight = torch.empty(0, dtype=module.weight.dtype, device="cpu")
         if hasattr(module, "bias") and module.bias is not None:
             if isinstance(module.bias, torch.nn.Parameter):
                 module.bias = torch.nn.Parameter(
-                    torch.empty(0, dtype=module.bias.dtype, device="cpu"),
-                    requires_grad=module.bias.requires_grad
+                    torch.empty(0, dtype=module.bias.dtype, device="cpu"), requires_grad=module.bias.requires_grad
                 )
             else:
                 module.bias = torch.empty(0, dtype=module.bias.dtype, device="cpu")
@@ -877,9 +869,7 @@ def get_score_for_scheme(
             for name in quant_layer_names:
                 wrap_layer(name)
 
-        model_forward_low_gpu(
-            model, dataloader, major_device=major_device, pbar=pbar, offload_context=offload_context
-        )
+        model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar, offload_context=offload_context)
 
         # NOTE: do NOT load all blocks back — scores are read block-by-block below
     else:
@@ -919,9 +909,7 @@ def get_score_for_scheme(
                                 f"layer {full_name} max abs activation is 0, "
                                 "please use more data to improve the accuracy"
                             )
-                    layer_bits, _ = compute_layer_bits(
-                        m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits
-                    )
+                    layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
                     scores_dict[full_name] = [layer_bits, m.mix_score]
 
             # Unwrap layers in this block
@@ -943,12 +931,9 @@ def get_score_for_scheme(
             if hasattr(m, "mix_score") and n not in scores_dict:
                 if m.orig_layer.act_bits <= 8 and m.act_cnt == 0:
                     logger.warning_once(
-                        f"layer {n} max abs activation is 0, "
-                        "please use more data to improve the accuracy"
+                        f"layer {n} max abs activation is 0, " "please use more data to improve the accuracy"
                     )
-                layer_bits, _ = compute_layer_bits(
-                    m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits
-                )
+                layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
                 scores_dict[n] = [layer_bits, m.mix_score]
         for n, m in model.named_modules():
             if hasattr(m, "orig_layer"):
@@ -963,8 +948,7 @@ def get_score_for_scheme(
                 if m.orig_layer.act_bits <= 8:
                     if m.act_cnt == 0:
                         logger.warning_once(
-                            f"layer {n} max abs activation is 0, "
-                            "please use more data to improve the accuracy"
+                            f"layer {n} max abs activation is 0, " "please use more data to improve the accuracy"
                         )
                 layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
                 scores_dict[n] = [layer_bits, m.mix_score]
