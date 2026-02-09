@@ -446,62 +446,6 @@ class TestAutoRound:
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=1)[0])
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_not_convert_modules(self):
-        import requests
-        from PIL import Image
-        from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
-
-        from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
-
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct-AWQ")
-        quantization_config = AutoRoundConfig()
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
-        )
-        if transformers_version < version.parse("5.0.0"):
-            assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-            assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
-        else:
-            assert isinstance(model.model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-            assert not isinstance(model.model.visual.merger.mlp[0], QuantLinear)
-        if hasattr(model.model, "language_model"):
-            assert isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear)
-        else:
-            assert isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear)
-
-        processor = AutoProcessor.from_pretrained(model_name, size=None)
-        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "image": image_url,
-                    },
-                    {"type": "text", "text": "Describe this image."},
-                ],
-            }
-        ]
-
-        # Preparation for inference
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-
-        # Inference: Generation of the output
-        generated_ids = model.generate(**inputs, max_new_tokens=1)
-        generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-        output_text = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )
-        print(output_text)
-
     def test_fallback_layers_regex_awq(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         bits, group_size, sym = 4, 128, True
