@@ -451,7 +451,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
@@ -466,7 +466,7 @@ BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_zp"] = BackendInfo(
@@ -481,7 +481,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
@@ -496,7 +496,7 @@ BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_awq"] = BackendInfo(
@@ -511,7 +511,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
@@ -526,7 +526,7 @@ BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["ipex_gptq_cpu"] = BackendInfo(
@@ -723,7 +723,7 @@ def dynamic_import_inference_linear(backend, config):
         try:
             import auto_round_kernel as ark  # pylint: disable=E0611, E0401
         except Exception as e:
-            raise ImportError("Please install auto_round_kernel version for CPU/XPU")
+            raise ImportError("Please install auto-round-lib for CPU/XPU, e.g., using: pip install auto-round-lib")
         import auto_round_extension.ark.qlinear as qlinear
 
         if "zp" in backend:

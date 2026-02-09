@@ -27,6 +27,7 @@ import torch
 import transformers
 
 from auto_round.compressors.utils import (
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
     is_standard_fp,
@@ -47,6 +48,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     logger,
+    unsupported_meta_device,
 )
 
 
@@ -62,6 +64,7 @@ class AutoRoundExportFormat(str, Enum):
     NV_FP = "nv_fp"
     MX_FP_RCEIL = "mx_fp_rceil"
     NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
+    INT8_W8A8 = "int8_w8a8"
 
 
 if TYPE_CHECKING:
@@ -305,8 +308,12 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
+        if not unsupported_meta_device(model):
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+        elif hasattr(model, "config") and model.config is not None:
+            model.config.save_pretrained(output_dir)
+
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
         processor = kwargs.get("processor", None)
@@ -321,7 +328,7 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
-    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"]
+    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8"]
     format_name = "llm_compressor"
 
     def __init__(self, format, ar):
@@ -353,6 +360,11 @@ class LLMCompressorFormat(OutputFormat):
                         f"please note that group_size={ar.group_size}"
                         " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
                     )
+            elif is_dynamic_wint8aint8(ar):
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+                check_compressed_tensors_supported()
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8_W8A8.value, ar)
         else:
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
@@ -364,9 +376,9 @@ class LLMCompressorFormat(OutputFormat):
         error_logs = []
         if scheme.bits not in [4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
-        if not re.search("mxfp|fp|nvfp", scheme.data_type):
+        if not re.search("mxfp|fp|nvfp|int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
-        if scheme.data_type == "fp" and scheme.bits != 8:
+        if scheme.data_type in ["fp", "int"] and scheme.bits != 8:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
@@ -415,7 +427,10 @@ class LLMCompressorFormat(OutputFormat):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
+        elif re.search(f"{AutoRoundExportFormat.INT8_W8A8.value}", self.output_format):
+            from auto_round.export.export_to_llmcompressor.export import pack_layer
 
+            return pack_layer(layer_name, model, device=device)
         ## passed as no other llm_compressor format is supported yet
         logger.warning("No other llm_compressor packing format(except NVFP&MXFP) is supported yet, skip packing")
         return
@@ -1068,19 +1083,11 @@ class AutoRoundFormat(OutputFormat):
 
             backend = "auto_round:llm_compressor"
             export_func = save_quantized_as_fp
-        elif (
-            serialization_dict.get("data_type", "int") == "fp"
-            and serialization_dict.get("bits", 16) == 8
-            and serialization_dict.get("act_bits", 16) >= 16
-        ):
+        elif serialization_dict.get("data_type", "int") == "fp" and serialization_dict.get("bits", 16) == 8:
             from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
             backend = "auto_round"
             export_func = save_quantized_as_autoround
-        elif AutoRoundExportFormat.FP8_STATIC.value in backend:
-            from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
-
-            export_func = save_quantized_as_static_fp
         else:
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
 

@@ -36,3 +36,16 @@ class AutoRoundKVCacheMethod(BaseKVCacheMethod):
     def validate_kv_cache_scheme(quant_config):
         # FIXME: parse from quant_config
         return True
+
+
+class AutoRoundKVCacheMethodForMLA(BaseKVCacheMethod):
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        super().process_weights_after_loading(layer)
+        k_scale = layer._k_scale
+        v_scale = layer._v_scale
+        aligned_kv_scale = max(k_scale, v_scale)
+        layer._k_scale.data.fill_(aligned_kv_scale)
+        layer._v_scale.data.fill_(aligned_kv_scale)
+        layer._k_scale_float = aligned_kv_scale.item()
+        layer._v_scale_float = aligned_kv_scale.item()
+        logger.warning_once("Aligned MLA k/v scales for MLA")

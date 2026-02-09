@@ -1,2 +1,2 @@
-auto-round-kernel
+auto-round-lib
 lm_eval >= 0.4.10  # for transformers >= 5.0.0

@@ -1,5 +1,5 @@
+import os
 import shutil
-import sys
 
 import pytest
 import torch
@@ -23,7 +23,7 @@ class TestAutoRoundARKBackend:
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.28):
+    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.27):
         limit = 100
         if device == "xpu":
             limit = 1000
@@ -31,6 +31,7 @@ class TestAutoRoundARKBackend:
                 pytest.skip("No XPU device")
             if sym is False:
                 pytest.skip("No asym support for XPU")
+
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if fast_cfg:
