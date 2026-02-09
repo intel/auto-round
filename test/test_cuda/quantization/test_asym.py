@@ -8,10 +8,6 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.utils import get_module
-
-from ...helpers import model_infer
 
 
 class LLMDataLoader:

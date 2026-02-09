@@ -7,7 +7,6 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import (
     require_autogptq,
     require_awq,
@@ -16,7 +15,7 @@ from auto_round.testing_utils import (
     require_package_version_ut,
 )
 
-from ...helpers import get_model_path, get_tiny_model, model_infer
+from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, model_infer
 
 
 class TestAutoRound:
@@ -87,9 +86,8 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.32
+        evaluate_accuracy(model, tokenizer, threshold=0.32, batch_size=16)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
@@ -114,9 +112,7 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.18
+        evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(

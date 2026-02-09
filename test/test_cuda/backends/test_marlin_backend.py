@@ -5,9 +5,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 
-from ...helpers import get_model_path, model_infer
+from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundMarlinBackend:
@@ -53,9 +52,7 @@ class TestAutoRoundMarlinBackend:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             model_infer(model, tokenizer)
-            result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-            print(result["results"]["lambada_openai"]["acc,none"])
-            assert result["results"]["lambada_openai"]["acc,none"] > 0.14
+            evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16)
 
         for group_size in [32, 128]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
@@ -82,9 +79,7 @@ class TestAutoRoundMarlinBackend:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             model_infer(model, tokenizer)
-            result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-            print(result["results"]["lambada_openai"]["acc,none"])
-            assert result["results"]["lambada_openai"]["acc,none"] > 0.14
+            evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16)
 
     def test_marlin_4bits_sym_with_zp_m_1(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -110,9 +105,7 @@ class TestAutoRoundMarlinBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
+        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -121,9 +114,7 @@ class TestAutoRoundMarlinBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
+        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
