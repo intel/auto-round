@@ -106,7 +106,7 @@ class TestAutoRound:
         output_sentence = self.tokenizer.decode(output[0], skip_special_tokens=True)
         assert output_sentence in self.EXPECTED_OUTPUTS
 
-    @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch>=2.5")
+    @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch")
     def test_quantized_model_on_cpu(self):
         """
         Simple test that checks if the quantized model is working properly
@@ -171,7 +171,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
 
-    @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch>=2.5")
+    @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch")
     def test_convert_from_awq_cpu(self):
         """
         Simple test that checks if auto-round work properly with awq format
