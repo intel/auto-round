@@ -17,7 +17,6 @@ import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-import transformers
 from packaging import version
 from transformers.utils.versions import require_version
 
@@ -28,7 +27,7 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
 
-is_transformers_below_v5 = version.parse(transformers.__version__) < version.parse("5.0.0")
+is_transformers_below_v5 = version.parse(get_library_version("transformers")) < version.parse("5.0.0")
 
 BackendInfos = {}
 
