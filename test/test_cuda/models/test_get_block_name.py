@@ -41,7 +41,7 @@ class TestAutoRound:
         model_name = "/models/glm-4-9b-chat-hf"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        
+
         if transformers_version >= version.parse("5.0.0"):
             self.check_block_names(block_names, ["model.layers"], [40])
         else:
