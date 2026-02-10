@@ -737,7 +737,7 @@ def setup_eval_parser():
 
 def run_eval():
     from auto_round.logger import logger
-    from auto_round.utils import is_mllm_model
+    from auto_round.utils import is_gguf_model, is_mllm_model
 
     args = setup_eval_parser()
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
@@ -747,7 +747,7 @@ def run_eval():
     if "llama" in args.model.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
-    if is_mllm_model(args.model):
+    if not is_gguf_model(args.model) and is_mllm_model(args.model):
         args.mllm = True
 
     if args.eval_task_by_task:
