@@ -419,6 +419,7 @@ def prepare_tensors(cls):
                     break
             if skip:
                 continue
+            # squeeze is necessary for reloading in transformers.
             data = data_torch.squeeze()
             n_dims = len(data.shape)
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
@@ -548,6 +549,7 @@ def prepare_tensors(cls):
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
             ]:
+                # squeeze is necessary for reloading in transformers.
                 data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
