@@ -1274,27 +1274,6 @@ class BaseCompressor(object):
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
         self.all_to_quantized_module_names = all_to_quantized_module_names
-        if is_nv_fp(self.data_type):
-            # FIXME: (yiliu30) change it to block-wise after we refactor the quantization code and
-            # https://github.com/intel/auto-round/issues/1331
-            materialize_model_(self.model)
-            self.model.to("cpu")
-            from auto_round.data_type.nvfp import calculate_gparam
-            from auto_round.data_type.utils import update_fused_layer_global_scales
-
-            pbar = tqdm(all_to_quantized_module_names)
-            for name in pbar:
-                pbar.set_description(f"Calculate weight global scale: {name}")
-                m = get_module(self.model, name)
-                m = convert_module_to_hp_if_necessary(m, self.amp_dtype, self.device)
-                set_module(self.model, name, m)
-                weight_global_scale = calculate_gparam(m.weight, self.group_size)
-                setattr(m, "weight_global_scale", weight_global_scale)
-
-            logger.info("Start to update fused layer global scales, it may take some time.")
-            for name, module in self.model.named_modules():
-                update_fused_layer_global_scales(module)
-            logger.info("Finished updating fused layer global scales.")
 
         if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
@@ -1486,6 +1465,19 @@ class BaseCompressor(object):
                 materialize_model_(block)
                 block.to("cpu")
                 convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+                if is_nv_fp(self.data_type):
+                    from auto_round.data_type.nvfp import calculate_gparam
+                    from auto_round.data_type.utils import update_fused_layer_global_scales
+
+                    logger.info(f"Calculate block wise weight global scale: {block_name}")
+                    for name, m in block.named_modules():
+                        if check_to_quantized(m):
+                            weight_global_scale = calculate_gparam(m.weight, self.group_size)
+                            setattr(m, "weight_global_scale", weight_global_scale)
+                    logger.info("Update fused layer global scales.")
+                    modules = block.modules()
+                    for module in modules:
+                        update_fused_layer_global_scales(module)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
@@ -2883,7 +2875,8 @@ class BaseCompressor(object):
             enable_torch_compile=self.enable_torch_compile,
             device=device,
         )
-        if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
+        # Call this before quantization and after applying the block wrapper.
+        if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
             from auto_round.data_type.utils import update_fused_layer_global_scales
 
             modules = block.modules()
