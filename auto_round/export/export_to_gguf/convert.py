@@ -419,9 +419,7 @@ def prepare_tensors(cls):
                     break
             if skip:
                 continue
-            # sync with new version of gguf
-            # data = data_torch.squeeze()
-            data = data_torch
+            data = data_torch.squeeze()
             n_dims = len(data.shape)
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
 
@@ -550,14 +548,12 @@ def prepare_tensors(cls):
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
             ]:
-                # sync with new version of gguf
-                # data = data_torch.squeeze().cpu().numpy()
+                data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
                 if len(data_torch.shape) == 0:
                     data = data_torch.numpy()
                 try:
-                    data = data_torch.squeeze().cpu().numpy()
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
                     logger.warning("%s, %s", e, "falling back to F16")
