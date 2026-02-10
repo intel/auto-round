@@ -1469,12 +1469,11 @@ class BaseCompressor(object):
                     from auto_round.data_type.nvfp import calculate_gparam
                     from auto_round.data_type.utils import update_fused_layer_global_scales
 
-                    logger.info(f"Calculate block wise weight global scale: {block_name}")
+                    # Calculate block wise weight global scale
                     for name, m in block.named_modules():
                         if check_to_quantized(m):
                             weight_global_scale = calculate_gparam(m.weight, self.group_size)
                             setattr(m, "weight_global_scale", weight_global_scale)
-                    logger.info("Update fused layer global scales.")
                     modules = block.modules()
                     for module in modules:
                         update_fused_layer_global_scales(module)
