@@ -1464,7 +1464,7 @@ class BaseCompressor(object):
                 block = get_module(self.model, block_name)
                 materialize_model_(block)
                 block.to("cpu")
-                convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+                block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                 if is_nv_fp(self.data_type):
                     from auto_round.data_type.nvfp import calculate_gparam
                     from auto_round.data_type.utils import update_fused_layer_global_scales
