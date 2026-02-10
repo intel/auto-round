@@ -557,7 +557,7 @@ def prepare_tensors(cls):
                 if len(data_torch.shape) == 0:
                     data = data_torch.numpy()
                 try:
-                    data = data_torch.cpu().numpy()
+                    data = data_torch.squeeze().cpu().numpy()
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
                     logger.warning("%s, %s", e, "falling back to F16")
