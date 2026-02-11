@@ -169,6 +169,7 @@ function run_unit_test_llmc() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
     uv pip install -r test_cuda/requirements_llmc.txt
+    uv pip install torch==2.9.1 torchvision
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
