@@ -52,7 +52,7 @@ class TestAutoRound:
         autoround = AutoRound(model_name, bits=bits, sym=sym)
         autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.32, batch_size="auto")
+        evaluate_accuracy(model_args, threshold=0.32, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_greater_than_050
@@ -64,7 +64,7 @@ class TestAutoRound:
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.18, batch_size="auto")
+        evaluate_accuracy(model_args, threshold=0.18, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_greater_than_050
@@ -76,10 +76,10 @@ class TestAutoRound:
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.17, batch_size="auto")
+        evaluate_accuracy(model_args, threshold=0.17, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
         autoround.save_quantized(self.save_dir, format="auto_gptq", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.17, batch_size="auto")
+        evaluate_accuracy(model_args, threshold=0.17, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
