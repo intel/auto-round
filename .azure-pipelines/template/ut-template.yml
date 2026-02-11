@@ -72,8 +72,9 @@ steps:
       displayName: "HPU Env Setup"
 
   - script: |
+      echo "NUMA_CMD=$NUMA_CMD"
       docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round/.azure-pipelines/scripts \
-        && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
+        && $NUMA_CMD bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
     displayName: "Run UT"
 
   - task: PublishPipelineArtifact@1
