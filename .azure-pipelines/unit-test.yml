@@ -66,6 +66,7 @@ stages:
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"
               utTestMode: $(PART)
+              utContainerName: "AutoRoundUnitTest$(RUNNER_FLAG)"
 
   - stage: Coverage
     displayName: "Collect Coverage"
