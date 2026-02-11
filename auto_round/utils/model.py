@@ -570,6 +570,19 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     return False
 
 
+def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
+    is_gguf_file = False
+    if isinstance(model_path, str):
+        if os.path.isfile(model_path) and model_path.endswith(".gguf"):
+            is_gguf_file = True
+        elif os.path.exists(model_path):
+            for file in os.listdir(model_path):
+                if file.endswith(".gguf"):
+                    is_gguf_file = True
+                    break
+    return is_gguf_file
+
+
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     from auto_round.utils.common import LazyImport
 

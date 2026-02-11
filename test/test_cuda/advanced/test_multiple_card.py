@@ -1,4 +1,3 @@
-import re
 import shutil
 
 import pytest
@@ -7,27 +6,15 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import multi_card, require_gptqmodel, require_greater_than_050
 
-from ...helpers import get_model_path, get_tiny_model
-
-
-def get_accuracy(data):
-    match = re.search(r"\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|", data)
-
-    if match:
-        accuracy = float(match.group(1))
-        return accuracy
-    else:
-        return 0.0
+from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 class TestAutoRound:
     save_dir = "./saved"
-    tasks = "lambada_openai"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -53,11 +40,7 @@ class TestAutoRound:
         autoround.quantize()
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(model="hf", model_args=model_args, tasks=self.tasks, batch_size="auto")
-        res = make_table(res)
-        accuracy = get_accuracy(res)
-        print(accuracy)
-        assert accuracy > 0.45  ##0.4786
+        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.45, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @multi_card

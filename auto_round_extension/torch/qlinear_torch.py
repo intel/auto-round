@@ -51,7 +51,7 @@ class QuantLinear(nn.Module):
 
     QUANT_TYPE = "torch"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False, **kwargs):
         super().__init__()
         if bits not in [2, 3, 4, 8]:
             raise NotImplementedError("Only 2,3,4,8 bits are supported.")
@@ -86,6 +86,11 @@ class QuantLinear(nn.Module):
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
             self.bias = None
+
+        if g_idx:
+            self.register_buffer(
+                "g_idx", torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32)
+            )
 
         self.trainable = trainable
 

@@ -14,6 +14,7 @@
 
 
 import copy
+import functools
 import inspect
 import json
 import os
@@ -79,7 +80,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     elif "gptqmodel" in backend:
         from auto_round_extension.torch.qlinear_torch import QuantLinear
 
-        return QuantLinear
+        return functools.partial(QuantLinear, g_idx=True)
     elif "auto_round" in backend and "gptq" in backend and "gptqmodel" not in backend:
         from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
 

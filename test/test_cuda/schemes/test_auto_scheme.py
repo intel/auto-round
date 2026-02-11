@@ -8,11 +8,10 @@ from transformers import AutoRoundConfig
 
 from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
-from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import multi_card
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 
 class TestAutoScheme:
@@ -239,10 +238,8 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
         ar.quantize_and_save(self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
+        evaluate_accuracy(self.save_dir, threshold=0.25)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_auto_scheme_export_gguf(self, tiny_qwen_model_path):
         scheme = AutoScheme(avg_bits=3, options=("gguf:q2_k_s,gguf:q4_k_s"), nsamples=1, ignore_scale_zp_bits=True)
@@ -254,7 +251,5 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, enable_torch_compile=True)
         ar.quantize_and_save(self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.10
+        evaluate_accuracy(self.save_dir, threshold=0.10)
+        shutil.rmtree(self.save_dir, ignore_errors=True)

@@ -38,10 +38,14 @@ class TestAutoRound:
             assert block_name == expected_block_names
 
     def test_glm4(self):
-        model_name = "/models/glm-4-9b-chat"
+        model_name = "/models/glm-4-9b-chat-hf"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
+
+        if transformers_version >= version.parse("5.0.0"):
+            self.check_block_names(block_names, ["model.layers"], [40])
+        else:
+            self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
         assert is_pure_text_model(model), "Expected model to be pure text model"
 
     def test_opt_125m(self):
@@ -140,6 +144,10 @@ class TestAutoRound:
         self.check_block_names(block_names, ["model.vision_model.encoder.layers", "model.text_model.layers"], [27, 24])
         assert not is_pure_text_model(model)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="ChatGLMConfig object has no attribute max_length, https://github.com/huggingface/transformers/issues/43881",
+    )
     def test_glm_4v(self):
         model_name = "/models/glm-4v-9b"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -176,6 +184,10 @@ class TestAutoRound:
         )
         assert not is_pure_text_model(model)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="AttributeError: 'MolmoForCausalLM' object has no attribute 'all_tied_weights_keys', https://github.com/huggingface/transformers/issues/43883",
+    )
     def test_Molmo(self):
         model_name = "/models/Molmo-7B-D-0924"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)

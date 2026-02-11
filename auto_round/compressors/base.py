@@ -2187,9 +2187,8 @@ class BaseCompressor(object):
                     else:
                         # Change this if new device is supported
                         if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
-                            no_split_modules = normalize_no_split_modules(
-                                getattr(self.model, "_no_split_modules", [])
-                            )
+                            # type(self.model._no_split_modules) changes from list to set when transformers > 5.0
+                            no_split_modules = list(getattr(self.model, "_no_split_modules", []))
                             devices = parse_available_devices(self.device_map)
 
                             max_memory = get_max_memory()
