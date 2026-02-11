@@ -55,6 +55,10 @@ class TestAutoRound:
     EXPECTED_OUTPUTS.add(
         "There is a girl who likes adventure, and she has been exploring the world for many years. She has visited every country in Europe and has even traveled to some of the most remote parts of Africa. She has also climbed mountains, swum"
     )
+    # transformers 5.1.0
+    EXPECTED_OUTPUTS.add(
+        "There is a girl who likes adventure, and she has been exploring the world for many years. She has visited every country in Europe and has even traveled to some of the most remote parts of Africa. She has also climbed mountains and explored caves"
+    )
 
     device_map = "cuda"
 
