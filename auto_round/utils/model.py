@@ -691,17 +691,6 @@ def get_block_names(model, quant_vision=False):
 
 def get_lm_head_name(model):
     block_names = get_block_names(model, True)
-
-    # Prefer a leaf module explicitly named "lm_head"
-    for n, m in model.named_modules():
-        if any(m.children()):
-            continue
-        if n.split(".")[-1] == "lm_head":
-            in_block = any(n in block for block in block_names)
-            if not in_block:
-                return n
-
-    # Fallback: last leaf module not in any block
     last_name = None
     for n, m in model.named_modules():
         if any(m.children()):
