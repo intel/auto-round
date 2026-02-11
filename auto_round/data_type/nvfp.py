@@ -53,8 +53,7 @@ FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8
 
 
 def calculate_gparam(tensor, group_size=16, device="cpu"):
-    """Calculate global scaling factor for NVFP quantization.
-    """
+    """Calculate global scaling factor for NVFP quantization."""
     assert group_size == 16, f"Only group_size=16 is supported, got {group_size}"
     if isinstance(tensor, (float, int)):
         tensor_amax = torch.tensor(tensor, device=device, dtype=torch.float32).abs()

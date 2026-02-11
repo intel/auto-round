@@ -16,12 +16,12 @@ import math
 from functools import lru_cache
 from typing import List
 
-from auto_round.compressors.utils import is_nv_fp
 import torch
 from torch.nn import Linear, Module
 
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
-from auto_round.utils import logger, check_to_quantized
+from auto_round.utils import check_to_quantized, logger
 
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int, val: float = 0.0):
@@ -324,14 +324,15 @@ def update_fused_layer_global_scales(
 def update_block_global_scale_if_needed(block, data_type, group_size):
     if not is_nv_fp(data_type):
         return
-    
+
     from auto_round.data_type.nvfp import calculate_gparam
+
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
         if check_to_quantized(m) and not hasattr(m, "weight_global_scale"):
             weight_global_scale = calculate_gparam(m.weight, group_size)
             setattr(m, "weight_global_scale", weight_global_scale)
-    
+
     # Update fused layer global scales
     for module in block.modules():
         update_fused_layer_global_scales(module)
