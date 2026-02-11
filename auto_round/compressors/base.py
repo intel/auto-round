@@ -1464,7 +1464,8 @@ class BaseCompressor(object):
                 block = get_module(self.model, block_name)
                 materialize_model_(block)
                 block.to("cpu")
-                convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+
+                block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                 update_weight_global_scale_if_needed(block, self.data_type, self.group_size)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
