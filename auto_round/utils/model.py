@@ -398,28 +398,11 @@ def mllm_load_model(
         model_type = None
 
     if model_type == "qwen3_omni_moe":
-        # TODO: remove once transformers fix the bug
-        # https://github.com/huggingface/transformers/issues/43684
-        # https://github.com/huggingface/transformers/pull/43593
-        # Workaround for transformers bug: Qwen3OmniMoeTalkerCodePredictorConfig.__init__
-        # accesses self.use_sliding_window before it's set as an attribute.
-        # Monkey-patch the config class to fix the initialization order.
-        try:
-            from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
-                Qwen3OmniMoeTalkerCodePredictorConfig,
+        if version.parse(transformers.__version__) < version.parse("5.1.0"):
+            raise RuntimeError(
+                f"Qwen3-Omni requires transformers >= 5.1.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=5.1.0"
             )
-
-            _original_code_predictor_init = Qwen3OmniMoeTalkerCodePredictorConfig.__init__
-
-            def _patched_code_predictor_init(self, *args, **kwargs):
-                # Pre-set use_sliding_window before calling original __init__
-                use_sliding_window = kwargs.get("use_sliding_window", False)
-                object.__setattr__(self, "use_sliding_window", use_sliding_window)
-                _original_code_predictor_init(self, *args, **kwargs)
-
-            Qwen3OmniMoeTalkerCodePredictorConfig.__init__ = _patched_code_predictor_init
-        except Exception:
-            pass
 
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
@@ -694,6 +677,17 @@ def get_block_names(model, quant_vision=False):
 
 def get_lm_head_name(model):
     block_names = get_block_names(model, True)
+
+    # Prefer a leaf module explicitly named "lm_head"
+    for n, m in model.named_modules():
+        if any(m.children()):
+            continue
+        if n.split(".")[-1] == "lm_head":
+            in_block = any(n in block for block in block_names)
+            if not in_block:
+                return n
+
+    # Fallback: last leaf module not in any block
     last_name = None
     for n, m in model.named_modules():
         if any(m.children()):
@@ -1550,3 +1544,4 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return True
         else:
             return False
+

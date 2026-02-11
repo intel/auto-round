@@ -96,6 +96,7 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
+    normalize_no_split_modules,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -2186,7 +2187,9 @@ class BaseCompressor(object):
                     else:
                         # Change this if new device is supported
                         if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
-                            no_split_modules = getattr(self.model, "_no_split_modules", [])
+                            no_split_modules = normalize_no_split_modules(
+                                getattr(self.model, "_no_split_modules", [])
+                            )
                             devices = parse_available_devices(self.device_map)
 
                             max_memory = get_max_memory()
