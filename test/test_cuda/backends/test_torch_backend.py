@@ -5,10 +5,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import require_autogptq, require_gptqmodel
 
-from ...helpers import get_model_path, model_infer
+from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundTorchBackend:
@@ -53,9 +52,7 @@ class TestAutoRoundTorchBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.35
+        evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -64,9 +61,7 @@ class TestAutoRoundTorchBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.35
+        evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -95,8 +90,6 @@ class TestAutoRoundTorchBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.28
+        evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree(self.save_dir, ignore_errors=True)

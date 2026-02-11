@@ -159,7 +159,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         yield name, tensor
 
     def is_extra_tensor(tensor_name):
-        if is_quantized_input_module(cls.model) and "scale" in tensor_name.split(".")[-1]:
+        if getattr(cls.model, "_is_quantized_input_module", False) and "scale" in tensor_name.split(".")[-1]:
             return False
         if tensor_name not in cls.model.tensor_name_list:
             return True
@@ -419,9 +419,8 @@ def prepare_tensors(cls):
                     break
             if skip:
                 continue
-            # sync with new version of gguf
-            # data = data_torch.squeeze()
-            data = data_torch
+            # squeeze is necessary for reloading in transformers.
+            data = data_torch.squeeze()
             n_dims = len(data.shape)
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
 
@@ -550,14 +549,13 @@ def prepare_tensors(cls):
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
             ]:
-                # sync with new version of gguf
-                # data = data_torch.squeeze().cpu().numpy()
+                # squeeze is necessary for reloading in transformers.
+                data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
                 if len(data_torch.shape) == 0:
                     data = data_torch.numpy()
                 try:
-                    data = data_torch.cpu().numpy()
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
                     logger.warning("%s, %s", e, "falling back to F16")

@@ -8,11 +8,10 @@ from transformers import AutoRoundConfig
 
 from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
-from auto_round.eval.evaluation import simple_evaluate
 from auto_round.testing_utils import multi_card
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 
 class TestAutoScheme:
@@ -36,14 +35,12 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gguf_k_1(self, tiny_qwen_model_path):
         target_bits = 3.5
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_1"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     #
     def test_embedding_fallback(self, tiny_qwen_model_path):
@@ -51,14 +48,12 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gguf_export(self, tiny_qwen_model_path):
         target_bits = 3
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gguf(self):
         model_name = get_model_path("qwen/Qwen3-8B")
@@ -238,29 +233,23 @@ class TestAutoScheme:
         # cause using tiny model
         assert 5.78 < avg_bits <= target_bits + 1e-3
 
-    def test_auto_scheme_export(self, tiny_qwen_model_path):
+    def test_auto_scheme_export(self):
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
         ar.quantize_and_save(self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.25
+        evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    def test_auto_scheme_export_gguf(self, tiny_qwen_model_path):
         scheme = AutoScheme(avg_bits=3, options=("gguf:q2_k_s,gguf:q4_k_s"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, nsamples=1)
         ar.quantize_and_save(self.save_dir)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_enable_torch_compile(self):
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, enable_torch_compile=True)
         ar.quantize_and_save(self.save_dir)
-        model_args = f"pretrained={self.save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks="lambada_openai", batch_size="auto")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.10
+        evaluate_accuracy(self.save_dir, threshold=0.10)
         shutil.rmtree(self.save_dir, ignore_errors=True)

@@ -563,6 +563,19 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     return False
 
 
+def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
+    is_gguf_file = False
+    if isinstance(model_path, str):
+        if os.path.isfile(model_path) and model_path.endswith(".gguf"):
+            is_gguf_file = True
+        elif os.path.exists(model_path):
+            for file in os.listdir(model_path):
+                if file.endswith(".gguf"):
+                    is_gguf_file = True
+                    break
+    return is_gguf_file
+
+
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     from auto_round.utils.common import LazyImport
 
@@ -605,6 +618,7 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "DeepseekV3MoE".lower(),
             "Qwen2MoeSparseMoeBlock".lower(),
             "Qwen3MoeSparseMoeBlock".lower(),
+            "Qwen3VLMoeTextSparseMoeBlock".lower(),
         ]
     )
 
@@ -625,6 +639,8 @@ def get_block_names(model, quant_vision=False):
             return [(name, module)]
         target_modules = []
         for n, m in module.named_children():
+            if hasattr(type(m), "__name__") and "NgramEmbedding" in type(m).__name__:
+                continue
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
                 target_modules.append((".".join(filter(None, (name, n))), m))
             else:
@@ -701,6 +717,7 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",
+            "Qwen3VLMoeTextSparseMoeBlock",
         ],
     ):
         return ["gate_proj", "down_proj", "up_proj"]
@@ -731,7 +748,15 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
         return any(name.lower() in type(module).__name__.lower() for name in name_list)
 
     if module_match_name_list(
-        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+        module,
+        [
+            "Qwen2MoeSparseMoeBlock",
+            "Qwen3MoeSparseMoeBlock",
+            "Qwen3VLMoeTextSparseMoeBlock",
+            "DeepseekMoE",
+            "DeepseekV2MoE",
+            "DeepseekV3MoE",
+        ],
     ):
         # gate_proj and up_proj are input projections, down_proj is output
         return ["gate_proj", "up_proj"]
@@ -1156,11 +1181,11 @@ def set_amax_for_uncalibrated_experts(
                         f"This may indicate calibration hooks were not attached to expert layers."
                     )
             return uncalibrated_experts
-        else:
-            # Flatten all tensors to 1D before concatenation
-            flat_values = [t.reshape(-1) for t in amax_values]
-            all_values = torch.cat(flat_values)
-            set_amax_value = torch.max(all_values)
+        # Flatten all tensors to 1D before concatenation
+        flat_values = [t.reshape(-1) for t in amax_values]
+        all_values = torch.cat(flat_values)
+        set_amax_value = torch.max(all_values)
+        set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value
 
     for module in experts:
         current_amax = _get_amax_value(module)

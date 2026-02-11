@@ -17,6 +17,7 @@ import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from packaging import version
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
@@ -25,6 +26,8 @@ from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
+
+is_transformers_below_v5 = version.parse(get_library_version("transformers")) < version.parse("5.0.0")
 
 BackendInfos = {}
 
@@ -198,53 +201,55 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
-BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
-    device=["cuda"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[4],
-    priority=5,
-    compute_dtype=["float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    # 16, 384,768 accuracy issue
-    group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
-    checkers=[compatible_exllamav2_feature_checker],
-    alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
-    requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
-)
+if is_transformers_below_v5:
+    # AutoGPTQ is no longer maintained, supports transformers < 5.0.0
+    BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
+        device=["cuda"],
+        sym=[True, False],
+        packing_format=GPTQ_FORMAT,
+        bits=[4],
+        priority=5,
+        compute_dtype=["float16"],
+        data_type=["int"],
+        act_bits=WOQ_DEFAULT_ACT_BITS,
+        # 16, 384,768 accuracy issue
+        group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
+        checkers=[compatible_exllamav2_feature_checker],
+        alias=["gptq", "auto_gptq", "exllamav2", "gptq:exllamav2", "auto_gptq:exllamav2"],
+        requirements=["torch<2.6.0", "auto-gptq>=0.7.1"],
+    )
 
-BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
-    device=["cuda"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[2, 4, 8],
-    group_size=None,
-    compute_dtype=["float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    priority=0,
-    checkers=[exllamav2_feature_checker],
-    alias=["auto_gptq:tritonv2"],
-    requirements=["auto-gptq>=0.7.1", "triton>=2.0"],
-)
+    BackendInfos["auto_gptq:tritonv2"] = BackendInfo(
+        device=["cuda"],
+        sym=[True, False],
+        packing_format=GPTQ_FORMAT,
+        bits=[2, 4, 8],
+        group_size=None,
+        compute_dtype=["float16"],
+        data_type=["int"],
+        act_bits=WOQ_DEFAULT_ACT_BITS,
+        priority=0,
+        checkers=[exllamav2_feature_checker],
+        alias=["auto_gptq:tritonv2"],
+        requirements=["auto-gptq>=0.7.1", "triton>=2.0"],
+    )
 
-BackendInfos["auto_gptq:cuda"] = BackendInfo(
-    device=["cuda"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[2, 3, 4, 8],
-    group_size=None,
-    priority=1,
-    checkers=[exllamav2_feature_checker],
-    compute_dtype=["float16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["auto_gptq:cuda"],
-    requirements=[
-        "auto-gptq>=0.7.1",
-    ],
-)
+    BackendInfos["auto_gptq:cuda"] = BackendInfo(
+        device=["cuda"],
+        sym=[True, False],
+        packing_format=GPTQ_FORMAT,
+        bits=[2, 3, 4, 8],
+        group_size=None,
+        priority=1,
+        checkers=[exllamav2_feature_checker],
+        compute_dtype=["float16"],
+        data_type=["int"],
+        act_bits=WOQ_DEFAULT_ACT_BITS,
+        alias=["auto_gptq:cuda"],
+        requirements=[
+            "auto-gptq>=0.7.1",
+        ],
+    )
 
 # FP8 static quant
 # Weight: FP8, per-channel, may be extended to per-tensor in future
@@ -451,7 +456,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
@@ -466,7 +471,7 @@ BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_zp"] = BackendInfo(
@@ -481,7 +486,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
@@ -496,7 +501,7 @@ BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_awq"] = BackendInfo(
@@ -511,7 +516,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
@@ -526,7 +531,7 @@ BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     compute_dtype=["float32", "float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    requirements=["torch>=2.8.0", "auto_round_kernel"],
+    requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
 BackendInfos["ipex_gptq_cpu"] = BackendInfo(
@@ -723,7 +728,7 @@ def dynamic_import_inference_linear(backend, config):
         try:
             import auto_round_kernel as ark  # pylint: disable=E0611, E0401
         except Exception as e:
-            raise ImportError("Please install auto_round_kernel version for CPU/XPU")
+            raise ImportError("Please install auto-round-lib for CPU/XPU, e.g., using: pip install auto-round-lib")
         import auto_round_extension.ark.qlinear as qlinear
 
         if "zp" in backend:

@@ -5,10 +5,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import require_greater_than_050
 
-from ...helpers import model_infer
+from ...helpers import evaluate_accuracy, model_infer
 
 
 class TestAutoRoundTritonBackend:
@@ -47,9 +46,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.34
+        evaluate_accuracy(model, tokenizer, threshold=0.34, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -58,9 +55,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.34
+        evaluate_accuracy(model, tokenizer, threshold=0.34, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -80,9 +75,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.19
+        evaluate_accuracy(model, tokenizer, threshold=0.19, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -91,9 +84,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.19
+        evaluate_accuracy(model, tokenizer, threshold=0.19, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -122,9 +113,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        # print(result['results']['lambada_openai']['acc,none'])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.26
+        evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -133,9 +122,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        # print(result['results']['lambada_openai']['acc,none'])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.26
+        evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
 
         shutil.rmtree("./saved", ignore_errors=True)
@@ -156,9 +143,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
+        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -167,9 +152,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        # print(result['results']['lambada_openai']['acc,none'])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.27
+        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -195,9 +178,7 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.18
+        evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -206,8 +187,6 @@ class TestAutoRoundTritonBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        # print(result['results']['lambada_openai']['acc,none'])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.18
+        evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)

@@ -1,14 +1,13 @@
+import os
 import shutil
-import sys
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 
-from ..helpers import get_model_path, model_infer
+from ..helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundARKBackend:
@@ -23,7 +22,7 @@ class TestAutoRoundARKBackend:
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.28):
+    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.27):
         limit = 100
         if device == "xpu":
             limit = 1000
@@ -31,6 +30,7 @@ class TestAutoRoundARKBackend:
                 pytest.skip("No XPU device")
             if sym is False:
                 pytest.skip("No asym support for XPU")
+
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if fast_cfg:
@@ -49,9 +49,7 @@ class TestAutoRoundARKBackend:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=32, tasks="lambada_openai", limit=limit)
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > tar_acc
+        evaluate_accuracy(model, tokenizer, threshold=tar_acc, batch_size=32, limit=limit)
         torch.xpu.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 

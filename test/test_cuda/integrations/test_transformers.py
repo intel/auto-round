@@ -19,13 +19,14 @@ import pytest
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from transformers.testing_utils import (
     require_accelerate,
-    require_intel_extension_for_pytorch,
     require_torch_gpu,
     require_torch_multi_gpu,
     slow,
     torch_device,
 )
 from transformers.utils import is_torch_available
+
+from auto_round.testing_utils import is_ipex_available
 
 from ...helpers import get_model_path
 
@@ -53,6 +54,10 @@ class TestAutoRound:
     # transformers 5.0.0
     EXPECTED_OUTPUTS.add(
         "There is a girl who likes adventure, and she has been exploring the world for many years. She has visited every country in Europe and has even traveled to some of the most remote parts of Africa. She has also climbed mountains, swum"
+    )
+    # transformers 5.1.0
+    EXPECTED_OUTPUTS.add(
+        "There is a girl who likes adventure, and she has been exploring the world for many years. She has visited every country in Europe and has even traveled to some of the most remote parts of Africa. She has also climbed mountains and explored caves"
     )
 
     device_map = "cuda"
@@ -105,7 +110,7 @@ class TestAutoRound:
         output_sentence = self.tokenizer.decode(output[0], skip_special_tokens=True)
         assert output_sentence in self.EXPECTED_OUTPUTS
 
-    @require_intel_extension_for_pytorch
+    @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch")
     def test_quantized_model_on_cpu(self):
         """
         Simple test that checks if the quantized model is working properly
@@ -170,7 +175,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
 
-    @require_intel_extension_for_pytorch
+    @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch")
     def test_convert_from_awq_cpu(self):
         """
         Simple test that checks if auto-round work properly with awq format
