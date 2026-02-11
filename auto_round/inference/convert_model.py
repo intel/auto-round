@@ -469,16 +469,15 @@ def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
     return get_available_devices()[0]
 
 
-def process_gptq_qzero(model: nn.Module) -> nn.Module:
+def process_gptq_qzero(model: nn.Module):
     """Convert gptq v1 to v2 format to ensure compatible with gptqmodel:exllamav2 backend."""
-    from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear
+    from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
 
     for n, m in model.named_modules():
         if isinstance(m, ExllamaV2QuantLinear):
             if hasattr(m, "qzeros") and m.qzeros is not None and m.qzeros.dtype == torch.int32 and m.bits == 4:
                 m.qzeros += 0b00010001000100010001000100010001
                 logger.warning_once("Converting gptq v1 to v2 format")
-    return model
 
 
 def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
