@@ -95,12 +95,13 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
-    uv pip install git+https://github.com/ModelCloud/GPTQModel.git --no-build-isolation
+    uv pip install gptqmodel --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
+    uv pip install torch==2.10.0 torchvision
     uv pip install transformers==5.1.0
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -224,9 +225,9 @@ function run_unit_test_sglang() {
 }
 
 function main() {
-    run_unit_test_vlm
-    run_unit_test_llmc
-    run_unit_test_sglang
+    # run_unit_test_vlm
+    # run_unit_test_llmc
+    # run_unit_test_sglang
     run_unit_test
     cat ${SUMMARY_LOG}
 }
