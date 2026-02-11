@@ -73,8 +73,8 @@ steps:
 
   - script: |
       echo "NUMA_CMD=$NUMA_CMD"
-      docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round/.azure-pipelines/scripts \
-        && $NUMA_CMD bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
+      docker exec -e NUMA_CMD="${NUMA_CMD}" ${{ parameters.utContainerName }} bash -c "cd /auto-round/.azure-pipelines/scripts \
+        && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
     displayName: "Run UT"
 
   - task: PublishPipelineArtifact@1
