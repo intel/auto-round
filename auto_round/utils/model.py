@@ -618,6 +618,7 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "DeepseekV3MoE".lower(),
             "Qwen2MoeSparseMoeBlock".lower(),
             "Qwen3MoeSparseMoeBlock".lower(),
+            "Qwen3VLMoeTextSparseMoeBlock".lower(),
         ]
     )
 
@@ -716,6 +717,7 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",
+            "Qwen3VLMoeTextSparseMoeBlock",
         ],
     ):
         return ["gate_proj", "down_proj", "up_proj"]
@@ -746,7 +748,15 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
         return any(name.lower() in type(module).__name__.lower() for name in name_list)
 
     if module_match_name_list(
-        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+        module,
+        [
+            "Qwen2MoeSparseMoeBlock",
+            "Qwen3MoeSparseMoeBlock",
+            "Qwen3VLMoeTextSparseMoeBlock",
+            "DeepseekMoE",
+            "DeepseekV2MoE",
+            "DeepseekV3MoE",
+        ],
     ):
         # gate_proj and up_proj are input projections, down_proj is output
         return ["gate_proj", "up_proj"]
