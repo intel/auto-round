@@ -8,9 +8,9 @@ from transformers import AutoRoundConfig
 
 from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import compute_avg_bits_for_model
-from auto_round.testing_utils import multi_card
 from auto_round.utils import get_module
 
+from ...envs import multi_card
 from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 

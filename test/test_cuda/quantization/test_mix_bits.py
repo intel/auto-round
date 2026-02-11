@@ -8,12 +8,12 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import (
+
+from ...envs import (
     require_awq,
     require_gptqmodel,
     require_package_version_ut,
 )
-
 from ...helpers import get_model_path
 
 

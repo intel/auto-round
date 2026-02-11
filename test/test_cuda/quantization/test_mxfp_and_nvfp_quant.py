@@ -10,8 +10,8 @@ from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 from auto_round.formats import AutoRoundExportFormat
-from auto_round.testing_utils import has_module
 
+from ...envs import has_module
 from ...helpers import get_model_path
 
 testing_schemes = [

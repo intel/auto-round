@@ -7,8 +7,8 @@ import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_awq, require_optimum
 
+from ...envs import require_awq, require_optimum
 from ...helpers import get_model_path, save_tiny_model
 
 

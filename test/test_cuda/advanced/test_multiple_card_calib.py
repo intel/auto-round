@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from auto_round.testing_utils import multi_card
+from ...envs import multi_card
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])

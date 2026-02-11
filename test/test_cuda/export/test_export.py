@@ -8,8 +8,8 @@ from packaging import version
 from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
+from ...envs import require_awq, require_optimum, require_package_version_ut
 from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
