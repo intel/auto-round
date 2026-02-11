@@ -237,4 +237,3 @@ def shard_writer(rounder: object, m: torch.nn.Module = None, name: str = None, i
         rounder._shard_writer.finalize()
         # Optional: cleanup the saver object from rounder
         del rounder._shard_writer
-

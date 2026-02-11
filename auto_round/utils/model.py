@@ -1557,4 +1557,3 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return True
         else:
             return False
-
