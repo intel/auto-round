@@ -256,10 +256,14 @@ def _qwen3_omni_moe_forward(
                     attention_mask=attention_mask,
                     use_cache=False,
                 )
-        except Exception:
-            # Silently ignore talker forward errors during calibration
-            # This ensures thinker quantization still completes
-            pass
+        except Exception as exc:
+            # Log talker forward errors during calibration without interrupting thinker quantization
+            logger.warning(
+                "Qwen3-Omni-MoE talker forward failed during calibration; "
+                "continuing with thinker-only quantization. Error: %s",
+                exc,
+                exc_info=True,
+            )
 
     return thinker_output
 
