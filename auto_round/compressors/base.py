@@ -52,7 +52,7 @@ from auto_round.compressors.utils import (
     set_layer_config,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -1465,18 +1465,7 @@ class BaseCompressor(object):
                 materialize_model_(block)
                 block.to("cpu")
                 convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
-                if is_nv_fp(self.data_type):
-                    from auto_round.data_type.nvfp import calculate_gparam
-                    from auto_round.data_type.utils import update_fused_layer_global_scales
-
-                    # Calculate block wise weight global scale
-                    for name, m in block.named_modules():
-                        if check_to_quantized(m):
-                            weight_global_scale = calculate_gparam(m.weight, self.group_size)
-                            setattr(m, "weight_global_scale", weight_global_scale)
-                    modules = block.modules()
-                    for module in modules:
-                        update_fused_layer_global_scales(module)
+                update_weight_global_scale_if_needed(block, self.data_type, self.group_size)
 
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
