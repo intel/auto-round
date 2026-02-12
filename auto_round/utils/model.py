@@ -274,6 +274,8 @@ def llm_load_model(
         _use_hpu_compile_mode,
         get_device_and_parallelism,
         override_cuda_device_capability,
+        fake_cuda_for_hpu,
+        is_hpex_available,
     )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
@@ -289,13 +291,15 @@ def llm_load_model(
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
-    if _use_hpu_compile_mode():
-        model = model_cls.from_pretrained(
-            pretrained_model_name_or_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
-            device_map="auto" if use_auto_mapping else None,
-        )
+    if is_hpex_available():
+        # For loading FP8 model on HPU
+        with fake_cuda_for_hpu(), override_cuda_device_capability():
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=trust_remote_code,
+                device_map="auto" if use_auto_mapping else None,
+            )
     else:
         try:
             model = model_cls.from_pretrained(

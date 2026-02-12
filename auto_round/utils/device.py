@@ -337,6 +337,24 @@ class override_cuda_device_capability(ContextDecorator):
             torch.cuda.get_device_capability = self._orig_func
             self._orig_func = None
         return False
+    
+class fake_cuda_for_hpu(ContextDecorator):
+    """Context manager/decorator to fake CUDA availability for HPU devices."""
+    
+    def __init__(self):
+        self._orig_is_available = None
+
+    def __enter__(self):
+        if is_hpex_available():
+            self._orig_is_available = torch.cuda.is_available
+            torch.cuda.is_available = lambda: True
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        if is_hpex_available() and hasattr(self, "_orig_is_available"):
+            torch.cuda.is_available = self._orig_is_available
+            del self._orig_is_available
+        return False
 
 
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
