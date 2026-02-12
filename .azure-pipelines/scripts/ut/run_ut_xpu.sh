@@ -11,7 +11,7 @@ rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
 export ZE_AFFINITY_MASK=2,3 # set xpu affinity
-export LD_LIBRARY_PATH=/workspace/.venv/lib/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
@@ -26,7 +26,7 @@ cat run_xpu.sh
 
 bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
 
-numactl -C "0-27" bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
+numactl -C "0-27" -m 0 bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
