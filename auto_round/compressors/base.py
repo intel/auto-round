@@ -1465,7 +1465,7 @@ class BaseCompressor(object):
 
                 block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-
+                self._register_act_max_hook(block)
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device

@@ -10,7 +10,7 @@
 <h3> 面向 LLM 的先进量化算法</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.9.7-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.10.0-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -86,22 +86,31 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 ### 从 PyPI 安装
 
 ```shell
-# CPU / Intel GPU / CUDA
+# CPU(Xeon)/GPU(CUDA)
 pip install auto-round
 
-# HPU
+# HPU(Gaudi)
+# 在 hpu docker container 中安装, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
 pip install auto-round-hpu
+
+# XPU(Intel GPU)
+pip install torch --index-url https://download.pytorch.org/whl/xpu
+pip install auto-round
 ```
 
 <details>
   <summary>从源码编译安装</summary>
 
   ```bash
-  # CPU/Intel GPU/CUDA
+  # CPU(Xeon)/GPU(CUDA)
   pip install .
 
-  # HPU
+  # HPU(Gaudi)
   python setup.py install hpu
+  
+  # XPU(Intel GPU)
+  pip install torch --index-url https://download.pytorch.org/whl/xpu
+  pip install .
   ```
 
 </details>
