@@ -29,7 +29,7 @@ pr:
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
-pool: EMR-28C
+pool: ICX-16C
 
 variables:
   IMAGE_NAME: "auto-round"
