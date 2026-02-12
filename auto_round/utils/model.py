@@ -15,9 +15,11 @@ import collections
 import json
 import os
 import re
+import shutil
+import tempfile
 from collections import UserDict
 from pathlib import Path
-from typing import Union
+from typing import Any, Optional, Union
 
 import psutil
 import torch
@@ -61,6 +63,197 @@ def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
             if param is not None:
                 param.data = torch.empty(0, dtype=param.dtype, device=param.device)
                 param.requires_grad = False
+
+
+def save_module_weights(module: torch.nn.Module, save_path: str) -> dict:
+    """Save module's weight and bias tensors to disk to reduce CPU RAM usage.
+
+    This function saves the weight and bias tensors of a module to a specified path on disk.
+    It returns metadata about the saved tensors that can be used later to reload them.
+
+    Args:
+        module (torch.nn.Module): The module whose weights should be saved.
+        save_path (str): Path where the weights should be saved.
+                        This should be a unique path for each module.
+
+    Returns:
+        dict: Metadata containing information about the saved tensors, including:
+            - 'has_weight': bool indicating if weight was saved
+            - 'has_bias': bool indicating if bias was saved
+            - 'weight_shape': shape of the weight tensor
+            - 'bias_shape': shape of the bias tensor (if exists)
+            - 'weight_dtype': dtype of the weight tensor
+            - 'bias_dtype': dtype of the bias tensor (if exists)
+            - 'weight_device': original device of the weight tensor
+            - 'bias_device': original device of the bias tensor (if exists)
+            - 'save_path': the path where tensors were saved
+
+    Example:
+        >>> module = torch.nn.Linear(10, 5)
+        >>> metadata = save_module_weights(module, "/tmp/module_weights.pt")
+        >>> # Now module's weights can be cleared to save RAM
+        >>> clear_module_weights(module)
+        >>> # Later, weights can be restored
+        >>> load_module_weights(module, metadata)
+    """
+    if module is None:
+        return {}
+
+    metadata = {"save_path": save_path}
+    tensors_to_save = {}
+
+    # Save weight if it exists
+    if hasattr(module, "weight") and module.weight is not None:
+        weight = module.weight
+        if weight.device.type != "meta" and weight.numel() > 0:
+            tensors_to_save["weight"] = weight.detach().cpu()
+            metadata["has_weight"] = True
+            metadata["weight_shape"] = tuple(weight.shape)
+            metadata["weight_dtype"] = weight.dtype
+            metadata["weight_device"] = str(weight.device)
+        else:
+            metadata["has_weight"] = False
+    else:
+        metadata["has_weight"] = False
+
+    # Save bias if it exists
+    if hasattr(module, "bias") and module.bias is not None:
+        bias = module.bias
+        if bias.device.type != "meta" and bias.numel() > 0:
+            tensors_to_save["bias"] = bias.detach().cpu()
+            metadata["has_bias"] = True
+            metadata["bias_shape"] = tuple(bias.shape)
+            metadata["bias_dtype"] = bias.dtype
+            metadata["bias_device"] = str(bias.device)
+        else:
+            metadata["has_bias"] = False
+    else:
+        metadata["has_bias"] = False
+
+    # Save to disk
+    if tensors_to_save:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save(tensors_to_save, save_path)
+
+    return metadata
+
+
+def load_module_weights(module: torch.nn.Module, metadata: dict) -> None:
+    """Load module's weight and bias tensors from disk.
+
+    This function reloads weights that were previously saved using save_module_weights().
+    The weights are loaded back to their original device and dtype.
+
+    Args:
+        module (torch.nn.Module): The module whose weights should be restored.
+        metadata (dict): Metadata returned by save_module_weights(), containing
+                        information about the saved tensors and their path.
+
+    Example:
+        >>> module = torch.nn.Linear(10, 5)
+        >>> metadata = save_module_weights(module, "/tmp/module_weights.pt")
+        >>> clear_module_weights(module)
+        >>> # ... do some work with reduced memory ...
+        >>> load_module_weights(module, metadata)
+        >>> # Now module's weights are restored
+    """
+    if module is None or not metadata or "save_path" not in metadata:
+        return
+
+    save_path = metadata["save_path"]
+    if not os.path.exists(save_path):
+        logger.warning(f"Cannot load weights: file {save_path} does not exist")
+        return
+
+    # Load tensors from disk
+    try:
+        tensors = torch.load(save_path, map_location="cpu")
+    except Exception as e:
+        logger.warning(f"Failed to load weights from {save_path}: {e}")
+        return
+
+    # Restore weight
+    if metadata.get("has_weight", False) and "weight" in tensors:
+        weight = tensors["weight"]
+        target_device = metadata.get("weight_device", "cpu")
+        target_dtype = metadata.get("weight_dtype", weight.dtype)
+
+        # Move to target device and dtype
+        weight = weight.to(device=target_device, dtype=target_dtype)
+
+        # Set the weight back to the module
+        if hasattr(module, "weight"):
+            if isinstance(module.weight, torch.nn.Parameter):
+                module.weight = torch.nn.Parameter(weight, requires_grad=module.weight.requires_grad)
+            else:
+                module.weight = weight
+
+    # Restore bias
+    if metadata.get("has_bias", False) and "bias" in tensors:
+        bias = tensors["bias"]
+        target_device = metadata.get("bias_device", "cpu")
+        target_dtype = metadata.get("bias_dtype", bias.dtype)
+
+        # Move to target device and dtype
+        bias = bias.to(device=target_device, dtype=target_dtype)
+
+        # Set the bias back to the module
+        if hasattr(module, "bias"):
+            if isinstance(module.bias, torch.nn.Parameter):
+                module.bias = torch.nn.Parameter(bias, requires_grad=module.bias.requires_grad)
+            else:
+                module.bias = bias
+
+
+def clear_module_weights(module: torch.nn.Module, to_meta: bool = False) -> None:
+    """Clear module's weight and bias to free CPU RAM.
+
+    This function clears the weight and bias of a module to reduce memory usage.
+    It can either set them to empty tensors (default) or move them to meta device.
+
+    Args:
+        module (torch.nn.Module): The module whose weights should be cleared.
+        to_meta (bool): If True, move tensors to meta device.
+                       If False, set them to empty tensors. Default is False.
+
+    Note:
+        This function should typically be called after save_module_weights()
+        to preserve the ability to restore weights later.
+
+    Example:
+        >>> module = torch.nn.Linear(10, 5)
+        >>> metadata = save_module_weights(module, "/tmp/module_weights.pt")
+        >>> clear_module_weights(module)  # Free memory
+        >>> # ... later ...
+        >>> load_module_weights(module, metadata)  # Restore weights
+    """
+    if module is None:
+        return
+
+    with torch.no_grad():
+        # Clear weight
+        if hasattr(module, "weight") and module.weight is not None:
+            if to_meta:
+                # Move to meta device
+                if module.weight.device.type != "meta":
+                    module.weight = torch.nn.Parameter(
+                        torch.empty_like(module.weight, device="meta"), requires_grad=module.weight.requires_grad
+                    )
+            else:
+                # Use clean_module_parameter for safety
+                clean_module_parameter(module, "weight")
+
+        # Clear bias
+        if hasattr(module, "bias") and module.bias is not None:
+            if to_meta:
+                # Move to meta device
+                if module.bias.device.type != "meta":
+                    module.bias = torch.nn.Parameter(
+                        torch.empty_like(module.bias, device="meta"), requires_grad=module.bias.requires_grad
+                    )
+            else:
+                # Use clean_module_parameter for safety
+                clean_module_parameter(module, "bias")
 
 
 def convert_dtype_str2torch(str_dtype):
@@ -1549,3 +1742,226 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return True
         else:
             return False
+
+
+# ===================== CPU Offload Utilities =====================
+
+
+def init_cpu_offload_dir(compressor: Any) -> Optional[str]:
+    """Initialize a temporary directory for CPU offloading.
+
+    Args:
+        compressor: The compressor object containing low_cpu_mem_usage flag
+                   and _cpu_offload_tempdir attribute.
+
+    Returns:
+        Optional[str]: Path to the temporary directory, or None if not enabled.
+    """
+    if not compressor.low_cpu_mem_usage:
+        return None
+    if compressor._cpu_offload_tempdir is None:
+        compressor._cpu_offload_tempdir = tempfile.mkdtemp(prefix="autoround_cpu_offload_")
+    return compressor._cpu_offload_tempdir
+
+
+def offload_block_weights(compressor: Any, block_name: str, block: torch.nn.Module) -> None:
+    """Offload a block's weights to disk to reduce CPU RAM usage.
+
+    Args:
+        compressor: The compressor object containing offload state.
+        block_name: Name of the block being offloaded.
+        block: The block module whose weights should be offloaded.
+    """
+    if not compressor.low_cpu_mem_usage:
+        return
+    offload_dir = init_cpu_offload_dir(compressor)
+    if offload_dir is None:
+        return
+    safe_name = block_name.replace(".", "_")
+    save_path = os.path.join(offload_dir, f"{safe_name}.pt")
+    metadata = save_module_weights(block, save_path)
+    compressor._offloaded_blocks[block_name] = metadata
+    clear_module_weights(block)
+
+
+def stream_offload_blocks(compressor: Any, all_blocks: list[list[str]]) -> None:
+    """Offload all block weights to disk and clear from memory.
+
+    Args:
+        compressor: The compressor object containing model and offload state.
+        all_blocks: List of block name lists to offload.
+    """
+    if not (compressor.low_cpu_mem_usage and compressor.cpu_stream_offload_blocks):
+        return
+    offload_dir = init_cpu_offload_dir(compressor)
+    if offload_dir is None:
+        return
+    logger.info("stream offloading block weights to disk...")
+    total_offloaded_gb = 0.0
+    for block_names in all_blocks:
+        for block_name in block_names:
+            if block_name in compressor._offloaded_blocks:
+                continue
+            block = get_module(compressor.model, block_name)
+            if block is None:
+                continue
+            block_size_gb = estimate_block_size_gb(block)
+            total_offloaded_gb += block_size_gb
+            safe_name = block_name.replace(".", "_")
+            save_path = os.path.join(offload_dir, f"{safe_name}.pt")
+            # Save entire block state_dict (all submodule weights)
+            state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
+            torch.save(state_dict, save_path)
+            compressor._offloaded_blocks[block_name] = {"save_path": save_path}
+            # Clear all submodule weights
+            for submodule in block.modules():
+                if hasattr(submodule, "weight") and submodule.weight is not None:
+                    clear_module_weights(submodule)
+                if hasattr(submodule, "bias") and submodule.bias is not None:
+                    clear_module_weights(submodule)
+    # Import clear_memory here to avoid circular imports
+    from auto_round.utils.device import clear_memory
+
+    clear_memory(device_list=compressor.device_list)
+    logger.info(f"stream offload done, offloaded {total_offloaded_gb:.2f} GB of block weights")
+
+
+def load_offloaded_block_weights(compressor: Any, block_name: str, block: torch.nn.Module) -> None:
+    """Load block weights from disk back into memory.
+
+    Args:
+        compressor: The compressor object containing offload state.
+        block_name: Name of the block to load.
+        block: The block module to restore weights to.
+    """
+    if not (compressor.low_cpu_mem_usage and compressor.cpu_stream_offload_blocks):
+        return
+    metadata = compressor._offloaded_blocks.get(block_name)
+    if not metadata:
+        return
+    save_path = metadata.get("save_path")
+    if not save_path or not os.path.exists(save_path):
+        logger.warning(f"Cannot load block weights: file {save_path} does not exist")
+        return
+    try:
+        state_dict = torch.load(save_path, map_location="cpu")
+        # Manually assign parameters to handle empty tensor replacement
+        for name, param in state_dict.items():
+            parts = name.split(".")
+            target = block
+            for part in parts[:-1]:
+                target = getattr(target, part)
+            param_name = parts[-1]
+            if hasattr(target, param_name):
+                old_param = getattr(target, param_name)
+                if isinstance(old_param, torch.nn.Parameter):
+                    setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
+                else:
+                    setattr(target, param_name, param)
+    except Exception as e:
+        logger.warning(f"Failed to load block weights from {save_path}: {e}")
+
+
+def discard_offloaded_block(compressor: Any, block_name: str) -> None:
+    """Discard the original offload file and re-offload quantized weights.
+
+    Args:
+        compressor: The compressor object containing model and offload state.
+        block_name: Name of the block to discard and re-offload.
+    """
+    if not (compressor.low_cpu_mem_usage and compressor.cpu_stream_offload_blocks):
+        return
+    metadata = compressor._offloaded_blocks.pop(block_name, None)
+    if not metadata:
+        return
+    save_path = metadata.get("save_path")
+    if save_path and os.path.exists(save_path):
+        try:
+            os.remove(save_path)
+        except Exception as e:
+            logger.warning(f"Failed to remove offloaded block file {save_path}: {e}")
+
+    # Re-offload the quantized block weights to disk
+    block = get_module(compressor.model, block_name)
+    if block is None:
+        return
+    offload_dir = init_cpu_offload_dir(compressor)
+    if offload_dir is None:
+        return
+    safe_name = block_name.replace(".", "_")
+    new_save_path = os.path.join(offload_dir, f"{safe_name}_quantized.pt")
+    try:
+        state_dict = {k: v.cpu() for k, v in block.state_dict().items()}
+        torch.save(state_dict, new_save_path)
+        compressor._offloaded_blocks[block_name] = {"save_path": new_save_path, "quantized": True}
+        # Clear all submodule weights
+        for submodule in block.modules():
+            if hasattr(submodule, "weight") and submodule.weight is not None:
+                clear_module_weights(submodule)
+            if hasattr(submodule, "bias") and submodule.bias is not None:
+                clear_module_weights(submodule)
+    except Exception as e:
+        logger.warning(f"Failed to re-offload quantized block {block_name}: {e}")
+
+
+def restore_offloaded_blocks(compressor: Any) -> None:
+    """Restore all offloaded block weights back to memory.
+
+    Args:
+        compressor: The compressor object containing model and offload state.
+    """
+    if not compressor._offloaded_blocks:
+        return
+    for block_name, metadata in list(compressor._offloaded_blocks.items()):
+        try:
+            block = get_module(compressor.model, block_name)
+            save_path = metadata.get("save_path")
+            if not save_path or not os.path.exists(save_path):
+                logger.warning(f"Cannot restore block {block_name}: file {save_path} does not exist")
+                continue
+            state_dict = torch.load(save_path, map_location="cpu")
+            # Manually assign parameters to handle empty tensor replacement
+            for name, param in state_dict.items():
+                parts = name.split(".")
+                target = block
+                for part in parts[:-1]:
+                    target = getattr(target, part)
+                param_name = parts[-1]
+                if hasattr(target, param_name):
+                    old_param = getattr(target, param_name)
+                    if isinstance(old_param, torch.nn.Parameter):
+                        setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
+                    else:
+                        setattr(target, param_name, param)
+        except Exception as e:
+            logger.warning(f"Failed to restore offloaded block {block_name}: {e}")
+
+
+def cleanup_cpu_offload_dir(compressor: Any) -> None:
+    """Clean up the CPU offload temporary directory.
+
+    Args:
+        compressor: The compressor object containing the tempdir path.
+    """
+    if compressor._cpu_offload_tempdir and os.path.isdir(compressor._cpu_offload_tempdir):
+        try:
+            shutil.rmtree(compressor._cpu_offload_tempdir)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup cpu offload dir {compressor._cpu_offload_tempdir}: {e}")
+    compressor._cpu_offload_tempdir = None
+
+
+def estimate_block_size_gb(block: torch.nn.Module) -> float:
+    """Estimate a block's weights size in GB.
+
+    Args:
+        block: The block module to estimate size for.
+
+    Returns:
+        float: Size of the block's parameters in GB.
+    """
+    total = 0.0
+    for param in block.parameters():
+        if param.numel() > 0:
+            total += param.numel() * param.element_size() / (1024**3)
+    return total
