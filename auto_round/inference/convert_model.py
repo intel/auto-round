@@ -519,7 +519,13 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
         from packaging import version
 
-        if model.config.quantization_config.packing_format == "auto_round:gptq":
+        packing_format = None
+        if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+            quant_cfg = model.config.quantization_config
+            if hasattr(quant_cfg, "packing_format"):
+                packing_format = quant_cfg.packing_format
+
+        if packing_format == "auto_round:gptq":
             # v1: auto_round:gptq; v2: auto_round:gptqmodel
             convert_gptq_v1_to_v2_format(model)  # Handle qzero layers if present
         if version.parse(gptqmodel_version) <= version.parse("5.6.0"):
