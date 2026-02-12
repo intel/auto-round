@@ -7,14 +7,20 @@ import torch
 from auto_round import AutoRound
 
 
+MODEL_LIST = (
+    "Qwen/Qwen3-0.6B-FP8",
+    "Qwen/Qwen3-0.6B",
+)
+
 class TestAutoRound:
     save_dir = "./saved"
 
     def check_nan_inf_in_tensor(self, tensor, name=""):
         return torch.isnan(tensor).any() or torch.isinf(tensor).any()
 
-    def test_small_model_rtn_generation(self):
-        model_name = "Qwen/Qwen3-0.6B-FP8"
+
+    @pytest.mark.parametrize("model_name", MODEL_LIST)
+    def test_small_model_rtn_generation(self, model_name):
         ar = AutoRound(model_name, iters=0, scheme="FP8_STATIC", nsamples=16)
         model, folder = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
         # all linears except lm_head should be quantized to FP8
