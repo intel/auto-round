@@ -272,10 +272,10 @@ def llm_load_model(
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
     from auto_round.utils.device import (
         _use_hpu_compile_mode,
-        get_device_and_parallelism,
-        override_cuda_device_capability,
         fake_cuda_for_hpu,
+        get_device_and_parallelism,
         is_hpex_available,
+        override_cuda_device_capability,
     )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)

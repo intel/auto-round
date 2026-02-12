@@ -337,10 +337,11 @@ class override_cuda_device_capability(ContextDecorator):
             torch.cuda.get_device_capability = self._orig_func
             self._orig_func = None
         return False
-    
+
+
 class fake_cuda_for_hpu(ContextDecorator):
     """Context manager/decorator to fake CUDA availability for HPU devices."""
-    
+
     def __init__(self):
         self._orig_is_available = None
 
