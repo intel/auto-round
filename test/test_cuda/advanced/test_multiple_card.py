@@ -39,8 +39,7 @@ class TestAutoRound:
         autoround = AutoRound(model, tokenizer, device_map=device_map)
         autoround.quantize()
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.45, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.45, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @multi_card
