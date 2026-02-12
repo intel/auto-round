@@ -17,15 +17,10 @@ Quantization for diffusion models is limited:
 ```python
 import torch
 from auto_round import AutoRound
-from diffusers import AutoPipelineForText2Image
-
-# Load the model
-model_name = "black-forest-labs/FLUX.1-dev"
-pipe = AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.bfloat16)
 
 # Quantize the model
 autoround = AutoRound(
-    pipe,
+    "black-forest-labs/FLUX.1-dev",
     scheme="MXFP8",
     dataset="coco2014",
     num_inference_steps=10,
@@ -33,12 +28,11 @@ autoround = AutoRound(
     generator_seed=None,
     batch_size=1,
 )
-autoround.quantize()
 
 # Save the quantized model
 output_dir = "./tmp_autoround"
 # Currently loading the quantized diffusion model is not supported, so use fake format
-autoround.save_quantized(output_dir, format="fake", inplace=True)
+autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently only support coco2014 and user customized .tsv file.
@@ -62,6 +56,7 @@ auto-round \
     --scheme MXFP8 \
     --format fake \
     --batch_size 1 \
+    --dataset coco2014 \
     --output_dir ./tmp_autoround
 ```
 
