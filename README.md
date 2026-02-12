@@ -97,22 +97,31 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 ### Install from pypi
 
 ```bash
-# CPU/Intel GPU/CUDA
+# CPU(Xeon)/GPU(CUDA)
 pip install auto-round
 
-# HPU
+# HPU(Gaudi)
+# install inside the hpu docker container, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
 pip install auto-round-hpu
+
+# XPU(Intel GPU)
+pip install torch --index-url https://download.pytorch.org/whl/xpu
+pip install auto-round
 ```
 
 <details>
   <summary>Build from Source</summary>
 
   ```bash
-  # CPU/Intel GPU/CUDA
+  # CPU(Xeon)/GPU(CUDA)
   pip install .
 
-  # HPU
+  # HPU(Gaudi)
   python setup.py install hpu
+  
+  # XPU(Intel GPU)
+  pip install torch --index-url https://download.pytorch.org/whl/xpu
+  pip install .
   ```
 
 </details>

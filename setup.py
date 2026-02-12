@@ -137,7 +137,6 @@ if __name__ == "__main__":
 
     package_name = "auto-round"
 
-    # From v0.9.3, auto-round-hpu will be published to replace auto-round-lib.
     hpu_build = "hpu" in sys.argv
     if hpu_build:
         sys.argv.remove("hpu")
