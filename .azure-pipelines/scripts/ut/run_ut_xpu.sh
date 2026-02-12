@@ -26,7 +26,7 @@ cat run_xpu.sh
 
 bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
 
-numactl -C "0-27" bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
+numactl -C "0-27" -m 0 bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
