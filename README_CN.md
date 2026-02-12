@@ -86,22 +86,31 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 ### 从 PyPI 安装
 
 ```shell
-# CPU / Intel GPU / CUDA
+# CPU(Xeon)/GPU(CUDA)
 pip install auto-round
 
-# HPU
+# HPU(Gaudi)
+# 在 hpu docker container 中安装, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
 pip install auto-round-hpu
+
+# XPU(Intel GPU)
+pip install torch --index-url https://download.pytorch.org/whl/xpu
+pip install auto-round
 ```
 
 <details>
   <summary>从源码编译安装</summary>
 
   ```bash
-  # CPU/Intel GPU/CUDA
+  # CPU(Xeon)/GPU(CUDA)
   pip install .
 
-  # HPU
+  # HPU(Gaudi)
   python setup.py install hpu
+  
+  # XPU(Intel GPU)
+  pip install torch --index-url https://download.pytorch.org/whl/xpu
+  pip install .
   ```
 
 </details>
