@@ -68,47 +68,6 @@ class FP8Linear(nn.Linear):
         else:
             self.register_parameter("bias", None)
 
-    # def forward(self, input: torch.Tensor) -> torch.Tensor:
-    #     if self.weight.element_size() > 1:
-    #         return F.linear(input, self.weight, self.bias)
-    #     else:
-    #         if isinstance(self.weight, torch.distributed.tensor.DTensor):
-    #             weight = self.weight._local_tensor.contiguous()
-    #             scale_inv = self.weight_scale_inv._local_tensor.contiguous()
-    #         else:
-    #             weight = self.weight.contiguous()
-    #             scale_inv = self.weight_scale_inv.contiguous()
-    #         # Context manager used to switch among the available accelerators
-    #         device_type = torch.accelerator.current_accelerator().type if is_torch_accelerator_available() else "cuda"
-    #         torch_accelerator_module = getattr(torch, device_type, torch.cuda)
-    #         with torch_accelerator_module.device(input.device):
-    #             if self.activation_scheme == "dynamic":
-    #                 qinput, scale = act_quant(input, self.block_size[1])
-    #             elif self.activation_scheme == "static":
-    #                 scale = self.activation_scale.to(torch.float32)
-    #                 qinput = (input / scale).clamp(min=_FP8_MIN, max=_FP8_MAX).to(torch.float8_e4m3fn)
-
-    #             else:
-    #                 raise NotImplementedError("Not supported")
-
-    #             output = w8a8_block_fp8_matmul(
-    #                 qinput,
-    #                 weight,
-    #                 scale,
-    #                 scale_inv,
-    #                 self.block_size,
-    #                 output_dtype=input.dtype,
-    #             )
-
-    #         # Blocks the CPU until all accelerator operations on the specified device are complete. It is used to ensure that the results of the
-    #         # preceding operations are ready before proceeding
-    #         torch_accelerator_module.synchronize()
-    #         if self.bias is not None:
-    #             output = output + self.bias
-
-    #         return output.to(dtype=input.dtype)
-
-
 def _ceil_div(a, b):
     return (a + b - 1) // b
 
@@ -123,7 +82,8 @@ def replace_with_fp8_linear(
         model (`torch.nn.Module`):
             Input model or `torch.nn.Module` as the function is run recursively.
         modules_to_not_convert (`list[`str`]`, *optional*, defaults to `None`):
-            Names of the modules to not convert. In practice we keep the `lm_head` in full precision for numerical stability reasons.
+            Names of the modules to not convert. In practice we keep the `lm_head`
+            in full precision for numerical stability reasons.
         quantization_config (`FbgemmFp8Config`):
             The quantization config object that contains the quantization parameters.
         pre_quantized (`book`, defaults to `False`):
@@ -191,7 +151,10 @@ class Fp8Quantize(ConversionOps):
         # Enforce exact tiling like your original
         if rows % block_m != 0 or cols % block_n != 0:
             raise ValueError(
-                f"Matrix dimensions ({rows}, {cols}) must be divisible by block sizes ({block_m}, {block_n}). for {target_keys}"
+                (
+                f"Matrix dimensions ({rows}, {cols}) must be divisible by block sizes"
+                f" ({block_m}, {block_n}). for {target_keys}"
+                )
             )
 
         # Leading dims can be empty (2D) or include num_experts/... (3D+)
