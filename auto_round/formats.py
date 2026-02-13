@@ -1086,7 +1086,7 @@ class AutoRoundFormat(OutputFormat):
         elif serialization_dict.get("data_type", "int") == "fp" and serialization_dict.get("bits", 16) == 8:
             from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
-            backend = "auto_round"
+            backend = "auto_round:fp8_static" if serialization_dict.get("act_bits", 16) == 8 else None
             export_func = save_quantized_as_autoround
         else:
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
