@@ -68,6 +68,7 @@ class FP8Linear(nn.Linear):
         else:
             self.register_parameter("bias", None)
 
+
 def _ceil_div(a, b):
     return (a + b - 1) // b
 
@@ -152,8 +153,8 @@ class Fp8Quantize(ConversionOps):
         if rows % block_m != 0 or cols % block_n != 0:
             raise ValueError(
                 (
-                f"Matrix dimensions ({rows}, {cols}) must be divisible by block sizes"
-                f" ({block_m}, {block_n}). for {target_keys}"
+                    f"Matrix dimensions ({rows}, {cols}) must be divisible by block sizes"
+                    f" ({block_m}, {block_n}). for {target_keys}"
                 )
             )
 
