@@ -273,8 +273,8 @@ def llm_load_model(
     from auto_round.utils.device import (
         _use_hpu_compile_mode,
         fake_cuda_for_hpu,
-        get_device_and_parallelism,
         fake_triton_for_hpu,
+        get_device_and_parallelism,
         is_hpex_available,
         override_cuda_device_capability,
     )

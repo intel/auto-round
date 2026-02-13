@@ -15,6 +15,7 @@ import functools
 import gc
 import os
 import re
+import sys
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
@@ -24,7 +25,7 @@ from typing import Callable, Union
 import cpuinfo
 import psutil
 import torch
-import sys
+
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
@@ -358,10 +359,9 @@ class fake_cuda_for_hpu(ContextDecorator):
         return False
 
 
-
 class fake_triton_for_hpu(ContextDecorator):
     """Context manager/decorator to fake triton availability for HPU devices."""
-    
+
     def __init__(self):
         self._orig_triton = None
         self._orig_triton_language = None
@@ -371,39 +371,38 @@ class fake_triton_for_hpu(ContextDecorator):
     def __enter__(self):
         if is_hpex_available():
             # Save original state
-            self._had_triton = 'triton' in sys.modules
-            self._had_triton_language = 'triton.language' in sys.modules
-            
+            self._had_triton = "triton" in sys.modules
+            self._had_triton_language = "triton.language" in sys.modules
+
             if self._had_triton:
-                self._orig_triton = sys.modules['triton']
+                self._orig_triton = sys.modules["triton"]
             if self._had_triton_language:
-                self._orig_triton_language = sys.modules['triton.language']
-            
+                self._orig_triton_language = sys.modules["triton.language"]
+
             # Create and inject fake triton module
             class FakeTriton:
                 def __getattr__(self, name):
                     return None
-            
+
             fake_triton = FakeTriton()
             fake_triton.jit = lambda func: func  # Make triton.jit a no-op decorator
-            sys.modules['triton'] = fake_triton
-            sys.modules['triton.language'] = FakeTriton()
+            sys.modules["triton"] = fake_triton
+            sys.modules["triton.language"] = FakeTriton()
         return self
 
     def __exit__(self, exc_type, exc, exc_tb):
         if is_hpex_available():
             # Restore original state
             if self._had_triton and self._orig_triton is not None:
-                sys.modules['triton'] = self._orig_triton
-            elif not self._had_triton and 'triton' in sys.modules:
-                del sys.modules['triton']
-            
-            if self._had_triton_language and self._orig_triton_language is not None:
-                sys.modules['triton.language'] = self._orig_triton_language
-            elif not self._had_triton_language and 'triton.language' in sys.modules:
-                del sys.modules['triton.language']
-        return False
+                sys.modules["triton"] = self._orig_triton
+            elif not self._had_triton and "triton" in sys.modules:
+                del sys.modules["triton"]
 
+            if self._had_triton_language and self._orig_triton_language is not None:
+                sys.modules["triton.language"] = self._orig_triton_language
+            elif not self._had_triton_language and "triton.language" in sys.modules:
+                del sys.modules["triton.language"]
+        return False
 
 
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:

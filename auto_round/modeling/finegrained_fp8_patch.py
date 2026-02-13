@@ -16,10 +16,10 @@ from transformers.core_model_loading import ConversionOps
 from transformers.quantizers.quantizers_utils import should_convert_module
 from transformers.utils import is_kernels_available, is_torch_accelerator_available, is_torch_available, logging
 
-
 if is_torch_available():
     import torch
     import torch.nn as nn
+
     # import triton
     # import triton.language as tl
     from torch.nn import functional as F
@@ -28,11 +28,9 @@ if is_torch_available():
 logger = logging.get_logger(__name__)
 
 
-
 _FP8_DTYPE = torch.float8_e4m3fn
 _FP8_MIN = torch.finfo(_FP8_DTYPE).min
 _FP8_MAX = torch.finfo(_FP8_DTYPE).max
-
 
 
 class FP8Linear(nn.Linear):
@@ -113,7 +111,6 @@ class FP8Linear(nn.Linear):
 
 def _ceil_div(a, b):
     return (a + b - 1) // b
-
 
 
 def replace_with_fp8_linear(
@@ -278,5 +275,3 @@ class Fp8Dequantize(ConversionOps):
         return {
             full_layer_name: dequantized.reshape(quantized.shape),
         }
-
-
