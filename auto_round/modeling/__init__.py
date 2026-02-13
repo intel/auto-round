@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from .fp8_quant import *
+from .hpu_patch import *

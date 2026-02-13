@@ -274,6 +274,7 @@ def llm_load_model(
         _use_hpu_compile_mode,
         fake_cuda_for_hpu,
         get_device_and_parallelism,
+        fake_triton_for_hpu,
         is_hpex_available,
         override_cuda_device_capability,
     )
@@ -293,7 +294,7 @@ def llm_load_model(
 
     if is_hpex_available():
         # For loading FP8 model on HPU
-        with fake_cuda_for_hpu(), override_cuda_device_capability():
+        with fake_cuda_for_hpu(), fake_triton_for_hpu(), override_cuda_device_capability():
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path,
                 torch_dtype=torch_dtype,
