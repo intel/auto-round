@@ -155,6 +155,7 @@ def save_quantized_as_autoround(
     tokenizer: Callable = None,
     layer_config: dict = None,
     inplace: bool = True,
+    backend: str = None,
     device: Union[str, torch.device] = "cpu",
     serialization_dict: dict = None,
     **kwargs,
@@ -165,6 +166,8 @@ def save_quantized_as_autoround(
     quantization_config = serialization_dict
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
+    if backend:
+        quantization_config["packing_format"] = backend
     if "e5m2" in serialization_dict.get("data_type", "fp8"):
         quantization_config["fmt"] = "e5m2"
     else:
