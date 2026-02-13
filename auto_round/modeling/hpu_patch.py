@@ -7,9 +7,9 @@ from auto_round.logger import logger
 def patch_finegrained_fp8():
     """Use importlib to replace transformers.integrations.finegrained_fp8 with auto-round's HPU-compatible version."""
     try:
-        from auto_round.utils.hpu_utils import is_hpu_available
+        from auto_round.utils import is_hpex_available
 
-        if not is_hpu_available():
+        if not is_hpex_available():
             return  # No patching needed on non-HPU devices
 
         import importlib
