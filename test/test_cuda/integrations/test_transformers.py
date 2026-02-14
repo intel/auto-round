@@ -26,8 +26,7 @@ from transformers.testing_utils import (
 )
 from transformers.utils import is_torch_available
 
-from auto_round.testing_utils import is_ipex_available
-
+from ...envs import is_ipex_available
 from ...helpers import get_model_path
 
 if is_torch_available():
