@@ -27,6 +27,7 @@ from auto_round.utils import (
     get_layer_features,
     get_module,
     is_hpex_available,
+    normalize_no_split_modules,
     parse_available_devices,
 )
 
@@ -210,7 +211,7 @@ def dispatch_model_by_all_available_devices(
     if device_map is None:
         device_map = 0
 
-    no_split_modules = list(getattr(model, "_no_split_modules", []))
+    no_split_modules = normalize_no_split_modules(getattr(model, "_no_split_modules", []))
     if device_map == "auto":
         max_memory = get_balanced_memory(
             model,

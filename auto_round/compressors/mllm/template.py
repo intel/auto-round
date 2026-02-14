@@ -119,6 +119,7 @@ def _register_template(
 
 _register_template("qwen2_vl", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen2_vl"])
 _register_template("qwen2_5_vl", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen2_vl"])
+_register_template("qwen3_omni_moe", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen3_omni"])
 _register_template("mllama", default_dataset="liuhaotian/llava", processor=PROCESSORS["hf"])
 _register_template("deepseek_vl_v2", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["deepseek_v2"])
 _register_template("mistral3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])

@@ -397,6 +397,13 @@ def mllm_load_model(
     else:
         model_type = None
 
+    if model_type == "qwen3_omni_moe":
+        if version.parse(transformers.__version__) < version.parse("5.1.0"):
+            raise RuntimeError(
+                f"Qwen3-Omni requires transformers >= 5.1.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=5.1.0"
+            )
+
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
         from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401

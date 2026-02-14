@@ -91,6 +91,25 @@ def rename_kwargs(**name_map):
     return decorator
 
 
+def normalize_no_split_modules(no_split_modules):
+    if not no_split_modules:
+        return []
+
+    def flatten_items(value):
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from flatten_items(item)
+        else:
+            yield value
+
+    flattened = []
+    for item in flatten_items(no_split_modules):
+        if item is None:
+            continue
+        flattened.append(item)
+    return flattened
+
+
 # TODO this is not very robust as only AutoModelForCausaLM is patched
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
@@ -184,6 +203,8 @@ MM_KEYS = [
     "audio",
     "talker",
     "token2wav",
+    "code2wav",
+    "code_predictor",
     "vision_model",
     "audio_tower",
     "vision_encoder",
