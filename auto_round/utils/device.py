@@ -19,14 +19,19 @@ from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
-from typing import Callable, Union
+from typing import Any, Callable, Optional, Union
 
 import cpuinfo
 import psutil
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
+from auto_round.utils.model import (
+    check_to_quantized,
+    get_block_names,
+    get_layer_features,
+    get_module,
+)
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
@@ -499,6 +504,36 @@ class ClearMemory:
 
 
 clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
+
+
+def estimate_tensor_size_gb(tensor: Any) -> float:
+    """Estimate the size of a tensor (or nested tensors) in GB."""
+    if tensor is None:
+        return 0.0
+    if isinstance(tensor, torch.Tensor):
+        return tensor.numel() * tensor.element_size() / (1024**3)
+    if isinstance(tensor, list):
+        return sum(estimate_tensor_size_gb(t) for t in tensor)
+    if isinstance(tensor, dict):
+        return sum(estimate_tensor_size_gb(v) for v in tensor.values())
+    return 0.0
+
+
+def estimate_inputs_size_gb(all_inputs: dict) -> float:
+    """Estimate the total size of calibration inputs in GB."""
+    total = 0.0
+    for _, inputs in all_inputs.items():
+        total += estimate_tensor_size_gb(inputs)
+    return total
+
+
+def estimate_model_size_gb(model: torch.nn.Module) -> float:
+    """Estimate the model weights size in GB."""
+    total = 0.0
+    for param in model.parameters():
+        if param.numel() > 0:  # Skip empty tensors
+            total += param.numel() * param.element_size() / (1024**3)
+    return total
 
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
