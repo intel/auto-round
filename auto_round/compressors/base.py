@@ -1617,7 +1617,7 @@ class BaseCompressor(object):
             self.is_immediate_saving = True
 
         if self.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.warning(
+            logger.info(
                 "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
                 "Setting `low_cpu_mem_usage` to False."
             )
@@ -2193,6 +2193,7 @@ class BaseCompressor(object):
                                 max_memory=new_max_memory,
                                 no_split_module_classes=no_split_modules,
                             )
+                            self.model.tie_weights()
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )

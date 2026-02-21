@@ -16,9 +16,11 @@ import importlib.util
 import os
 import time
 
+import torch.nn
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
+    dispatch_model_block_wise,
     get_device_and_parallelism,
     get_device_str,
     get_model_dtype,
@@ -286,7 +288,11 @@ def eval_task_by_task(
     if batch_size is None:
         batch_size = "auto:8"
 
-    if not isinstance(model, str):
+    if not isinstance(model, str) and parallelism:
+        from accelerate import dispatch_model, infer_auto_device_map
+
+        device_map = infer_auto_device_map(model)
+        model = dispatch_model(model, device_map=device_map)
         parallelism = False
         is_gguf_file = False
         gguf_file = None
@@ -294,6 +300,8 @@ def eval_task_by_task(
         model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(model, eval_model_dtype)
         if is_gguf_file:
             parallelism = False
+    if isinstance(model, torch.nn.Module):
+        dispatch_model_block_wise(model, device_map="auto")  # As we set visible device before, so explcits
 
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if mllm:
