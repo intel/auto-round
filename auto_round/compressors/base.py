@@ -2197,11 +2197,13 @@ class BaseCompressor(object):
                                 # the chance of runtime OOM while still utilizing most available memory.
                                 new_max_memory[device] = max_memory[device] * 0.9
 
-                            # If no GPU device survived, fall back to CPU caching directly
+                            # If non-CPU devices were requested but none survived, fall back to CPU caching
                             # via the OOM handler below, avoiding unnecessary dispatch overhead.
-                            if not any(k != "cpu" for k in new_max_memory):
+                            requested_non_cpu = any((d != "cpu") for d in devices)
+                            has_non_cpu_memory = any((k != "cpu") for k in new_max_memory)
+                            if requested_non_cpu and not has_non_cpu_memory:
                                 raise torch.OutOfMemoryError(
-                                    "No GPU device available in accelerate's reported memory. "
+                                    "No non-CPU device available in accelerate's reported memory. "
                                     "Falling back to CPU caching."
                                 )
 
