@@ -2184,10 +2184,27 @@ class BaseCompressor(object):
                                     device = 0
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
+                                if device not in max_memory:
+                                    if device != "cpu":
+                                        logger.warning(
+                                            f"Device {device} is not available in accelerate's reported memory "
+                                            f"(max_memory keys: {list(max_memory.keys())}). "
+                                            f"This GPU may be out of memory or unavailable. Skipping it."
+                                        )
+                                    continue
                                 # Use 90% of the reported max memory to leave headroom for activations,
                                 # temporary tensors, other processes, and allocator fragmentation, reducing
                                 # the chance of runtime OOM while still utilizing most available memory.
                                 new_max_memory[device] = max_memory[device] * 0.9
+
+                            # If no GPU device survived, fall back to CPU caching directly
+                            # via the OOM handler below, avoiding unnecessary dispatch overhead.
+                            if not any(k != "cpu" for k in new_max_memory):
+                                raise torch.OutOfMemoryError(
+                                    "No GPU device available in accelerate's reported memory. "
+                                    "Falling back to CPU caching."
+                                )
+
                             new_max_memory = get_balanced_memory(
                                 self.model,
                                 max_memory=new_max_memory,
