@@ -2248,15 +2248,13 @@ class BaseCompressor(object):
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
+                    self.cache_device = torch.device("cpu")
                     if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
                         logger.warning(
                             "we recommend using more GPUs in calibration."
                             " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
                         )
-                    if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                        accelerate.hooks.remove_hook_from_submodules(
-                            self.model
-                        )  # self.model.hf_device_map has not been changed
+                    accelerate.hooks.remove_hook_from_submodules(self.model)
                     self.model = mv_module_from_gpu(self.model)
                     clear_memory(device_list=self.device_list)
                     # Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
