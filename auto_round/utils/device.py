@@ -1348,6 +1348,13 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
                 # Numeric → assign to first available device type
                 device_type = device_types[0]
                 parsed.append(f"{device_type}:{p}" if device_type != "cpu" else "cpu")
+            elif p in device_types and ":" not in p:
+                # Bare device type string (e.g., "cuda", "xpu") → normalize to "type:0".
+                # Special-case CPU: keep it as "cpu" without an index.
+                if p.lower() == "cpu":
+                    parsed.append("cpu")
+                else:
+                    parsed.append(f"{p}:0")
             else:
                 parsed.append(p)
         return list(set(parsed))
