@@ -2189,7 +2189,7 @@ class BaseCompressor(object):
                                         logger.warning(
                                             f"Device {device} is not available in accelerate's reported memory "
                                             f"(max_memory keys: {list(max_memory.keys())}). "
-                                            f"This GPU may be out of memory or unavailable. Skipping it."
+                                            f"This device may be out of memory or unavailable. Skipping it."
                                         )
                                     continue
                                 # Use 90% of the reported max memory to leave headroom for activations,
