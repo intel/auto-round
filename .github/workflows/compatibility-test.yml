@@ -60,8 +60,9 @@ jobs:
           python -m pip install --upgrade pip uv setuptools
           uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
           uv pip install datasets --upgrade
-          uv pip install .
-          pip list
+          uv pip install dist/*.tar.gz && uv pip uninstall auto-round
+          uv pip install dist/*.whl
+          uv pip list
         env:
           PYTHONUNBUFFERED: "1"
           UV_NO_PROGRESS: "1"
