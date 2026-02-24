@@ -83,5 +83,5 @@ stages:
         displayName: 'Install dependencies'
 
       - bash: |
-          python -c "import auto_round"
+          python -c "import auto_round; print(auto_round.__version__)"
         displayName: 'Run compatibility test'
