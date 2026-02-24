@@ -72,7 +72,7 @@ stages:
       - script: |
           python -m pip install --upgrade pip uv
           uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-          python3 setup.py sdist bdist_wheel
+          python setup.py sdist bdist_wheel
           uv pip install dist/*.tar.gz && uv pip uninstall auto-round
           uv pip install dist/*.whl
           uv pip list

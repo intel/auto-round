@@ -10,6 +10,7 @@ git config --global --add safe.directory /auto-round
 rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
+export TQDM_MININTERVAL=60
 export ZE_AFFINITY_MASK=2,3 # set xpu affinity
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
