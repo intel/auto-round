@@ -36,6 +36,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "internvl_chat",
     "glm4v_moe",
     "qwen3_vl_moe",
+    "gemma3",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
