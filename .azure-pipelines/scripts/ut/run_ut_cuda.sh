@@ -29,10 +29,10 @@ function create_conda_env() {
     cd ${REPO_PATH}
     uv pip install torch==2.10.0 torchvision
     uv pip install -r requirements.txt
-    if [ -d "/proc/driver/nvidia" ]; then
-        export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
-        export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
-    fi
+    # if [ -d "/proc/driver/nvidia" ]; then
+    #     export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
+    #     export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
+    # fi
     uv pip install --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake
 }
