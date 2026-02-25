@@ -75,23 +75,36 @@ class LazyImport(object):
         return function(*args, **kwargs)
 
 
-def rename_kwargs(**name_map):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            for old_name, new_name in name_map.items():
-                if old_name in kwargs:
-                    if new_name in kwargs:
-                        raise TypeError(f"Cannot specify both {old_name} and {new_name}")
-                    kwargs[new_name] = kwargs.pop(old_name)
-            return func(*args, **kwargs)
+def _patch_classmethod_kwargs(cls, method_name, **name_map):
+    """Wrap a classmethod to rename keyword arguments, preserving the descriptor protocol.
 
-        return wrapper
+    This patches the method by extracting the underlying function via ``__func__``,
+    wrapping it, and re-assigning it as a proper ``classmethod``.  This ensures that
+    ``__func__`` remains accessible to downstream code that relies on the standard
+    classmethod protocol (e.g. ``compressed_tensors.offload.load.patch_from_pretrained``).
 
-    return decorator
+    Args:
+        cls: The class whose classmethod should be patched.
+        method_name: Name of the classmethod to patch.
+        **name_map: ``old_kwarg_name=new_kwarg_name`` pairs.  When the patched method
+            is called with *old_kwarg_name*, it is transparently renamed to
+            *new_kwarg_name* before forwarding to the original implementation.
+    """
+    underlying_func = getattr(cls, method_name).__func__
+
+    @wraps(underlying_func)
+    def patched(klass, *args, **kwargs):
+        for old_name, new_name in name_map.items():
+            if old_name in kwargs:
+                if new_name in kwargs:
+                    raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
+                kwargs[new_name] = kwargs.pop(old_name)
+        return underlying_func(klass, *args, **kwargs)
+
+    setattr(cls, method_name, classmethod(patched))
 
 
-# TODO this is not very robust as only AutoModelForCausaLM is patched
+# TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
     if transformers_version is None:
@@ -112,13 +125,9 @@ def monkey_patch_transformers():
 
         setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
     if parsed_version >= version.parse("4.56.0"):
-        transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(torch_dtype="dtype")(
-            transformers.AutoModelForCausalLM.from_pretrained
-        )
+        _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
-        transformers.AutoModelForCausalLM.from_pretrained = rename_kwargs(dtype="torch_dtype")(
-            transformers.AutoModelForCausalLM.from_pretrained
-        )
+        _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
 
 
 @lru_cache(None)
