@@ -1,5 +1,5 @@
-# # Copyright (C) 2026 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 
 import torch
 import torch.nn as nn
@@ -30,8 +30,6 @@ class LinearGlmMoeDsaMoE(nn.Module):
         self.norm_topk_prob = config.norm_topk_prob
         self.routed_scaling_factor = config.routed_scaling_factor
         self.top_k = config.num_experts_per_tok
-
-
 
     def experts_forward(
         self,
