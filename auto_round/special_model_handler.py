@@ -263,7 +263,8 @@ register_ignore_layers(
     ],
     ignore_layers=[
         get_glm_flash_ignore_layers,  # vllm issue
-    ],
+"weights_proj"]
+
 )
 
 
