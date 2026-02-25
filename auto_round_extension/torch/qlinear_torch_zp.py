@@ -33,7 +33,7 @@ class QuantLinear(nn.Module):
 
     QUANT_TYPE = "torch"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False,**kwargs):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False, **kwargs):
         super().__init__()
         if bits not in [2, 3, 4, 8]:
             raise NotImplementedError("Only 2,3,4,8 bits are supported.")
