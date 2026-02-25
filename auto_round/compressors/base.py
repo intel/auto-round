@@ -486,8 +486,6 @@ class BaseCompressor(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         # Some helpers
-        if "hpu" in str(self.device):
-            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
