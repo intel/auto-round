@@ -16,6 +16,7 @@ import os
 from typing import Optional, Union
 
 from auto_round.logger import logger
+from auto_round.utils import dispatch_model_block_wise
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -199,13 +200,13 @@ def load_gguf_model_for_eval(eval_folder, formats, args):
     return model, tokenizer
 
 
-def prepare_model_for_eval(model, device_str, eval_model_dtype):
+def prepare_model_for_eval(model, device_map, eval_model_dtype):
     """
     Prepare model for evaluation.
 
     Args:
         model: Quantized model
-        device_str: Device string
+        device_map: Device string
         eval_model_dtype: Evaluation data type
 
     Returns:
@@ -221,9 +222,7 @@ def prepare_model_for_eval(model, device_str, eval_model_dtype):
 
         dispatch_model(model, model.hf_device_map)
     else:
-        # Single device model
-        device_str = detect_device(device_str)
-        model = model.to(device_str)
+        dispatch_model_block_wise(model, device_map)
 
     # Convert dtype
     if model.dtype != eval_model_dtype and eval_model_dtype != "auto":
@@ -427,7 +426,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
             model, tokenizer = load_gguf_model_for_eval(eval_folder, formats, args)
         else:
             eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-            model = prepare_model_for_eval(model, device_str, eval_model_dtype)
+            model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)
