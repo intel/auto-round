@@ -67,7 +67,7 @@ def _only_text_test(model, tokenizer, device, model_type):
 
     # Estimate model size and check if it fits in GPU memory.
     # When the model is too large, we skip the GPU transfer and test on CPU only.
-    use_gpu = True if device != cpu else False
+    use_gpu = True if device != "cpu" else False
     if device != "cpu" and torch.cuda.is_available():
         model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         dev_idx_str = device.split(":")[-1] if ":" in device else "0"
