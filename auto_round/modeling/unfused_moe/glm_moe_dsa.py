@@ -31,8 +31,6 @@ class LinearGlmMoeDsaMoE(nn.Module):
         self.routed_scaling_factor = config.routed_scaling_factor
         self.top_k = config.num_experts_per_tok
 
-
-
     def experts_forward(
         self,
         hidden_states: torch.Tensor,
