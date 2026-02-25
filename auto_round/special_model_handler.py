@@ -245,6 +245,8 @@ def get_glm_flash_ignore_layers(model) -> list[str]:
     return ignore_layers
 
 
+
+
 # glmflash
 register_ignore_layers(
     matchers=[
@@ -254,6 +256,18 @@ register_ignore_layers(
         get_glm_flash_ignore_layers,  # vllm issue
     ],
 )
+
+
+# glm5
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+    ],
+    ignore_layers=[
+        get_glm_flash_ignore_layers,  # vllm issue
+    ],
+)
+
 
 # # qwen3_next
 # register_ignore_layers(
