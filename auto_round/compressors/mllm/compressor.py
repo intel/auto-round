@@ -69,14 +69,14 @@ def _only_text_test(model, tokenizer, device, model_type):
     # When the model is too large, we skip the GPU transfer and test on CPU only.
     use_gpu = True
     if device != "cpu" and torch.cuda.is_available():
-        try:
-            model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
-            dev_idx = int(device.split(":")[-1]) if ":" in device else 0
-            free_bytes, _ = torch.cuda.mem_get_info(dev_idx)
-            if model_bytes > free_bytes * 0.9:
-                use_gpu = False
-        except Exception:
-            pass
+        model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+        dev_idx_str = device.split(":")[-1] if ":" in device else "0"
+        if dev_idx_str.isdigit():
+            dev_idx = int(dev_idx_str)
+            if 0 <= dev_idx < torch.cuda.device_count():
+                free_bytes, _ = torch.cuda.mem_get_info(dev_idx)
+                if model_bytes > free_bytes * 0.9:
+                    use_gpu = False
 
     if use_gpu:
         try:

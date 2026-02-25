@@ -2185,12 +2185,8 @@ class BaseCompressor(object):
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
                                 if device not in max_memory:
-                                    if device != "cpu":
-                                        logger.warning(
-                                            f"Device {device} is not available in accelerate's reported memory "
-                                            f"(max_memory keys: {list(max_memory.keys())}). "
-                                            f"This device may be out of memory or unavailable. Skipping it."
-                                        )
+                                    # Skip devices that are not reported by accelerate's max_memory.
+                                    # This is expected when a device is unavailable or cannot provide memory info.
                                     continue
                                 # Use 90% of the reported max memory to leave headroom for activations,
                                 # temporary tensors, other processes, and allocator fragmentation, reducing
