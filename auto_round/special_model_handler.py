@@ -261,10 +261,7 @@ register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
     ],
-    ignore_layers=[
-        get_glm_flash_ignore_layers,  # vllm issue
-"weights_proj"]
-
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
 )
 
 
