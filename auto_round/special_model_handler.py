@@ -245,8 +245,6 @@ def get_glm_flash_ignore_layers(model) -> list[str]:
     return ignore_layers
 
 
-
-
 # glmflash
 register_ignore_layers(
     matchers=[

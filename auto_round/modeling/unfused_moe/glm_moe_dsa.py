@@ -1,5 +1,10 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import torch
 import torch.nn as nn
+
+
 class LinearGlmMoeDsaMoE(nn.Module):
     """
     A mixed expert module containing shared experts.
@@ -9,7 +14,8 @@ class LinearGlmMoeDsaMoE(nn.Module):
         super().__init__()
         self.config = config
         self.num_experts = config.num_local_experts
-        from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaMLP,GlmMoeDsaTopkRouter
+        from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaMLP, GlmMoeDsaTopkRouter
+
         self.experts = nn.ModuleList(
             [GlmMoeDsaMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
