@@ -107,7 +107,14 @@ function run_unit_test_llmc() {
 
 function run_unit_test_sglang() {
     echo "##[group]set up UT env..."
-    cd ${BUILD_SOURCESDIRECTORY}/
+    apt-get update && apt-get install -y nvidia-cuda-toolkit
+    dpkg -L nvidia-cuda-toolkit | grep bin
+    if [ -d "/usr/lib/nvidia-cuda-toolkit" ]; then
+        export CUDA_HOME=/usr/lib/nvidia-cuda-toolkit
+    elif [ -d "/usr/local/cuda" ]; then
+        export CUDA_HOME=/usr/local/cuda
+    fi
+    cd ${BUILD_SOURCESDIRECTORY} || exit 1
     uv pip install pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_sglang.txt
     uv pip install .

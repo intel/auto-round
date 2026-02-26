@@ -6,7 +6,7 @@ import time
 
 
 TARGET_GPUS = [
-    "NVIDIA RTX 4000 Ada Generation",
+    # "NVIDIA RTX 4000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX PRO 4500 Blackwell",
     "NVIDIA GeForce RTX 5090"
@@ -127,8 +127,9 @@ def create_pod(args):
         "env": env_dict,
         "gpuCount": args.gpu_count,
         "gpuTypeIds": [gpu_type],
-        "imageName": args.image,
         "name": args.name,
+        "volumeInGb": 0,
+        "templateId": "qtac2hjxru"
     }
 
     print(f"🚀 Creating pod: {args.name}...")
@@ -209,7 +210,6 @@ def main():
     parser.add_argument("--api_key", required=True)
     parser.add_argument("--pod_id", help="Pod ID for termination")
     parser.add_argument("--name", help="Pod name")
-    parser.add_argument("--image", help="Container image")
     parser.add_argument("--gpu_count", type=int, default=1)
     parser.add_argument("--container_disk_size", type=int, default=50)
     parser.add_argument("--env", nargs="*", help="Environment variables in KEY=VALUE format")

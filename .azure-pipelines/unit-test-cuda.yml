@@ -1,8 +1,6 @@
 trigger: none
 
 variables:
-  - name: RUNPOD_IMAGE
-    value: "ghcr.io/xuehaosun/azure-agent:v0.1"
   - name: POOL_NAME
     value: "RunPod-GPU-Pool"
   - name: AGENT_NAME
@@ -45,7 +43,6 @@ stages:
                   --action create \
                   --api_key $(RUNPOD_API_KEY) \
                   --name "ci-$(Build.BuildId)" \
-                  --image "$(RUNPOD_IMAGE)" \
                   --container_disk_size "50" \
                   --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME=$(AGENT_NAME)
 
