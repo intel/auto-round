@@ -76,9 +76,7 @@ function print_test_results_table() {
 
 function run_unit_test() {
     # install unit test dependencies
-    cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    rm -rf .coverage* *.xml *.html
-
+    cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
     uv pip install torch==2.10.0 torchvision
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
@@ -86,8 +84,8 @@ function run_unit_test() {
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test_cuda/requirements.txt
-    uv pip install -r test_cuda/requirements_diffusion.txt
+    uv pip install -r test/test_cuda/requirements.txt
+    uv pip install -r test/test_cuda/requirements_diffusion.txt
     uv pip install torch==2.10.0 torchvision
     uv pip install -U transformers
     uv pip install .
@@ -96,7 +94,7 @@ function run_unit_test() {
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    # run unit tests individually with separate logs
+    cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
@@ -128,7 +126,6 @@ function run_unit_test_llmc() {
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
@@ -148,14 +145,7 @@ function run_unit_test_llmc() {
 
 function run_unit_test_sglang() {
     echo "##[group]set up UT env..."
-    apt-get update && apt-get install -y nvidia-cuda-toolkit
-    dpkg -L nvidia-cuda-toolkit | grep bin
-    if [ -d "/usr/lib/nvidia-cuda-toolkit" ]; then
-        export CUDA_HOME=/usr/lib/nvidia-cuda-toolkit
-    elif [ -d "/usr/local/cuda" ]; then
-        export CUDA_HOME=/usr/local/cuda
-    fi
-    cd ${BUILD_SOURCESDIRECTORY} || exit 1
+    cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_sglang.txt
     uv pip install .
@@ -166,7 +156,6 @@ function run_unit_test_sglang() {
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
