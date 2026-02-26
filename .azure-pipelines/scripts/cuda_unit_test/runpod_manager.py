@@ -6,7 +6,7 @@ import time
 
 
 TARGET_GPUS = [
-    # "NVIDIA RTX 4000 Ada Generation",
+    "NVIDIA RTX 4000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX PRO 4500 Blackwell",
     "NVIDIA GeForce RTX 5090"

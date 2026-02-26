@@ -21,7 +21,7 @@ SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
 export TZ='Asia/Shanghai'
 export TQDM_POSITION=-1
-export PYTHONUNBUFFERED=1
+export TQDM_MININTERVAL=120
 
 function print_test_results_table() {
     echo "##[group]Collect results..."
