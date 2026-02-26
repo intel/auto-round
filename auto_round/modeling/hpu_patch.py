@@ -16,7 +16,13 @@ def patch_finegrained_fp8():
         import sys
 
         # Import auto-round's HPU-compatible finegrained_fp8_patch module
-        finegrained_fp8_patch = importlib.import_module("auto_round.modeling.finegrained_fp8_patch")
+        from auto_round.utils import is_transformers_version_greater_or_equal_5
+        if is_transformers_version_greater_or_equal_5():
+            patch_file_name = "auto_round.modeling.finegrained_fp8_patch"
+        else:
+            patch_file_name = "auto_round.modeling.finegrained_fp8_patch_v4"
+    
+        finegrained_fp8_patch = importlib.import_module(patch_file_name)
 
         # Replace transformers.integrations.finegrained_fp8 in sys.modules
         sys.modules["transformers.integrations.finegrained_fp8"] = finegrained_fp8_patch
