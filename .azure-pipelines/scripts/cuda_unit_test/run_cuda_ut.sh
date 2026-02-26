@@ -74,9 +74,50 @@ function print_test_results_table() {
     echo "##[endgroup]"
 }
 
+function run_unit_test() {
+    # install unit test dependencies
+    cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
+    rm -rf .coverage* *.xml *.html
+
+    uv pip install pytest-cov pytest-html
+    uv pip install torch==2.10.0 torchvision
+    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+    uv pip install gptqmodel --no-build-isolation
+    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
+    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
+    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+    uv pip install -r test_cuda/requirements.txt
+    uv pip install -r test_cuda/requirements_diffusion.txt
+    uv pip install torch==2.10.0 torchvision
+    uv pip install -U transformers
+    uv pip install .
+
+    uv pip list
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    # run unit tests individually with separate logs
+    for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
+        echo "##[group]Running ${test_file}..."
+
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+
+    mv report.html ${LOG_DIR}/
+    mv coverage.xml ${LOG_DIR}/
+
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
+        echo "Some CUDA unit tests failed. Please check the individual log files for details."
+    fi
+}
+
 function run_unit_test_llmc() {
     echo "##[group]set up UT env..."
-    cd ${BUILD_SOURCESDIRECTORY}/
+    cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_llmc.txt
     uv pip install .

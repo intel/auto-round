@@ -129,7 +129,7 @@ def create_pod(args):
         "gpuTypeIds": [gpu_type],
         "name": args.name,
         "volumeInGb": 0,
-        "templateId": "qtac2hjxru"
+        "imageName": "ghcr.io/xuehaosun/azure-agent:v0.1",
     }
 
     print(f"🚀 Creating pod: {args.name}...")
