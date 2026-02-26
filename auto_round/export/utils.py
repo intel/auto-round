@@ -110,6 +110,8 @@ def save_model(
             model.config.save_pretrained(save_dir)
 
         if hasattr(model, "generation_config") and model.generation_config is not None:
+            if hasattr(model, "generation_config"):
+                setattr(model.generation_config, "do_sample", True)
             model.generation_config.save_pretrained(save_dir)
     elif has_unfused_experts:
         # For models with unfused MOE experts, save state_dict directly to avoid
