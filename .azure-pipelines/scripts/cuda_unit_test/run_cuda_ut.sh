@@ -70,10 +70,13 @@ function print_test_results_table() {
 
 function run_unit_test_llmc() {
     # install unit test dependencies
+    echo "##[group]set up UT env..."
+    cd ${BUILD_SOURCESDIRECTORY}/
     uv pip install -r test/test_cuda/requirements_llmc.txt
     uv pip install .
+    echo "##[endgroup]"
     uv pip list
-    cd test/test_cuda || exit 1
+    cd ${BUILD_SOURCESDIRECTORY}/test || exit 1
 
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
