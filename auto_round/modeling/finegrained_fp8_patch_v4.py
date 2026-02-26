@@ -15,7 +15,7 @@
 
 from typing import Optional
 
-from ..utils import is_accelerate_available, is_torch_available, logging
+from transformers.utils import is_accelerate_available, is_torch_available, logging
 
 
 if is_torch_available():
