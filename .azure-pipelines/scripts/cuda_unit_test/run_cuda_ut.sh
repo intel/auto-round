@@ -19,7 +19,12 @@ LOG_DIR="${BUILD_SOURCESDIRECTORY}/ut_log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
+export TZ='Asia/Shanghai'
+export TQDM_POSITION=-1
+export PYTHONUNBUFFERED=1
+
 function print_test_results_table() {
+    echo "##[group]Collect results..."
     local log_pattern=$1
     local test_type=$2
 
@@ -66,6 +71,7 @@ function print_test_results_table() {
     printf "Total: %d, Passed: %d, Failed: %d\n" ${total_tests} ${passed_tests} ${failed_tests} >> "${SUMMARY_LOG}"
     { printf '=%.0s' {1..120}; echo; } >> "${SUMMARY_LOG}"
     echo "" >> "${SUMMARY_LOG}"
+    echo "##[endgroup]"
 }
 
 function run_unit_test_llmc() {
@@ -107,6 +113,10 @@ function main() {
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
     fi
+    df -h
+    du -sh "${BUILD_SOURCESDIRECTORY}"
+    du -sh /root/.cache/huggingface
+    du -sh /root/.venv
     cat "${SUMMARY_LOG}"
 }
 
