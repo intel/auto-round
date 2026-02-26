@@ -91,7 +91,7 @@ stages:
             displayName: "Checkout out Repo"
           - script: |
               nvidia-smi
-              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case llmc
+              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case=llmc
             displayName: "Run GPU Tests"
 
   - stage: Cleanup_Verification
