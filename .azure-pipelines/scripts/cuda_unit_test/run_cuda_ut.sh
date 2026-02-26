@@ -75,7 +75,6 @@ function print_test_results_table() {
 }
 
 function run_unit_test_llmc() {
-    # install unit test dependencies
     echo "##[group]set up UT env..."
     cd ${BUILD_SOURCESDIRECTORY}/
     uv pip install pytest-cov pytest-html
@@ -83,7 +82,7 @@ function run_unit_test_llmc() {
     uv pip install .
     echo "##[endgroup]"
     uv pip list
-    cd ${BUILD_SOURCESDIRECTORY}/test || exit 1
+    cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
@@ -92,9 +91,10 @@ function run_unit_test_llmc() {
     for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        echo "Running ${test_file}..."
+        echo "##[group]Running ${test_file}..."
 
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
     done
 
     mv report_llmc.html ${LOG_DIR}/
@@ -105,11 +105,46 @@ function run_unit_test_llmc() {
     fi
 }
 
+function run_unit_test_sglang() {
+    echo "##[group]set up UT env..."
+    cd ${BUILD_SOURCESDIRECTORY}/
+    uv pip install pytest-cov pytest-html
+    uv pip install -r test/test_cuda/requirements_sglang.txt
+    uv pip install .
+    echo "##[endgroup]"
+
+    uv pip list
+    cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    # run unit tests individually with separate logs
+    for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
+        echo "##[group]Running ${test_file}..."
+
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+
+    mv report.html ${LOG_DIR}/
+    mv coverage.xml ${LOG_DIR}/
+
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
+        echo "Some CUDA unit tests failed. Please check the individual log files for details."
+    fi
+}
+
+
 function main() {
     if [ "${test_case}" == "vlm" ]; then
         run_unit_test_vlm
     elif [ "${test_case}" == "llmc" ]; then
         run_unit_test_llmc
+    elif [ "${test_case}" == "sglang" ]; then
+        run_unit_test_sglang
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
     fi
