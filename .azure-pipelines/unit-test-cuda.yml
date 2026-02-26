@@ -88,7 +88,7 @@ stages:
             displayName: "Checkout out Repo"
           - script: |
               nvidia-smi
-              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case=sglang
+              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case=all
             displayName: "Run GPU Tests"
 
   - stage: Cleanup_Verification
