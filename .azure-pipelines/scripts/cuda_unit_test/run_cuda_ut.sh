@@ -72,6 +72,7 @@ function run_unit_test_llmc() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd ${BUILD_SOURCESDIRECTORY}/
+    uv pip install pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_llmc.txt
     uv pip install .
     echo "##[endgroup]"
