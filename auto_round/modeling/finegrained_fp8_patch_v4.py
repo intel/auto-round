@@ -45,39 +45,42 @@ _FP8_MAX = torch.finfo(_FP8_DTYPE).max
 
 
 class FP8Linear(nn.Linear):
+    dtype = torch.float8_e4m3fn
+
     def __init__(
         self,
         in_features: int,
         out_features: int,
         bias: bool = False,
-        dtype=torch.float8_e4m3fn,
-        block_size: tuple[int, int] | None = None,
+        dtype=None,
+        block_size: Optional[tuple[int, int]] = None,
+        device=None,
         activation_scheme="dynamic",
     ):
         super().__init__(in_features, out_features)
+        self.in_features = in_features
+        self.out_features = out_features
 
-        # If block size is None, it means that we are doing per-tensor quantization
-        self.block_size = block_size
-        self.activation_scheme = activation_scheme
+        self.weight = torch.nn.Parameter(torch.empty(out_features, in_features, dtype=FP8Linear.dtype, device=device))
 
-        self.weight = torch.nn.Parameter(torch.empty(out_features, in_features, dtype=dtype))
-
-        if self.block_size is None:
-            self.weight_scale_inv = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
-        else:
-            scale_out_features = (out_features + self.block_size[0] - 1) // self.block_size[0]
-            scale_in_features = (in_features + self.block_size[1] - 1) // self.block_size[1]
+        if self.weight.element_size() == 1:
+            scale_out_features = (out_features + block_size[0] - 1) // block_size[0]
+            scale_in_features = (in_features + block_size[1] - 1) // block_size[1]
             self.weight_scale_inv = nn.Parameter(
-                torch.empty(scale_out_features, scale_in_features, dtype=torch.float32)
+                torch.empty(scale_out_features, scale_in_features, dtype=torch.float32, device=device)
             )
+        else:
+            self.register_parameter("weight_scale_inv", None)
 
-        if self.activation_scheme == "static":
-            self.activation_scale = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+        self.block_size = block_size
+
+        self.activation_scheme = activation_scheme
 
         if bias:
             self.bias = nn.Parameter(torch.empty(self.out_features))
         else:
             self.register_parameter("bias", None)
+
 
 def _replace_with_fp8_linear(
     model,
