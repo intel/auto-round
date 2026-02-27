@@ -31,10 +31,14 @@ Usage:
     # Now the model uses linear_loop forward which supports quantized nn.Linear layers
 """
 
+
+import re
+
 import torch
 from torch import nn
 
 from auto_round.utils import clear_memory, logger
+from auto_round.utils.device import memory_monitor
 
 try:
     from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS
@@ -54,7 +58,10 @@ LINEAR_LOOP_IMPL = "linear_loop"
 #   output_multiplier: output dimension multiplier (e.g., 2 for fused gate+up projection)
 KNOWN_PROJECTION_PATTERNS = {
     # Transformers 5.0+ standard (Qwen3-MoE, etc.)
-    "gate_up_proj": {"is_input_proj": True, "output_multiplier": 2},  # hidden -> 2*intermediate
+    # gate_up_proj is auto-split into gate_proj + up_proj during unfusing
+    "gate_up_proj": {"is_input_proj": True, "output_multiplier": 2, "split_into": ["gate_proj", "up_proj"]},
+    "gate_proj": {"is_input_proj": True, "output_multiplier": 1},  # hidden -> intermediate (gate)
+    "up_proj": {"is_input_proj": True, "output_multiplier": 1},  # hidden -> intermediate (up)
     "down_proj": {"is_input_proj": False, "output_multiplier": 1},  # intermediate -> hidden
     # Mixtral-style
     "w1": {"is_input_proj": True, "output_multiplier": 1},  # gate: hidden -> intermediate
@@ -66,6 +73,52 @@ KNOWN_PROJECTION_PATTERNS = {
     "w2_proj": {"is_input_proj": False, "output_multiplier": 1},
 }
 
+_EXPERT_KEY_REMAP_RE = None
+
+
+def _remap_expert_key(name: str) -> str:
+    """Remap a parameter key from ModuleList format to standard per-expert format.
+
+    Transforms: {prefix}.{proj_name}.{idx}.{param} -> {prefix}.{idx}.{proj_name}.{param}
+
+    For example:
+        model.layers.1.mlp.experts.gate_proj.0.weight -> model.layers.1.mlp.experts.0.gate_proj.weight
+        gate_proj.0.weight -> 0.gate_proj.weight
+
+    This is idempotent: already-remapped keys won't be matched (because the digit
+    precedes the projection name, so {proj_name}.{digit} never appears).
+    """
+    global _EXPERT_KEY_REMAP_RE
+    if _EXPERT_KEY_REMAP_RE is None:
+        proj_names = list(KNOWN_PROJECTION_PATTERNS.keys())
+        proj_pattern = "|".join(re.escape(n) for n in proj_names)
+        _EXPERT_KEY_REMAP_RE = re.compile(rf"^((?:.*?\.)?)({proj_pattern})\.(\d+)\.(.+)$")
+    m = _EXPERT_KEY_REMAP_RE.match(name)
+    if m:
+        prefix, proj_name, idx, param = m.groups()
+        return f"{prefix}{idx}.{proj_name}.{param}"
+    return name
+
+
+def _experts_state_dict_hook(module, state_dict, prefix, local_metadata):
+    """State dict hook to remap expert keys from ModuleList to per-expert format.
+
+    Registered on experts modules after unfusing so that model.state_dict()
+    and model.save_pretrained() automatically produce standard key names:
+        {prefix}gate_proj.0.weight -> {prefix}0.gate_proj.weight
+
+    Only remaps keys belonging to this module (matching the prefix).
+    """
+    keys_to_remap = {}
+    for key in list(state_dict.keys()):
+        if prefix and not key.startswith(prefix):
+            continue
+        new_key = _remap_expert_key(key)
+        if new_key != key:
+            keys_to_remap[key] = new_key
+    for old_key, new_key in keys_to_remap.items():
+        state_dict[new_key] = state_dict.pop(old_key)
+
 
 def linear_loop_experts_forward(
     self: nn.Module,
@@ -75,12 +128,13 @@ def linear_loop_experts_forward(
 ) -> torch.Tensor:
     """Forward using individual nn.Linear layers per expert.
 
-    This implementation loops over experts and uses self.gate_up_proj[i] and
-    self.down_proj[i] as nn.Linear layers (or quantized equivalents), enabling
-    proper quantization support.
+    This implementation loops over experts and uses self.gate_proj[i],
+    self.up_proj[i] and self.down_proj[i] as nn.Linear layers
+    (or quantized equivalents), enabling proper quantization support.
 
     Expected module attributes:
-        - gate_up_proj: nn.ModuleList of nn.Linear (in_features=hidden_dim, out_features=2*intermediate_dim)
+        - gate_proj: nn.ModuleList of nn.Linear (in_features=hidden_dim, out_features=intermediate_dim)
+        - up_proj: nn.ModuleList of nn.Linear (in_features=hidden_dim, out_features=intermediate_dim)
         - down_proj: nn.ModuleList of nn.Linear (in_features=intermediate_dim, out_features=hidden_dim)
         - act_fn: activation function
         - num_experts: number of experts
@@ -133,15 +187,16 @@ def linear_loop_experts_forward(
 
         expert_input = selected_hidden_states[mask]  # (num_samples_for_expert, hidden_dim)
 
-        # Use nn.Linear layers for this expert
-        gate_up_out = self.gate_up_proj[expert_idx](expert_input)  # (num_samples, 2*intermediate_dim)
+        # Use nn.Linear layers for this expert (gate and up are separate)
+        gate_out = self.gate_proj[expert_idx](expert_input)  # (num_samples, intermediate_dim)
+        up_out = self.up_proj[expert_idx](expert_input)  # (num_samples, intermediate_dim)
 
         # Apply gating
         if hasattr(self, "_apply_gate"):
+            gate_up_out = torch.cat([gate_out, up_out], dim=-1)
             gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
         else:
-            gate, up = gate_up_out.chunk(2, dim=-1)
-            gated_out = self.act_fn(gate) * up
+            gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
 
         # Down projection
         expert_out = self.down_proj[expert_idx](gated_out)  # (num_samples, hidden_dim)
@@ -267,6 +322,12 @@ def _unfuse_single_projection(
 ) -> nn.ModuleList | None:
     """Unfuse a single projection from 3D Parameter to ModuleList of Linear layers.
 
+    Optimized to minimize device allocations and copies:
+    - Moves the full 3D tensor to CPU in a single transfer
+    - Performs batch transpose on CPU if needed
+    - Creates Linear shells on meta device (no allocation)
+    - Directly assigns weight slices as Parameters (zero-copy on CPU)
+
     Args:
         module: The experts module
         proj_name: Name of the projection attribute
@@ -293,32 +354,47 @@ def _unfuse_single_projection(
     bias_param = getattr(module, bias_name, None)
     has_bias = bias_param is not None
 
-    # Create ModuleList
-    linears = nn.ModuleList()
     source_device = param.device
+    is_meta = source_device.type == "meta"
 
+    # Prepare weight slices on CPU in batch (single D2H transfer + batch transpose)
+    if not is_meta:
+        # Single transfer: GPU -> CPU (or no-op if already on CPU)
+        weights_cpu = param.data.cpu()  # (num_experts, dim1, dim2)
+        if is_transposed:
+            # Batch transpose: (num_experts, in, out) -> (num_experts, out, in)
+            weights_cpu = weights_cpu.transpose(1, 2)
+        # Ensure contiguous layout so unbind produces contiguous 2D slices.
+        # This is needed when the param comes from a chunk split (Phase 1)
+        # which produces non-contiguous views even on CPU.
+        if not weights_cpu.is_contiguous():
+            weights_cpu = weights_cpu.contiguous()
+        # Unbind into a tuple of 2D tensors (zero-copy views since contiguous)
+        weight_slices = weights_cpu.unbind(0)
+
+        if has_bias:
+            bias_slices = bias_param.data.cpu().unbind(0)
+
+    # Create ModuleList with meta-device Linear shells (no memory allocation)
+    linears = nn.ModuleList()
     for i in range(num_experts):
-        linear = nn.Linear(in_features, out_features, bias=has_bias, dtype=dtype, device=target_device)
+        # meta device: creates the module structure without allocating weight storage
+        linear = nn.Linear(in_features, out_features, bias=has_bias, dtype=dtype, device="meta")
 
-        # Copy weights if not on meta device
-        if source_device.type != "meta":
-            if is_transposed:
-                linear.weight.data.copy_(param[i].t())
-            else:
-                linear.weight.data.copy_(param[i])
-
+        if not is_meta:
+            # Direct parameter assignment — no copy, just references the CPU tensor slice
+            linear.weight = nn.Parameter(weight_slices[i])
             if has_bias:
-                linear.bias.data.copy_(bias_param[i])
+                linear.bias = nn.Parameter(bias_slices[i])
 
         linears.append(linear)
 
-    # Release original parameter memory using to_empty
-    if source_device.type != "meta":
+    # Release original parameter memory
+    if not is_meta:
         try:
             param.data = param.data.to_empty(device="meta")
             logger.debug(f"Released memory for {proj_name} using to_empty(device='meta')")
         except Exception:
-            # Fallback: just delete
             pass
 
     return linears
@@ -375,7 +451,36 @@ def _unfuse_experts_weights_inplace(
     dtype = first_param.dtype
     target_device = first_param.device if first_param.device.type != "meta" else "cpu"
 
-    # Unfuse each projection
+    # Phase 1: Split fused projections (e.g., gate_up_proj -> gate_proj + up_proj) into separate 3D params
+    extra_projections = {}
+    fused_to_remove = []
+    for proj_name, config in detected_projections.items():
+        split_into = config.get("split_into")
+        if not split_into:
+            continue
+        param = getattr(module, proj_name, None)
+        if param is None or not isinstance(param, nn.Parameter) or param.dim() != 3:
+            continue
+        # Split along output dimension
+        split_dim = 2 if is_transposed else 1
+        split_params = param.chunk(len(split_into), dim=split_dim)
+        for split_name, split_param in zip(split_into, split_params):
+            # Avoid .contiguous() here — _unfuse_single_projection will handle it
+            # during batch transpose/unbind, saving a full-tensor copy
+            setattr(module, split_name, nn.Parameter(split_param))
+            extra_projections[split_name] = KNOWN_PROJECTION_PATTERNS.get(
+                split_name, {"is_input_proj": True, "output_multiplier": 1}
+            )
+        delattr(module, proj_name)
+        fused_to_remove.append(proj_name)
+        logger.debug(f"Split {proj_name} -> {split_into}: {num_experts} experts")
+
+    # Remove fused entries and add split entries
+    for name in fused_to_remove:
+        del detected_projections[name]
+    detected_projections.update(extra_projections)
+
+    # Phase 2: Unfuse all 3D params (including newly split ones) via _unfuse_single_projection
     unfused_count = 0
     for proj_name in detected_projections:
         linears = _unfuse_single_projection(module, proj_name, num_experts, is_transposed, dtype, target_device)
@@ -389,6 +494,11 @@ def _unfuse_experts_weights_inplace(
     # Ensure num_experts is set
     if not hasattr(module, "num_experts"):
         module.num_experts = num_experts
+
+    # Register state_dict hook for automatic key remapping during save
+    if unfused_count > 0:
+        module._register_state_dict_hook(_experts_state_dict_hook)
+        logger.debug(f"Registered state_dict hook for expert key remapping on {module.__class__.__name__}")
 
     return unfused_count > 0
 
@@ -411,25 +521,27 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
     Returns:
         List of module names that were unfused
     """
-    # Register our custom implementation
     if not register_linear_loop_experts():
         raise RuntimeError(
             "Failed to register linear_loop experts implementation. "
             "This requires transformers >= 5.0.0 with MOE integration support."
         )
 
+    memory_monitor.update()
+    logger.info(f"[MoE Prep] Before unfuse: {memory_monitor.get_summary()}")
+
     # Unfuse all fused experts modules (only those supporting @use_experts_implementation)
     unfused_modules = []
     for name, module in model.named_modules():
         if _unfuse_experts_weights_inplace(module):
             unfused_modules.append(name)
-            logger.debug(f"Unfused expert weights in: {name}")
+            logger.debug(f"[MoE Prep] Unfused '{name}'")
 
     # Only set config if we actually unfused something
     # Models that don't support the decorator (like Llama4) won't have anything unfused
     # and should use full module replacement instead
     if unfused_modules:
-        logger.info(f"Unfused {len(unfused_modules)} MOE experts modules for quantization")
+        logger.info(f"[MoE Prep] Unfused {len(unfused_modules)} MOE experts modules")
         clear_memory()
 
         # Set config for linear_loop forward
@@ -438,6 +550,9 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
             impl_to_set = saved_impl if saved_impl else implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
+
+    memory_monitor.update()
+    logger.info(f"[MoE Prep] After unfuse: {memory_monitor.get_summary()}")
 
     return unfused_modules
 
