@@ -18,6 +18,7 @@ import re
 import sys
 import shutil
 import tempfile
+import ctypes
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
@@ -424,6 +425,7 @@ class fake_triton_for_hpu(ContextDecorator):
                 del sys.modules["triton.language"]
         return False
 
+def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
     """
     Selects the packing device.
     - "auto": choose best available (CUDA > XPU > CPU).
@@ -517,6 +519,7 @@ def _clear_memory_for_cpu_and_cuda(
             tensor[i] = None
     tensor = None
     gc.collect()
+    _maybe_trim_malloc()
 
     # ------------------------
     # Normalize device_list
@@ -558,6 +561,40 @@ def _clear_memory_for_cpu_and_cuda(
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
+
+
+_malloc_trim_counter = 0
+
+
+def _maybe_trim_malloc() -> None:
+    """Optionally release glibc heap pages back to OS on Linux.
+
+    Controlled by environment variables:
+    - AR_ENABLE_MALLOC_TRIM: default "1" (enabled)
+    - AR_MALLOC_TRIM_EVERY: default "10" (trigger every N clear_memory calls)
+    """
+    global _malloc_trim_counter
+
+    if os.name != "posix":
+        return
+    if os.environ.get("AR_ENABLE_MALLOC_TRIM", "1") != "1":
+        return
+
+    try:
+        every = int(os.environ.get("AR_MALLOC_TRIM_EVERY", "10"))
+    except ValueError:
+        every = 10
+    every = max(1, every)
+
+    _malloc_trim_counter += 1
+    if _malloc_trim_counter % every != 0:
+        return
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
 
 
 class ClearMemory:

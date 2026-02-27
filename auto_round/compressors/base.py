@@ -1272,6 +1272,10 @@ class BaseCompressor(object):
             m = get_module(self.model, name)
             m.to("cpu")
             shard_writer(self, m, name, False)
+            # Free RAM immediately: the data is now in the shard-writer buffer
+            # (and will be flushed to disk).  Keeping it also in the model tree
+            # causes linear RAM growth for large models.
+            m.to("meta")
 
     def _immediate_pack(self, name: str):
         if not self.is_immediate_packing:
@@ -1344,8 +1348,16 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            # By default, we go with layer-wise way if no replacement happened
+            # By default, we go with layer-wise way if no replacement happened.
+            # In RTN mode (iters == 0), force blockwise quantization to avoid
+            # full-model materialization and linear CPU RAM growth.
             use_blockwise_quantization = global_state.replaced_module_count > 0
+            if self.iters == 0 and not use_blockwise_quantization:
+                logger.info(
+                    "RTN mode detected (iters=0): force blockwise quantization to avoid "
+                    "layer-wise full-model materialization."
+                )
+                use_blockwise_quantization = True
             tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
             if tied_weights_keys is None:
                 tied_weights_keys = []
@@ -1382,7 +1394,24 @@ class BaseCompressor(object):
                                 set_module(self.model, m.global_name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
                                     shard_writer(self, name=m.global_name)
+                                    copied_m = get_module(self.model, m.global_name)
+                                    copied_m.to("meta")
                                 m.to("meta")
+                        # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
+                        # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
+                        if not self.is_immediate_saving:
+                            mv_module_from_gpu(block)
+                        else:
+                            # Save once at block scope to capture tensors that are not saved
+                            # in per-layer branch (e.g., custom module-level params/buffers).
+                            shard_writer(self, name=block_name)
+                            # Per-layer tensors have already been saved; flush once per block
+                            # to reduce I/O overhead while keeping memory bounded.
+                            if hasattr(self, "_shard_writer"):
+                                self._shard_writer._flush_shard()
+                            block.to("meta")
+                        if self.low_cpu_mem_usage:
+                            offload_block_weights(self, block_name, block)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1541,6 +1570,12 @@ class BaseCompressor(object):
                 if not self.is_immediate_saving:
                     # some modules may have been flushed and set to meta, so we could not  move to gpu
                     mv_module_from_gpu(block)
+                else:
+                    # Flush once per block; do not force block-level save since some modules
+                    # may already be on meta and would fail during serialization.
+                    if hasattr(self, "_shard_writer"):
+                        self._shard_writer._flush_shard()
+                    mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage:
                     offload_block_weights(self, block_name, block)
                 if block_name == block_names[-1]:
@@ -1654,13 +1689,10 @@ class BaseCompressor(object):
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
-                logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported "
-                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
-                    "Setting `low_cpu_mem_usage` to False."
+                logger.info(
+                    "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
+                    "RTN path uses blockwise quantization and supports per-block offloading."
                 )
-                self.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
             elif self.has_qlayer_outside_block and self.iters > 0:
                 logger.warning(
                     "`low_cpu_mem_usage` is not fully supported "
