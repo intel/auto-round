@@ -162,6 +162,7 @@ def monkey_patch_transformers():
 
     if parsed_version >= version.parse("5.0.0"):
         from transformers.initialization import no_init_weights
+
         setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
     if parsed_version >= version.parse("5.2.0"):
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
