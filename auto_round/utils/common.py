@@ -136,8 +136,16 @@ def _patch_transpose_for_buffers():
                     tensors = next(iter(input_dict.values()))
                     tensor = tensors[0] if isinstance(tensors, list) else tensors
                     return {target_pattern: tensor}
-            except Exception:
-                pass  # Fall through to original behavior
+            except Exception as exc:
+                logger.debug(
+                    "Failed to apply buffer transpose patch for model=%r, full_layer_name=%r, module_path=%r; "
+                    "falling back to original Transpose.convert behavior. Error: %s",
+                    model,
+                    full_layer_name,
+                    module_path,
+                    exc,
+                    exc_info=True,
+                )
 
         return _original_convert(self, input_dict, source_patterns, target_patterns, **kwargs)
 
