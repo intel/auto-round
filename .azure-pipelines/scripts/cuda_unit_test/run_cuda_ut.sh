@@ -21,7 +21,6 @@ SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
 function setup_environment() {
     export TZ='Asia/Shanghai'
-    export TQDM_POSITION=-1
     export TQDM_MININTERVAL=120
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
@@ -50,7 +49,6 @@ function print_test_results_table() {
             test_name=${test_name#unittest_cuda_vlm_}
 
             local result="UNKNOWN"
-            local flag="::notice::"
             local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || echo 0)
             local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || echo 0)
             local killed_count=$(grep -c 'Killed' "${log_file}" 2>/dev/null || echo 0)
@@ -58,20 +56,17 @@ function print_test_results_table() {
 
             if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ] || [ ${killed_count} -gt 0 ]; then
                 result="FAILED"
-                flag="::error::"
                 failed_tests=$((failed_tests + 1))
             elif [ ${passed_count} -gt 0 ]; then
                 result="PASSED"
-                flag="::notice::"
                 passed_tests=$((passed_tests + 1))
             else
-                flag="::warning::"
                 result="NO_TESTS"
             fi
 
             total_tests=$((total_tests + 1))
             local log_filename=$(basename "${log_file}")
-            printf "%-35s %-10s %-50s\n" "${flag}${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
+            printf "%-35s %-10s %-50s\n" "${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
         fi
     done
 

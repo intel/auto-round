@@ -43,7 +43,7 @@ stages:
                   --action create \
                   --api_key $(RUNPOD_API_KEY) \
                   --name "ci-$(Build.BuildId)" \
-                  --container_disk_size "50" \
+                  --container_disk_size "500" \
                   --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME=$(AGENT_NAME)
 
           - task: Bash@3
@@ -90,7 +90,7 @@ stages:
               nvidia-smi
               uv pip install -U "huggingface_hub[cli]"
               hf auth login --token "$(HF_TOKEN)"
-              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case=sglang
+              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case=all
             displayName: "Run GPU Tests"
 
   - stage: Cleanup_Verification
