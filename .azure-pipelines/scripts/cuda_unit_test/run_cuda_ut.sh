@@ -22,6 +22,7 @@ SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 export TZ='Asia/Shanghai'
 export TQDM_POSITION=-1
 export TQDM_MININTERVAL=120
+export CUDA_VISIBLE_DEVICES=0
 
 function print_test_results_table() {
     echo "##[group]Collect results..."
@@ -76,6 +77,7 @@ function print_test_results_table() {
 
 function run_unit_test() {
     # install unit test dependencies
+    echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
     uv pip install torch==2.10.0 torchvision
@@ -89,6 +91,7 @@ function run_unit_test() {
     uv pip install torch==2.10.0 torchvision
     uv pip install -U transformers
     uv pip install .
+    echo "##[endgroup]"
 
     uv pip list
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
@@ -96,9 +99,9 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
-        echo "##[group]Running ${test_file}..."
 
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -127,10 +130,9 @@ function run_unit_test_llmc() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        echo "##[group]Running ${test_file}..."
-
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -157,10 +159,9 @@ function run_unit_test_sglang() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
-        echo "##[group]Running ${test_file}..."
-
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -188,6 +189,7 @@ function main() {
     df -h
     du -sh "${BUILD_SOURCESDIRECTORY}"
     du -sh /root/.cache/huggingface
+    du -sh /root/.cache/huggingface/hub/*
     du -sh /root/.venv
     cat "${SUMMARY_LOG}"
 }

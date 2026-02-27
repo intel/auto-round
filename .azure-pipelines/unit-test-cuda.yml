@@ -43,7 +43,7 @@ stages:
                   --action create \
                   --api_key $(RUNPOD_API_KEY) \
                   --name "ci-$(Build.BuildId)" \
-                  --container_disk_size "250" \
+                  --container_disk_size "1000" \
                   --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME=$(AGENT_NAME)
 
           - task: Bash@3
@@ -78,7 +78,7 @@ stages:
     dependsOn: Start_Pod
     jobs:
       - job: GpuTests
-        timeoutInMinutes: 180
+        timeoutInMinutes: 240
         pool:
           name: "$(POOL_NAME)"
           demands: Agent.Name -equals runpod-agent-$(Build.BuildId)
