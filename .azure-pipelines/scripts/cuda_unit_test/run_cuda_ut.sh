@@ -24,6 +24,7 @@ function setup_environment() {
     export TQDM_POSITION=-1
     export TQDM_MININTERVAL=120
     export CUDA_VISIBLE_DEVICES=0
+    export HF_HUB_DISABLE_PROGRESS_BARS=1
 }
 
 function print_test_results_table() {
@@ -167,17 +168,15 @@ function run_unit_test_sglang() {
     for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
-        local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    mv report.html ${LOG_DIR}/
-    mv coverage.xml ${LOG_DIR}/
-
-    # Print test results table and check for failures
-    if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
-        echo "Some CUDA unit tests failed. Please check the individual log files for details."
+    mv report_sglang.html ${LOG_DIR}/
+    mv coverage_sglang.xml ${LOG_DIR}/
+    if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
+        echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
     fi
 }
 
@@ -192,6 +191,9 @@ function main() {
         run_unit_test_sglang
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
+    else
+        echo "Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', or 'all'."
+        exit 1
     fi
     df -h
     du -sh "${BUILD_SOURCESDIRECTORY}"
