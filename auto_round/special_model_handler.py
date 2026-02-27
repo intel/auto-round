@@ -217,15 +217,43 @@ def register_ignore_layers(
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
 
-# Qwen3MOE
+# # Qwen3MOE
+# register_ignore_layers(
+#     matchers=[
+#         ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
+#     ],
+#     ignore_layers=[
+#         "mlp.gate",  # vllm inference issue
+#     ],
+# )
+
 register_ignore_layers(
     matchers=[
-        ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
+        ModelTypeMatcher(r"qwen3_vl_moe", mode="full"),
     ],
     ignore_layers=[
         "mlp.gate",  # vllm inference issue
     ],
 )
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"qwen3", mode="full"),
+    ],
+    ignore_layers=[
+        "mlp.gate",  # vllm inference issue
+    ],
+)
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"qwen3_5_moe", mode="full"),
+    ],
+    ignore_layers=[
+        "mlp.gate",  # vllm inference issue
+    ],
+)
+
 
 # longcat
 register_ignore_layers(

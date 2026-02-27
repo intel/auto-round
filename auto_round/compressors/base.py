@@ -1337,11 +1337,21 @@ class BaseCompressor(object):
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+                import time
+
+                total_time = 0.0
+
                 for block_names in all_blocks:
                     for block_name in block_names:
                         pbar.set_description(f"Quantizing {block_name}")
                         block = get_module(self.model, block_name)
+
+
                         materialize_model_(block)
+
+
+
+                        start = time.perf_counter()
                         for name, m in block.named_modules():
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
@@ -1355,6 +1365,9 @@ class BaseCompressor(object):
                                 if self.is_immediate_saving:
                                     shard_writer(self, name=m.global_name)
                                 m.to("meta")
+                        end = time.perf_counter()
+                        total_time += (end - start)
+                        print(f"Total materialize_model_ time: {total_time:.4f} seconds")
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
