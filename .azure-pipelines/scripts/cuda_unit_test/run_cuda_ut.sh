@@ -83,7 +83,7 @@ function run_unit_test() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
     uv pip install torch==2.10.0 torchvision
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+    uv pip install git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
     # uv pip install gptqmodel --no-build-isolation
     # uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
