@@ -219,7 +219,8 @@ def _quant_data_with_args(
 
 
 def need_modify_tensor(cls, name):
-    if cls.hf_arch == "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
+    hf_arch = getattr(cls, "hf_arch", "")
+    if hf_arch == "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
         return True
     return False
 
