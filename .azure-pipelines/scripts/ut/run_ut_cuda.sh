@@ -201,7 +201,7 @@ function run_unit_test_sglang() {
     uv pip install torch==2.9.1 torchvision
     uv pip install -r test_cuda/requirements_sglang.txt
 
-    pip list > ${LOG_DIR}/ut_pip_list.txt
+    pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
