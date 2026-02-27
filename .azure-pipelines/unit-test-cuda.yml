@@ -88,6 +88,8 @@ stages:
             displayName: "Checkout out Repo"
           - script: |
               nvidia-smi
+              uv pip install -U "huggingface_hub[cli]"
+              hf auth login --token "$(HF_TOKEN)"
               bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh --test_case=all
             displayName: "Run GPU Tests"
 

@@ -19,10 +19,12 @@ LOG_DIR="${BUILD_SOURCESDIRECTORY}/ut_log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
-export TZ='Asia/Shanghai'
-export TQDM_POSITION=-1
-export TQDM_MININTERVAL=120
-export CUDA_VISIBLE_DEVICES=0
+function setup_environment() {
+    export TZ='Asia/Shanghai'
+    export TQDM_POSITION=-1
+    export TQDM_MININTERVAL=120
+    export CUDA_VISIBLE_DEVICES=0
+}
 
 function print_test_results_table() {
     echo "##[group]Collect results..."
@@ -47,6 +49,7 @@ function print_test_results_table() {
             test_name=${test_name#unittest_cuda_vlm_}
 
             local result="UNKNOWN"
+            local flag="::notice::"
             local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || echo 0)
             local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || echo 0)
             local killed_count=$(grep -c 'Killed' "${log_file}" 2>/dev/null || echo 0)
@@ -54,17 +57,20 @@ function print_test_results_table() {
 
             if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ] || [ ${killed_count} -gt 0 ]; then
                 result="FAILED"
+                flag="::error::"
                 failed_tests=$((failed_tests + 1))
             elif [ ${passed_count} -gt 0 ]; then
                 result="PASSED"
+                flag="::notice::"
                 passed_tests=$((passed_tests + 1))
             else
+                flag="::warning::"
                 result="NO_TESTS"
             fi
 
             total_tests=$((total_tests + 1))
             local log_filename=$(basename "${log_file}")
-            printf "%-30s %-10s %-50s\n" "${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
+            printf "%-35s %-10s %-50s\n" "${flag}${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
         fi
     done
 
@@ -103,7 +109,7 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -133,7 +139,7 @@ function run_unit_test_llmc() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -162,7 +168,7 @@ function run_unit_test_sglang() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -177,6 +183,7 @@ function run_unit_test_sglang() {
 
 
 function main() {
+    setup_environment
     if [ "${test_case}" == "vlm" ]; then
         run_unit_test_vlm
     elif [ "${test_case}" == "llmc" ]; then

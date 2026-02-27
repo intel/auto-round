@@ -17,8 +17,7 @@ REQUIRED_COUNT = 1
 def check_gpu_count(token):
     url = f"https://api.runpod.io/graphql?api_key={token}"
     ids_string = ", ".join([f'"{gid}"' for gid in TARGET_GPUS])
-    graphql_query = (
-        """
+    graphql_query = """
     query GpuAvailability($input: GpuLowestPriceInput!) {
       gpuTypes(input: {ids: [%s]}) {
         id
@@ -34,7 +33,7 @@ def check_gpu_count(token):
           gpuName
           stockStatus
           minimumBidPrice
-          uninterruptiblePrice
+          uninterruptablePrice
           maxGpuCount
           maxUnreservedGpuCount
           availableGpuCounts
@@ -43,10 +42,7 @@ def check_gpu_count(token):
         }
       }
     }
-    """
-        % ids_string
-    )
-
+    """ % ids_string
     variables = {"input": {"gpuCount": 1, "secureCloud": True, "minMemoryInGb": 0, "minVcpuCount": 0}}
 
     try:
