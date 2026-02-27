@@ -16,7 +16,7 @@ class LinearQwen3_5MoeSparseMoeBlock(ReplacementModuleBase):
         super().__init__(original)
         self.gate = original.gate
         text_config = config.get_text_config()
-
+        self.shared_expert = original.shared_expert
         with torch.device("meta"):
             self.experts = SequentialQwen3_5MoeExperts(text_config,original.experts)
         self.shared_expert_gate = original.shared_expert_gate
