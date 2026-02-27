@@ -1,15 +1,15 @@
-import requests
 import argparse
-import sys
 import json
+import sys
 import time
 
+import requests
 
 TARGET_GPUS = [
     # "NVIDIA RTX 4000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX PRO 4500 Blackwell",
-    "NVIDIA GeForce RTX 5090"
+    "NVIDIA GeForce RTX 5090",
 ]
 REQUIRED_COUNT = 1
 
@@ -17,7 +17,8 @@ REQUIRED_COUNT = 1
 def check_gpu_count(token):
     url = f"https://api.runpod.io/graphql?api_key={token}"
     ids_string = ", ".join([f'"{gid}"' for gid in TARGET_GPUS])
-    graphql_query = """
+    graphql_query = (
+        """
     query GpuAvailability($input: GpuLowestPriceInput!) {
       gpuTypes(input: {ids: [%s]}) {
         id
@@ -33,7 +34,7 @@ def check_gpu_count(token):
           gpuName
           stockStatus
           minimumBidPrice
-          uninterruptablePrice
+          uninterruptiblePrice
           maxGpuCount
           maxUnreservedGpuCount
           availableGpuCounts
@@ -42,7 +43,9 @@ def check_gpu_count(token):
         }
       }
     }
-    """ % ids_string
+    """
+        % ids_string
+    )
 
     variables = {"input": {"gpuCount": 1, "secureCloud": True, "minMemoryInGb": 0, "minVcpuCount": 0}}
 
@@ -54,10 +57,10 @@ def check_gpu_count(token):
         data = response.json()
         all_gpus = data.get("data", {}).get("gpuTypes", [])
 
-        id_to_gpu = {gpu['id']: gpu for gpu in all_gpus}
+        id_to_gpu = {gpu["id"]: gpu for gpu in all_gpus}
         all_gpus = [id_to_gpu[gpu_id] for gpu_id in TARGET_GPUS if gpu_id in id_to_gpu]
 
-        print(f"--- Checking target graphics card inventory ---\n")
+        print("--- Checking target graphics card inventory ---\n")
 
         for gpu in all_gpus:
             gpu_id = gpu.get("id")
@@ -66,9 +69,7 @@ def check_gpu_count(token):
                 max_count = gpu.get("lowestPrice", {}).get("maxUnreservedGpuCount", 0)
 
                 if REQUIRED_COUNT > max_count:
-                    print(
-                        f"❌ {gpu_id}: \n   Status: Insufficient inventory.\n"
-                    )
+                    print(f"❌ {gpu_id}: \n   Status: Insufficient inventory.\n")
                     continue
                 else:
                     print(f"✅ {gpu_id}: \n   Status: Sufficient inventory.\n")

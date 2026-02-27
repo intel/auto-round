@@ -1,9 +1,9 @@
-import time
-import requests
 import argparse
-import sys
 import base64
+import sys
+import time
 
+import requests
 
 API_VERSION = "7.1"
 
