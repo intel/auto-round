@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import torch
 import torch.nn.functional as F
 import transformers
@@ -11,14 +14,15 @@ transformers_version = version.parse(transformers.__version__)
 
 from auto_round.modeling.fused_moe.utils import _update_parameter
 
+
 class LinearQwen3_5MoeSparseMoeBlock(ReplacementModuleBase):
-    def __init__(self,original, config):
+    def __init__(self, original, config):
         super().__init__(original)
         self.gate = original.gate
         text_config = config.get_text_config()
         self.shared_expert = original.shared_expert
         with torch.device("meta"):
-            self.experts = SequentialQwen3_5MoeExperts(text_config,original.experts)
+            self.experts = SequentialQwen3_5MoeExperts(text_config, original.experts)
         self.shared_expert_gate = original.shared_expert_gate
         self.num_experts = text_config.num_experts
 
@@ -82,6 +86,7 @@ class LinearQwen3_5MoeSparseMoeBlock(ReplacementModuleBase):
         """Create an instance from the original module."""
         return cls(original, config)
 
+
 class SequentialQwen3_5MoeExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
         super().__init__()
@@ -98,8 +103,8 @@ class SequentialQwen3_5MoeExperts(torch.nn.ModuleList):
                 gate_up = original.gate_up_proj[i]
                 down = original.down_proj[i]
 
-                gate_proj = gate_up[:intermediate_size,:]
-                up_proj = gate_up[intermediate_size:,:]
+                gate_proj = gate_up[:intermediate_size, :]
+                up_proj = gate_up[intermediate_size:, :]
 
                 _update_parameter(self[i].gate_proj, "weight", gate_proj.contiguous())
                 _update_parameter(self[i].up_proj, "weight", up_proj.contiguous())
