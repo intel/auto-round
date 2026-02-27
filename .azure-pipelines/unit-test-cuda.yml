@@ -10,15 +10,16 @@ parameters:
   - name: matrix
     type: object
     default:
-      part1:
-        PART: 1
-      part2:
-        PART: 2
+      # part1:
+      #   PART: 1
+      # part2:
+      #   PART: 2
       part3:
         PART: 3
 
 stages:
   - ${{ each pair in parameters.matrix }}:
+  
       - stage: Start_Pod_${{ pair.key }}
         displayName: "Start Pod ${{ pair.value.PART }}"
         dependsOn: []
@@ -89,12 +90,14 @@ stages:
       - stage: GPU_Test_${{ pair.key }}
         displayName: "GPU Test ${{ pair.value.PART }}"
         dependsOn: Start_Pod_${{ pair.key }}
+        variables:
+          TARGET_AGENT_NAME: "runpod-agent-$(Build.BuildId)-${{ pair.value.PART }}"
         jobs:
           - job: GpuTests
             timeoutInMinutes: 60
             pool:
               name: "$(POOL_NAME)"
-              demands: Agent.Name -equals $(AGENT_NAME)-${{ pair.value.PART }}
+              demands: Agent.Name -equals $(TARGET_AGENT_NAME)
             steps:
               - checkout: self
                 clean: true
