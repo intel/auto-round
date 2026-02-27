@@ -211,15 +211,14 @@ function run_unit_test_sglang() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report.html ${LOG_DIR}/
-    mv coverage.xml ${LOG_DIR}/
-
+    mv report_sglang.html ${LOG_DIR}/
+    mv coverage_sglang.xml ${LOG_DIR}/
     # Print test results table and check for failures
-    if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
-        echo "Some CUDA unit tests failed. Please check the individual log files for details."
+    if ! print_test_results_table "unittest_cuda_test_sglang*.log" "CUDA SGLang Unit Tests"; then
+        echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
     fi
 }
 
