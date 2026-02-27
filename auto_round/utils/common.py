@@ -130,7 +130,8 @@ def _patch_transpose_for_buffers():
             module_path, _, param_name = full_layer_name.rpartition(".")
             try:
                 module_obj = model.get_submodule(module_path) if module_path else model
-                if param_name in module_obj._buffers:
+                buffer_tensor = module_obj.get_buffer(param_name) if hasattr(module_obj, "get_buffer") else None
+                if buffer_tensor is not None:
                     # Buffer tensors must not be transposed – return as-is.
                     target_pattern = self.get_target_pattern(input_dict, source_patterns, target_patterns)
                     tensors = next(iter(input_dict.values()))
