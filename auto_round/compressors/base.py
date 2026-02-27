@@ -105,14 +105,20 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import (
+    cleanup_cpu_offload_dir,
     clear_memory_if_reached_threshold,
     estimate_inputs_size_gb,
     estimate_model_size_gb,
     estimate_tensor_size_gb,
     get_major_device,
+    init_cpu_offload_dir,
+    load_offloaded_block_weights,
+    offload_block_weights,
     parse_available_devices,
+    restore_offloaded_blocks,
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
+    stream_offload_blocks,
 )
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.utils.model import (
