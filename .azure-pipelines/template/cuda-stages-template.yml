@@ -2,12 +2,12 @@ parameters:
   - name: matrix
     type: object
     default: {}
-
-variables:
   - name: POOL_NAME
-    value: "RunPod-GPU-Pool"
+    type: string
+    default: "RunPod-GPU-Pool"
   - name: AGENT_NAME
-    value: "runpod-agent-$(Build.BuildId)"
+    type: string
+    default: "runpod-agent-$(Build.BuildId)"
 
 stages:
   - ${{ each pair in parameters.matrix }}:
@@ -83,7 +83,7 @@ stages:
       dependsOn: Start_Pod_${{ pair.key }}
       jobs:
         - job: GpuTests
-          timeoutInMinutes: 90
+          timeoutInMinutes: 60
           pool:
             name: "$(POOL_NAME)"
             demands: Agent.Name -equals $(AGENT_NAME)-${{ pair.value.PART }}
