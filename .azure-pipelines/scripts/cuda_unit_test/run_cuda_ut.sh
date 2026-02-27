@@ -8,6 +8,9 @@ for i in "$@"; do
     --test_case=*)
         test_case=$(echo $i | sed "s/${PATTERN}//")
         ;;
+    --test_part=*)
+        test_part=$(echo $i | sed "s/${PATTERN}//")
+        ;;
     *)
         echo "Parameter $i not recognized."
         exit 1
@@ -100,7 +103,23 @@ function run_unit_test() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort); do
+
+    find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort > all_tests.txt
+    total_lines=$(wc -l < all_tests.txt)
+    NUM_CHUNKS=3
+    q=$(( total_lines / NUM_CHUNKS ))
+    r=$(( total_lines % NUM_CHUNKS ))
+    if [ "$test_part" -le "$r" ]; then
+        chunk_size=$(( q + 1 ))
+        start_line=$(( (test_part - 1) * chunk_size + 1 ))
+    else
+        chunk_size=$q
+        start_line=$(( r * (q + 1) + (test_part - r - 1) * q + 1 ))
+    fi
+    end_line=$(( start_line + chunk_size - 1 ))
+    selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+
+    for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
