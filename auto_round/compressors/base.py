@@ -1346,10 +1346,7 @@ class BaseCompressor(object):
                         pbar.set_description(f"Quantizing {block_name}")
                         block = get_module(self.model, block_name)
 
-
                         materialize_model_(block)
-
-
 
                         start = time.perf_counter()
                         for name, m in block.named_modules():
@@ -1366,7 +1363,7 @@ class BaseCompressor(object):
                                     shard_writer(self, name=m.global_name)
                                 m.to("meta")
                         end = time.perf_counter()
-                        total_time += (end - start)
+                        total_time += end - start
                         print(f"Total materialize_model_ time: {total_time:.4f} seconds")
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
