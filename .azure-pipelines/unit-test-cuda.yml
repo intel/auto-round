@@ -1,11 +1,5 @@
 trigger: none
 
-variables:
-  - name: POOL_NAME
-    value: "RunPod-GPU-Pool"
-  - name: AGENT_NAME
-    value: "runpod-agent-$(Build.BuildId)"
-
 stages:
   - template: template/cuda-stages-template.yml
     parameters:

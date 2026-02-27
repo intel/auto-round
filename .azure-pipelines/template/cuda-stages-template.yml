@@ -3,10 +3,17 @@ parameters:
     type: object
     default: {}
 
+variables:
+  - name: POOL_NAME
+    value: "RunPod-GPU-Pool"
+  - name: AGENT_NAME
+    value: "runpod-agent-$(Build.BuildId)"
+
 stages:
   - ${{ each pair in parameters.matrix }}:
     - stage: Start_Pod_${{ pair.key }}
       displayName: "Start Pod ${{ pair.value.PART }}"
+      dependsOn: []
       jobs:
         - job: Start_Pod_Job
           displayName: "Launch Pod & Run CUDA Tests"
@@ -40,7 +47,7 @@ stages:
                     --action create \
                     --api_key $(RUNPOD_API_KEY) \
                     --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
-                    --container_disk_size "500" \
+                    --container_disk_size "200" \
                     --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME=$(AGENT_NAME)-${{ pair.value.PART }}
 
             - task: Bash@3
