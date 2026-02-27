@@ -114,16 +114,6 @@ from auto_round.utils.device import (
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
 )
-from auto_round.utils.model import (
-    cleanup_cpu_offload_dir,
-    discard_offloaded_block,
-    estimate_block_size_gb,
-    init_cpu_offload_dir,
-    load_offloaded_block_weights,
-    offload_block_weights,
-    restore_offloaded_blocks,
-    stream_offload_blocks,
-)
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.utils.model import (
     cleanup_cpu_offload_dir,

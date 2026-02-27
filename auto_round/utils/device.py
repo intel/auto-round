@@ -11,14 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ctypes
 import functools
 import gc
 import os
 import re
-import sys
 import shutil
+import sys
 import tempfile
-import ctypes
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
@@ -361,6 +361,7 @@ class override_cuda_device_capability(ContextDecorator):
             self._orig_func = None
         return False
 
+
 class fake_cuda_for_hpu(ContextDecorator):
     """Context manager/decorator to fake CUDA availability for HPU devices."""
 
@@ -424,6 +425,7 @@ class fake_triton_for_hpu(ContextDecorator):
             elif not self._had_triton_language and "triton.language" in sys.modules:
                 del sys.modules["triton.language"]
         return False
+
 
 class fake_cuda_for_hpu(ContextDecorator):
     """Context manager/decorator to fake CUDA availability for HPU devices."""
