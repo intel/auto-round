@@ -25,10 +25,10 @@ from auto_round.modeling.fused_moe.moe_experts_interface import LINEAR_LOOP_IMPL
 from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
 
 BUILTIN_MODULES = {
-    # "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
-    # "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
-    # "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
-    # "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    "gpt_oss": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
+    "qwen3_vl_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
+    "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
@@ -44,19 +44,7 @@ def _has_custom_replacement_only(model: torch.nn.Module) -> bool:
         if model_type in BUILTIN_MODULES:
             return True
     return False
-    # for _, module in model.named_modules():
-    #     class_name = module.__class__.__name__
-    #     # Check if this looks like an MOE experts module (has fused 3D weights)
-    #     if (
-    #         hasattr(module, "gate_up_proj")
-    #         and isinstance(module.gate_up_proj, torch.nn.Parameter)
-    #         and module.gate_up_proj.dim() == 3
-    #     ):
-    #         # This is a fused experts module - check if it has a custom replacement
-    #         if class_name not in BUILTIN_MODULES and not ReplacementModuleBase.is_registered(class_name):
-    #             # Found a fused experts module without custom replacement - need linear_loop
-    #             return False
-    # return True
+
 
 
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
