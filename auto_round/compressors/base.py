@@ -27,10 +27,10 @@ import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from packaging import version
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed, AutoConfig
-from packaging import version
+from transformers import AutoConfig, set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -93,6 +93,7 @@ from auto_round.utils import (
     is_debug_mode,
     is_hpex_available,
     is_moe_model,
+    is_moe_model_via_config,
     is_quantized_input_module,
     llm_load_model,
     memory_monitor,
@@ -101,7 +102,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupported_meta_device, is_moe_model_via_config,
+    unsupported_meta_device,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -278,12 +279,14 @@ class BaseCompressor(object):
 
                 self.is_model_patched = apply_model_monkey_patches(model_name=model)
                 import transformers
+
                 if (
                     not self.is_model_patched
                     and is_moe_model_via_config(config)
                     and version.parse(transformers.__version__) >= version.parse("5.0.0")
                 ):
                     from auto_round.modeling.fused_moe import BUILTIN_MODULES
+
                     model_type = getattr(config, "model_type", None)
                     if model_type is not None and model_type not in BUILTIN_MODULES:
                         logger.warning(
@@ -2176,7 +2179,7 @@ class BaseCompressor(object):
                     self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
                 else:
                     # Change this if new device is supported
-                    if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")) :
+                    if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
                         # type(self.model._no_split_modules) changes from list to set when transformers > 5.0
                         no_split_modules = list(getattr(self.model, "_no_split_modules", []))
                         devices = parse_available_devices(self.device_map)

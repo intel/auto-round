@@ -46,7 +46,6 @@ def _has_custom_replacement_only(model: torch.nn.Module) -> bool:
     return False
 
 
-
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
 
