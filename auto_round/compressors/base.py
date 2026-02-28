@@ -294,7 +294,6 @@ class BaseCompressor(object):
 
                     )
 
-
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,

@@ -1434,9 +1434,11 @@ def copy_python_files_from_model_cache(model, save_path: str):
 
         if version.parse(transformers.__version__) < version.parse("5.0.0"):
             from transformers.utils import TRANSFORMERS_CACHE
+
             cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
         else:
             from huggingface_hub.constants import HF_HUB_CACHE
+
             cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
         from transformers.utils import http_user_agent
 

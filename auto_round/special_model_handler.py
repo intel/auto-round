@@ -301,7 +301,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     if not layers:
         if hasattr(model, "config") and hasattr(model.config, "model_type"):
             model_type = model.config.model_type
-            if "moe" in model_type: # Append gate which usually cause vllm issue
+            if "moe" in model_type:  # Append gate which usually cause vllm issue
                 layers.append("gate")
 
     return list(dict.fromkeys(layers))
