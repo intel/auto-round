@@ -86,15 +86,6 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
             imported.add(imported.add(model_type))
             logger.debug(f"Loaded replacement module for {model_type}")
 
-    # for _, module in model.named_modules():
-    #     class_name = module.__class__.__name__
-    #
-    #     if class_name in BUILTIN_MODULES and class_name not in imported:
-    #         # Trigger import by accessing the LazyImport object
-    #         _ = BUILTIN_MODULES[class_name].__name__  # or any attribute
-    #         imported.add(class_name)
-    #         logger.debug(f"Loaded replacement module for {class_name}")
-
 
 def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module) -> bool:
     """Skip MOE replacement if linear_loop experts are already unfused.
