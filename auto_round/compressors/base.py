@@ -274,28 +274,26 @@ class BaseCompressor(object):
         self.quantized = False
         self.is_model_patched = False
         if isinstance(model, str):
-            try:
-                config = AutoConfig.from_pretrained(model)
+            config = AutoConfig.from_pretrained(model)
 
-                self.is_model_patched = apply_model_monkey_patches(model_name=model)
-                import transformers
+            self.is_model_patched = apply_model_monkey_patches(model_name=model)
+            import transformers
 
-                if (
-                    not self.is_model_patched
-                    and is_moe_model_via_config(config)
-                    and version.parse(transformers.__version__) >= version.parse("5.0.0")
-                ):
-                    from auto_round.modeling.fused_moe import BUILTIN_MODULES
+            if (
+                not self.is_model_patched
+                and is_moe_model_via_config(config)
+                and version.parse(transformers.__version__) >= version.parse("5.0.0")
+            ):
+                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
 
-                    model_type = getattr(config, "model_type", None)
-                    if model_type is not None and model_type not in BUILTIN_MODULES:
-                        logger.warning(
-                            "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
-                            "please submit an issue to https://github.com/intel/auto-round/issues"
-                        )
+                model_type = getattr(config, "model_type", None)
+                if model_type is not None and model_type not in BUILTIN_MODULES:
+                    logger.warning(
+                        "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
+                        "please submit an issue to https://github.com/intel/auto-round/issues"
+                    )
 
-            except:
-                pass
+
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,

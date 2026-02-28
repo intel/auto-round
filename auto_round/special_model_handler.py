@@ -217,16 +217,6 @@ def register_ignore_layers(
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
 
-# # Qwen3MOE
-# register_ignore_layers(
-#     matchers=[
-#         ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
-#     ],
-#     ignore_layers=[
-#         "mlp.gate",  # vllm inference issue
-#     ],
-# )
-
 register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"qwen3_vl_moe", mode="full"),
@@ -238,7 +228,7 @@ register_ignore_layers(
 
 register_ignore_layers(
     matchers=[
-        ModelTypeMatcher(r"qwen3", mode="full"),
+        ModelTypeMatcher(r"qwen3_moe", mode="full"),
     ],
     ignore_layers=[
         "mlp.gate",  # vllm inference issue
@@ -294,17 +284,6 @@ register_ignore_layers(
 )
 
 
-# # qwen3_next
-# register_ignore_layers(
-#     matchers=[
-#         ModelTypeMatcher(r"qwen3_next", mode="full"),
-#     ],
-#     ignore_layers=[
-#         "mlp.gate",  # vllm issue
-#     ],
-# )
-
-
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
@@ -319,5 +298,10 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                     else:
                         layers.extend(res)
             break
+    if not layers:
+        if hasattr(model, "config") and hasattr(model.config, "model_type"):
+            model_type = model.config.model_type
+            if "moe" in model_type: # Append gate which usually cause vllm issue
+                layers.append("gate")
 
     return list(dict.fromkeys(layers))
