@@ -166,12 +166,7 @@ def save_quantized_as_llmcompressor(
     model.config.quantization_config = quantization_config.to_dict()
     model.config.save_pretrained(output_dir)
 
-    try:
-        save_model(model, output_dir, safe_serialization=safe_serialization)
-    except ValueError as e:
-        if hasattr(model, "generation_config"):
-            setattr(model.generation_config, "do_sample", True)
-        save_model(model, output_dir, safe_serialization=safe_serialization)
+    save_model(model, output_dir, safe_serialization=safe_serialization)
 
     try:
         copy_python_files_from_model_cache(model, output_dir)
