@@ -139,6 +139,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci  # Skip CI due to OOM
     def test_qwen_moe_quant_infer(self, dataloader):
         model_name = get_model_path("qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
