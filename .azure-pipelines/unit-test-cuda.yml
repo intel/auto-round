@@ -3,8 +3,6 @@ trigger: none
 variables:
   - name: POOL_NAME
     value: "RunPod-GPU-Pool"
-  - name: AGENT_NAME
-    value: "runpod-agent-$(Build.BuildId)"
 
 parameters:
   - name: matrix
@@ -16,6 +14,7 @@ parameters:
       #   PART: 2
       part3:
         PART: 3
+        AGENT_NAME: "runpod-agent-$(Build.BuildId)-part3"
 
 stages:
   - ${{ each pair in parameters.matrix }}:
@@ -57,7 +56,7 @@ stages:
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
                       --container_disk_size "200" \
-                      --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME=$(AGENT_NAME)-${{ pair.value.PART }}
+                      --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME=$(pair.value.AGENT_NAME)
 
               - task: Bash@3
                 displayName: "Wait for Pod to be Online"
@@ -85,27 +84,29 @@ stages:
                       --url "$(System.CollectionUri)" \
                       --pat "$(AZP_DEVOPS_PAT)" \
                       --pool "$(POOL_NAME)" \
-                      --agent "$(AGENT_NAME)-${{ pair.value.PART }}"
+                      --agent "$(pair.value.AGENT_NAME)"
 
       - stage: GPU_Test_${{ pair.key }}
         displayName: "GPU Test ${{ pair.value.PART }}"
         dependsOn: Start_Pod_${{ pair.key }}
-        variables:
-          TARGET_AGENT_NAME: "runpod-agent-$(Build.BuildId)-${{ pair.value.PART }}"
         jobs:
           - job: GpuTests
             timeoutInMinutes: 60
             pool:
               name: "$(POOL_NAME)"
-              demands: Agent.Name -equals $(TARGET_AGENT_NAME)
+              demands: Agent.Name -equals $(pair.value.AGENT_NAME)
             steps:
               - checkout: self
                 clean: true
                 displayName: "Checkout Repo"
               - script: |
                   nvidia-smi
+                  lscpu
+                  free -g
+                  echo "##[group]Installing Hugging Face CLI..."
                   uv pip install -U "huggingface_hub[cli]"
                   hf auth login --token "$(HF_TOKEN)"
+                  echo "##[endgroup]"
                   bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
                     --test_case=all \
                     --test_part=${{ pair.value.PART }}
@@ -163,4 +164,4 @@ stages:
                       --url "$(System.CollectionUri)" \
                       --pat "$(AZP_DEVOPS_PAT)" \
                       --pool "$(POOL_NAME)" \
-                      --agent "$(AGENT_NAME)-${{ pair.value.PART }}"
+                      --agent "$(pair.value.AGENT_NAME)"
