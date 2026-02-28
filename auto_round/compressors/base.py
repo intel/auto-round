@@ -291,7 +291,6 @@ class BaseCompressor(object):
                     logger.warning(
                         "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage,"
                         "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
-
                     )
 
             model, tokenizer = llm_load_model(
