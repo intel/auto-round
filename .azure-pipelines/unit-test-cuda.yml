@@ -94,7 +94,7 @@ stages:
             timeoutInMinutes: 60
             pool:
               name: "$(POOL_NAME)"
-              demands: Agent.Name -equals ${{ pair.value.AGENT_NAME }}
+              demands: Agent.Name -equals runpod-agent-$(Build.BuildId)-part3
             steps:
               - checkout: self
                 clean: true
