@@ -274,13 +274,23 @@ class BaseCompressor(object):
         self.quantized = False
         self.is_model_patched = False
         if isinstance(model, str):
-            config = AutoConfig.from_pretrained(model)
+            config: Optional[AutoConfig] = None
+            try:
+                config = AutoConfig.from_pretrained(model, trust_remote_code=self.trust_remote_code)
+            except (OSError, EnvironmentError) as e:
+                logger.debug(
+                    "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
+                    "Proceeding without config-based checks.",
+                    model,
+                    e,
+                )
 
             self.is_model_patched = apply_model_monkey_patches(model_name=model)
             import transformers
 
             if (
                 not self.is_model_patched
+                and config is not None
                 and is_moe_model_via_config(config)
                 and version.parse(transformers.__version__) >= version.parse("5.0.0")
             ):
