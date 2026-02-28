@@ -82,7 +82,7 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
         model_type = model.config.model_type
         if model_type in BUILTIN_MODULES:
             _ = BUILTIN_MODULES[model_type].__name__  # or any attribute
-            imported.add(imported.add(model_type))
+            imported.add(model_type)
             logger.debug(f"Loaded replacement module for {model_type}")
 
 
