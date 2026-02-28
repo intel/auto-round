@@ -293,7 +293,6 @@ class BaseCompressor(object):
                         "please submit an issue to https://github.com/intel/auto-round/issues"
                     )
 
-
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,
