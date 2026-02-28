@@ -25,7 +25,7 @@ stages:
       - job: DelayTask
         pool: server # 'server' is a reserved word for agentless jobs. Delay task must be agentless.
         steps:
-          - task: Delay@V1
+          - task: Delay@1
             inputs:
               delayForMinutes: "1"
 
@@ -113,7 +113,6 @@ stages:
               - script: |
                   nvidia-smi
                   lscpu
-                  free -g
                   echo "##[group]Installing Hugging Face CLI..."
                   uv pip install -U "huggingface_hub[cli]"
                   hf auth login --token "$(HF_TOKEN)"
