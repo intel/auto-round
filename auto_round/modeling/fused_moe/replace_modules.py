@@ -32,26 +32,25 @@ BUILTIN_MODULES = {
 }
 
 
-def _has_custom_replacement_only(model: torch.nn.Module) -> bool:
-    """Check if all MOE-like modules in model have custom replacements registered.
+def _has_remaining_fused_moe_modules(model: torch.nn.Module) -> bool:
+    """Check if the model still has fused MOE modules that need handling.
 
-    If all MOE modules are covered by BUILTIN_MODULES, we can skip the linear_loop path entirely.
+    Scans for modules with fused 3D weights (gate_up_proj) that haven't been
+    replaced by custom ReplacementModuleBase implementations.
     """
     for _, module in model.named_modules():
-        class_name = module.__class__.__name__
-        # Check if this looks like an MOE experts module (has fused 3D weights)
+        if isinstance(module, ReplacementModuleBase):
+            continue
         if (
             hasattr(module, "gate_up_proj")
             and isinstance(module.gate_up_proj, torch.nn.Parameter)
             and module.gate_up_proj.dim() == 3
         ):
-            # This is a fused experts module - check if it has a custom replacement
-            if class_name not in BUILTIN_MODULES and not ReplacementModuleBase.is_registered(class_name):
-                # Found a fused experts module without custom replacement - need linear_loop
-                return False
-    return True
+            return True
+    return False
 
 
+@dump_mem_usage("Applying general replacements")
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
 
@@ -317,11 +316,27 @@ def apply_replacements(
     """
     _import_required_replacements(model)
 
-    # Auto-detect and handle fused MOE modules if enabled
-    # Skip if all MOE modules already have custom replacements registered
-    if auto_detect_moe and not _has_custom_replacement_only(model):
-        _handle_moe_modules(model)
+    # Custom replacements first; if nothing was replaced, fall back to general MOE handling
+    print(model)
+    replaced = _apply_custom_replacements(model)
 
+    if not replaced and auto_detect_moe:
+        _handle_moe_modules(model)
+    print(model)
+
+    return model
+
+
+@dump_mem_usage("Applying custom replacements")
+def _apply_custom_replacements(model: torch.nn.Module) -> list:
+    """Scan model and replace registered modules with custom implementations.
+
+    Args:
+        model: The model to scan and apply replacements to (modified in-place).
+
+    Returns:
+        List of (name, replacement_class) tuples for replaced modules.
+    """
     replaced = []
 
     # Step 1: Collect all modules that need replacement
@@ -371,7 +386,7 @@ def apply_replacements(
         global_state.replaced_module_count = len(replaced)
         logger.info(f"Replaced {len(replaced)} modules")
 
-    return model
+    return replaced
 
 
 @dataclass

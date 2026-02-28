@@ -527,9 +527,6 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
             "This requires transformers >= 5.0.0 with MOE integration support."
         )
 
-    memory_monitor.update()
-    logger.info(f"[MoE Prep] Before unfuse: {memory_monitor.get_summary()}")
-
     # Unfuse all fused experts modules (only those supporting @use_experts_implementation)
     unfused_modules = []
     for name, module in model.named_modules():
@@ -550,9 +547,6 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
             impl_to_set = saved_impl if saved_impl else implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
-
-    memory_monitor.update()
-    logger.info(f"[MoE Prep] After unfuse: {memory_monitor.get_summary()}")
 
     return unfused_modules
 
