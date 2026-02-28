@@ -1351,10 +1351,6 @@ class BaseCompressor(object):
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))
-                import time
-
-                total_time = 0.0
-
                 for block_names in all_blocks:
                     for block_name in block_names:
                         pbar.set_description(f"Quantizing {block_name}")
