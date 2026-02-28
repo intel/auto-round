@@ -2473,6 +2473,9 @@ class BaseCompressor(object):
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max") or module.act_max.numel() == 0:
                 module.act_max = act_max
+                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                    max_val = act_max.max()
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
             else:
                 act_max = act_max.to(module.act_max.device)
                 if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage

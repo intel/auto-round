@@ -9,8 +9,8 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_gguf
 
+from ...envs import require_gguf
 from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, save_tiny_model, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")

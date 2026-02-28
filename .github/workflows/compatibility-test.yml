@@ -81,3 +81,4 @@ jobs:
         env:
           TQDM_MININTERVAL: "60"
           PYTHONUNBUFFERED: "1"
+          HF_HUB_DISABLE_PROGRESS_BARS: "1"
