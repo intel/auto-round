@@ -36,6 +36,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "internvl_chat",
     "glm4v_moe",
     "qwen3_vl_moe",
+    "gemma3",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -254,6 +255,16 @@ register_ignore_layers(
         get_glm_flash_ignore_layers,  # vllm issue
     ],
 )
+
+
+# glm5
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+    ],
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
+)
+
 
 # # qwen3_next
 # register_ignore_layers(

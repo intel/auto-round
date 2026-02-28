@@ -123,6 +123,7 @@ _register_template("mllama", default_dataset="liuhaotian/llava", processor=PROCE
 _register_template("deepseek_vl_v2", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["deepseek_v2"])
 _register_template("mistral3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 _register_template("mistral3_2", default_dataset="liuhaotian/llava", processor=PROCESSORS["mistral3_2"])
+_register_template("gemma3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 
 
 def load_template(path: str):

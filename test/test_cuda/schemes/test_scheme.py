@@ -2,6 +2,7 @@ import os
 import shutil
 
 import pytest
+import transformers
 from packaging import version
 
 from auto_round import AutoRound
@@ -36,12 +37,16 @@ class TestAutoRound:
     def test_w4a16(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1)
         assert ar.bits == 4
-        ar.quantize()
+        ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        assert model is not None, "Model loading failed after quantization with W4A16 scheme"
 
     def test_w2a16(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=1)
         assert ar.bits == 2
-        ar.quantize()
+        ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        assert model is not None, "Model loading failed after quantization with W2A16 scheme"
 
     def test_mxfp4(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4_RCEIL", nsamples=1, iters=1)
@@ -49,7 +54,9 @@ class TestAutoRound:
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
         assert ar.act_data_type == "mx_fp_rceil"
-        ar.quantize()
+        ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        assert model is not None, "Model loading failed after quantization with MXFP4 scheme"
 
     def test_fp8_static(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=1)
@@ -59,13 +66,15 @@ class TestAutoRound:
         assert ar.act_data_type == "fp"
         assert ar.group_size == -1
         assert ar.act_dynamic is False
-        ar.quantize()
+        ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        assert model is not None, "Model loading failed after quantization with FP8_STATIC scheme"
 
     ## RTN tests
     def test_w2a16_rtn(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0)
         assert ar.bits == 2
-        ar.quantize()
+        ar.quantize_and_save()
 
     def test_mxfp4_rtn(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=0)
@@ -73,7 +82,7 @@ class TestAutoRound:
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
         assert ar.act_data_type == "mx_fp"
-        ar.quantize()
+        ar.quantize_and_save()
 
     def test_fp8_static_rtn(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=0)
@@ -83,7 +92,7 @@ class TestAutoRound:
         assert ar.act_data_type == "fp"
         assert ar.group_size == -1
         assert ar.act_dynamic is False
-        ar.quantize()
+        ar.quantize_and_save()
 
     def test_scheme_in_layer_config(self):
         model_path = get_model_path("facebook/opt-125m")
@@ -94,7 +103,9 @@ class TestAutoRound:
         }
         ar = AutoRound(model_path, scheme="W3A16", nsamples=1, iters=1, layer_config=layer_config)
 
-        ar.quantize()
+        ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        assert model is not None, "Model loading failed after quantization with layer-specific schemes"
         for n, m in ar.model.named_modules():
             if n == "model.decoder.layers.2.self_attn.q_proj":
                 assert m.bits == 2

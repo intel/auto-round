@@ -486,8 +486,6 @@ class BaseCompressor(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         # Some helpers
-        if "hpu" in str(self.device):
-            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
@@ -1467,7 +1465,7 @@ class BaseCompressor(object):
 
                 block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-
+                self._register_act_max_hook(block)
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
@@ -1617,7 +1615,7 @@ class BaseCompressor(object):
             self.is_immediate_saving = True
 
         if self.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.warning(
+            logger.info(
                 "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
                 "Setting `low_cpu_mem_usage` to False."
             )
@@ -2184,15 +2182,31 @@ class BaseCompressor(object):
                                     device = 0
                                 else:
                                     raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
+                                if device not in max_memory:
+                                    # Skip devices that are not reported by accelerate's max_memory.
+                                    # This is expected when a device is unavailable or cannot provide memory info.
+                                    continue
                                 # Use 90% of the reported max memory to leave headroom for activations,
                                 # temporary tensors, other processes, and allocator fragmentation, reducing
                                 # the chance of runtime OOM while still utilizing most available memory.
                                 new_max_memory[device] = max_memory[device] * 0.9
+
+                            # If non-CPU devices were requested but none survived, fall back to CPU caching
+                            # via the OOM handler below, avoiding unnecessary dispatch overhead.
+                            requested_non_cpu = any((d != "cpu") for d in devices)
+                            has_non_cpu_memory = any((k != "cpu") for k in new_max_memory)
+                            if requested_non_cpu and not has_non_cpu_memory:
+                                raise torch.OutOfMemoryError(
+                                    "No non-CPU device available in accelerate's reported memory. "
+                                    "Falling back to CPU caching."
+                                )
+
                             new_max_memory = get_balanced_memory(
                                 self.model,
                                 max_memory=new_max_memory,
                                 no_split_module_classes=no_split_modules,
                             )
+                            self.model.tie_weights()
                             device_map = infer_auto_device_map(
                                 self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                             )
@@ -2229,15 +2243,13 @@ class BaseCompressor(object):
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
+                    self.cache_device = torch.device("cpu")
                     if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
                         logger.warning(
                             "we recommend using more GPUs in calibration."
                             " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
                         )
-                    if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                        accelerate.hooks.remove_hook_from_submodules(
-                            self.model
-                        )  # self.model.hf_device_map has not been changed
+                    accelerate.hooks.remove_hook_from_submodules(self.model)
                     self.model = mv_module_from_gpu(self.model)
                     clear_memory(device_list=self.device_list)
                     # Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
