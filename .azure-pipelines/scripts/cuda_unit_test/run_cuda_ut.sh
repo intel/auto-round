@@ -69,7 +69,7 @@ function print_test_results_table() {
 
             total_tests=$((total_tests + 1))
             local log_filename=$(basename "${log_file}")
-            printf "%-35s %-10s %-50s\n" "${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
+            printf "%-30s %-10s %-50s\n" "${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
         fi
     done
 
@@ -77,6 +77,22 @@ function print_test_results_table() {
     printf "Total: %d, Passed: %d, Failed: %d\n" ${total_tests} ${passed_tests} ${failed_tests} >> "${SUMMARY_LOG}"
     { printf '=%.0s' {1..120}; echo; } >> "${SUMMARY_LOG}"
     echo "" >> "${SUMMARY_LOG}"
+    echo "##[endgroup]"
+}
+
+function print_summary() {
+    echo "##[group]Test Summary"
+    for line in $(cat "${SUMMARY_LOG}"); do
+        if [[ "$line" == *"FAILED"* ]]; then
+            echo "::error::$line"
+        elif [[ "$line" == *"PASSED"* ]]; then
+            echo "::notice::$line"
+        elif [[ "$line" == *"NO_TESTS"* ]]; then
+            echo "::warning::$line"
+        else
+            echo "$line"
+        fi
+    done
     echo "##[endgroup]"
 }
 

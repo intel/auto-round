@@ -70,6 +70,7 @@ class TestAutoRound:
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
+    @pytest.mark.skip_ci(reason="Triton issue")
     def test_small_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
@@ -77,6 +78,7 @@ class TestAutoRound:
         evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Triton issue")
     def test_small_model_iters1(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
@@ -84,6 +86,7 @@ class TestAutoRound:
         evaluate_accuracy(self.save_dir, threshold=0.25)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Triton issue")
     def test_medium_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
@@ -91,6 +94,7 @@ class TestAutoRound:
         evaluate_accuracy(self.save_dir, threshold=0.33)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Triton issue")
     def test_medium_model_rtn_with_lm_head(self, mock_fp8_capable_device):
         model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}

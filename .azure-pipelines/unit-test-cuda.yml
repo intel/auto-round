@@ -10,18 +10,29 @@ parameters:
   - name: matrix
     type: object
     default:
-      # part1:
-      #   PART: 1
-      # part2:
-      #   PART: 2
+      part1:
+        PART: 1
+      part2:
+        PART: 2
       part3:
         PART: 3
 
 stages:
+  - stage: Delay_Before_Pod_Creation
+    displayName: "Delay Before Pod Creation"
+    dependsOn: []
+    jobs:
+      - job: DelayTask
+        pool: server # 'server' is a reserved word for agentless jobs. Delay task must be agentless.
+        steps:
+          - task: Delay@V1
+            inputs:
+              delayForMinutes: "1"
+
   - ${{ each pair in parameters.matrix }}:
       - stage: Start_Pod_${{ pair.key }}
         displayName: "Start Pod ${{ pair.value.PART }}"
-        dependsOn: []
+        dependsOn: [Delay_Before_Pod_Creation]
         jobs:
           - job: Start_Pod_Job
             displayName: "Launch Pod & Run CUDA Tests"
@@ -55,7 +66,7 @@ stages:
                       --action create \
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
-                      --container_disk_size "200" \
+                      --container_disk_size "100" \
                       --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
 
               - task: Bash@3

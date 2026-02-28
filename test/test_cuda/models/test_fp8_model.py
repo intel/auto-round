@@ -19,7 +19,7 @@ def setup_qwen_fp8():
     return tokenizer, output_dir, config, model_name
 
 
-@pytest.mark.skip_ci  # Skip CI due to OOM
+@pytest.mark.skip_ci(reason="OOM")
 def test_qwen3_fp8_moe_mxfp(setup_qwen_fp8):
     tokenizer, output_dir, config, model_name = setup_qwen_fp8
     autoround = AutoRound(
