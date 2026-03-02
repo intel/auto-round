@@ -3,6 +3,7 @@ set -xe
 
 test_part=$1
 export TQDM_MININTERVAL=60
+export HF_HUB_DISABLE_PROGRESS_BARS=1
 echo "##[group]set up UT env..."
 uv pip install pytest-cov pytest-html
 uv pip list

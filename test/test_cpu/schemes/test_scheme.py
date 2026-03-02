@@ -61,7 +61,7 @@ class TestAutoRound:
         assert ar.model.model.layers[0].self_attn.q_proj.bits == 8
         assert ar.model.model.layers[0].self_attn.k_proj.bits == 16
         assert ar.model.model.layers[0].mlp.experts[0].up_proj.bits == 4
-        assert ar.model.model.layers[0].mlp.shared_expert.gate_proj.bits == 8
+        # assert ar.model.model.layers[0].mlp.shared_expert.gate_proj.bits == 8 # gate has been added to ignore_layers
 
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
