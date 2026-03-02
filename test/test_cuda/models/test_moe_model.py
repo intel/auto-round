@@ -52,7 +52,7 @@ def setup_qwen3_vl_moe():
 
     # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
     config.text_config.pad_token_id = None
-    #
+    # Reduce model depth for faster and cheaper test runs
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing
