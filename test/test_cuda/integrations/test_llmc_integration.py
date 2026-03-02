@@ -56,9 +56,7 @@ w8a8_dynamic_recipe_modifier = AutoRoundModifier(
         "group_0": QuantizationScheme(
             targets=["Linear"],
             weights=QuantizationArgs(num_bits=8, type="float", strategy="channel"),
-            input_activations=QuantizationArgs(
-                num_bits=8, type="float", strategy="token", dynamic=True
-            ),
+            input_activations=QuantizationArgs(num_bits=8, type="float", strategy="token", dynamic=True),
         )
     },
 )
@@ -70,9 +68,7 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
         "group_0": QuantizationScheme(
             targets=["Linear"],
             weights=QuantizationArgs(num_bits=8, type="float", strategy="tensor"),
-            input_activations=QuantizationArgs(
-                num_bits=8, type="float", strategy="tensor"
-            ),
+            input_activations=QuantizationArgs(num_bits=8, type="float", strategy="tensor"),
         )
     },
 )
@@ -125,12 +121,12 @@ def test_oneshot_application(recipe, tmp_path):
     assert weight_args.num_bits == 4
 
     # Check a specific layer is quantized
-    targetted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
-    assert hasattr(targetted_linear_layer, "quantization_scheme")
+    targeted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
+    assert hasattr(targeted_linear_layer, "quantization_scheme")
 
     # Check lm-head is not quantized
-    not_targetted = model_loaded.lm_head
-    assert not hasattr(not_targetted, "quantization_scheme")
+    not_targeted = model_loaded.lm_head
+    assert not hasattr(not_targeted, "quantization_scheme")
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="test requires at least 2 Cuda GPUs")
@@ -183,12 +179,12 @@ def test_oneshot_with_device_ids(tmp_path):
     assert weight_args.num_bits == 4
 
     # Check a specific layer is quantized
-    targetted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
-    assert hasattr(targetted_linear_layer, "quantization_scheme")
+    targeted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
+    assert hasattr(targeted_linear_layer, "quantization_scheme")
 
     # Check lm-head is not quantized
-    not_targetted = model_loaded.lm_head
-    assert not hasattr(not_targetted, "quantization_scheme")
+    not_targeted = model_loaded.lm_head
+    assert not hasattr(not_targeted, "quantization_scheme")
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 1, reason="test requires at least 1 Cuda GPU")
@@ -231,19 +227,13 @@ def test_rtn_oneshot(recipe, tmp_path):
     assert weight_args.num_bits == recipe.config_groups["group_0"].weights.num_bits
     assert weight_args.strategy == recipe.config_groups["group_0"].weights.strategy
     if act_args is not None:
-        assert (
-            act_args.num_bits
-            == recipe.config_groups["group_0"].input_activations.num_bits
-        )
-        assert (
-            act_args.strategy
-            == recipe.config_groups["group_0"].input_activations.strategy
-        )
+        assert act_args.num_bits == recipe.config_groups["group_0"].input_activations.num_bits
+        assert act_args.strategy == recipe.config_groups["group_0"].input_activations.strategy
 
     # Check a specific layer is quantized
-    targetted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
-    assert hasattr(targetted_linear_layer, "quantization_scheme")
+    targeted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
+    assert hasattr(targeted_linear_layer, "quantization_scheme")
 
     # Check lm-head is not quantized
-    not_targetted = model_loaded.lm_head
-    assert not hasattr(not_targetted, "quantization_scheme")
+    not_targeted = model_loaded.lm_head
+    assert not hasattr(not_targeted, "quantization_scheme")
