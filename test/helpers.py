@@ -182,6 +182,14 @@ def is_pytest_mode_compile():
 def is_pytest_mode_lazy():
     return pytest.mode == "lazy"
 
+def check_version(lib):
+    from transformers.utils.versions import require_version
+    try:
+        require_version(lib)
+        return True
+    except ImportError:
+        return False
+
 
 # General model inference code
 def model_infer(model, tokenizer, apply_chat_template=False):

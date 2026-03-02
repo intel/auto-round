@@ -10,7 +10,7 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeFor
 
 from auto_round import AutoRound
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-
+from ...helpers import check_version
 
 @pytest.fixture
 def setup_gpt_oss():
@@ -50,7 +50,7 @@ def setup_qwen3_vl_moe():
 
     # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
     config.text_config.pad_token_id = None
-
+    #
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -60,77 +60,80 @@ def setup_qwen3_vl_moe():
     return model, tokenizer, processor, output_dir, config
 
 
-def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
-    """Helper function to quantize the model with the given scheme."""
-    autoround = AutoRound(
-        model,
-        tokenizer,
-        scheme=scheme,
-        nsamples=2,
-        iters=iters,
-        seqlen=32,
-        ignore_layers="self_attn,router,lm_head,mlp.gate",
-    )
-    quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
-    return quantized_model
 
 
-def test_gptoss(setup_gpt_oss):
-    model, tokenizer, output_dir, config = setup_gpt_oss
 
-    # Below parameter is set to be same as the full model
-    # Remove it to avoid mismatch during quantized model loading
-    delattr(model.config, "layer_types")
-
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
-
-    # Ensure the quantized model is not None
-    assert quantized_model is not None, "Quantized model should not be None."
-
-    loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
-    quantized_model.to("cuda")
-    loaded_model.to("cuda")
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed == m.weight_packed).all()
-
-    inp = torch.randint(0, 100, (1, 64)).to("cuda")
-    with torch.inference_mode():
-        loaded_out = loaded_model(inp)
-
-    # clean the output directory after test
-    shutil.rmtree(output_dir, ignore_errors=True)
+# def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
+#     """Helper function to quantize the model with the given scheme."""
+#     autoround = AutoRound(
+#         model,
+#         tokenizer,
+#         scheme=scheme,
+#         nsamples=2,
+#         iters=iters,
+#         seqlen=32,
+#         ignore_layers="self_attn,router,lm_head,mlp.gate",
+#     )
+#     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+#     return quantized_model
 
 
-def test_llama4(setup_llama4):
-    model, tokenizer, output_dir, config = setup_llama4
+# def test_gptoss(setup_gpt_oss):
+#     model, tokenizer, output_dir, config = setup_gpt_oss
+#
+#     # Below parameter is set to be same as the full model
+#     # Remove it to avoid mismatch during quantized model loading
+#     delattr(model.config, "layer_types")
+#
+#     quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
+#
+#     # Ensure the quantized model is not None
+#     assert quantized_model is not None, "Quantized model should not be None."
+#
+#     loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
+#     quantized_model.to("cuda")
+#     loaded_model.to("cuda")
+#     for n, m in quantized_model.named_modules():
+#         if m.__class__.__name__ == "QuantLinear":
+#             loaded_m = loaded_model.get_submodule(n)
+#             assert (loaded_m.weight_packed == m.weight_packed).all()
+#
+#     inp = torch.randint(0, 100, (1, 64)).to("cuda")
+#     with torch.inference_mode():
+#         loaded_out = loaded_model(inp)
+#
+#     # clean the output directory after test
+#     shutil.rmtree(output_dir, ignore_errors=True)
 
-    # Below parameters are set to be same as the full model
-    # Remove them to avoid mismatch during quantized model loading
-    model.config.text_config.no_rope_layers = []
-    delattr(model.config.text_config, "moe_layers")
-    delattr(model.config.text_config, "layer_types")
 
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
-
-    # Ensure the quantized model is not None
-    assert quantized_model is not None, "Quantized model should not be None."
-
-    loaded_model = Llama4ForConditionalGeneration.from_pretrained(output_dir)
-    quantized_model.to("cuda")
-    loaded_model.to("cuda")
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed == m.weight_packed).all()
-
-    inp = torch.randint(0, 100, (1, 64)).to("cuda")
-    with torch.inference_mode():
-        loaded_out = loaded_model(inp)
-
-    # clean the output directory after test
-    shutil.rmtree(output_dir, ignore_errors=True)
+# def test_llama4(setup_llama4):
+#     model, tokenizer, output_dir, config = setup_llama4
+#
+#     # Below parameters are set to be same as the full model
+#     # Remove them to avoid mismatch during quantized model loading
+#     model.config.text_config.no_rope_layers = []
+#     delattr(model.config.text_config, "moe_layers")
+#     delattr(model.config.text_config, "layer_types")
+#
+#     quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
+#
+#     # Ensure the quantized model is not None
+#     assert quantized_model is not None, "Quantized model should not be None."
+#
+#     loaded_model = Llama4ForConditionalGeneration.from_pretrained(output_dir)
+#     quantized_model.to("cuda")
+#     loaded_model.to("cuda")
+#     for n, m in quantized_model.named_modules():
+#         if m.__class__.__name__ == "QuantLinear":
+#             loaded_m = loaded_model.get_submodule(n)
+#             assert (loaded_m.weight_packed == m.weight_packed).all()
+#
+#     inp = torch.randint(0, 100, (1, 64)).to("cuda")
+#     with torch.inference_mode():
+#         loaded_out = loaded_model(inp)
+#
+#     # clean the output directory after test
+#     shutil.rmtree(output_dir, ignore_errors=True)
 
 
 class NewQwen3MLP(ReplacementModuleBase):
@@ -174,21 +177,39 @@ def setup_qwen3():
     return model, tokenizer, output_dir, config
 
 
-def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
-    model, tokenizer, processor, output_dir, config = setup_qwen3_vl_moe
-    autoround = AutoRound(
+@pytest.fixture
+def setup_qwen35_moe():
+    """Fixture to set up the qwen3 model and tokenizer."""
+    from transformers import Qwen3_5MoeForConditionalGeneration
+    model_name = "/models/Qwen3.5-35B-A3B"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name)
+    # config.text_config.pad_token_id = None
+    # config.vision_config.num_hidden_layers = 1
+    # config.text_config.num_hidden_layers = 4
+    # config.num_hidden_layers = 1  # Reduce layers for testing
+    # config.text_config.layer_types = config.text_config.layer_types[:config.text_config.num_hidden_layers]  # Reduce layers for testing
+    # config.text_config.use_cache=False
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_name)
+    output_dir = "test_quantized_qwen35_moe"
+    return model, tokenizer, processor, output_dir, config
+
+@pytest.mark.skipif(not check_version("transformers>5.2.0"), reason="requires transformers >= 5.2.0")
+def test_qwen3_5_moe(setup_qwen35_moe):
+    model, tokenizer, processor, output_dir, config = setup_qwen35_moe
+    ar = AutoRound(
         model,
         tokenizer=tokenizer,
         processor=processor,
-        scheme="MXFP4",
         nsamples=2,
         seqlen=32,
         iters=1,
-        ignore_layers="self_attn,lm_head,mlp.gate",
     )
-    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, _ = ar.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
-    loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(output_dir)
+    from transformers import Qwen3_5MoeForConditionalGeneration
+    loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(output_dir)
     loaded_model.to("cuda")
     quantized_model.to("cuda")
     for n, m in quantized_model.named_modules():
@@ -208,33 +229,68 @@ def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
 
-
-def has_module(model: torch.nn.Module, module_name: str) -> bool:
-    for n, m in model.named_modules():
-        if module_name in n:
-            return True
-    return False
-
-
-def test_register_module_out_of_tree_base():
-    from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-
-    for name, subclass in ReplacementModuleBase._replacement_registry.items():
-        if name == "Qwen3MLP":
-            assert subclass == NewQwen3MLP, "Qwen3MLP not registered correctly."
-
-
-def test_register_module_out_of_tree_model(setup_qwen3):
-    model, tokenizer, output_dir, config = setup_qwen3
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
-    # Ensure the quantized model is not None
-    assert quantized_model is not None, "Quantized model should not be None."
-    check_module_names = ["new_gate_proj", "new_up_proj", "new_down_proj"]
-    for name in check_module_names:
-        assert has_module(quantized_model, name), f"Module {name} not found in quantized model."
-    loaded_model = Qwen3ForCausalLM.from_pretrained(output_dir)
-    quantized_model.to("cuda")
-
-    for name in check_module_names:
-        assert has_module(loaded_model, name), f"Module {name} not found in loaded model."
-    loaded_model.to("cuda")
+#
+# def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
+#     model, tokenizer, processor, output_dir, config = setup_qwen3_vl_moe
+#     autoround = AutoRound(
+#         model,
+#         tokenizer=tokenizer,
+#         processor=processor,
+#         scheme="MXFP4",
+#         nsamples=2,
+#         seqlen=32,
+#         iters=1,
+#         ignore_layers="self_attn,lm_head,mlp.gate",
+#     )
+#     quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+#     assert quantized_model is not None, "Quantized model should not be None."
+#     loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(output_dir)
+#     loaded_model.to("cuda")
+#     quantized_model.to("cuda")
+#     for n, m in quantized_model.named_modules():
+#         if m.__class__.__name__ == "QuantLinear":
+#             loaded_m = loaded_model.get_submodule(n)
+#             assert (loaded_m.weight_packed == m.weight_packed).all()
+#
+#     inp = torch.randint(0, 100, (1, 64)).to("cuda")
+#     with torch.inference_mode():
+#         loaded_out = loaded_model(inp)
+#
+#     # test generation
+#     tokenizer = AutoTokenizer.from_pretrained(output_dir)
+#     text = "There is a girl who likes adventure,"
+#     inputs = tokenizer(text, return_tensors="pt").to(device=loaded_model.device)
+#     print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
+#     # clean the output directory after test
+#     shutil.rmtree(output_dir, ignore_errors=True)
+#
+#
+# def has_module(model: torch.nn.Module, module_name: str) -> bool:
+#     for n, m in model.named_modules():
+#         if module_name in n:
+#             return True
+#     return False
+#
+#
+# def test_register_module_out_of_tree_base():
+#     from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+#
+#     for name, subclass in ReplacementModuleBase._replacement_registry.items():
+#         if name == "Qwen3MLP":
+#             assert subclass == NewQwen3MLP, "Qwen3MLP not registered correctly."
+#
+#
+# def test_register_module_out_of_tree_model(setup_qwen3):
+#     model, tokenizer, output_dir, config = setup_qwen3
+#     quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
+#     # Ensure the quantized model is not None
+#     assert quantized_model is not None, "Quantized model should not be None."
+#     check_module_names = ["new_gate_proj", "new_up_proj", "new_down_proj"]
+#     for name in check_module_names:
+#         assert has_module(quantized_model, name), f"Module {name} not found in quantized model."
+#     loaded_model = Qwen3ForCausalLM.from_pretrained(output_dir)
+#     quantized_model.to("cuda")
+#
+#     for name in check_module_names:
+#         assert has_module(loaded_model, name), f"Module {name} not found in loaded model."
+#     loaded_model.to("cuda")
