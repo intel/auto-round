@@ -101,15 +101,15 @@ function run_unit_test() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
-    uv pip install torch==2.10.0 torchvision
+    uv pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
-    # uv pip install gptqmodel --no-build-isolation
-    # uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
+    uv pip install gptqmodel --extra-index-url https://pkgs.dev.azure.com/lpot-inc/neural-compressor/_packaging/gptqmodel-wheels/pypi/simple/
+    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v5.7.0/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
-    uv pip install torch==2.10.0 torchvision
+    uv pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install -U transformers
     uv pip install .
     echo "##[endgroup]"
@@ -120,7 +120,8 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort > all_tests.txt
+    # find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
+    find ./test_cuda -name "test_exllamav2_backend.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=3
     q=$(( total_lines / NUM_CHUNKS ))

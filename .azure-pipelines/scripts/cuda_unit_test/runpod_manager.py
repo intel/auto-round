@@ -12,6 +12,7 @@ TARGET_GPUS = [
     "NVIDIA GeForce RTX 5090",
 ]
 REQUIRED_COUNT = 1
+IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent-cuda-13.0.2:v1.0"
 
 
 def check_gpu_count(token):
@@ -65,10 +66,10 @@ def check_gpu_count(token):
                 max_count = gpu.get("lowestPrice", {}).get("maxUnreservedGpuCount", 0)
 
                 if REQUIRED_COUNT > max_count:
-                    print(f"❌ {gpu_id}: \n   Status: Insufficient inventory.\n")
+                    print(f"❌ {gpu_id}: \n   Status: Available.\n")
                     continue
                 else:
-                    print(f"✅ {gpu_id}: \n   Status: Sufficient inventory.\n")
+                    print(f"✅ {gpu_id}: \n   Status: Unavailable.\n")
                     return gpu_id
 
         print("❌ No compliant GPU found.")
@@ -88,11 +89,6 @@ def run_create_pod(api_key, payload):
     response = requests.post(url, json=payload, headers=headers)
 
     response.raise_for_status()
-    if response.status_code != 201:
-        print(f"❌ HTTP Error: {response.status_code}")
-        print(response.text)
-        sys.exit(1)
-
     result = response.json()
     if "errors" in result:
         print("❌ Errors:")
@@ -126,7 +122,7 @@ def create_pod(args):
         "gpuTypeIds": [gpu_type],
         "name": args.name,
         "volumeInGb": 0,
-        "imageName": "ghcr.io/xuehaosun/azure-agent:v0.1",
+        "imageName": IMAGES_NAME,
     }
 
     print(f"🚀 Creating pod: {args.name}...")
