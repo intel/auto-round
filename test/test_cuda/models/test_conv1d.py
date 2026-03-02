@@ -6,8 +6,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_gptqmodel
 
+from ...envs import require_gptqmodel
 from ...helpers import get_model_path, get_tiny_model, model_infer
 
 
