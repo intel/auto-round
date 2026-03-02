@@ -184,12 +184,11 @@ def is_pytest_mode_lazy():
 
 
 def check_version(lib):
-    from transformers.utils.versions import require_version
-
     try:
+        from transformers.utils.versions import require_version
         require_version(lib)
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
