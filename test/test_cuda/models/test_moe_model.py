@@ -178,7 +178,7 @@ def setup_qwen3():
 
 @pytest.fixture
 def setup_qwen35_moe():
-    """Fixture to set up the qwen3 model and tokenizer."""
+    """Fixture to set up the Qwen3.5 MoE model, tokenizer, and processor."""
     from transformers import Qwen3_5MoeForConditionalGeneration
 
     model_name = "/models/Qwen3.5-35B-A3B"
