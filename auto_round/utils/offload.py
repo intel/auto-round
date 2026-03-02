@@ -36,7 +36,28 @@ import torch
 from auto_round.logger import logger
 from auto_round.utils.model import get_module
 
-__all__ = ["AutoSchemeOffloadContext", "BlockOffloadManager", "load_block_from_model_files"]
+__all__ = ["AutoSchemeOffloadContext", "BlockOffloadManager", "load_block_from_model_files", "_group_layers_by_block"]
+
+
+# =====================================================================
+# Generic helpers
+# =====================================================================
+
+
+def _group_layers_by_block(quant_layer_names, block_names):
+    """Group quantization layer names by their containing block."""
+    groups = {bn: [] for bn in block_names}
+    non_block = []
+    for name in quant_layer_names:
+        matched = False
+        for bn in block_names:
+            if name.startswith(bn + "."):
+                groups[bn].append(name)
+                matched = True
+                break
+        if not matched:
+            non_block.append(name)
+    return groups, non_block
 
 
 # =====================================================================
@@ -116,7 +137,6 @@ def _clear_submodule_weights(module: torch.nn.Module, cache_numel: bool = False)
 # Reload from original model checkpoint
 # =====================================================================
 
-
 def _resolve_model_dir(model_dir: str) -> str:
     """Resolve a model name/path to a local directory containing weight files.
 
@@ -127,7 +147,6 @@ def _resolve_model_dir(model_dir: str) -> str:
     # Try HuggingFace hub cache resolution
     try:
         from huggingface_hub import snapshot_download
-
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
         return model_dir
@@ -148,7 +167,6 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
     single_path = os.path.join(model_dir, "model.safetensors")
     if os.path.exists(single_path):
         from safetensors import safe_open
-
         with safe_open(single_path, framework="pt") as f:
             return {k: "model.safetensors" for k in f.keys()}
 
@@ -207,17 +225,16 @@ def load_block_from_model_files(
         shard_path = os.path.join(model_dir, shard_file)
         if shard_file.endswith(".safetensors"):
             from safetensors import safe_open
-
             with safe_open(shard_path, framework="pt", device="cpu") as f:
                 for name in tensor_names:
                     # Convert absolute name to block-relative name
-                    relative_name = name[len(prefix) :]
+                    relative_name = name[len(prefix):]
                     state_dict[relative_name] = f.get_tensor(name)
         else:
             # pytorch bin format
             full_state = torch.load(shard_path, map_location="cpu")
             for name in tensor_names:
-                relative_name = name[len(prefix) :]
+                relative_name = name[len(prefix):]
                 if name in full_state:
                     state_dict[relative_name] = full_state[name]
             del full_state
@@ -277,7 +294,6 @@ class AutoSchemeOffloadContext:
                 self._cleared_blocks.add(block_name)
         gc.collect()
         from auto_round.utils import clear_memory
-
         clear_memory()
         logger.info("AutoScheme: original block weights cleared")
 

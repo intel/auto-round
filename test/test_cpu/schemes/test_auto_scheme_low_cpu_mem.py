@@ -25,7 +25,8 @@ import pytest
 import torch
 
 from auto_round import AutoRound, AutoScheme
-from auto_round.auto_scheme.delta_loss import _group_layers_by_block
+from auto_round.utils.offload import _group_layers_by_block
+from auto_round.utils.offload import AutoSchemeOffloadContext, _clear_submodule_weights as _clear_module_weights
 from auto_round.auto_scheme.utils import compute_layer_bits
 from auto_round.utils import get_block_names, get_module
 from auto_round.utils.offload import AutoSchemeOffloadContext

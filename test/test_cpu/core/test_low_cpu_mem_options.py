@@ -115,7 +115,7 @@ class TestCpuStreamOffloadBlocks:
 
         dummy_block = torch.nn.Linear(4, 4)
         # Monkeypatch get_module used by _stream_offload_blocks in base.py
-
+        from auto_round.compressors import base as base_module
         monkeypatch.setattr(base_module, "get_module", lambda _model, _name: dummy_block)
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
 

@@ -57,26 +57,10 @@ from auto_round.utils import (
     to_device,
 )
 from auto_round.utils.device import MemoryMonitor
-from auto_round.utils.offload import AutoSchemeOffloadContext
+from auto_round.utils.offload import AutoSchemeOffloadContext, _group_layers_by_block
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
-
-
-def _group_layers_by_block(quant_layer_names, block_names):
-    """Group quantization layer names by their containing block."""
-    groups = {bn: [] for bn in block_names}
-    non_block = []
-    for name in quant_layer_names:
-        matched = False
-        for bn in block_names:
-            if name.startswith(bn + "."):
-                groups[bn].append(name)
-                matched = True
-                break
-        if not matched:
-            non_block.append(name)
-    return groups, non_block
 
 
 class AutoSchemeWrapperLinear(WrapperLinear):
