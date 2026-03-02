@@ -57,7 +57,7 @@ from auto_round.utils import (
     to_device,
 )
 from auto_round.utils.device import MemoryMonitor
-from auto_round.utils.offload import AutoSchemeOffloadContext, _group_layers_by_block
+from auto_round.utils.offload import AutoSchemeOffloadContext
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]

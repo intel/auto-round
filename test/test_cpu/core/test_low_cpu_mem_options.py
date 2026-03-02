@@ -73,7 +73,7 @@ class TestCpuStreamOffloadBlocks:
         assert autoround.low_cpu_mem_usage is False
 
     def test_stream_offload_blocks_skips_when_disabled(self, tiny_opt_model_path):
-        """Test that stream_offload_blocks returns early when disabled."""
+        """Test that _stream_offload_blocks returns early when disabled."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
@@ -101,7 +101,7 @@ class TestCpuStreamOffloadBlocks:
         assert autoround2._offloader._blocks == {}
 
     def test_stream_offload_blocks_records_blocks(self, tiny_opt_model_path, tmp_path, monkeypatch):
-        """Test that stream_offload_blocks records offloaded blocks when enabled."""
+        """Test that _stream_offload_blocks records offloaded blocks when enabled."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
@@ -115,7 +115,7 @@ class TestCpuStreamOffloadBlocks:
 
         dummy_block = torch.nn.Linear(4, 4)
         # Monkeypatch get_module used by _stream_offload_blocks in base.py
-
+        from auto_round.compressors import base as base_module
         monkeypatch.setattr(base_module, "get_module", lambda _model, _name: dummy_block)
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
 
