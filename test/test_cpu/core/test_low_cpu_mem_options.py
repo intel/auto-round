@@ -24,7 +24,6 @@ from auto_round import AutoRound
 from auto_round.compressors import base as base_module
 from auto_round.utils import device as device_module
 from auto_round.utils import model as model_module
-from auto_round.utils.model import stream_offload_blocks
 
 
 class TestCpuStreamOffloadBlocks:
@@ -74,7 +73,7 @@ class TestCpuStreamOffloadBlocks:
         assert autoround.low_cpu_mem_usage is False
 
     def test_stream_offload_blocks_skips_when_disabled(self, tiny_opt_model_path):
-        """Test that stream_offload_blocks returns early when disabled."""
+        """Test that _stream_offload_blocks returns early when disabled."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
@@ -85,8 +84,8 @@ class TestCpuStreamOffloadBlocks:
             nsamples=1,
             seqlen=32,
         )
-        stream_offload_blocks(autoround, [["model.layers.0"]])
-        assert autoround._offloaded_blocks == {}
+        autoround._stream_offload_blocks([["model.layers.0"]])
+        assert autoround._offloader._blocks == {}
 
         autoround2 = AutoRound(
             tiny_opt_model_path,
@@ -98,11 +97,11 @@ class TestCpuStreamOffloadBlocks:
             nsamples=1,
             seqlen=32,
         )
-        stream_offload_blocks(autoround2, [["model.layers.0"]])
-        assert autoround2._offloaded_blocks == {}
+        autoround2._stream_offload_blocks([["model.layers.0"]])
+        assert autoround2._offloader._blocks == {}
 
     def test_stream_offload_blocks_records_blocks(self, tiny_opt_model_path, tmp_path, monkeypatch):
-        """Test that stream_offload_blocks records offloaded blocks when enabled."""
+        """Test that _stream_offload_blocks records offloaded blocks when enabled."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
@@ -115,13 +114,15 @@ class TestCpuStreamOffloadBlocks:
         )
 
         dummy_block = torch.nn.Linear(4, 4)
-        monkeypatch.setattr(model_module, "get_module", lambda _model, _name: dummy_block)
-        monkeypatch.setattr(model_module, "init_cpu_offload_dir", lambda _compressor: str(tmp_path))
+        # Monkeypatch get_module used by _stream_offload_blocks in base.py
+        from auto_round.compressors import base as base_module
+        monkeypatch.setattr(base_module, "get_module", lambda _model, _name: dummy_block)
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
-        monkeypatch.setattr(model_module, "clear_module_weights", lambda *_args, **_kwargs: None)
 
-        stream_offload_blocks(autoround, [["model.layers.0"]])
-        assert "model.layers.0" in autoround._offloaded_blocks
+        # Force the offloader to think it has a tempdir already
+        autoround._offloader._tempdir = str(tmp_path)
+        autoround._stream_offload_blocks([["model.layers.0"]])
+        assert autoround._offloader.has("model.layers.0")
 
 
 class TestCpuStreamLoss:

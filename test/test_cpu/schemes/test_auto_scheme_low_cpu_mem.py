@@ -19,18 +19,14 @@ This tests the disk offload mechanism for AutoScheme that reduces CPU RAM usage
 by offloading block weights to disk during gradient computation.
 """
 
-import os
 import shutil
 
 import pytest
 import torch
 
 from auto_round import AutoRound, AutoScheme
-from auto_round.auto_scheme.delta_loss import (
-    AutoSchemeOffloadContext,
-    _clear_module_weights,
-    _group_layers_by_block,
-)
+from auto_round.auto_scheme.delta_loss import _group_layers_by_block
+from auto_round.utils.offload import AutoSchemeOffloadContext, _clear_submodule_weights as _clear_module_weights
 from auto_round.auto_scheme.utils import compute_layer_bits
 from auto_round.utils import get_block_names, get_module
 
@@ -42,186 +38,72 @@ class TestAutoSchemeOffloadContext:
         """Test that context is properly initialized when disabled."""
         ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
         assert ctx.low_cpu_mem_usage is False
-        assert ctx._offload_tempdir is None
-        assert ctx._offloaded_blocks == {}
+        assert len(ctx._cleared_blocks) == 0
 
     def test_context_init_enabled(self):
         """Test that context is properly initialized when enabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
+        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir="/tmp/fake")
         assert ctx.low_cpu_mem_usage is True
-        assert ctx._offload_tempdir is None
-        assert ctx._offloaded_blocks == {}
-
-    def test_init_offload_dir_disabled(self):
-        """Test that init_offload_dir returns None when disabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
-        result = ctx.init_offload_dir()
-        assert result is None
-        assert ctx._offload_tempdir is None
-
-    def test_init_offload_dir_enabled(self):
-        """Test that init_offload_dir creates temp directory when enabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            result = ctx.init_offload_dir()
-            assert result is not None
-            assert os.path.isdir(result)
-            assert "autoscheme_offload_" in result
-        finally:
-            ctx.cleanup()
+        assert ctx.model_dir == "/tmp/fake"
+        assert len(ctx._cleared_blocks) == 0
 
     def test_offload_block_weights_disabled(self):
         """Test that offload_block_weights does nothing when disabled."""
         ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
         module = torch.nn.Linear(4, 4)
+        original_numel = module.weight.numel()
         ctx.offload_block_weights("test_block", module)
-        assert ctx._offloaded_blocks == {}
+        assert module.weight.numel() == original_numel  # unchanged
 
     def test_offload_block_weights_enabled(self):
-        """Test that offload_block_weights saves weights to disk."""
+        """Test that offload_block_weights clears weights from memory."""
         ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            module = torch.nn.Linear(4, 4)
-            ctx.offload_block_weights("test_block", module)
+        module = torch.nn.Linear(4, 4)
+        ctx.offload_block_weights("test_block", module)
 
-            assert "test_block" in ctx._offloaded_blocks
-            metadata = ctx._offloaded_blocks["test_block"]
-            assert "save_path" in metadata
-            assert os.path.exists(metadata["save_path"])
-
-            # Verify weight was cleared
-            assert module.weight.numel() == 0
-        finally:
-            ctx.cleanup()
+        # Verify weight was cleared
+        assert module.weight.numel() == 0
+        # Verify tracking
+        assert "test_block" in ctx._cleared_blocks
 
     def test_load_block_weights_disabled(self):
         """Test that load_block_weights does nothing when disabled."""
         ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
         module = torch.nn.Linear(4, 4)
-        ctx.load_block_weights("test_block", module)
+        ctx.load_block_weights("test_block", module)  # should not raise
 
-    def test_offload_and_load_block_weights(self):
-        """Test full cycle of offloading and loading block weights."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            module = torch.nn.Linear(4, 4)
-            original_weight = module.weight.clone()
-            original_bias = module.bias.clone()
+    def test_load_block_weights_no_model_dir(self):
+        """Test that load_block_weights does nothing when model_dir is None."""
+        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=None)
+        module = torch.nn.Linear(4, 4)
+        ctx.load_block_weights("test_block", module)  # should not raise
 
-            # Offload
-            ctx.offload_block_weights("test_block", module)
-            assert module.weight.numel() == 0
-
-            # Load back
-            ctx.load_block_weights("test_block", module)
-
-            # Verify weights are restored
-            assert module.weight.shape == original_weight.shape
-            assert torch.allclose(module.weight, original_weight)
-            assert module.bias.shape == original_bias.shape
-            assert torch.allclose(module.bias, original_bias)
-        finally:
-            ctx.cleanup()
-
-    def test_offload_block_weights_idempotent(self):
-        """Test that offloading same block twice doesn't create duplicate files."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            module = torch.nn.Linear(4, 4)
-
-            ctx.offload_block_weights("test_block", module)
-            first_path = ctx._offloaded_blocks["test_block"]["save_path"]
-
-            # Create new module and try to offload again
-            module2 = torch.nn.Linear(4, 4)
-            ctx.offload_block_weights("test_block", module2)
-
-            # Should still have same path (second offload skipped)
-            assert ctx._offloaded_blocks["test_block"]["save_path"] == first_path
-        finally:
-            ctx.cleanup()
-
-    def test_cleanup(self):
-        """Test that cleanup removes temp directory."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        ctx.init_offload_dir()
-        tempdir = ctx._offload_tempdir
-        assert os.path.isdir(tempdir)
-
-        ctx.cleanup()
-
-        assert not os.path.exists(tempdir)
-        assert ctx._offload_tempdir is None
-        assert ctx._offloaded_blocks == {}
-
-    def test_save_and_load_original_block_weights(self):
-        """Test saving and loading original (unwrapped) block weights."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            module = torch.nn.Linear(8, 4)
-            original_weight = module.weight.data.clone()
-
-            ctx.save_original_block_weights("block.0", module)
-            assert "block.0" in ctx._original_blocks
-
-            # Clear and load back
-            _clear_module_weights(module)
-            assert module.weight.numel() == 0
-
-            ctx.load_original_block_weights("block.0", module)
-            assert module.weight.numel() == original_weight.numel()
-            assert torch.allclose(module.weight.data, original_weight)
-        finally:
-            ctx.cleanup()
-
-    def test_save_original_idempotent(self):
-        """Test that saving original block twice doesn't overwrite."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            module = torch.nn.Linear(4, 4)
-            ctx.save_original_block_weights("b", module)
-            path1 = ctx._original_blocks["b"]["save_path"]
-
-            # Modify module and save again — should be a no-op
-            module.weight.data.fill_(999.0)
-            ctx.save_original_block_weights("b", module)
-            path2 = ctx._original_blocks["b"]["save_path"]
-            assert path1 == path2
-        finally:
-            ctx.cleanup()
-
-    def test_reset_scheme_state(self):
-        """Test that reset_scheme_state clears wrapped state but keeps originals."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            module = torch.nn.Linear(4, 4)
-            ctx.save_original_block_weights("b", module)
-            ctx.offload_block_weights("b", module)
-
-            assert len(ctx._offloaded_blocks) == 1
-            assert len(ctx._original_blocks) == 1
-
-            ctx.reset_scheme_state()
-            assert len(ctx._offloaded_blocks) == 0
-            assert len(ctx._original_blocks) == 1
-        finally:
-            ctx.cleanup()
-
-    def test_cleanup_removes_both_dirs(self):
-        """Test that cleanup removes both original and offload directories."""
+    def test_cleanup_resets_tracking(self):
+        """Test that cleanup resets internal tracking state."""
         ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
         module = torch.nn.Linear(4, 4)
-        ctx.save_original_block_weights("b", module)
-        ctx.offload_block_weights("b", module)
-
-        orig_dir = ctx._original_dir
-        offload_dir = ctx._offload_tempdir
-        assert os.path.isdir(orig_dir)
-        assert os.path.isdir(offload_dir)
+        ctx.offload_block_weights("test", module)
+        assert len(ctx._cleared_blocks) == 1
 
         ctx.cleanup()
-        assert not os.path.exists(orig_dir)
-        assert not os.path.exists(offload_dir)
+        assert len(ctx._cleared_blocks) == 0
+
+    def test_reset_scheme_state(self):
+        """Test that reset_scheme_state clears tracking."""
+        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
+        module = torch.nn.Linear(4, 4)
+        ctx.offload_block_weights("b", module)
+        assert len(ctx._cleared_blocks) == 1
+
+        ctx.reset_scheme_state()
+        assert len(ctx._cleared_blocks) == 0
+
+    def test_model_dir_property(self):
+        """Test model_dir getter/setter."""
+        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir="/path/a")
+        assert ctx.model_dir == "/path/a"
+        ctx.model_dir = "/path/b"
+        assert ctx.model_dir == "/path/b"
 
 
 class TestClearModuleWeights:
@@ -239,7 +121,7 @@ class TestClearModuleWeights:
         """Test that clearing weights caches the original numel."""
         module = torch.nn.Linear(32, 16)
         expected = 32 * 16
-        _clear_module_weights(module)
+        _clear_module_weights(module, cache_numel=True)
         assert hasattr(module, "_cached_weight_numel")
         assert module._cached_weight_numel == expected
 
@@ -254,7 +136,7 @@ class TestClearModuleWeights:
         layer.super_bits = None
 
         bits_before, _ = compute_layer_bits(layer, False)
-        _clear_module_weights(layer)
+        _clear_module_weights(layer, cache_numel=True)
         bits_after, _ = compute_layer_bits(layer, False)
         assert bits_before == bits_after
 
@@ -388,8 +270,8 @@ class TestAutoSchemeIntegration:
 class TestAutoSchemeOffloadContextWithModel:
     """Tests for AutoSchemeOffloadContext with actual model blocks."""
 
-    def test_offload_model_block(self, tiny_opt_model_path):
-        """Test offloading an actual model block."""
+    def test_clear_and_load_model_block(self, tiny_opt_model_path):
+        """Test clearing and reloading an actual model block from checkpoint files."""
         from transformers import AutoModelForCausalLM
 
         model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float32)
@@ -401,29 +283,28 @@ class TestAutoSchemeOffloadContextWithModel:
         block_name = block_names[0]
         block = get_module(model, block_name)
 
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            # Get original param count
-            original_params = sum(p.numel() for p in block.parameters())
+        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=tiny_opt_model_path)
 
-            # Offload
-            ctx.offload_block_weights(block_name, block)
+        # Get original weights
+        original_params = sum(p.numel() for p in block.parameters())
+        original_weight = next(block.parameters()).data.clone()
 
-            # Check that weights were cleared
-            current_params = sum(p.numel() for p in block.parameters())
-            assert current_params < original_params
+        # Clear
+        ctx.offload_block_weights(block_name, block)
+        current_params = sum(p.numel() for p in block.parameters())
+        assert current_params < original_params
 
-            # Load back
-            ctx.load_block_weights(block_name, block)
+        # Load back from model files
+        ctx.load_block_weights(block_name, block)
+        restored_params = sum(p.numel() for p in block.parameters())
+        assert restored_params == original_params
 
-            # Check params are restored
-            restored_params = sum(p.numel() for p in block.parameters())
-            assert restored_params == original_params
-        finally:
-            ctx.cleanup()
+        # Verify values match
+        restored_weight = next(block.parameters()).data
+        assert torch.allclose(restored_weight, original_weight)
 
-    def test_offload_all_blocks(self, tiny_opt_model_path):
-        """Test offloading all model blocks."""
+    def test_clear_all_and_load_all(self, tiny_opt_model_path):
+        """Test clearing all model blocks and loading them all back."""
         from transformers import AutoModelForCausalLM
 
         model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float32)
@@ -432,17 +313,24 @@ class TestAutoSchemeOffloadContextWithModel:
         if len(block_names) == 0:
             pytest.skip("Model has no blocks")
 
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        try:
-            # Offload all blocks
-            ctx.offload_all_blocks(model, block_names)
+        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=tiny_opt_model_path)
 
-            # Verify all blocks were offloaded
-            for block_name in block_names:
-                assert block_name in ctx._offloaded_blocks
-                block = get_module(model, block_name)
-                # Check weights are cleared (should have very few params)
-                block_params = sum(p.numel() for p in block.parameters())
-                assert block_params == 0 or block_params < 100  # Allow for some edge cases
-        finally:
-            ctx.cleanup()
+        # Save original param counts
+        original_counts = {}
+        for bn in block_names:
+            blk = get_module(model, bn)
+            original_counts[bn] = sum(p.numel() for p in blk.parameters())
+
+        # Clear all
+        ctx.clear_all_original_blocks(model, block_names)
+        for bn in block_names:
+            blk = get_module(model, bn)
+            block_params = sum(p.numel() for p in blk.parameters())
+            assert block_params == 0
+
+        # Load all back
+        ctx.load_all_original_blocks(model, block_names)
+        for bn in block_names:
+            blk = get_module(model, bn)
+            block_params = sum(p.numel() for p in blk.parameters())
+            assert block_params == original_counts[bn]

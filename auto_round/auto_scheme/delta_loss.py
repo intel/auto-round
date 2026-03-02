@@ -14,16 +14,12 @@
 
 import copy
 import gc
-import os
-import shutil
-import tempfile
 from dataclasses import asdict
 from functools import wraps
-from typing import Any, Iterable, Optional, Union
+from typing import Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model
-from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -61,6 +57,7 @@ from auto_round.utils import (
     to_device,
 )
 from auto_round.utils.device import MemoryMonitor
+from auto_round.utils.offload import AutoSchemeOffloadContext
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
@@ -80,242 +77,6 @@ def _group_layers_by_block(quant_layer_names, block_names):
         if not matched:
             non_block.append(name)
     return groups, non_block
-
-
-# ============================================================================
-# CPU RAM Offload Management for AutoScheme
-# ============================================================================
-
-
-class AutoSchemeOffloadContext:
-    """Manages disk offload state for AutoScheme to reduce CPU RAM usage.
-
-    Maintains two separate on-disk stores:
-      - *original* weights (unwrapped, saved once at the start)
-      - *wrapped* weights (saved per-scheme iteration for forward/backward)
-
-    This allows block weights to stay on disk between scheme iterations,
-    keeping only one block in RAM at a time.
-    """
-
-    def __init__(self, low_cpu_mem_usage: bool = False):
-        self.low_cpu_mem_usage = low_cpu_mem_usage
-        # Wrapped-state storage (changes every scheme iteration)
-        self._offload_tempdir: Optional[str] = None
-        self._offloaded_blocks: dict[str, dict] = {}
-        # Original-state storage (saved once, read many)
-        self._original_dir: Optional[str] = None
-        self._original_blocks: dict[str, dict] = {}
-
-    # ------------------------------------------------------------------
-    # Directory helpers
-    # ------------------------------------------------------------------
-    def init_offload_dir(self) -> Optional[str]:
-        """Initialize the temporary directory for wrapped-state offload."""
-        if not self.low_cpu_mem_usage:
-            return None
-        if self._offload_tempdir is None:
-            self._offload_tempdir = tempfile.mkdtemp(prefix="autoscheme_offload_")
-            logger.info(f"AutoScheme CPU offload directory: {self._offload_tempdir}")
-        return self._offload_tempdir
-
-    def _init_original_dir(self) -> str:
-        """Initialize the temporary directory for original-weight storage."""
-        if self._original_dir is None:
-            self._original_dir = tempfile.mkdtemp(prefix="autoscheme_original_")
-        return self._original_dir
-
-    # ------------------------------------------------------------------
-    # Original (unwrapped) weight management — saved once at start
-    # ------------------------------------------------------------------
-    def save_original_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        """Save original (unwrapped) block weights to disk. Skips if already saved."""
-        if not self.low_cpu_mem_usage:
-            return
-        if block_name in self._original_blocks:
-            return
-        orig_dir = self._init_original_dir()
-        safe_name = block_name.replace(".", "_")
-        save_path = os.path.join(orig_dir, f"{safe_name}.safetensors")
-        try:
-            state_dict = {k: v.cpu().contiguous() for k, v in block.state_dict().items()}
-            save_file(state_dict, save_path)
-            self._original_blocks[block_name] = {"save_path": save_path}
-            del state_dict
-        except Exception as e:
-            logger.warning(f"Failed to save original block {block_name}: {e}")
-
-    def _load_state_into_block(self, save_path: str, block: torch.nn.Module) -> None:
-        """Low-level helper: load a safetensors file into *block*."""
-        state_dict = load_file(save_path, device="cpu")
-        for name, param in state_dict.items():
-            parts = name.split(".")
-            target = block
-            try:
-                for part in parts[:-1]:
-                    target = getattr(target, part)
-            except AttributeError:
-                continue  # key belongs to a different module tree (e.g. wrapper vs orig)
-            param_name = parts[-1]
-            if hasattr(target, param_name):
-                old_param = getattr(target, param_name)
-                if isinstance(old_param, torch.nn.Parameter):
-                    setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
-                else:
-                    setattr(target, param_name, param)
-        del state_dict
-
-    def load_original_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        """Load original (unwrapped) weights from disk into *block*."""
-        if not self.low_cpu_mem_usage:
-            return
-        metadata = self._original_blocks.get(block_name)
-        if not metadata:
-            return
-        save_path = metadata["save_path"]
-        if not os.path.exists(save_path):
-            logger.warning(f"Original weights not found: {save_path}")
-            return
-        try:
-            self._load_state_into_block(save_path, block)
-        except Exception as e:
-            logger.warning(f"Failed to load original block {block_name}: {e}")
-
-    def save_and_clear_all_original_blocks(self, model: torch.nn.Module, block_names: list[str]) -> None:
-        """Save all original block weights to disk and clear them from RAM."""
-        if not self.low_cpu_mem_usage:
-            return
-        logger.info("AutoScheme: saving original block weights to disk...")
-        for block_name in block_names:
-            block = get_module(model, block_name)
-            if block is not None:
-                self.save_original_block_weights(block_name, block)
-                for submodule in block.modules():
-                    _clear_module_weights(submodule)
-        gc.collect()
-        clear_memory()
-        logger.info("AutoScheme: original weights saved and cleared")
-
-    def load_all_original_blocks(self, model: torch.nn.Module, block_names: list[str]) -> None:
-        """Load all original block weights back into RAM."""
-        if not self.low_cpu_mem_usage:
-            return
-        for block_name in block_names:
-            block = get_module(model, block_name)
-            if block is not None:
-                self.load_original_block_weights(block_name, block)
-
-    # ------------------------------------------------------------------
-    # Wrapped-state management — re-saved each scheme iteration
-    # ------------------------------------------------------------------
-    def offload_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        """Offload a block's (possibly wrapped) weights to disk."""
-        if not self.low_cpu_mem_usage:
-            return
-        offload_dir = self.init_offload_dir()
-        if offload_dir is None:
-            return
-
-        safe_name = block_name.replace(".", "_")
-        save_path = os.path.join(offload_dir, f"{safe_name}.safetensors")
-
-        already_saved = block_name in self._offloaded_blocks
-
-        try:
-            if not already_saved:
-                state_dict = {k: v.cpu().contiguous() for k, v in block.state_dict().items()}
-                save_file(state_dict, save_path)
-                self._offloaded_blocks[block_name] = {"save_path": save_path}
-                del state_dict
-
-            for submodule in block.modules():
-                _clear_module_weights(submodule)
-        except Exception as e:
-            logger.warning(f"Failed to offload block {block_name}: {e}")
-
-    def load_block_weights(self, block_name: str, block: torch.nn.Module) -> None:
-        """Load wrapped block weights from disk back into memory."""
-        if not self.low_cpu_mem_usage:
-            return
-        metadata = self._offloaded_blocks.get(block_name)
-        if not metadata:
-            return
-        save_path = metadata.get("save_path")
-        if not save_path or not os.path.exists(save_path):
-            logger.warning(f"Cannot load block weights: file {save_path} does not exist")
-            return
-        try:
-            self._load_state_into_block(save_path, block)
-        except Exception as e:
-            logger.warning(f"Failed to load block weights from {save_path}: {e}")
-
-    def offload_all_blocks(self, model: torch.nn.Module, block_names: list[str]) -> None:
-        """Offload all block weights to disk."""
-        if not self.low_cpu_mem_usage:
-            return
-        logger.info("AutoScheme: offloading all block weights to disk for RAM optimization...")
-        for block_name in block_names:
-            block = get_module(model, block_name)
-            if block is not None:
-                self.offload_block_weights(block_name, block)
-        gc.collect()
-        clear_memory()
-        logger.info("AutoScheme: block weights offload complete")
-
-    def reset_scheme_state(self) -> None:
-        """Clear wrapped-state tracking so the next scheme iteration re-saves."""
-        self._offloaded_blocks = {}
-
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
-    def cleanup(self) -> None:
-        """Clean up all temporary directories."""
-        for d in (self._offload_tempdir, self._original_dir):
-            if d and os.path.isdir(d):
-                try:
-                    shutil.rmtree(d)
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup dir {d}: {e}")
-        self._offload_tempdir = None
-        self._offloaded_blocks = {}
-        self._original_dir = None
-        self._original_blocks = {}
-
-
-def _clear_module_weights(module: torch.nn.Module) -> None:
-    """Clear module's weight and bias to free CPU RAM.
-
-    Note: Skips WrapperLayer modules since their weight/bias are properties
-    that delegate to orig_layer. Clearing the actual orig_layer is sufficient.
-    Caches weight.numel() as ``_cached_weight_numel`` before clearing so that
-    ``compute_layer_bits`` can still compute correct results with empty tensors.
-    """
-    if module is None:
-        return
-    # Skip WrapperLayer - its weight is a property, assigning to it would create
-    # an instance attribute shadowing the property. We clear orig_layer directly instead.
-    if hasattr(module, "orig_layer"):
-        return
-    with torch.no_grad():
-        if hasattr(module, "weight") and module.weight is not None:
-            # Cache numel / shape before replacing with empty tensor
-            if module.weight.numel() > 0:
-                module._cached_weight_numel = module.weight.numel()
-                module._cached_weight_shape = tuple(module.weight.shape)
-            if isinstance(module.weight, torch.nn.Parameter):
-                module.weight = torch.nn.Parameter(
-                    torch.empty(0, dtype=module.weight.dtype, device="cpu"), requires_grad=module.weight.requires_grad
-                )
-            else:
-                module.weight = torch.empty(0, dtype=module.weight.dtype, device="cpu")
-        if hasattr(module, "bias") and module.bias is not None:
-            if isinstance(module.bias, torch.nn.Parameter):
-                module.bias = torch.nn.Parameter(
-                    torch.empty(0, dtype=module.bias.dtype, device="cpu"), requires_grad=module.bias.requires_grad
-                )
-            else:
-                module.bias = torch.empty(0, dtype=module.bias.dtype, device="cpu")
 
 
 class AutoSchemeWrapperLinear(WrapperLinear):
@@ -923,8 +684,7 @@ def get_score_for_scheme(
 
             # Clear weights so this block no longer occupies RAM
             block = get_module(model, block_name)
-            for submodule in block.modules():
-                _clear_module_weights(submodule)
+            offload_context.offload_block_weights(block_name, block)
 
         # Handle non-block layers
         for n, m in model.named_modules():
@@ -1070,10 +830,13 @@ def _gen_layer_config(
 
     # Create offload context for CPU RAM optimization
     # Note: low_cpu_mem_usage only works when low_gpu_mem_usage is also enabled,
-    # because disk offloading requires layer-by-layer processing
+    # because it requires layer-by-layer processing
     offload_context = None
     if auto_scheme.low_cpu_mem_usage and auto_scheme.low_gpu_mem_usage:
-        offload_context = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
+        _model_dir = model_name
+        if _model_dir is None and hasattr(model, "config"):
+            _model_dir = getattr(model.config, "_name_or_path", None)
+        offload_context = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=_model_dir)
 
     target_bits = auto_scheme.avg_bits
     model.eval()
@@ -1179,10 +942,10 @@ def _gen_layer_config(
             cal_imatrix(model, dataloader)
             logger.info("finish calculating imatrix")
 
-    # Offload all original block weights to disk before the scheme loop
-    # so that only one block needs to be in RAM at a time during scoring.
+    # Clear all original block weights from memory before the scheme loop.
+    # They will be reloaded from the original checkpoint files on demand.
     if offload_context is not None:
-        offload_context.save_and_clear_all_original_blocks(model, block_name)
+        offload_context.clear_all_original_blocks(model, block_name)
 
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):

@@ -95,7 +95,6 @@ from auto_round.utils import (
     is_moe_model,
     is_quantized_input_module,
     llm_load_model,
-    load_module_weights,
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
@@ -115,16 +114,7 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.utils.model import (
-    cleanup_cpu_offload_dir,
-    discard_offloaded_block,
-    estimate_block_size_gb,
-    init_cpu_offload_dir,
-    load_offloaded_block_weights,
-    offload_block_weights,
-    restore_offloaded_blocks,
-    stream_offload_blocks,
-)
+from auto_round.utils.offload import BlockOffloadManager
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 SERIALIZATION_KEYS = (
@@ -373,8 +363,7 @@ class BaseCompressor(object):
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.cpu_stream_offload_blocks = kwargs.pop("cpu_stream_offload_blocks", False)
         self.cpu_stream_loss = kwargs.pop("cpu_stream_loss", False)
-        self._cpu_offload_tempdir = None
-        self._offloaded_blocks = {}
+        self._offloader = BlockOffloadManager(enabled=low_cpu_mem_usage, prefix="compressor")
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -1401,7 +1390,7 @@ class BaseCompressor(object):
                                 self._shard_writer._flush_shard()
                             block.to("meta")
                         if self.low_cpu_mem_usage:
-                            offload_block_weights(self, block_name, block)
+                            self._offloader.save_and_clear(block_name, block)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1444,6 +1433,27 @@ class BaseCompressor(object):
 
         self.quantized = True
         return self.model, self.layer_config
+
+    def _stream_offload_blocks(self, all_blocks: list[list[str]]) -> None:
+        """Offload all block weights to disk upfront to minimize peak CPU RAM.
+
+        Each block's full ``state_dict`` is saved and then cleared from memory.
+        """
+        if not (self.low_cpu_mem_usage and self.cpu_stream_offload_blocks):
+            return
+        logger.info("stream offloading block weights to disk...")
+        total_offloaded_gb = 0.0
+        for block_names in all_blocks:
+            for block_name in block_names:
+                if self._offloader.has(block_name):
+                    continue
+                block = get_module(self.model, block_name)
+                if block is None:
+                    continue
+                total_offloaded_gb += BlockOffloadManager.estimate_block_size_gb(block)
+                self._offloader.save_and_clear(block_name, block)
+        clear_memory(device_list=self.device_list)
+        logger.info(f"stream offload done, offloaded {total_offloaded_gb:.2f} GB of block weights")
 
     def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
@@ -1567,7 +1577,7 @@ class BaseCompressor(object):
                         self._shard_writer._flush_shard()
                     mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage:
-                    offload_block_weights(self, block_name, block)
+                    self._offloader.save_and_clear(block_name, block)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1732,7 +1742,7 @@ class BaseCompressor(object):
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
         if self.low_cpu_mem_usage:
-            self._offloaded_blocks = {}
+            self._offloader.reset()
 
         def _should_disable_inplace_due_to_layers_outside_block() -> bool:
             return self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn))
@@ -1796,7 +1806,7 @@ class BaseCompressor(object):
             model_size_gb = estimate_model_size_gb(self.model)
             logger.info(f"[Memory] model weights size: {model_size_gb:.2f} GB")
         if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
-            stream_offload_blocks(self, all_blocks)
+            self._stream_offload_blocks(all_blocks)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1843,8 +1853,8 @@ class BaseCompressor(object):
             shard_writer(self, is_finalize=True)
 
         if self.low_cpu_mem_usage:
-            restore_offloaded_blocks(self)
-            cleanup_cpu_offload_dir(self)
+            self._offloader.restore_all(self.model)
+            self._offloader.cleanup()
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -3287,13 +3297,13 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
                 if nblocks == 1:
-                    load_offloaded_block_weights(self, n, get_module(model, n))
+                    self._offloader.load_block(n, get_module(model, n))
                     if i == 0:  # Log only for first block
-                        block_size = estimate_block_size_gb(get_module(model, n))
+                        block_size = BlockOffloadManager.estimate_block_size_gb(get_module(model, n))
                         logger.info(f"[Memory] loaded block weights size: {block_size:.2f} GB")
                 else:
                     for name in names:
-                        load_offloaded_block_weights(self, name, get_module(model, name))
+                        self._offloader.load_block(name, get_module(model, name))
 
             m.config = model.config if hasattr(model, "config") else None
 
@@ -3307,16 +3317,16 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.cpu_stream_offload_blocks:
                 if nblocks == 1:
-                    offload_block_weights(self, n, get_module(model, n))
+                    self._offloader.save_and_clear(n, get_module(model, n))
                 else:
                     for name in names:
-                        offload_block_weights(self, name, get_module(model, name))
+                        self._offloader.save_and_clear(name, get_module(model, name))
             if self.low_cpu_mem_usage and self.cpu_stream_offload_blocks:
                 if nblocks == 1:
-                    discard_offloaded_block(self, n)
+                    self._offloader.discard_and_resave(n, get_module(model, n))
                 else:
                     for name in names:
-                        discard_offloaded_block(self, name)
+                        self._offloader.discard_and_resave(name, get_module(model, name))
             if hasattr(model, "config"):
                 del m.config
             if self.is_immediate_packing:
