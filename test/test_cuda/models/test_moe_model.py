@@ -11,6 +11,8 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeFor
 from auto_round import AutoRound
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 
+from ...helpers import check_version
+
 
 @pytest.fixture
 def setup_gpt_oss():
@@ -50,7 +52,7 @@ def setup_qwen3_vl_moe():
 
     # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
     config.text_config.pad_token_id = None
-
+    # Reduce model depth for faster and cheaper test runs
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -172,6 +174,54 @@ def setup_qwen3():
     model = Qwen3ForCausalLM(config)
     output_dir = "test_quantized_qwen3"
     return model, tokenizer, output_dir, config
+
+
+@pytest.fixture
+def setup_qwen35_moe():
+    """Fixture to set up the Qwen3.5 MoE model, tokenizer, and processor."""
+    from transformers import Qwen3_5MoeForConditionalGeneration
+
+    model_name = "/models/Qwen3.5-35B-A3B"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name)
+    config.text_config.pad_token_id = None
+    config.vision_config.num_hidden_layers = 1
+    config.text_config.num_hidden_layers = 4
+    config.num_hidden_layers = 1  # Reduce layers for testing
+    config.text_config.layer_types = config.text_config.layer_types[
+        : config.text_config.num_hidden_layers
+    ]  # Reduce layers for testing
+    config.text_config.use_cache = False
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = Qwen3_5MoeForConditionalGeneration(config)
+    # model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_name)
+    output_dir = "test_quantized_qwen35_moe"
+    return model, tokenizer, processor, output_dir, config
+
+
+@pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
+def test_qwen3_5_moe(setup_qwen35_moe):
+    model, tokenizer, processor, output_dir, config = setup_qwen35_moe
+    ar = AutoRound(
+        model,
+        tokenizer=tokenizer,
+        processor=processor,
+        nsamples=2,
+        seqlen=32,
+        iters=1,
+    )
+    quantized_model, _ = ar.quantize_and_save(format="auto_round", output_dir=output_dir)
+    assert quantized_model is not None, "Quantized model should not be None."
+    from transformers import Qwen3_5MoeForConditionalGeneration
+
+    loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(output_dir)
+    loaded_model.to("cuda")
+
+    inp = torch.randint(0, 100, (1, 64)).to("cuda")
+    with torch.inference_mode():
+        loaded_out = loaded_model(inp)
+
+    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
