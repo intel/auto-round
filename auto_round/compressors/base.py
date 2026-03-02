@@ -27,9 +27,10 @@ import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from packaging import version
 from torch import autocast
 from tqdm import tqdm
-from transformers import set_seed
+from transformers import AutoConfig, set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -92,6 +93,7 @@ from auto_round.utils import (
     is_debug_mode,
     is_hpex_available,
     is_moe_model,
+    is_moe_model_via_config,
     is_quantized_input_module,
     llm_load_model,
     memory_monitor,
@@ -272,23 +274,35 @@ class BaseCompressor(object):
         self.quantized = False
         self.is_model_patched = False
         if isinstance(model, str):
+            config: Optional[AutoConfig] = None
             try:
-                # config = AutoConfig.from_pretrained(model)
-                self.is_model_patched = apply_model_monkey_patches(model_name=model)
+                config = AutoConfig.from_pretrained(model, trust_remote_code=self.trust_remote_code)
+            except (OSError, EnvironmentError) as e:
+                logger.debug(
+                    "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
+                    "Proceeding without config-based checks.",
+                    model,
+                    e,
+                )
 
-                # TODO excluded  ori_params_moe
-                # if (
-                #     not self.is_model_patched
-                #     and is_moe_model_via_config(config)
-                #     and version.parse(transformers.__version__) >= version.parse("5.0.0")
-                # ):
-                #     logger.warning(
-                #         "This moe model is not optimized by AutoRound yet which may cause large ram usage, "
-                #         "please submit an issue to https://github.com/intel/auto-round/issues"
-                #     )
+            self.is_model_patched = apply_model_monkey_patches(model_name=model)
+            import transformers
 
-            except:
-                pass
+            if (
+                not self.is_model_patched
+                and config is not None
+                and is_moe_model_via_config(config)
+                and version.parse(transformers.__version__) >= version.parse("5.0.0")
+            ):
+                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+
+                model_type = getattr(config, "model_type", None)
+                if model_type is not None and model_type not in BUILTIN_MODULES:
+                    logger.warning(
+                        "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
+                        "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
+                    )
+
             model, tokenizer = llm_load_model(
                 model,
                 platform=platform,
@@ -1341,7 +1355,9 @@ class BaseCompressor(object):
                     for block_name in block_names:
                         pbar.set_description(f"Quantizing {block_name}")
                         block = get_module(self.model, block_name)
+
                         materialize_model_(block)
+
                         for name, m in block.named_modules():
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
@@ -2159,79 +2175,82 @@ class BaseCompressor(object):
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
         else:
             try:
-                if not self.model.device.type == "meta":
-                    if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                        self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
-                    else:
-                        # Change this if new device is supported
-                        if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
-                            # type(self.model._no_split_modules) changes from list to set when transformers > 5.0
-                            no_split_modules = list(getattr(self.model, "_no_split_modules", []))
-                            devices = parse_available_devices(self.device_map)
+                if any(p.device.type == "meta" for p in self.model.parameters()):
+                    materialize_model_(self.model)
 
-                            max_memory = get_max_memory()
-                            new_max_memory = {}
-                            if "cpu" not in devices:
-                                devices.append("cpu")
-                            for device in devices:
-                                if ":" in device:
-                                    device = int(device.split(":")[-1])
-                                elif device == "cpu":
-                                    device = "cpu"
-                                elif isinstance(device, str):
-                                    device = 0
-                                else:
-                                    raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
-                                if device not in max_memory:
-                                    # Skip devices that are not reported by accelerate's max_memory.
-                                    # This is expected when a device is unavailable or cannot provide memory info.
-                                    continue
-                                # Use 90% of the reported max memory to leave headroom for activations,
-                                # temporary tensors, other processes, and allocator fragmentation, reducing
-                                # the chance of runtime OOM while still utilizing most available memory.
-                                new_max_memory[device] = max_memory[device] * 0.9
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
+                else:
+                    # Change this if new device is supported
+                    if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
+                        # type(self.model._no_split_modules) changes from list to set when transformers > 5.0
+                        no_split_modules = list(getattr(self.model, "_no_split_modules", []))
+                        devices = parse_available_devices(self.device_map)
 
-                            # If non-CPU devices were requested but none survived, fall back to CPU caching
-                            # via the OOM handler below, avoiding unnecessary dispatch overhead.
-                            requested_non_cpu = any((d != "cpu") for d in devices)
-                            has_non_cpu_memory = any((k != "cpu") for k in new_max_memory)
-                            if requested_non_cpu and not has_non_cpu_memory:
-                                raise torch.OutOfMemoryError(
-                                    "No non-CPU device available in accelerate's reported memory. "
-                                    "Falling back to CPU caching."
-                                )
+                        max_memory = get_max_memory()
+                        new_max_memory = {}
+                        if "cpu" not in devices:
+                            devices.append("cpu")
+                        for device in devices:
+                            if ":" in device:
+                                device = int(device.split(":")[-1])
+                            elif device == "cpu":
+                                device = "cpu"
+                            elif isinstance(device, str):
+                                device = 0
+                            else:
+                                raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
+                            if device not in max_memory:
+                                # Skip devices that are not reported by accelerate's max_memory.
+                                # This is expected when a device is unavailable or cannot provide memory info.
+                                continue
+                            # Use 90% of the reported max memory to leave headroom for activations,
+                            # temporary tensors, other processes, and allocator fragmentation, reducing
+                            # the chance of runtime OOM while still utilizing most available memory.
+                            new_max_memory[device] = max_memory[device] * 0.9
 
-                            new_max_memory = get_balanced_memory(
-                                self.model,
-                                max_memory=new_max_memory,
-                                no_split_module_classes=no_split_modules,
+                        # If non-CPU devices were requested but none survived, fall back to CPU caching
+                        # via the OOM handler below, avoiding unnecessary dispatch overhead.
+                        requested_non_cpu = any((d != "cpu") for d in devices)
+                        has_non_cpu_memory = any((k != "cpu") for k in new_max_memory)
+                        if requested_non_cpu and not has_non_cpu_memory:
+                            raise torch.OutOfMemoryError(
+                                "No non-CPU device available in accelerate's reported memory. "
+                                "Falling back to CPU caching."
                             )
-                            self.model.tie_weights()
-                            device_map = infer_auto_device_map(
-                                self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
+
+                        new_max_memory = get_balanced_memory(
+                            self.model,
+                            max_memory=new_max_memory,
+                            no_split_module_classes=no_split_modules,
+                        )
+                        self.model.tie_weights()
+                        device_map = infer_auto_device_map(
+                            self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
+                        )
+                        if len(devices) > 1 and "cpu" in device_map.values():
+                            logger.warning(
+                                "Some layers are offloaded to cpu, which may severely impact calibration speed."
+                                " Please consider using more cards."
                             )
-                            if len(devices) > 1 and "cpu" in device_map.values():
+
+                        try:
+
+                            self.model = dispatch_model(self.model, device_map=device_map)
+                        except ValueError as e:
+                            if "offload_dir" in e.__str__():
                                 logger.warning(
-                                    "Some layers are offloaded to cpu, which may severely impact calibration speed."
-                                    " Please consider using more cards."
+                                    f"Due to insufficient resources, disk is used to store the model."
+                                    f" `offload_dir={envs.AR_WORK_SPACE}`"
                                 )
+                                self.model = dispatch_model(
+                                    self.model, device_map=device_map, offload_dir=envs.AR_WORK_SPACE
+                                )
+                            else:
+                                raise
+                    else:
 
-                            try:
-                                materialize_model_(self.model)
-                                self.model = dispatch_model(self.model, device_map=device_map)
-                            except ValueError as e:
-                                if "offload_dir" in e.__str__():
-                                    logger.warning(
-                                        f"Due to insufficient resources, disk is used to store the model."
-                                        f" `offload_dir={envs.AR_WORK_SPACE}`"
-                                    )
-                                    self.model = dispatch_model(
-                                        self.model, device_map=device_map, offload_dir=envs.AR_WORK_SPACE
-                                    )
-                                else:
-                                    raise
-                        else:
-                            self.model = self.model.to(self.device)
+                        self.model = self.model.to(self.device)
 
                 all_inputs = self.cache_inter_data(
                     block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name

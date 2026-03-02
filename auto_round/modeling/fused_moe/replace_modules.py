@@ -32,12 +32,12 @@ from auto_round.utils import (
 BUILTIN_MODULES = {
     # Llama4 has no use_experts_implementation, needs custom replacement to handle fused MoE blocks.
     "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
+    "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
     # Both custom and general solution work.
     "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
-    # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
-    "DeepseekV2Attention": LazyImport(
-        "auto_round.modeling.fused_moe.deepseek_v2"
-    ),  # https://github.com/intel/auto-round/pull/1299
+    "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
 
 
@@ -80,15 +80,12 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
 def _import_required_replacements(model: torch.nn.Module) -> None:
     """Scan model and trigger lazy imports for registered replacement modules."""
     imported = set()
-
-    for _, module in model.named_modules():
-        class_name = module.__class__.__name__
-
-        if class_name in BUILTIN_MODULES and class_name not in imported:
-            # Trigger import by accessing the LazyImport object
-            _ = BUILTIN_MODULES[class_name].__name__  # or any attribute
-            imported.add(class_name)
-            logger.debug(f"Loaded replacement module for {class_name}")
+    if hasattr(model, "config") and hasattr(model.config, "model_type"):
+        model_type = model.config.model_type
+        if model_type in BUILTIN_MODULES:
+            _ = BUILTIN_MODULES[model_type].__name__  # or any attribute
+            imported.add(model_type)
+            logger.debug(f"Loaded replacement module for {model_type}")
 
 
 def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
@@ -106,6 +103,7 @@ def materialize_model_(model: torch.nn.Module) -> None:
             module.materialize_weights()
 
     model.apply(_materialize_module)
+
     # check if any module on meta device remains
     found_meta = False
     for name, param in model.named_parameters():
