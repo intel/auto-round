@@ -188,8 +188,10 @@ def setup_qwen35_moe():
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 4
     config.num_hidden_layers = 1  # Reduce layers for testing
-    config.text_config.layer_types = config.text_config.layer_types[:config.text_config.num_hidden_layers]  # Reduce layers for testing
-    config.text_config.use_cache=False
+    config.text_config.layer_types = config.text_config.layer_types[
+        : config.text_config.num_hidden_layers
+    ]  # Reduce layers for testing
+    config.text_config.use_cache = False
     processor = AutoProcessor.from_pretrained(model_name)
     model = Qwen3_5MoeForConditionalGeneration(config)
     # model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_name)
@@ -231,7 +233,6 @@ def test_qwen3_5_moe(setup_qwen35_moe):
     # print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
-
 
 
 def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
