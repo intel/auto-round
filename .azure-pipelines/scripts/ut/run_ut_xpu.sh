@@ -38,7 +38,7 @@ numactl -C "0-27" -m 0 bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
 echo "##[endgroup]"
 
 echo "##[group]Run LLMC integration test with xpu..."
-uv pip install -r requirements_llmc.txt
+uv pip install -r ./test_xpu/requirements_llmc.txt
 uv pip list
 bash run_xpu_llmc.sh 2>&1 | tee -a "${ut_log_name}"
 echo "##[endgroup]"
