@@ -31,11 +31,11 @@ from auto_round.utils import (
 
 BUILTIN_MODULES = {
     # Llama4 has no use_experts_implementation, needs custom replacement to handle fused MoE blocks.
-    "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
     # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
-    "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
     # Both custom and general solution work.
-    "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
+    "gpt_oss": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
@@ -43,8 +43,8 @@ BUILTIN_MODULES = {
 
 # transformers >= 5.0.0 supports the general linear_loop experts interface.
 if not is_transformers_version_greater_or_equal_5():
-    # Qwen3VLMoeTextSparseMoeBlock custom replacement is only needed for transformers < 5.0.0;
-    BUILTIN_MODULES["Qwen3VLMoeTextSparseMoeBlock"] = LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe")
+    # Qwen3VLMoeTextSparseMoeBlock custom replacement only works with transformers < 5.0.0;
+    BUILTIN_MODULES["qwen3_vl_moe"] = LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe")
 
 
 @dump_mem_usage("Applying general replacements")
