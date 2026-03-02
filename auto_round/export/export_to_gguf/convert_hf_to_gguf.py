@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
 if "NO_LOCAL_GGUF" not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / "gguf-py"))
-import gguf
-from gguf.vocab import MistralTokenizerType, MistralVocab
+import gguf  # pylint: disable=E0401
+from gguf.vocab import MistralTokenizerType, MistralVocab  # pylint: disable=E0401
 
 try:
     from mistral_common.tokens.tokenizers.base import TokenizerVersion  # pyright: ignore[reportMissingImports]
@@ -6574,7 +6574,6 @@ class GemmaModel(TextModel):
             logger.debug(f"Skipping get tensor {name!r} in safetensors so that convert can end normally.")
             return
 
-        # ref: https://github.com/huggingface/transformers/blob/fc37f38915372c15992b540dfcbbe00a916d4fc6/src/transformers/models/gemma/modeling_gemma.py#L89
         if name.endswith("norm.weight"):
             data_torch = data_torch + 1
 
@@ -6616,7 +6615,6 @@ class Gemma2Model(TextModel):
             logger.debug(f"Skipping get tensor {name!r} in safetensors so that convert can end normally.")
             return
 
-        # ref: https://github.com/huggingface/transformers/blob/fc37f38915372c15992b540dfcbbe00a916d4fc6/src/transformers/models/gemma/modeling_gemma.py#L89
         if name.endswith("norm.weight"):
             data_torch = data_torch + 1
 
@@ -7545,9 +7543,6 @@ class MambaModel(TextModel):
         d_conv = self.find_hparam(["conv_kernel", "d_conv"], optional=True) or 4
         d_inner = self.find_hparam(["intermediate_size", "d_inner"], optional=True) or 2 * d_model
         d_state = self.find_hparam(["state_size", "d_state"], optional=True) or 16
-        # ceiling division
-        # ref: https://stackoverflow.com/a/17511341/22827863
-        # ref: https://github.com/state-spaces/mamba/blob/ce59daea3a090d011d6476c6e5b97f6d58ddad8b/mamba_ssm/modules/mamba_simple.py#L58
         dt_rank = self.find_hparam(["time_step_rank", "dt_rank"], optional=True) or -(d_model // -16)
         rms_norm_eps = self.find_hparam(["layer_norm_epsilon", "rms_norm_eps"], optional=True) or 1e-5
         use_dt_b_c_norm = False
@@ -7717,9 +7712,6 @@ class JambaModel(TextModel):
         d_conv = self.find_hparam(["mamba_d_conv"], optional=True) or 4
         d_inner = self.hparams["mamba_expand"] * d_model
         d_state = self.find_hparam(["mamba_d_state"], optional=True) or 16
-        # ceiling division
-        # ref: https://stackoverflow.com/a/17511341/22827863
-        # ref: https://github.com/state-spaces/mamba/blob/ce59daea3a090d011d6476c6e5b97f6d58ddad8b/mamba_ssm/modules/mamba_simple.py#L58
         dt_rank = self.find_hparam(["mamba_dt_rank"], optional=True) or -(d_model // -16)
         rms_norm_eps = self.find_hparam(["layer_norm_epsilon", "rms_norm_eps"], optional=True) or 1e-6
         n_kv_head = self.hparams["num_key_value_heads"]
@@ -7989,7 +7981,6 @@ class OpenELMModel(TextModel):
 
     @staticmethod
     def _make_divisible(v: float | int, divisor: int) -> int:
-        # ref: https://huggingface.co/apple/OpenELM-270M-Instruct/blob/eb111ff2e6724348e5b905984063d4064d4bc579/configuration_openelm.py#L34-L38
         new_v = max(divisor, int(v + divisor / 2) // divisor * divisor)
         # Make sure that round down does not go down by more than 10%.
         if new_v < 0.9 * v:
@@ -9494,8 +9485,6 @@ class ChatGLMModel(TextModel):
 
             text = piece.encode("utf-8")
             score = 0.0
-            # Referencing the tokenizer Python implementation(https://huggingface.co/THUDM/chatglm3-6b/blob/main/tokenization_chatglm.py),
-            # it is only valid if it is less than tokenizer.tokenizer.sp_model.vocab_size()
             if len(piece) != 0 and token_id < tokenizer.tokenizer.sp_model.vocab_size():
                 score = tokenizer.tokenizer.sp_model.get_score(token_id)
 
@@ -10449,11 +10438,8 @@ class GroveMoeModel(TextModel):
         if (moe_intermediate_size := self.hparams.get("moe_intermediate_size")) is not None:
             self.gguf_writer.add_expert_feed_forward_length(moe_intermediate_size)
             logger.info(f"gguf: expert feed forward length = {moe_intermediate_size}")
-        # FIXME?: Hardcoded https://huggingface.co/inclusionAI/GroveMoE-Inst/blob/c4c69e5970d18907b5e6ddccdfd55176fe292df1/modeling_grove_moe.py#L299
         self.gguf_writer.add_expert_chunk_feed_forward_length(self.hparams.get("head_dim") or 128)
-        # FIXME?: Hardcoded https://huggingface.co/inclusionAI/GroveMoE-Inst/blob/c4c69e5970d18907b5e6ddccdfd55176fe292df1/modeling_grove_moe.py#L298
         self.gguf_writer.add_experts_per_group(2)
-        # FIXME?: Hardcoded https://huggingface.co/inclusionAI/GroveMoE-Inst/blob/c4c69e5970d18907b5e6ddccdfd55176fe292df1/modeling_grove_moe.py#L376
         self.gguf_writer.add_expert_group_scale(0.05)
 
     _experts: list[dict[str, Tensor]] | None = None
@@ -10461,7 +10447,6 @@ class GroveMoeModel(TextModel):
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         if name.endswith(".expert_bias"):
-            # FIXME?: Unused https://huggingface.co/inclusionAI/GroveMoE-Inst/blob/c4c69e5970d18907b5e6ddccdfd55176fe292df1/modeling_grove_moe.py#L303
             return
 
         # process the experts separately
@@ -10571,7 +10556,6 @@ class ChameleonModel(TextModel):
 
         yield from super().modify_tensors(data_torch, name, bid)
 
-    # see: https://github.com/huggingface/transformers/blob/72fb02c47dbbe1999ae105319f24631cad6e2e00/src/transformers/models/chameleon/convert_chameleon_weights_to_hf.py#L176-L203
     @staticmethod
     def _reverse_hf_permute(data_torch, n_heads, hidden_dim):
         head_dim = hidden_dim // n_heads
@@ -12207,9 +12191,6 @@ class LazyTorchTensor(gguf.LazyBase):
         torch.float8_e5m2: np.uint8,
     }
 
-    # used for safetensors slices
-    # ref: https://github.com/huggingface/safetensors/blob/079781fd0dc455ba0fe851e2b4507c33d0c0d407/bindings/python/src/lib.rs#L1046
-    # TODO: uncomment U64, U32, and U16, ref: https://github.com/pytorch/pytorch/issues/58734
     _dtype_str_map: dict[str, torch.dtype] = {
         "F64": torch.float64,
         "F32": torch.float32,
