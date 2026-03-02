@@ -216,22 +216,11 @@ def test_qwen3_5_moe(setup_qwen35_moe):
 
     loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(output_dir)
     loaded_model.to("cuda")
-    # quantized_model.to("cuda")
-    # for n, m in quantized_model.named_modules():
-    #     if m.__class__.__name__ == "QuantLinear":
-    #         loaded_m = loaded_model.get_submodule(n)
-    #         assert (loaded_m.weight_packed == m.weight_packed).all()
 
     inp = torch.randint(0, 100, (1, 64)).to("cuda")
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
-    #
-    # # test generation
-    # tokenizer = AutoTokenizer.from_pretrained(output_dir)
-    # text = "There is a girl who likes adventure,"
-    # inputs = tokenizer(text, return_tensors="pt").to(device=loaded_model.device)
-    # print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
-    # clean the output directory after test
+
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
