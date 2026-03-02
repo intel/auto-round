@@ -182,8 +182,10 @@ def is_pytest_mode_compile():
 def is_pytest_mode_lazy():
     return pytest.mode == "lazy"
 
+
 def check_version(lib):
     from transformers.utils.versions import require_version
+
     try:
         require_version(lib)
         return True

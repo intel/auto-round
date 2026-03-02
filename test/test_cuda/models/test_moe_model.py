@@ -10,7 +10,9 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeFor
 
 from auto_round import AutoRound
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+
 from ...helpers import check_version
+
 
 @pytest.fixture
 def setup_gpt_oss():
@@ -58,9 +60,6 @@ def setup_qwen3_vl_moe():
     model = Qwen3VLMoeForConditionalGeneration(config)
     output_dir = "test_quantized_qwen3_vl_moe"
     return model, tokenizer, processor, output_dir, config
-
-
-
 
 
 # def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
@@ -181,6 +180,7 @@ def setup_qwen3():
 def setup_qwen35_moe():
     """Fixture to set up the qwen3 model and tokenizer."""
     from transformers import Qwen3_5MoeForConditionalGeneration
+
     model_name = "/models/Qwen3.5-35B-A3B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
@@ -194,6 +194,7 @@ def setup_qwen35_moe():
     model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_name)
     output_dir = "test_quantized_qwen35_moe"
     return model, tokenizer, processor, output_dir, config
+
 
 @pytest.mark.skipif(not check_version("transformers>5.2.0"), reason="requires transformers >= 5.2.0")
 def test_qwen3_5_moe(setup_qwen35_moe):
@@ -209,6 +210,7 @@ def test_qwen3_5_moe(setup_qwen35_moe):
     quantized_model, _ = ar.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
     from transformers import Qwen3_5MoeForConditionalGeneration
+
     loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(output_dir)
     loaded_model.to("cuda")
     quantized_model.to("cuda")
@@ -228,6 +230,7 @@ def test_qwen3_5_moe(setup_qwen35_moe):
     print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
+
 
 #
 # def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
