@@ -79,13 +79,21 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
 
 def _import_required_replacements(model: torch.nn.Module) -> None:
     """Scan model and trigger lazy imports for registered replacement modules."""
-    imported = set()
+    if not is_custom_model(model):
+        return
+    model_type = model.config.model_type
+    _ = BUILTIN_MODULES[model_type].__name__  # Trigger lazy import
+    logger.debug(f"Loaded replacement module for {model_type}")
+
+
+def is_custom_model(model: torch.nn.Module) -> bool:
+    """Check if the model has a custom replacement registered via BUILTIN_MODULES.
+
+    Returns True if the model's model_type matches a key in BUILTIN_MODULES.
+    """
     if hasattr(model, "config") and hasattr(model.config, "model_type"):
-        model_type = model.config.model_type
-        if model_type in BUILTIN_MODULES:
-            _ = BUILTIN_MODULES[model_type].__name__  # or any attribute
-            imported.add(model_type)
-            logger.debug(f"Loaded replacement module for {model_type}")
+        return model.config.model_type in BUILTIN_MODULES
+    return False
 
 
 def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
@@ -125,16 +133,6 @@ def release_original_module_(model: torch.nn.Module) -> None:
             module.release_original_module()
 
     model.apply(_clear_source_module)
-
-
-def _has_meta_params_or_buffers(model: PreTrainedModel) -> bool:
-    for _, param in model.named_parameters():
-        if param.device.type == "meta":
-            return True
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "meta":
-            return True
-    return False
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
@@ -295,8 +293,9 @@ def apply_replacements(
     _log_first_moe_block(model, "before replacement")
 
     # Custom replacements first
-    _apply_custom_replacements(model)
-    if auto_detect_moe:
+    if is_custom_model(model):
+        _apply_custom_replacements(model)
+    if auto_detect_moe and is_transformers_version_greater_or_equal_5():
         _handle_moe_modules(model)
 
     _log_first_moe_block(model, "after replacement")
