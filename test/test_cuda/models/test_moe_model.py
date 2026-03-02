@@ -199,7 +199,7 @@ def setup_qwen35_moe():
     return model, tokenizer, processor, output_dir, config
 
 
-@pytest.mark.skipif(not check_version("transformers>5.2.0"), reason="requires transformers >= 5.2.0")
+@pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
 def test_qwen3_5_moe(setup_qwen35_moe):
     model, tokenizer, processor, output_dir, config = setup_qwen35_moe
     ar = AutoRound(
