@@ -7,14 +7,14 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import (
+
+from ...envs import (
     require_autogptq,
     require_awq,
     require_greater_than_050,
     require_ipex,
     require_package_version_ut,
 )
-
 from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, model_infer
 
 

@@ -9,8 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils.versions import require_version
 
 from auto_round import AutoRound, AutoRoundAdam
-from auto_round.testing_utils import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
 
+from ...envs import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
 from ...helpers import evaluate_accuracy, get_model_path
 
 
@@ -41,14 +41,12 @@ class TestMainFunc:
 
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.35, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
         ##test auto_gptq format
         autoround.save_quantized(self.save_dir, format="auto_gptq", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.35, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_optimum
@@ -63,8 +61,7 @@ class TestMainFunc:
 
         ##test auto_awq format
         autoround.save_quantized(self.save_dir, format="auto_awq", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.35, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -84,8 +81,7 @@ class TestMainFunc:
 
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.35, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -106,8 +102,7 @@ class TestMainFunc:
 
         ##test auto_awq format
         autoround.save_quantized(self.save_dir, format="auto_awq", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.35, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -128,8 +123,7 @@ class TestMainFunc:
 
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.34, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.34, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_asym(self):  ##need to install false
@@ -146,8 +140,7 @@ class TestMainFunc:
 
         ##test auto_round format
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
-        model_args = f"pretrained={self.save_dir}"
-        evaluate_accuracy(model="hf", model_args=model_args, threshold=0.35, batch_size="auto")
+        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_attention_mask_lm_head(self, tiny_qwen_moe_model_path):

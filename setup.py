@@ -16,7 +16,7 @@ try:
 except Exception as error:
     assert False, "Error: Could not open '%s' due %s\n" % (filepath, error)
 
-# All BUILD_* flags are initially set to `False`` and
+# All BUILD_* flags are initially set to `False` and
 # will be updated to `True` if the corresponding environment check passes.
 PYPI_RELEASE = os.environ.get("PYPI_RELEASE", None)
 BUILD_HPU_ONLY = os.environ.get("BUILD_HPU_ONLY", "0") == "1"
@@ -137,7 +137,6 @@ if __name__ == "__main__":
 
     package_name = "auto-round"
 
-    # From v0.9.3, auto-round-hpu will be published to replace auto-round-lib.
     hpu_build = "hpu" in sys.argv
     if hpu_build:
         sys.argv.remove("hpu")

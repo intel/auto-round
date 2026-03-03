@@ -272,7 +272,10 @@ def llm_load_model(
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
     from auto_round.utils.device import (
         _use_hpu_compile_mode,
+        fake_cuda_for_hpu,
+        fake_triton_for_hpu,
         get_device_and_parallelism,
+        is_hpex_available,
         override_cuda_device_capability,
     )
 
@@ -289,13 +292,15 @@ def llm_load_model(
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
         logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
 
-    if _use_hpu_compile_mode():
-        model = model_cls.from_pretrained(
-            pretrained_model_name_or_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
-            device_map="auto" if use_auto_mapping else None,
-        )
+    if is_hpex_available():
+        # For loading FP8 model on HPU
+        with fake_cuda_for_hpu(), fake_triton_for_hpu(), override_cuda_device_capability():
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=trust_remote_code,
+                device_map="auto" if use_auto_mapping else None,
+            )
     else:
         try:
             model = model_cls.from_pretrained(
@@ -1428,7 +1433,6 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
 def copy_python_files_from_model_cache(model, save_path: str):
     config = model.config
-    cache_path = None
     if hasattr(config, "_name_or_path"):
         import os
         import shutil
@@ -1436,14 +1440,13 @@ def copy_python_files_from_model_cache(model, save_path: str):
         from huggingface_hub import hf_hub_download
 
         if version.parse(transformers.__version__) < version.parse("5.0.0"):
-            from transformers import TRANSFORMERS_CACHE
+            from transformers.utils import TRANSFORMERS_CACHE
 
-            cache_dir = TRANSFORMERS_CACHE
+            cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
+        else:
             from huggingface_hub.constants import HF_HUB_CACHE
 
-            cache_dir = os.environ.get("HF_HOME") or HF_HUB_CACHE
-
-            cache_dir = os.environ.get("HF_HOME", None)
+            cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
         from transformers.utils import http_user_agent
 
         cache_path = config._name_or_path
