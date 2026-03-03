@@ -19,7 +19,6 @@ from collections import OrderedDict
 import torch
 
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.moe_experts_interface import _remap_expert_key
 from auto_round.utils import get_lm_head_name, get_module
 
 
@@ -96,7 +95,6 @@ class ShardWriter:
             self._add_tensor(param_name, v)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
-        name = _remap_expert_key(name)
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size

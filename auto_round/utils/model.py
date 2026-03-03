@@ -1237,10 +1237,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         expert_input_proj_names = get_expert_input_proj_names(sub_module)
 
         # Check experts structure and handle accordingly
-        if _is_unfused_experts_module(sub_module.experts):
-            # Unfused experts: gate_up_proj/down_proj are nn.ModuleList
-            _set_amax_for_unfused_experts(sub_module.experts, attr_name=attr_name)
-        elif _is_fused_experts_module(sub_module.experts):
+        if _is_fused_experts_module(sub_module.experts):
             # Fused experts: 3D Parameters (e.g., DeepseekV2Experts)
             # For fused experts, act_max is set on the parent MOE module, not individual experts
             # Skip processing here as they don't have individual Linear layers to calibrate
@@ -1281,13 +1278,6 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
             )
 
 
-def _is_unfused_experts_module(module: torch.nn.Module) -> bool:
-    """Check if the module is an unfused experts module (has ModuleList gate_up_proj/down_proj)."""
-    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
-        return False
-    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(module.down_proj, torch.nn.ModuleList)
-
-
 def _is_fused_experts_module(module: torch.nn.Module) -> bool:
     """Check if the module is a fused experts module (has 3D Parameter gate_up_proj/down_proj)."""
     if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
@@ -1298,29 +1288,6 @@ def _is_fused_experts_module(module: torch.nn.Module) -> bool:
         and module.gate_up_proj.dim() == 3
         and module.down_proj.dim() == 3
     )
-
-
-def _set_amax_for_unfused_experts(experts_module: torch.nn.Module, attr_name: str = "act_max"):
-    """Set amax for unfused experts module with ModuleList attributes.
-
-    This handles experts modules that have been unfused to have:
-    - gate_up_proj: nn.ModuleList of nn.Linear (input projections, unified scale)
-    - down_proj: nn.ModuleList of nn.Linear (output projections)
-    """
-    if hasattr(experts_module, "gate_up_proj") and isinstance(experts_module.gate_up_proj, torch.nn.ModuleList):
-        unify_scale = envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
-        set_amax_for_uncalibrated_experts(
-            list(experts_module.gate_up_proj),
-            attr_name=attr_name,
-            unify_all=unify_scale,
-        )
-
-    if hasattr(experts_module, "down_proj") and isinstance(experts_module.down_proj, torch.nn.ModuleList):
-        set_amax_for_uncalibrated_experts(
-            list(experts_module.down_proj),
-            attr_name=attr_name,
-            unify_all=False,
-        )
 
 
 def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: str = "act_max"):
@@ -1393,17 +1360,8 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 
     experts = moe_module.experts
 
-    # Handle unfused experts (ModuleList)
-    if _is_unfused_experts_module(experts):
-        for proj_list in [getattr(experts, "gate_up_proj", None), getattr(experts, "down_proj", None)]:
-            if proj_list is not None and isinstance(proj_list, torch.nn.ModuleList):
-                for layer in proj_list:
-                    amax = get_nested_attr(layer, attr_name)
-                    if amax is not None:
-                        amax_values.append(amax)
-
     # Handle iterable experts (list of modules)
-    elif isinstance(experts, collections.abc.Iterable):
+    if isinstance(experts, collections.abc.Iterable):
         expert_linear_names = get_expert_linear_names(moe_module)
         for expert in experts:
             for linear_name in expert_linear_names:
