@@ -215,6 +215,7 @@ class MLLMCompressor(BaseCompressor):
                 "please remove --quant_nontext_module and retry if you meet some errors."
             )
             import importlib.util
+
             missing_libs = []
             required_libs = {
                 "pillow": "PIL",
