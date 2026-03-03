@@ -36,11 +36,8 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "internvl_chat",
     "glm4v_moe",
     "qwen3_vl_moe",
-<<<<<<< lvl/support_omni
     "qwen3_omni_moe",
-=======
     "gemma3",
->>>>>>> main
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -376,7 +373,6 @@ register_ignore_layers(
     ],
 )
 
-<<<<<<< lvl/support_omni
 # Qwen3-Omni MoE (covers both thinker and talker MOE blocks)
 register_ignore_layers(
     matchers=[
@@ -387,7 +383,6 @@ register_ignore_layers(
     ],
 )
 
-=======
 register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"qwen3_moe", mode="full"),
@@ -406,8 +401,6 @@ register_ignore_layers(
     ],
 )
 
-
->>>>>>> main
 # longcat
 register_ignore_layers(
     matchers=[
