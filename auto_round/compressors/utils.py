@@ -103,7 +103,7 @@ def is_dynamic_afp8(ar_or_format: Callable) -> bool:
 
 def is_block_wfp8(ar_or_format: Callable) -> bool:
     return (
-        ar_or_format.weight_block_size is not None
+        isinstance(ar_or_format.group_size, list)
         and ar_or_format.data_type.startswith("fp")
         and ar_or_format.bits == 8
     )

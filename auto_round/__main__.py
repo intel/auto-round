@@ -285,19 +285,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         scheme = self.add_argument_group("Scheme Arguments")
         scheme.add_argument("--bits", default=None, type=int, help="Number of bits for weight quantization. ")
-        scheme.add_argument("--group_size", default=None, type=int, help="Group size for weight quantization.")
+        scheme.add_argument(
+            "--group_size",
+            default=None,
+            type=lambda s: int(s) if s.isdigit() else [int(x.strip()) for x in s.split(',')],
+            help="Group size for weight quantization."
+        )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
         scheme.add_argument(
             "--data_type",
             "--dtype",
             default=None,
             help="Data type for quantization. Options: 'int' for integer, 'mx_fp' for mixed floating-point, etc.",
-        )
-        scheme.add_argument(
-            "--weight_block_size",
-            default=None,
-            type=lambda s: [int(x) for x in s.split(",")],
-            help="block size for weight quantization. (e.g., --weight_block_size 128,128)",
         )
         scheme.add_argument(
             "--act_bits",
@@ -636,7 +635,6 @@ def tune(args):
         group_size=args.group_size,
         sym=sym,
         data_type=args.data_type,
-        weight_block_size=args.weight_block_size,
         act_bits=args.act_bits,
         act_group_size=args.act_group_size,
         act_data_type=args.act_data_type,
@@ -716,7 +714,12 @@ def tune(args):
     elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
     else:
-        if autoround.group_size is not None:
+        if isinstance(autoround.group_size, list):
+            assert (
+                len(autoround.group_size) == 2
+            ), f"Only support 2D group_size, but get {autoround.group_size}"
+            suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
+        else:
             if autoround.group_size <= 0:
                 if "fp" in autoround.act_data_type:
                     suffix = f"afp{autoround.act_bits}"
@@ -724,11 +727,6 @@ def tune(args):
                     suffix = f"a{autoround.act_bits}"
             else:
                 suffix = f"g{autoround.group_size}"
-        elif autoround.weight_block_size is not None:
-            assert (
-                len(autoround.weight_block_size) == 2
-            ), f"Only support 2D weight_block_size, but get {autoround.weight_block_size}"
-            suffix = f"g{autoround.weight_block_size[0]}x{autoround.weight_block_size[1]}"
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
 
     # ======================= Quantize and save model =======================

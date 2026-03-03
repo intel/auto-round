@@ -147,7 +147,6 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-    "weight_block_size",
 )
 
 
@@ -177,7 +176,6 @@ class BaseCompressor(object):
     act_dynamic: bool | None
     super_bits: int | None
     super_group_size: int | None
-    weight_block_size: list | None
 
     def __init__(
         self,
@@ -827,14 +825,12 @@ class BaseCompressor(object):
             raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
             raise ValueError("`act_bits` must be positive")
-        if self.group_size is not None and not (self.group_size == -1 or self.group_size >= 0):
+        if not isinstance(self.group_size, list) and not (self.group_size == -1 or self.group_size >= 0):
             raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if self.group_size is not None and not (self.act_group_size == -1 or self.act_group_size >= 0):
+        if not isinstance(self.group_size, list) and not (self.act_group_size == -1 or self.act_group_size >= 0):
             raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if self.weight_block_size is not None and (
-            not isinstance(self.weight_block_size, list) or len(self.weight_block_size) != 2
-        ):
-            raise ValueError("`weight_block_size` must be a list whose length is 2")
+        if isinstance(self.group_size, list) and len(self.group_size) != 2:
+            raise ValueError("`group_size` must be a list whose length is 2")
         if self.batch_size <= 0:
             raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
@@ -865,7 +861,7 @@ class BaseCompressor(object):
         if is_nv_fp(self.data_type) and (self.group_size != 16):
             logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
 
-        if self.weight_block_size is not None and not is_block_wfp8(self):
+        if isinstance(self.group_size, list) and not is_block_wfp8(self):
             logger.error("only support block-wise quantization for fp8 weight quantization.")
             exit(-1)
 

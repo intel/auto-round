@@ -45,7 +45,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
     orig_shape = data.shape
     pad_len = 0
     if isinstance(group_size, list):
-        assert len(group_size) == 2, f"Only support 2D weight_block_size, but get {len(group_size)}"
+        assert len(group_size) == 2, f"Only support 2D group_size, but get {len(group_size)}"
         M, N = group_size
         pad_len_m = (orig_shape[0] + M - 1) // M * M - orig_shape[0]
         pad_len_n = (orig_shape[1] + M - 1) // N * N - orig_shape[1]
@@ -83,7 +83,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
         torch.Tensor: The tensor restored to its original shape.
     """
     if isinstance(pad_len, list):
-        assert len(pad_len) == 2, f"Only support 2D weight_block_size, but get {len(pad_len)}"
+        assert len(pad_len) == 2, f"Only support 2D group_size, but get {len(pad_len)}"
         return data[: data.shape[0] - pad_len[0], : data.shape[1] - pad_len[1]].reshape(orig_shape)
     if pad_len == 0:
         return data.reshape(orig_shape)
@@ -99,7 +99,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
 
 
 def get_quant_func(
-    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, weight_block_size=None
+    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None
 ) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
@@ -112,7 +112,7 @@ def get_quant_func(
         bits (int): The bit width for the quantization (e.g., 2,4,8).
         sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
         disable_opt_rtn(bool): whether to disable optimized rtn.
-        weight_block_size (list): The block size for weight quantization (e.g., [128, 128]).
+        group_size (list): The block size for weight quantization (e.g., [128, 128]).
 
     Returns:
         function: The quantization function corresponding to the specified parameters.
@@ -138,7 +138,7 @@ def get_quant_func(
             if data_type in QUANT_FUNC_WITH_DTYPE:
                 return QUANT_FUNC_WITH_DTYPE[data_type], data_type
 
-    if weight_block_size is not None:
+    if group_size is not None and isinstance(group_size, list):
         block_data_type = "block_" + dtype
         data_types = [
             block_data_type,

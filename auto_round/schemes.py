@@ -36,7 +36,6 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    weight_block_size: Optional[list] = None
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -248,8 +247,7 @@ FPW8A16 = QuantizationScheme.from_dict(
 FP8_BLOCK = QuantizationScheme.from_dict(
     {
         "bits": 8,
-        "group_size": None,
-        "weight_block_size": [128, 128],
+        "group_size": [128, 128],
         "data_type": "fp",
         "act_bits": 8,
         "act_group_size": -1,
