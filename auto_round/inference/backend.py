@@ -17,7 +17,6 @@ import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from packaging import version
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
@@ -25,8 +24,6 @@ from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
-
-is_transformers_below_v5 = version.parse(get_library_version("transformers")) < version.parse("5.0.0")
 
 BackendInfos = {}
 
