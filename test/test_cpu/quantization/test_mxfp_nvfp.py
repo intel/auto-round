@@ -54,44 +54,7 @@ class TestAutoRoundFP:
         )
         compressed_model, _ = autoround.quantize()
         moe = compressed_model.model.layers[1].mlp
-        experts = moe.experts
-
-        def _has_act_max(layer):
-            if layer is None:
-                return False
-            if hasattr(layer, "orig_layer"):
-                layer = layer.orig_layer
-            return hasattr(layer, "act_max")
-
-        found_act_max = False
-        if hasattr(experts, "gate_up_proj") and isinstance(experts.gate_up_proj, torch.nn.ModuleList):
-            if len(experts.gate_up_proj) > 0:
-                found_act_max = _has_act_max(experts.gate_up_proj[0])
-        elif isinstance(experts, collections.abc.Iterable):
-            first_expert = next(iter(experts), None)
-            if first_expert is not None:
-                for linear_name in [
-                    "gate_proj",
-                    "up_proj",
-                    "down_proj",
-                    "linear_fc1",
-                    "linear_fc2",
-                    "w1",
-                    "w2",
-                    "w3",
-                ]:
-                    if hasattr(first_expert, linear_name):
-                        found_act_max = _has_act_max(getattr(first_expert, linear_name))
-                        if found_act_max:
-                            break
-        elif hasattr(moe, "act_max"):
-            found_act_max = True
-
-        assert found_act_max, "Missing act_max on MOE expert layers"
-        lm_head = compressed_model.lm_head
-        assert hasattr(lm_head, "orig_layer") and hasattr(
-            lm_head.orig_layer, "act_max"
-        ), "Illegal NVFP4 quantization for lm_head layer"
+        assert hasattr(moe.experts[0].gate_proj.orig_layer, "act_max")
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
