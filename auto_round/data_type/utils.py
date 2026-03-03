@@ -84,7 +84,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
     """
     if isinstance(pad_len, list):
         assert len(pad_len) == 2, f"Only support 2D weight_block_size, but get {len(pad_len)}"
-        return data[:data.shape[0] - pad_len[0], :data.shape[1] - pad_len[1]].reshape(orig_shape)
+        return data[: data.shape[0] - pad_len[0], : data.shape[1] - pad_len[1]].reshape(orig_shape)
     if pad_len == 0:
         return data.reshape(orig_shape)
     else:
@@ -98,7 +98,9 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
         return data_new
 
 
-def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, weight_block_size=None) -> tuple[callable, str]:
+def get_quant_func(
+    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, weight_block_size=None
+) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
     This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
@@ -138,9 +140,15 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, weig
 
     if weight_block_size is not None:
         block_data_type = "block_" + dtype
-        data_types = [block_data_type, pad_bits(block_data_type), pad_sym(block_data_type), pad_sym(pad_bits(block_data_type))]
+        data_types = [
+            block_data_type,
+            pad_bits(block_data_type),
+            pad_sym(block_data_type),
+            pad_sym(pad_bits(block_data_type)),
+        ]
 
         from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+
         for data_type in data_types:
             if data_type in QUANT_FUNC_WITH_DTYPE:
                 return QUANT_FUNC_WITH_DTYPE[data_type], data_type

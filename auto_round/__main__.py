@@ -296,7 +296,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         scheme.add_argument(
             "--weight_block_size",
             default=None,
-            type=lambda s: [int(x) for x in s.split(',')],
+            type=lambda s: [int(x) for x in s.split(",")],
             help="block size for weight quantization. (e.g., --weight_block_size 128,128)",
         )
         scheme.add_argument(
@@ -725,7 +725,9 @@ def tune(args):
             else:
                 suffix = f"g{autoround.group_size}"
         elif autoround.weight_block_size is not None:
-            assert len(autoround.weight_block_size) == 2, f"Only support 2D weight_block_size, but get {autoround.weight_block_size}"
+            assert (
+                len(autoround.weight_block_size) == 2
+            ), f"Only support 2D weight_block_size, but get {autoround.weight_block_size}"
             suffix = f"g{autoround.weight_block_size[0]}x{autoround.weight_block_size[1]}"
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
 

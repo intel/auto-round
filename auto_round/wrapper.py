@@ -43,7 +43,9 @@ def get_scale_shape(weight, group_size):
       The shape of the scale tensor to be used for quantization.
     """
     if isinstance(group_size, list):
-        assert len(weight.shape) == len(group_size), f"Expected weight_block_size is {len(weight.shape)}D but get {group_size}"
+        assert len(weight.shape) == len(
+            group_size
+        ), f"Expected weight_block_size is {len(weight.shape)}D but get {group_size}"
         return (weight.shape[0] // group_size[0], weight.shape[1] // group_size[1])
     if group_size == 0:
         return 1
@@ -173,8 +175,8 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             orig_weight = orig_weight.t()
         weight_reshape = (
-            reshape_and_pad_tensor(orig_weight.data, orig_layer.weight_block_size) 
-            if orig_layer.weight_block_size is not None 
+            reshape_and_pad_tensor(orig_weight.data, orig_layer.weight_block_size)
+            if orig_layer.weight_block_size is not None
             else reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
         )
         if self.enable_round_tuning:
@@ -184,9 +186,11 @@ class WrapperLinear(torch.nn.Module):
                         weight_reshape.shape[0] // orig_layer.weight_block_size[0],
                         orig_layer.weight_block_size[0],
                         weight_reshape.shape[1] // orig_layer.weight_block_size[1],
-                        orig_layer.weight_block_size[1]
-                    ).permute(0, 2, 1, 3).amin(dim=(-2, -1)),
-                    max=0
+                        orig_layer.weight_block_size[1],
+                    )
+                    .permute(0, 2, 1, 3)
+                    .amin(dim=(-2, -1)),
+                    max=0,
                 )
                 if orig_layer.weight_block_size is not None
                 else torch.clamp(weight_reshape.min(1)[0], max=0)
@@ -197,9 +201,11 @@ class WrapperLinear(torch.nn.Module):
                         weight_reshape.shape[0] // orig_layer.weight_block_size[0],
                         orig_layer.weight_block_size[0],
                         weight_reshape.shape[1] // orig_layer.weight_block_size[1],
-                        orig_layer.weight_block_size[1]
-                    ).permute(0, 2, 1, 3).amax(dim=(-2, -1)),
-                    min=0
+                        orig_layer.weight_block_size[1],
+                    )
+                    .permute(0, 2, 1, 3)
+                    .amax(dim=(-2, -1)),
+                    min=0,
                 )
                 if orig_layer.weight_block_size is not None
                 else torch.clamp(weight_reshape.max(1)[0], min=0)
@@ -212,8 +218,8 @@ class WrapperLinear(torch.nn.Module):
         )
         # Min-max scale initialization
         shape = (
-            get_scale_shape(orig_weight, orig_layer.weight_block_size) 
-            if orig_layer.weight_block_size is not None 
+            get_scale_shape(orig_weight, orig_layer.weight_block_size)
+            if orig_layer.weight_block_size is not None
             else get_scale_shape(orig_weight, orig_layer.group_size)
         )
         self._init_params("min_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
@@ -289,8 +295,8 @@ class WrapperLinear(torch.nn.Module):
             weight.to(self.device),
             bits=self.orig_layer.bits,
             group_size=(
-                self.orig_layer.weight_block_size 
-                if self.orig_layer.weight_block_size is not None 
+                self.orig_layer.weight_block_size
+                if self.orig_layer.weight_block_size is not None
                 else self.orig_layer.group_size
             ),
             v=value,

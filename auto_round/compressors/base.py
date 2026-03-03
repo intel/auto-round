@@ -831,9 +831,8 @@ class BaseCompressor(object):
             raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
         if self.group_size is not None and not (self.act_group_size == -1 or self.act_group_size >= 0):
             raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if (
-            self.weight_block_size is not None
-            and (not isinstance(self.weight_block_size, list) or len(self.weight_block_size) != 2)
+        if self.weight_block_size is not None and (
+            not isinstance(self.weight_block_size, list) or len(self.weight_block_size) != 2
         ):
             raise ValueError("`weight_block_size` must be a list whose length is 2")
         if self.batch_size <= 0:

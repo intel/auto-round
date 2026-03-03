@@ -51,7 +51,10 @@ def quant_block_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128,
     if tensor_max is None:
         new_M, new_N = tensor.shape
         block_M, block_N = group_size
-        max_tensor = tensor.view(new_M // block_M, block_M, new_N // block_N, block_N).permute(0, 2, 1, 3).amax(dim=(-2, -1)) * max_scale
+        max_tensor = (
+            tensor.view(new_M // block_M, block_M, new_N // block_N, block_N).permute(0, 2, 1, 3).amax(dim=(-2, -1))
+            * max_scale
+        )
     elif isinstance(tensor_max, torch.Tensor):
         max_tensor = tensor_max.to(tensor.device) * max_scale
     else:

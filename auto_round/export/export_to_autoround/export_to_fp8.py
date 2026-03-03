@@ -128,7 +128,7 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         return
 
     orig_device = layer.weight.device
-    scale = layer.scale if layer.weight_block_size is not None else layer.scale.view(-1) 
+    scale = layer.scale if layer.weight_block_size is not None else layer.scale.view(-1)
     zp = layer.zp
     weight = layer.weight
     weight, orig_shape, pad_len = (
@@ -145,12 +145,20 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         if isinstance(zp, torch.Tensor):
             zp = zp.to(packing_device)
         if layer.weight_block_size is not None:
-            q_weight = weight.to(packing_device) / scale.repeat_interleave(layer.weight_block_size[0], dim=0).repeat_interleave(layer.weight_block_size[1], dim=1).to(packing_device) + zp
+            q_weight = (
+                weight.to(packing_device)
+                / scale.repeat_interleave(layer.weight_block_size[0], dim=0)
+                .repeat_interleave(layer.weight_block_size[1], dim=1)
+                .to(packing_device)
+                + zp
+            )
         else:
             q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
         if layer.weight_block_size is not None:
-            q_weight = weight.to(packing_device) / scale.repeat_interleave(layer.weight_block_size[0], dim=0).repeat_interleave(layer.weight_block_size[1], dim=1).to(packing_device)
+            q_weight = weight.to(packing_device) / scale.repeat_interleave(
+                layer.weight_block_size[0], dim=0
+            ).repeat_interleave(layer.weight_block_size[1], dim=1).to(packing_device)
         else:
             q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
@@ -177,7 +185,12 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         input_scale=act_scale,
         dtype=model.dtype,
     )
-    if unsqueeze and isinstance(linear_cls, FP8QLinear) and len(my_linear.weight_scale.shape) and my_linear.weight_scale.shape[0] != 1:
+    if (
+        unsqueeze
+        and isinstance(linear_cls, FP8QLinear)
+        and len(my_linear.weight_scale.shape)
+        and my_linear.weight_scale.shape[0] != 1
+    ):
         my_linear.weight_scale = my_linear.weight_scale.reshape(-1, 1)
 
     my_linear.to(orig_device)
@@ -202,7 +215,9 @@ def save_quantized_as_autoround(
         model = copy.deepcopy(model.to("cpu"))
     quantization_config = serialization_dict
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-    quantization_config["quant_method"] = "auto-round" if serialization_dict.get("weight_block_size", None) is None else "fp8"
+    quantization_config["quant_method"] = (
+        "auto-round" if serialization_dict.get("weight_block_size", None) is None else "fp8"
+    )
     if backend:
         quantization_config["packing_format"] = backend
     if "e5m2" in serialization_dict.get("data_type", "fp8"):

@@ -1,9 +1,12 @@
 import shutil
+
 import pytest
 import torch
 
 from auto_round import AutoRound
+
 from ...helpers import get_model_path
+
 
 class TestAutoRoundBlockFP:
     @classmethod
