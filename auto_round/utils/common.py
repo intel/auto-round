@@ -103,6 +103,7 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
 
     setattr(cls, method_name, classmethod(patched))
 
+
 def normalize_no_split_modules(no_split_modules):
     if not no_split_modules:
         return []
