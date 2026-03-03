@@ -94,15 +94,13 @@ def test_oneshot_application(recipe, tmp_path):
         nsamples=32,
     )
 
-    device = "xpu:0" if torch.xpu.is_available() else "cpu"
-
     oneshot(
         model=model,
         dataset=dataset,
         output_dir=output,
         recipe=recipe,
     )
-    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map="xpu")
 
     # Check that the model is quantized
     # decompress() will attach a quantization_config to the model
@@ -140,8 +138,6 @@ def test_oneshot_with_device_ids(tmp_path):
         nsamples=4,
     )
 
-    device = "xpu:0"
-
     recipe = AutoRoundModifier(
         ignore=["lm_head"],
         iters=10,
@@ -160,7 +156,7 @@ def test_oneshot_with_device_ids(tmp_path):
         output_dir=output,
         recipe=recipe,
     )
-    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map="xpu")
 
     # Check that the model is quantized
     # decompress() will attach a quantization_config to the model
@@ -202,15 +198,13 @@ def test_rtn_oneshot(recipe, tmp_path):
         nsamples=32,
     )
 
-    device = "xpu:0"
-
     oneshot(
         model=model,
         dataset=dataset,
         output_dir=output,
         recipe=recipe,
     )
-    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map="xpu")
 
     quantization_config = model_loaded.config.quantization_config.quantization_config
     assert quantization_config is not None
