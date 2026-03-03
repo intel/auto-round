@@ -8,8 +8,8 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_autogptq, require_greater_than_050, require_greater_than_051
 
+from ...envs import require_autogptq, require_greater_than_050, require_greater_than_051
 from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
