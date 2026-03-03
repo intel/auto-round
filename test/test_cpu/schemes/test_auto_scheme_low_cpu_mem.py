@@ -265,8 +265,9 @@ class TestAutoSchemeOffloadContextWithModel:
 
     def test_clear_and_load_model_block(self, tiny_opt_model_path):
         """Test clearing and reloading an actual model block from checkpoint files."""
-        from auto_round.utils.offload import load_block_from_model_files
         from transformers import AutoModelForCausalLM
+
+        from auto_round.utils.offload import load_block_from_model_files
 
         model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float32)
         block_names = get_block_names(model)[0]

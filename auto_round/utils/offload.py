@@ -137,6 +137,7 @@ def _clear_submodule_weights(module: torch.nn.Module, cache_numel: bool = False)
 # Reload from original model checkpoint
 # =====================================================================
 
+
 def _resolve_model_dir(model_dir: str) -> str:
     """Resolve a model name/path to a local directory containing weight files.
 
@@ -147,6 +148,7 @@ def _resolve_model_dir(model_dir: str) -> str:
     # Try HuggingFace hub cache resolution
     try:
         from huggingface_hub import snapshot_download
+
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
         return model_dir
@@ -167,6 +169,7 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
     single_path = os.path.join(model_dir, "model.safetensors")
     if os.path.exists(single_path):
         from safetensors import safe_open
+
         with safe_open(single_path, framework="pt") as f:
             return {k: "model.safetensors" for k in f.keys()}
 
@@ -225,16 +228,17 @@ def load_block_from_model_files(
         shard_path = os.path.join(model_dir, shard_file)
         if shard_file.endswith(".safetensors"):
             from safetensors import safe_open
+
             with safe_open(shard_path, framework="pt", device="cpu") as f:
                 for name in tensor_names:
                     # Convert absolute name to block-relative name
-                    relative_name = name[len(prefix):]
+                    relative_name = name[len(prefix) :]
                     state_dict[relative_name] = f.get_tensor(name)
         else:
             # pytorch bin format
             full_state = torch.load(shard_path, map_location="cpu")
             for name in tensor_names:
-                relative_name = name[len(prefix):]
+                relative_name = name[len(prefix) :]
                 if name in full_state:
                     state_dict[relative_name] = full_state[name]
             del full_state
@@ -308,9 +312,7 @@ class AutoSchemeOffloadContext:
             block = get_module(model, block_name)
             if block is None:
                 continue
-            handle = block.register_forward_pre_hook(
-                partial(self._pre_forward_hook, block_name=block_name)
-            )
+            handle = block.register_forward_pre_hook(partial(self._pre_forward_hook, block_name=block_name))
             self._hook_handles.append(handle)
 
     def _remove_hooks(self) -> None:
@@ -404,6 +406,7 @@ class AutoSchemeOffloadContext:
                 self._cleared_blocks.add(block_name)
         gc.collect()
         from auto_round.utils import clear_memory
+
         clear_memory()
         logger.info("AutoScheme: block weights cleared")
 
@@ -638,9 +641,7 @@ class BlockOffloadManager:
     # ------------------------------------------------------------------
     # Stream offload
     # ------------------------------------------------------------------
-    def stream_offload_all_blocks(
-        self, model: torch.nn.Module, all_blocks: list[list[str]], device_list=None
-    ) -> None:
+    def stream_offload_all_blocks(self, model: torch.nn.Module, all_blocks: list[list[str]], device_list=None) -> None:
         """Offload all block weights to disk upfront to minimize peak CPU RAM.
 
         Each block's full ``state_dict`` is saved and then cleared from memory.

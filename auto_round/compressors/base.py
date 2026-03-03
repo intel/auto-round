@@ -2919,10 +2919,7 @@ class BaseCompressor(object):
             )
 
             # Log output cache size for first block
-            if (
-                self.low_cpu_mem_usage
-                and not hasattr(self, "_logged_output_size")
-            ):
+            if self.low_cpu_mem_usage and not hasattr(self, "_logged_output_size"):
                 output_size = BlockOffloadManager.estimate_tensor_size_gb(output)
                 self._logged_output_size = True
 

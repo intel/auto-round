@@ -81,7 +81,7 @@ class TestLowCpuMemUsage:
 
         dummy_block = torch.nn.Linear(4, 4)
         # Monkeypatch get_module used by stream_offload_all_blocks in offload.py
-        from auto_round.utils import offload as offload_module
+
         monkeypatch.setattr(offload_module, "get_module", lambda _model, _name: dummy_block)
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
 
