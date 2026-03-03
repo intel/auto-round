@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import copy
-import gc
 from dataclasses import asdict
 from functools import wraps
 from typing import Iterable, Optional, Union
@@ -325,13 +324,7 @@ class MyCustomError(Exception):
 last_grad_input = None
 
 
-def prepare_model_low_gpu(
-    model,
-    block_inputs: dict = None,
-    pbar=None,
-    major_device="cpu",
-    offload_context: Optional[AutoSchemeOffloadContext] = None,
-):
+def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu"):
     block_inputs.clear()
     for n, m in model.named_modules():
         if hasattr(m, "grad_mode"):
@@ -344,10 +337,6 @@ def prepare_model_low_gpu(
 
         @wraps(original_forward)
         def new_forward(*args, **kwargs):
-            # Load block weights from disk if using low_cpu_mem_usage
-            if offload_context is not None:
-                offload_context.load_block_weights(module_name, module)
-
             move_module_to_tuning_device(module, major_device=major_device)
 
             # Call the original forward
@@ -365,10 +354,6 @@ def prepare_model_low_gpu(
 
             module.to("cpu")
             # torch.cuda.empty_cache()
-
-            # Offload block weights back to disk if using low_cpu_mem_usage
-            if offload_context is not None:
-                offload_context.offload_block_weights(module_name, module)
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -392,13 +377,7 @@ def prepare_model_low_gpu(
         module.forward = wrap_forward(module, block_name)
 
 
-def model_forward_low_gpu(
-    model,
-    dataloader,
-    major_device="cuda",
-    pbar=None,
-    offload_context: Optional[AutoSchemeOffloadContext] = None,
-):
+def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
     block_inputs = {}
 
     block_names = get_block_names(model)[0]
@@ -415,9 +394,7 @@ def model_forward_low_gpu(
         raise MyCustomError("Interrupt backward pass")
 
     for data in dataloader:
-        prepare_model_low_gpu(
-            model, block_inputs, major_device=major_device, pbar=pbar, offload_context=offload_context
-        )
+        prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar)
 
         # Register backward hook on the last block
         last_block = get_module(model, block_names[-1])
@@ -452,11 +429,6 @@ def model_forward_low_gpu(
 
             # Move the block module to GPU
             block_module = get_module(model, block_name)
-
-            # Load block weights from disk if offloaded (for backward pass)
-            if offload_context is not None:
-                offload_context.load_block_weights(block_name, block_module)
-
             for n, m in block_module.named_modules():
                 if hasattr(m, "grad_mode"):
                     m.grad_mode = True
@@ -498,11 +470,6 @@ def model_forward_low_gpu(
 
             block_module.to("cpu")
             # clear_memory()
-
-            # Offload block weights to disk if low_cpu_mem_usage is enabled (after backward)
-            if offload_context is not None:
-                offload_context.offload_block_weights(block_name, block_module)
-
             pbar.update(1)
 
 
@@ -520,7 +487,6 @@ def get_score_for_scheme(
     need_weight_grad=False,
     enable_torch_compile=False,
     low_gpu_mem_usage=True,
-    low_cpu_mem_usage=False,
     major_device="cpu",
     batch_size=1,
     disable_opt_rtn=True,
@@ -542,14 +508,16 @@ def get_score_for_scheme(
             has_imatrix = True
             break
 
-    def wrap_layer(name: str) -> None:
+    for name in quant_layer_names:
+        if offload_context is not None:
+            offload_context.ensure_block_for_layer(model, name)
         if name in fixed_layer_scheme.keys():
-            return
+            continue
         m = get_module(model, name)
         if not check_to_quantized(m):
             layer_bits, _ = compute_layer_bits(m, ignore_scale_zp_bits)
             scores_dict[name] = [layer_bits, 0.0]
-            return
+            continue
         if m.act_bits > 8 and m.super_bits is not None:
             m.scale_dtype = torch.float32  # TODO set this via API
         elif m.act_bits > 8:
@@ -584,43 +552,13 @@ def get_score_for_scheme(
                 disable_opt_rtn=disable_opt_rtn,
             )
             set_module(model, name, new_m)
-
-    # ------------------------------------------------------------------
-    # Wrapping + forward/backward
-    # ------------------------------------------------------------------
+    if offload_context is not None:
+        offload_context.flush_loaded_block(model)
     if low_gpu_mem_usage:
         dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
 
-        if offload_context is not None and low_cpu_mem_usage:
-            # Block-by-block wrapping: load original weights -> wrap -> offload wrapped state
-            block_names = get_block_names(model)[0]
-            layer_groups, non_block_layers = _group_layers_by_block(quant_layer_names, block_names)
-            offload_context.reset_scheme_state()
-
-            for block_name in block_names:
-                block = get_module(model, block_name)
-                offload_context.load_original_block_weights(block_name, block)
-                for name in layer_groups.get(block_name, []):
-                    wrap_layer(name)
-                offload_context.offload_block_weights(block_name, block)
-
-            # Wrap layers that live outside of blocks (e.g. lm_head)
-            for name in non_block_layers:
-                wrap_layer(name)
-
-            gc.collect()
-            clear_memory()
-        else:
-            for name in quant_layer_names:
-                wrap_layer(name)
-
-        model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar, offload_context=offload_context)
-
-        # NOTE: do NOT load all blocks back — scores are read block-by-block below
+        model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
     else:
-        for name in quant_layer_names:
-            wrap_layer(name)
-
         dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
         for data in dataloader:
             data = to_device(data, model.device)
@@ -634,71 +572,19 @@ def get_score_for_scheme(
         for n, m in model.named_parameters():
             m.grad = None
 
-    # ------------------------------------------------------------------
-    # Score reading + unwrapping
-    # ------------------------------------------------------------------
-    if offload_context is not None and low_cpu_mem_usage:
-        # Block-by-block: load wrapped state -> read scores -> unwrap -> clear
-        scores_dict = {}
-        for block_name in block_names:
-            block = get_module(model, block_name)
-            offload_context.load_block_weights(block_name, block)
-
-            # Read scores from wrapper attributes in this block
-            for n, m in block.named_modules():
-                full_name = f"{block_name}.{n}" if n else block_name
-                if hasattr(m, "mix_score"):
-                    if m.orig_layer.act_bits <= 8:
-                        if m.act_cnt == 0:
-                            logger.warning_once(
-                                f"layer {full_name} max abs activation is 0, "
-                                "please use more data to improve the accuracy"
-                            )
-                    layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
-                    scores_dict[full_name] = [layer_bits, m.mix_score]
-
-            # Unwrap layers in this block
-            unwrap_pairs = []
-            for n, m in block.named_modules():
-                full_name = f"{block_name}.{n}" if n else block_name
-                if hasattr(m, "orig_layer"):
-                    unwrap_pairs.append((full_name, m.orig_layer))
-            for full_name, orig_layer in unwrap_pairs:
-                set_module(model, full_name, orig_layer)
-
-            # Clear weights so this block no longer occupies RAM
-            block = get_module(model, block_name)
-            offload_context.offload_block_weights(block_name, block)
-
-        # Handle non-block layers
-        for n, m in model.named_modules():
-            if hasattr(m, "mix_score") and n not in scores_dict:
-                if m.orig_layer.act_bits <= 8 and m.act_cnt == 0:
+    scores_dict = {}
+    for n, m in model.named_modules():
+        if hasattr(m, "mix_score"):
+            if m.orig_layer.act_bits <= 8:
+                if m.act_cnt == 0:
                     logger.warning_once(
-                        f"layer {n} max abs activation is 0, " "please use more data to improve the accuracy"
+                        "layer{n} max abs activation is 0, please use more data to improve the accuracy"
                     )
-                layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
-                scores_dict[n] = [layer_bits, m.mix_score]
-        for n, m in model.named_modules():
-            if hasattr(m, "orig_layer"):
-                set_module(model, n, m.orig_layer)
-
-        gc.collect()
-        clear_memory()
-    else:
-        scores_dict = {}
-        for n, m in model.named_modules():
-            if hasattr(m, "mix_score"):
-                if m.orig_layer.act_bits <= 8:
-                    if m.act_cnt == 0:
-                        logger.warning_once(
-                            f"layer {n} max abs activation is 0, " "please use more data to improve the accuracy"
-                        )
-                layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
-                scores_dict[n] = [layer_bits, m.mix_score]
-        for n, m in model.named_modules():
-            if hasattr(m, "orig_layer"):
-                set_module(model, n, m.orig_layer)
+            layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
+            scores_dict[n] = [layer_bits, m.mix_score]
+    for n, m in model.named_modules():
+        if hasattr(m, "orig_layer"):
+            set_module(model, n, m.orig_layer)
     return scores_dict
 
 
@@ -714,72 +600,44 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
         (layer_names, scheme) for each layer, or (None, None) if no feasible
         solution exists.
     """
-    # dp: total_params -> accumulated_loss
-    # Use backtracking pointers instead of storing full paths to avoid
-    # O(layers) list copies per state transition.
-    dp: dict[int, float] = {0: 0.0}
+    # dp: total_params -> (accumulated_loss, chosen_path)
+    # The path explicitly stores the selected options.
+    dp: dict[int, tuple[float, list]] = {0: (0.0, [])}
 
-    layer_list = list(layers.items())
-    total_layers = len(layer_list)
-    logger.info(f"Starting DP for {total_layers} layers, budget P={P}")
-
-    # history[layer_idx][params] = (prev_params, opt_idx) for path reconstruction
-    history: list[dict[int, tuple[int, int]]] = []
-
-    pbar = tqdm(range(total_layers), desc="DP bit allocation", leave=True)
-    for idx in pbar:
-        layer_name, opts = layer_list[idx]
-        pbar.set_postfix(dp_states=len(dp))
-
-        new_dp: dict[int, float] = {}
-        new_bt: dict[int, tuple[int, int]] = {}
-
-        for cur_params, cur_loss in dp.items():
-            for opt_idx, opt in enumerate(opts):
+    for layer_name, opts in layers.items():
+        new_dp: dict[int, tuple[float, list]] = {}
+        for cur_params, (cur_loss, cur_path) in dp.items():
+            for opt in opts:
                 scheme, bits_cost, loss_cost, layer_names = opt
                 np_total = cur_params + bits_cost
                 if np_total > P:
                     continue
 
                 new_loss = cur_loss + loss_cost
+                new_path = cur_path + [(layer_names, scheme)]
 
-                # Keep the option with smaller loss for the same parameter budget
-                if np_total not in new_dp or new_loss < new_dp[np_total]:
-                    new_dp[np_total] = new_loss
-                    new_bt[np_total] = (cur_params, opt_idx)
+                # Keep the path with smaller loss for the same parameter budget
+                if np_total not in new_dp or new_loss < new_dp[np_total][0]:
+                    new_dp[np_total] = (new_loss, new_path)
 
         if not new_dp:
             return None, None
 
         # Pareto pruning: remove dominated (params, loss) states
-        items = sorted(new_dp.items(), key=lambda x: x[0])  # sort by params
-        pruned_dp: dict[int, float] = {}
-        pruned_bt: dict[int, tuple[int, int]] = {}
+        items = sorted(new_dp.items(), key=lambda x: x[0])  # (params, (loss, path))
+        pruned: dict[int, tuple[float, list]] = {}
         best_loss_so_far = float("inf")
-        for params_val, loss_val in items:
+        for params_val, (loss_val, path_val) in items:
             if loss_val < best_loss_so_far:
-                pruned_dp[params_val] = loss_val
-                pruned_bt[params_val] = new_bt[params_val]
+                pruned[params_val] = (loss_val, path_val)
                 best_loss_so_far = loss_val
 
-        dp = pruned_dp
-        history.append(pruned_bt)
+        dp = pruned
 
     # Select the solution with the minimum loss
-    best_params = min(dp.keys(), key=lambda k: dp[k])
-    best_loss = dp[best_params]
-
-    # Backtrack to reconstruct the chosen path
-    path = []
-    cur_params = best_params
-    for layer_idx in range(total_layers - 1, -1, -1):
-        prev_params, opt_idx = history[layer_idx][cur_params]
-        scheme, bits_cost, loss_cost, layer_names = layer_list[layer_idx][1][opt_idx]
-        path.append((layer_names, scheme))
-        cur_params = prev_params
-    path.reverse()
-
-    return best_loss, path
+    best_params = min(dp.keys(), key=lambda k: dp[k][0])
+    best_loss, best_path = dp[best_params]
+    return best_loss, best_path
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
@@ -926,10 +784,10 @@ def _gen_layer_config(
             cal_imatrix(model, dataloader)
             logger.info("finish calculating imatrix")
 
-    # Clear all original block weights from memory before the scheme loop.
-    # They will be reloaded from the original checkpoint files on demand.
+    # Register hooks and clear all block weights before the scheme loop.
+    # Hooks will transparently reload weights on demand during forward passes.
     if offload_context is not None:
-        offload_context.clear_all_original_blocks(model, block_name)
+        offload_context.attach(model, block_name)
 
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):
@@ -958,7 +816,6 @@ def _gen_layer_config(
                 need_weight_grad=need_weight_grad,
                 enable_torch_compile=enable_torch_compile,
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
-                low_cpu_mem_usage=auto_scheme.low_cpu_mem_usage,
                 major_device=major_device,
                 batch_size=batch_size,
                 disable_opt_rtn=auto_scheme.disable_opt_rtn,
@@ -991,9 +848,9 @@ def _gen_layer_config(
         options_scores.append(options_total_loss)
         clear_memory(device_list=device_list)
 
-    # Restore original weights from disk for final bit-budget computations
+    # Remove hooks and restore original weights from disk for final bit-budget computations
     if offload_context is not None:
-        offload_context.load_all_original_blocks(model, block_name)
+        offload_context.detach(model, block_name)
 
     total_params = 0
     for n, m in model.named_modules():
@@ -1082,11 +939,6 @@ def _gen_layer_config(
                 m.grad = None
     global last_grad_input
     last_grad_input = None
-
-    # Cleanup offload context
-    if offload_context is not None:
-        offload_context.cleanup()
-
     clear_memory(device_list=device_list)
 
     # Log AutoScheme memory usage

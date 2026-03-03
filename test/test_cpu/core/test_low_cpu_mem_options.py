@@ -13,100 +13,66 @@
 # limitations under the License.
 
 """
-Unit tests for CPU RAM optimization options:
-1. cpu_stream_offload_blocks: Offload block weights to disk, load on demand
-2. cpu_stream_loss: Compute loss on-the-fly using frozen block copy
+Unit tests for low_cpu_mem_usage option:
+When enabled, block weights are offloaded to disk upfront and loaded on demand
+during quantization, significantly reducing peak CPU RAM usage.
 """
 
 import torch
 
 from auto_round import AutoRound
-from auto_round.compressors import base as base_module
-from auto_round.utils import device as device_module
-from auto_round.utils import model as model_module
+from auto_round.utils import offload as offload_module
 
 
-class TestCpuStreamOffloadBlocks:
-    """Tests for cpu_stream_offload_blocks option."""
+class TestLowCpuMemUsage:
+    """Tests for low_cpu_mem_usage block offloading."""
 
     def test_option_stored_correctly(self, tiny_opt_model_path):
-        """Test that cpu_stream_offload_blocks option is stored correctly."""
+        """Test that low_cpu_mem_usage option is stored correctly."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
             low_cpu_mem_usage=True,
-            cpu_stream_offload_blocks=True,
             iters=0,
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=32,
         )
-        assert autoround.cpu_stream_offload_blocks is True
+        assert autoround.low_cpu_mem_usage is True
 
         autoround2 = AutoRound(
             tiny_opt_model_path,
             bits=4,
             low_cpu_mem_usage=False,
-            cpu_stream_offload_blocks=False,
             iters=0,
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=32,
         )
-        assert autoround2.cpu_stream_offload_blocks is False
+        assert autoround2.low_cpu_mem_usage is False
 
-    def test_offload_requires_low_cpu_mem_usage(self, tiny_opt_model_path):
-        """Test that offload only activates when low_cpu_mem_usage is True."""
+    def test_offloader_disabled_when_low_cpu_mem_false(self, tiny_opt_model_path):
+        """Test that the offloader is disabled when low_cpu_mem_usage=False."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
             low_cpu_mem_usage=False,
-            cpu_stream_offload_blocks=True,
             iters=0,
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=32,
         )
-        # Even if cpu_stream_offload_blocks=True, it should not offload
-        # when low_cpu_mem_usage=False
-        assert autoround.cpu_stream_offload_blocks is True
         assert autoround.low_cpu_mem_usage is False
-
-    def test_stream_offload_blocks_skips_when_disabled(self, tiny_opt_model_path):
-        """Test that _stream_offload_blocks returns early when disabled."""
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=4,
-            low_cpu_mem_usage=True,
-            cpu_stream_offload_blocks=False,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=1,
-            seqlen=32,
-        )
-        autoround._stream_offload_blocks([["model.layers.0"]])
+        # stream_offload_all_blocks should be a no-op when offloader is disabled
+        autoround._offloader.stream_offload_all_blocks(autoround.model, [["model.layers.0"]], autoround.device_list)
         assert autoround._offloader._blocks == {}
 
-        autoround2 = AutoRound(
-            tiny_opt_model_path,
-            bits=4,
-            low_cpu_mem_usage=False,
-            cpu_stream_offload_blocks=True,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=1,
-            seqlen=32,
-        )
-        autoround2._stream_offload_blocks([["model.layers.0"]])
-        assert autoround2._offloader._blocks == {}
-
     def test_stream_offload_blocks_records_blocks(self, tiny_opt_model_path, tmp_path, monkeypatch):
-        """Test that _stream_offload_blocks records offloaded blocks when enabled."""
+        """Test that stream_offload_all_blocks records offloaded blocks when enabled."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
             low_cpu_mem_usage=True,
-            cpu_stream_offload_blocks=True,
             iters=0,
             disable_opt_rtn=True,
             nsamples=1,
@@ -114,83 +80,12 @@ class TestCpuStreamOffloadBlocks:
         )
 
         dummy_block = torch.nn.Linear(4, 4)
-        # Monkeypatch get_module used by _stream_offload_blocks in base.py
-        from auto_round.compressors import base as base_module
-        monkeypatch.setattr(base_module, "get_module", lambda _model, _name: dummy_block)
+        # Monkeypatch get_module used by stream_offload_all_blocks in offload.py
+        from auto_round.utils import offload as offload_module
+        monkeypatch.setattr(offload_module, "get_module", lambda _model, _name: dummy_block)
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
 
         # Force the offloader to think it has a tempdir already
         autoround._offloader._tempdir = str(tmp_path)
-        autoround._stream_offload_blocks([["model.layers.0"]])
+        autoround._offloader.stream_offload_all_blocks(autoround.model, [["model.layers.0"]], autoround.device_list)
         assert autoround._offloader.has("model.layers.0")
-
-
-class TestCpuStreamLoss:
-    """Tests for cpu_stream_loss option."""
-
-    def test_option_stored_correctly(self, tiny_opt_model_path):
-        """Test that cpu_stream_loss option is stored correctly."""
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=4,
-            low_cpu_mem_usage=True,
-            cpu_stream_loss=True,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=1,
-            seqlen=32,
-        )
-        assert autoround.cpu_stream_loss is True
-
-        autoround2 = AutoRound(
-            tiny_opt_model_path,
-            bits=4,
-            low_cpu_mem_usage=False,
-            cpu_stream_loss=False,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=1,
-            seqlen=32,
-        )
-        assert autoround2.cpu_stream_loss is False
-
-    def test_stream_loss_requires_nblocks_1(self, tiny_opt_model_path):
-        """Test that cpu_stream_loss only works with nblocks=1."""
-        # nblocks > 1 should trigger warning and disable stream_loss
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=4,
-            low_cpu_mem_usage=True,
-            cpu_stream_loss=True,
-            nblocks=2,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=1,
-            seqlen=32,
-        )
-        # The option is stored, but internally it will fall back during quantize
-        assert autoround.cpu_stream_loss is True
-        assert autoround.nblocks == 2
-        stream_loss = autoround.cpu_stream_loss and autoround.nblocks == 1
-        assert stream_loss is False
-
-
-class TestCombinedOptions:
-    """Tests for combined optimization options."""
-
-    def test_both_options_enabled(self, tiny_opt_model_path):
-        """Test that both options can be enabled together."""
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=4,
-            low_cpu_mem_usage=True,
-            cpu_stream_offload_blocks=True,
-            cpu_stream_loss=True,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=1,
-            seqlen=32,
-        )
-        assert autoround.cpu_stream_offload_blocks is True
-        assert autoround.cpu_stream_loss is True
-        assert autoround.low_cpu_mem_usage is True

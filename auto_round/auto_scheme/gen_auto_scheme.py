@@ -40,7 +40,7 @@ class AutoScheme:
     enable_torch_compile: Optional[bool] = None
     disable_opt_rtn: bool = True
     low_gpu_mem_usage: bool = True
-    low_cpu_mem_usage: bool = False  # Enable disk offload for CPU RAM optimization
+    low_cpu_mem_usage: bool = True
 
     def __post_init__(self):
         if isinstance(self.options, str):

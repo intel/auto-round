@@ -15,10 +15,9 @@ import collections
 import json
 import os
 import re
-import shutil
 from collections import UserDict
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Union
 
 import psutil
 import torch
