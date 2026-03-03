@@ -29,24 +29,25 @@ cat run_xpu.sh
 find ./test_xpu -name "test_llmc_integration.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run_xpu_llmc.sh
 cat run_xpu_llmc.sh
 
-echo "##[group]Run xpu integration test with xpu..."
-bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
+echo "##[group]Run xpu test on xpu..."
+numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
 echo "##[endgroup]"
 
-echo "##[group]Run Ark integration test with xpu..."
-numactl -C "0-27" -m 0 bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
+echo "##[group]Run Ark test on xpu..."
+numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
 echo "##[endgroup]"
 
-echo "##[group]Run LLMC integration test with xpu..."
+echo "##[group]Run LLMC integration test on xpu..."
 uv pip install -r ./test_xpu/requirements_llmc.txt
 uv pip list
-bash run_xpu_llmc.sh 2>&1 | tee -a "${ut_log_name}"
+numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" bash run_xpu_llmc.sh 2>&1 | tee -a "${ut_log_name}"
 echo "##[endgroup]"
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
 
-if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
+if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || \
+[ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c 'core dumped' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
     echo "##[error]Find errors in pytest case, please check the output..."
     exit 1
 fi
