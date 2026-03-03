@@ -112,25 +112,21 @@ def _clear_submodule_weights(module: torch.nn.Module, cache_numel: bool = False)
         return
 
     with torch.no_grad():
-        if hasattr(module, "weight") and module.weight is not None:
-            if cache_numel and module.weight.numel() > 0:
-                module._cached_weight_numel = module.weight.numel()
-                module._cached_weight_shape = tuple(module.weight.shape)
-            if isinstance(module.weight, torch.nn.Parameter):
-                module.weight = torch.nn.Parameter(
-                    torch.empty(0, dtype=module.weight.dtype, device="cpu"),
-                    requires_grad=module.weight.requires_grad,
-                )
-            else:
-                module.weight = torch.empty(0, dtype=module.weight.dtype, device="cpu")
-        if hasattr(module, "bias") and module.bias is not None:
-            if isinstance(module.bias, torch.nn.Parameter):
-                module.bias = torch.nn.Parameter(
-                    torch.empty(0, dtype=module.bias.dtype, device="cpu"),
-                    requires_grad=module.bias.requires_grad,
-                )
-            else:
-                module.bias = torch.empty(0, dtype=module.bias.dtype, device="cpu")
+        for name, param in list(module.named_parameters(recurse=False)):
+            if param is None or param.numel() == 0:
+                continue
+            if cache_numel and name == "weight":
+                module._cached_weight_numel = param.numel()
+                module._cached_weight_shape = tuple(param.shape)
+            setattr(
+                module,
+                name,
+                torch.nn.Parameter(torch.empty(0, dtype=param.dtype, device="cpu"), requires_grad=param.requires_grad),
+            )
+        for name, buf in list(module.named_buffers(recurse=False)):
+            if buf is None or buf.numel() == 0:
+                continue
+            module.register_buffer(name, torch.empty(0, dtype=buf.dtype, device="cpu"))
 
 
 # =====================================================================
@@ -338,12 +334,12 @@ class AutoSchemeOffloadContext:
 
     @staticmethod
     def _needs_loading(block: torch.nn.Module) -> bool:
-        """Return *True* if any sub-module's weight has been cleared (numel == 0)."""
+        """Return *True* if any sub-module's parameter has been cleared (numel == 0)."""
         for submodule in block.modules():
             if hasattr(submodule, "orig_layer"):
                 submodule = submodule.orig_layer
-            if hasattr(submodule, "weight") and submodule.weight is not None:
-                if submodule.weight.numel() == 0:
+            for param in submodule.parameters(recurse=False):
+                if param is not None and param.numel() == 0:
                     return True
         return False
 
