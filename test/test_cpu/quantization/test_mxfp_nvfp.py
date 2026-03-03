@@ -326,6 +326,8 @@ class TestAutoRoundFP:
         model_name = tiny_qwen_moe_model_path
         layer_config = {
             "layers.0": {"bits": 16, "act_bits": 16},
+            # general recipe allows moe quantization
+            "layers.1.mlp.experts": {"bits": 16, "act_bits": 16},
         }
         scheme = "nvfp4"
         autoround = AutoRound(
