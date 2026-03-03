@@ -41,10 +41,7 @@ class TestAutoRoundFormatGeneration:
 
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
 
-        quantization_config = AutoRoundConfig(backend="ipex")
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", quantization_config=quantization_config
-        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "My name is "
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -52,9 +49,7 @@ class TestAutoRoundFormatGeneration:
         print(res)
         assert "!!!" not in res
 
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", quantization_config=quantization_config, torch_dtype=torch.float16
-        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)

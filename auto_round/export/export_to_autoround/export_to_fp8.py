@@ -37,6 +37,7 @@ from auto_round.utils import (
     get_module,
     get_packing_device,
     set_module,
+    to_standard_regex,
 )
 
 
@@ -72,7 +73,7 @@ class FP8QLinear(torch.nn.Module):
             self.register_buffer("input_scale", input_scale.to(dtype))
 
 
-def pack_layer(layer_name, model, data_type, device=None):
+def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
     """
      Packs a model layer for quantization based on its type and configuration.
 
@@ -139,6 +140,8 @@ def pack_layer(layer_name, model, data_type, device=None):
         input_scale=act_scale,
         dtype=model.dtype,
     )
+    if unsqueeze and len(my_linear.weight_scale.shape) and my_linear.weight_scale.shape[0] != 1:
+        my_linear.weight_scale = my_linear.weight_scale.reshape(-1, 1)
 
     my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
@@ -152,6 +155,7 @@ def save_quantized_as_autoround(
     tokenizer: Callable = None,
     layer_config: dict = None,
     inplace: bool = True,
+    backend: str = None,
     device: Union[str, torch.device] = "cpu",
     serialization_dict: dict = None,
     **kwargs,
@@ -162,6 +166,8 @@ def save_quantized_as_autoround(
     quantization_config = serialization_dict
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
+    if backend:
+        quantization_config["packing_format"] = backend
     if "e5m2" in serialization_dict.get("data_type", "fp8"):
         quantization_config["fmt"] = "e5m2"
     else:
@@ -188,7 +194,7 @@ def save_quantized_as_autoround(
             neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
-                for key in scheme_keys:
+                for key in neq_keys:
                     if cfg[key] is not None:
                         extra_config[layer_name][key] = cfg[key]
 
@@ -209,6 +215,14 @@ def save_quantized_as_autoround(
 
             for _ in executor.map(wrapper, names):
                 pass
+    regex_config = quantization_config.pop("regex_config")
+    if regex_config is not None:
+        for name in regex_config.keys():
+            regex_name = to_standard_regex(name)
+            extra_config[regex_name] = {**{k: regex_config[name][k] for k in scheme_keys}}
+
+    if len(extra_config) > 0:
+        quantization_config["extra_config"] = extra_config
     filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
@@ -218,8 +232,8 @@ def save_quantized_as_autoround(
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
-    if os.path.exists(output_dir):
-        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    # if os.path.exists(output_dir):
+    #     logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 

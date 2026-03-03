@@ -4,12 +4,13 @@ import shutil
 import pytest
 import torch
 import transformers
+from packaging import version
 from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_awq, require_optimum, require_package_version_ut
 
-from ...helpers import get_model_path, get_tiny_model
+from ...envs import require_awq, require_optimum, require_package_version_ut
+from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
 class TestAutoRound:
@@ -197,6 +198,55 @@ class TestAutoRound:
         )
         shutil.rmtree("./saved", ignore_errors=True)
 
+    def test_autoawq_qwen3_vl_vllm_infer(self, dataloader):
+        pytest.importorskip("vllm")
+        from vllm import LLM, SamplingParams
+        from vllm.platforms import current_platform
+
+        if not current_platform.is_cuda():
+            pytest.skip("only supports CUDA backend for this test")
+
+        model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
+        autoround = AutoRound(
+            model=model_path,
+            scheme="W4A16",
+            iters=0,
+            seqlen=2,
+            batch_size=1,
+            dataset=dataloader,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_awq")
+
+        # Check items of modules_to_not_convert in quantization config
+        import json
+
+        quantization_config_path = f"{quantized_model_path}/quantization_config.json"
+        with open(quantization_config_path, "r") as f:
+            quantization_config = json.load(f)
+        modules_to_not_convert = quantization_config.get("modules_to_not_convert", [])
+        assert (
+            "model.visual.merger.linear_fc2" in modules_to_not_convert
+        ), f"'model.visual.merger.linear_fc2' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
+        assert (
+            "model.visual.blocks" in modules_to_not_convert
+        ), f"'model.visual.blocks' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
+
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=32)
+        llm = LLM(
+            model=quantized_model_path,
+            quantization="awq",
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+            dtype="half",
+        )
+        outputs = llm.generate(["Tell me a short joke."], sampling_params)
+        generated_text = outputs[0].outputs[0].text
+        print(generated_text)
+        assert "!!!" not in generated_text
+        shutil.rmtree("./saved", ignore_errors=True)
+
     @require_optimum
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
@@ -294,6 +344,10 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-2")
@@ -321,7 +375,11 @@ class TestAutoRound:
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_gptq_lmhead_export(self, tiny_qwen_model_path, dataloader):
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0"),
+        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
+    )
+    def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         model_name = get_model_path("microsoft/phi-2")
         tiny_model = get_tiny_model(model_name)
@@ -354,3 +412,35 @@ class TestAutoRound:
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_autogtq_qwen3_vl_vllm_infer(self, dataloader):
+        pytest.importorskip("vllm")
+        from vllm import LLM, SamplingParams
+        from vllm.platforms import current_platform
+
+        if not current_platform.is_cuda():
+            pytest.skip("only supports CUDA backend for this test")
+
+        model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
+        autoround = AutoRound(
+            model=model_path,
+            scheme="W4A16",
+            iters=0,
+            seqlen=2,
+            batch_size=1,
+            dataset=dataloader,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=20)
+        llm = LLM(
+            model=quantized_model_path,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            allow_deprecated_quantization=True,
+        )
+        outputs = llm.generate(["Tell me a short joke."], sampling_params)
+        generated_text = outputs[0].outputs[0].text
+        print(generated_text)
+        assert "!!!" not in generated_text
+        shutil.rmtree("./saved", ignore_errors=True)

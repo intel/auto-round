@@ -56,8 +56,8 @@ class QuantLinear(nn.Module):
         if not ARK_INSTALLED:
             raise ModuleNotFoundError(
                 "The 'auto_round_kernel' module is required but not installed. "
-                "Please install the 'auto-round-kernel' package, for example:\n"
-                "  pip install auto-round-kernel"
+                "Please install the 'auto-round-lib' package, for example:\n"
+                "  pip install auto-round-lib"
             )
 
         self.infeatures = in_features

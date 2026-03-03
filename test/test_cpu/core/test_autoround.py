@@ -7,10 +7,16 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.utils import get_module
 
-from ...helpers import get_model_path, model_infer, opt_name_or_path, qwen_name_or_path, transformers_version
+from ...helpers import (
+    evaluate_accuracy,
+    get_model_path,
+    model_infer,
+    opt_name_or_path,
+    qwen_name_or_path,
+    transformers_version,
+)
 
 
 class TestAutoRound:
@@ -117,11 +123,7 @@ class TestAutoRound:
             act_data_type="mx_fp_rceil",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(
-            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
-        )
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.3  # 0.375
+        evaluate_accuracy(model, self.tokenizer, threshold=0.3, batch_size="auto:8", limit=32)
 
     def test_nv_fp4(self, dataloader):
         model_name = opt_name_or_path
@@ -137,11 +139,7 @@ class TestAutoRound:
             data_type="nv_fp4",
         )
         model, _ = autoround.quantize()
-        result = simple_evaluate_user_model(
-            model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
-        )
-        print(result["results"]["lambada_openai"]["acc,none"])
-        assert result["results"]["lambada_openai"]["acc,none"] > 0.35
+        evaluate_accuracy(model, self.tokenizer, threshold=0.35, batch_size="auto:8", limit=32)
 
     def test_w4g1(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -172,11 +170,7 @@ class TestAutoRound:
         )
         model, _ = autoround.quantize()
         if bits > 2:
-            result = simple_evaluate_user_model(
-                model, self.tokenizer, batch_size="auto:8", tasks="lambada_openai", limit=32
-            )
-            print(result["results"]["lambada_openai"]["acc,none"])
-            assert result["results"]["lambada_openai"]["acc,none"] > 0.3
+            evaluate_accuracy(model, self.tokenizer, threshold=0.3, batch_size="auto:8", limit=32)
 
     def test_disable_quanted_input(self, dataloader):
         bits, group_size, sym = 4, -1, True
@@ -438,72 +432,13 @@ class TestAutoRound:
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
-        quantization_config = AutoRoundConfig(backend="ipex")
 
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", quantization_config=quantization_config
-        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=1)[0])
         shutil.rmtree(self.save_folder, ignore_errors=True)
-
-    def test_not_convert_modules(self):
-        import requests
-        from PIL import Image
-        from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
-
-        from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
-
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct-AWQ")
-        quantization_config = AutoRoundConfig()
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16
-        )
-        if transformers_version < version.parse("5.0.0"):
-            assert isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-            assert not isinstance(model.visual.merger.mlp[0], QuantLinear)
-        else:
-            assert isinstance(model.model.visual.blocks[0].attn.qkv, torch.nn.Linear)
-            assert not isinstance(model.model.visual.merger.mlp[0], QuantLinear)
-        if hasattr(model.model, "language_model"):
-            assert isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear)
-        else:
-            assert isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear)
-
-        processor = AutoProcessor.from_pretrained(model_name, size=None)
-        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "image": image_url,
-                    },
-                    {"type": "text", "text": "Describe this image."},
-                ],
-            }
-        ]
-
-        # Preparation for inference
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-
-        # Inference: Generation of the output
-        generated_ids = model.generate(**inputs, max_new_tokens=1)
-        generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-        output_text = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )
-        print(output_text)
 
     def test_fallback_layers_regex_awq(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -634,47 +569,51 @@ class TestAutoRound:
             autoround.quantize()
 
     def test_dequant_fp8_weight(self):
-        from auto_round.utils import dequant_block_fp8_weight
+        from auto_round.utils.model import _dequant_fp8_linear_weight
 
         # test high precision weight (should skip LUT and not crash)
         weight = torch.randn(587, 7168)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
         # test low precision weight (should use LUT)
         weight = torch.randint(0, 255, (587, 7168), dtype=torch.uint8)
         weight_scale = torch.randn(5, 56)
         block_size = [128, 128]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert dequant_weight.shape.numel() == 4207616
 
         # test experts are stacked.
         weight = torch.randint(0, 255, [32, 5760, 1440], dtype=torch.uint8)
         weight_scale = torch.randn([32, 5760, 90])
         block_size = [1, 16]
-        dequant_weight = dequant_block_fp8_weight(weight, weight_scale, block_size)
+        dequant_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size)
         assert len(dequant_weight.shape) == 3
         assert dequant_weight.shape[0] == 32
         assert dequant_weight.shape.numel() == 32 * 5760 * 1440
 
     def test_dequant_g2_fp8_weight(self):
-        """Test Gaudi2-specific dequantization redirection logic in convert_fp8_layer_to_linear."""
+        """Test Gaudi2-specific dequantization redirection logic in convert_module_to_hp_if_necessary."""
         from unittest.mock import MagicMock, patch
 
-        from auto_round.utils.model import convert_fp8_layer_to_linear, dequant_block_fp8_weight
+        from auto_round.utils.model import (
+            _dequant_fp8_linear_weight,
+            check_and_mark_quantized_module,
+            convert_module_to_hp_if_necessary,
+        )
 
         # Test 1: Verify Standard e4m3fn native dequantization result
         weight_uint8 = torch.tensor([[126, 0]], dtype=torch.uint8)
         weight_scale = torch.ones(1, 1, dtype=torch.bfloat16)
         block_size = [1, 2]
 
-        dq_weight = dequant_block_fp8_weight(weight_uint8, weight_scale, block_size)
+        dq_weight = _dequant_fp8_linear_weight(weight_uint8, weight_scale, block_size)
         assert dq_weight.dtype == torch.bfloat16
         assert abs(dq_weight[0, 0].item() - 448.0) < 1e-3
 
-        # Test 2: Verify Gaudi2 redirection in convert_fp8_layer_to_linear
+        # Test 2: Verify Gaudi2 redirection in convert_module_to_hp_if_necessary
         mock_layer = MagicMock()
         mock_layer.in_features = 2
         mock_layer.out_features = 1
@@ -684,19 +623,23 @@ class TestAutoRound:
         mock_layer.block_size = block_size
         mock_layer.data_type = "fp8_e4m3fn"
         mock_layer.__class__.__name__ = "FP8Linear"
+        # Explicitly set compressor to None to prevent MagicMock auto-creating it
+        mock_layer.compressor = None
 
         # mock_layer.to should return a mock layer that we can check
         mock_layer.to.return_value = mock_layer
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=True):
-            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            check_and_mark_quantized_module(mock_layer)
+            convert_module_to_hp_if_necessary(mock_layer, device="hpu")
             # Verify it was moved to CPU
             mock_layer.to.assert_called_with("cpu")
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=False):
             # Reset mock
             mock_layer.to.reset_mock()
-            convert_fp8_layer_to_linear(mock_layer, device="hpu")
+            check_and_mark_quantized_module(mock_layer)
+            convert_module_to_hp_if_necessary(mock_layer, device="hpu")
             # Verify it was moved to HPU (as requested in device arg)
             mock_layer.to.assert_called_with("hpu")
 

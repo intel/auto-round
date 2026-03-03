@@ -1,3 +1,4 @@
+import collections
 import os
 import shutil
 
@@ -32,9 +33,6 @@ class TestAutoRoundFP:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"), reason="transformers v5 MOE model has breaking changes"
-    )
     def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {
@@ -55,16 +53,47 @@ class TestAutoRoundFP:
             layer_config=layer_config,
         )
         compressed_model, _ = autoround.quantize()
-        assert hasattr(compressed_model.model.layers[1].mlp.experts[0].gate_proj.orig_layer, "act_max")
+        moe = compressed_model.model.layers[1].mlp
+        experts = moe.experts
+
+        def _has_act_max(layer):
+            if layer is None:
+                return False
+            if hasattr(layer, "orig_layer"):
+                layer = layer.orig_layer
+            return hasattr(layer, "act_max")
+
+        found_act_max = False
+        if hasattr(experts, "gate_up_proj") and isinstance(experts.gate_up_proj, torch.nn.ModuleList):
+            if len(experts.gate_up_proj) > 0:
+                found_act_max = _has_act_max(experts.gate_up_proj[0])
+        elif isinstance(experts, collections.abc.Iterable):
+            first_expert = next(iter(experts), None)
+            if first_expert is not None:
+                for linear_name in [
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                    "linear_fc1",
+                    "linear_fc2",
+                    "w1",
+                    "w2",
+                    "w3",
+                ]:
+                    if hasattr(first_expert, linear_name):
+                        found_act_max = _has_act_max(getattr(first_expert, linear_name))
+                        if found_act_max:
+                            break
+        elif hasattr(moe, "act_max"):
+            found_act_max = True
+
+        assert found_act_max, "Missing act_max on MOE expert layers"
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "orig_layer") and hasattr(
             lm_head.orig_layer, "act_max"
         ), "Illegal NVFP4 quantization for lm_head layer"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"), reason="transformers v5 MOE model has breaking changes"
-    )
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {
@@ -97,9 +126,6 @@ class TestAutoRoundFP:
         assert is_model_outputs_similar(model_name, quantized_model_path)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"), reason="transformers v5 MOE model has breaking changes"
-    )
     def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {
@@ -333,9 +359,6 @@ class TestAutoRoundFP:
         ), "Illegal NVFP4 packing name or data_type or shape"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"), reason="transformers v5 MOE model has breaking changes"
-    )
     def test_qwen_moe_quant_infer(self, tiny_qwen_moe_model_path, dataloader):
         model_name = tiny_qwen_moe_model_path
         layer_config = {

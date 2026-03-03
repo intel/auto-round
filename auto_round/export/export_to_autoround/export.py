@@ -14,6 +14,7 @@
 
 
 import copy
+import functools
 import inspect
 import json
 import os
@@ -79,7 +80,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     elif "gptqmodel" in backend:
         from auto_round_extension.torch.qlinear_torch import QuantLinear
 
-        return QuantLinear
+        return functools.partial(QuantLinear, g_idx=True)
     elif "auto_round" in backend and "gptq" in backend and "gptqmodel" not in backend:
         from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
 
@@ -294,9 +295,14 @@ def save_quantized_as_autoround(
 
     regex_config = quantization_config.pop("regex_config")
     if regex_config is not None:
-        for name in regex_config.keys():
+        for name, cfg in regex_config.items():
             regex_name = to_standard_regex(name)
-            extra_config[regex_name] = {**{k: regex_config[name][k] for k in scheme_keys}}
+            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
+            if len(neq_keys) > 0:
+                extra_config[regex_name] = {}
+                for key in neq_keys:
+                    if cfg.get(key) is not None:
+                        extra_config[regex_name][key] = cfg[key]
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
@@ -326,8 +332,8 @@ def save_quantized_as_autoround(
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
-    if os.path.exists(output_dir):
-        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    # if os.path.exists(output_dir):
+    #     logger.info(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
         tokenizer.save_pretrained(output_dir)
 

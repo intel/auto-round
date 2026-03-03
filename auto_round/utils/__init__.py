@@ -15,6 +15,10 @@
 from auto_round.utils.device import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *
+from auto_round.utils.weight_handler import (
+    detect_weight_type,
+    is_quantized_input_module,
+)
 
 import transformers
 from packaging.version import Version

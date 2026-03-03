@@ -59,58 +59,9 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     Returns:
         None: The function modifies the model in place.
     """
-    packing_device = get_packing_device(device)
-    layer = get_module(model, layer_name)
-    if hasattr(layer, "orig_layer"):
-        layer = layer.orig_layer
+    from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer as fp8_pack_layer
 
-    if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
-        return
-
-    if not check_to_quantized(layer):
-        return
-
-    orig_device = layer.weight.device
-    scale = layer.scale.view(-1)
-    zp = layer.zp
-    weight = layer.weight
-    weight, orig_shape, pad_len = reshape_pad_tensor_by_group_size(weight, layer.group_size)
-    act_scale = layer.act_scale.view(-1) if hasattr(layer, "act_scale") else None
-    torch_dtype = torch.float8_e4m3fn
-    if "fp8_e5m2" in data_type:
-        torch_dtype = torch.float8_e5m2
-    info = torch.finfo(torch_dtype)
-    if zp is not None:
-        if isinstance(zp, torch.Tensor):
-            zp = zp.to(packing_device)
-        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
-    else:
-        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
-    q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
-    q_weight = torch.clamp(q_weight, info.min, info.max)
-    q_weight = q_weight.to(torch_dtype)
-    if type(layer) == torch.nn.Linear:
-        in_features = layer.in_features
-        out_features = layer.out_features
-    elif type(layer) == transformers.pytorch_utils.Conv1D:
-        in_features = layer.weight.shape[0]
-        out_features = layer.weight.shape[1]
-    bias = layer.bias
-    my_linear = FP8QLinear(
-        in_features,
-        out_features,
-        weight=q_weight,
-        weight_scale=scale,
-        bias=bias,
-        weight_zp=zp,
-        input_scale=act_scale,
-        dtype=model.dtype,
-    )
-    if len(my_linear.weight_scale.shape) and my_linear.weight_scale.shape[0] != 1:
-        my_linear.weight_scale = my_linear.weight_scale.reshape(-1, 1)
-
-    my_linear.to(orig_device)
-    set_module(model, layer_name, my_linear)
+    fp8_pack_layer(layer_name, model, data_type, device, unsqueeze=True)
 
 
 def _construct_kv_scheme():

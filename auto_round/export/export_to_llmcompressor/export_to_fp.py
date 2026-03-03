@@ -72,7 +72,8 @@ def pack_layer(name, model, device=None):
     sym = layer.sym
 
     if is_nv_fp(act_data_type) and act_bits <= 8:
-        if not getattr(layer, "input_global_scale", None):
+        input_global_scale = getattr(layer, "input_global_scale", None)
+        if input_global_scale is None:
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
 

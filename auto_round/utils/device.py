@@ -15,7 +15,8 @@ import functools
 import gc
 import os
 import re
-from contextlib import contextmanager
+import sys
+from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
@@ -24,6 +25,8 @@ from typing import Callable, Union
 import cpuinfo
 import psutil
 import torch
+from accelerate import dispatch_model, infer_auto_device_map
+from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
@@ -273,7 +276,13 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
 
 def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[str, bool]:
     if isinstance(device, str):
-        devices = device.replace(" ", "").split(",")
+        if device in ["cuda", "xpu", "hpu"]:
+            device = detect_device(device)
+            parallelism = False
+            return device, parallelism
+        else:
+            device = re.sub("xpu:|hpu:|cuda:", "", device)
+            devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
         devices = [str(device)]
     else:
@@ -294,8 +303,14 @@ def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[s
     return device, parallelism
 
 
-def set_cuda_visible_devices(device):
-    devices = device.replace(" ", "").split(",")
+def set_cuda_visible_devices(device: str):
+    if device == "cuda":
+        devices = ["0"]
+    elif device == "auto":
+        return
+    else:
+        devices = device.replace(" ", "").split(",")
+    devices = [device.split(":")[-1] for device in devices]
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
@@ -315,17 +330,93 @@ def set_cuda_visible_devices(device):
             os.environ["CUDA_VISIBLE_DEVICES"] = device
 
 
-def set_fake_cuda_device_capability(func=None):
-    if func is not None:
-        torch.cuda.get_device_capability = func
-        return func
+class override_cuda_device_capability(ContextDecorator):
+    """Context manager/decorator to temporarily override CUDA capability checks."""
 
-    def fake_cuda():
-        return 100, 1
+    def __init__(self, major: int = 100, minor: int = 1) -> None:
+        self.major = major
+        self.minor = minor
+        self._orig_func = None
 
-    orig_func = torch.cuda.get_device_capability
-    torch.cuda.get_device_capability = fake_cuda
-    return orig_func
+    def __enter__(self):
+        self._orig_func = torch.cuda.get_device_capability
+
+        def _override_capability(*_args, **_kwargs):
+            return self.major, self.minor
+
+        torch.cuda.get_device_capability = _override_capability
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        if self._orig_func is not None:
+            torch.cuda.get_device_capability = self._orig_func
+            self._orig_func = None
+        return False
+
+
+class fake_cuda_for_hpu(ContextDecorator):
+    """Context manager/decorator to fake CUDA availability for HPU devices."""
+
+    def __init__(self):
+        self._orig_is_available = None
+
+    def __enter__(self):
+        if is_hpex_available():
+            self._orig_is_available = torch.cuda.is_available
+            torch.cuda.is_available = lambda: True
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        if is_hpex_available() and hasattr(self, "_orig_is_available"):
+            torch.cuda.is_available = self._orig_is_available
+            del self._orig_is_available
+        return False
+
+
+class fake_triton_for_hpu(ContextDecorator):
+    """Context manager/decorator to fake triton availability for HPU devices."""
+
+    def __init__(self):
+        self._orig_triton = None
+        self._orig_triton_language = None
+        self._had_triton = False
+        self._had_triton_language = False
+
+    def __enter__(self):
+        if is_hpex_available():
+            # Save original state
+            self._had_triton = "triton" in sys.modules
+            self._had_triton_language = "triton.language" in sys.modules
+
+            if self._had_triton:
+                self._orig_triton = sys.modules["triton"]
+            if self._had_triton_language:
+                self._orig_triton_language = sys.modules["triton.language"]
+
+            # Create and inject fake triton module
+            class FakeTriton:
+                def __getattr__(self, name):
+                    return None
+
+            fake_triton = FakeTriton()
+            fake_triton.jit = lambda func: func  # Make triton.jit a no-op decorator
+            sys.modules["triton"] = fake_triton
+            sys.modules["triton.language"] = FakeTriton()
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        if is_hpex_available():
+            # Restore original state
+            if self._had_triton and self._orig_triton is not None:
+                sys.modules["triton"] = self._orig_triton
+            elif not self._had_triton and "triton" in sys.modules:
+                del sys.modules["triton"]
+
+            if self._had_triton_language and self._orig_triton_language is not None:
+                sys.modules["triton.language"] = self._orig_triton_language
+            elif not self._had_triton_language and "triton.language" in sys.modules:
+                del sys.modules["triton.language"]
+        return False
 
 
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
@@ -1184,6 +1275,52 @@ def partition_dict_numbers(number_dict, n):
     return result
 
 
+def dispatch_model_block_wise(model: torch.nn.Module, device_map: str, max_mem_ratio=0.9):
+    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+        import accelerate
+
+        accelerate.hooks.remove_hook_from_submodules(model)
+    no_split_modules = getattr(model, "_no_split_modules", [])
+    devices = parse_available_devices(device_map)
+    if len(devices) == 1:
+        model.to(devices[0])
+        return model
+
+    max_memory = get_max_memory()
+    new_max_memory = {}
+    if "cpu" not in devices:
+        devices.append("cpu")
+    for device in devices:
+        if ":" in device:
+            device = int(device.split(":")[-1])
+        elif device == "cpu":
+            device = "cpu"
+        elif isinstance(device, str):
+            device = 0
+        else:
+            raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
+        # Use 90% of the reported max memory to leave headroom for activations,
+        # temporary tensors, other processes, and allocator fragmentation, reducing
+        # the chance of runtime OOM while still utilizing most available memory.
+        new_max_memory[device] = max_memory[device] * max_mem_ratio
+    new_max_memory = get_balanced_memory(
+        model,
+        max_memory=new_max_memory,
+        no_split_module_classes=no_split_modules,
+    )
+    model.tie_weights()
+    device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
+    if len(devices) > 1 and "cpu" in device_map.values():
+        logger.warning(
+            "Some layers are offloaded to cpu, which may severely impact calibration speed."
+            " Please consider using more cards."
+        )
+
+    model = dispatch_model(model, device_map=device_map)
+
+    return model
+
+
 def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     block_name_list = get_block_names(model)
     device_list = parse_available_devices(device_map)
@@ -1337,6 +1474,13 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
                 # Numeric → assign to first available device type
                 device_type = device_types[0]
                 parsed.append(f"{device_type}:{p}" if device_type != "cpu" else "cpu")
+            elif p in device_types and ":" not in p:
+                # Bare device type string (e.g., "cuda", "xpu") → normalize to "type:0".
+                # Special-case CPU: keep it as "cpu" without an index.
+                if p.lower() == "cpu":
+                    parsed.append("cpu")
+                else:
+                    parsed.append(f"{p}:0")
             else:
                 parsed.append(p)
         return list(set(parsed))

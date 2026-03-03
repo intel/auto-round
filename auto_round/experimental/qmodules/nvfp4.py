@@ -71,6 +71,7 @@ class NVFP4QuantLinear(QModuleBase):
         self.config = config
         self.dtype = dtype
         self.pre_dequantized = False
+        self._cached_weight = None
 
         # Validate dtype
         assert (
@@ -164,6 +165,12 @@ class NVFP4QuantLinear(QModuleBase):
     def dequant_weight_online(self) -> torch.Tensor:
         dq_weight = self._dequant_nvfp4_tensor(self.weight_packed, self.weight_scale)
         return dq_weight
+
+    @property
+    def weight(self) -> torch.Tensor:
+        if not hasattr(self, "_cached_weight") or self._cached_weight is None:
+            self._cached_weight = self.dequant_weight_online()
+        return self._cached_weight
 
     def qdq_input(self, activation: torch.Tensor):
         original_dtype = activation.dtype

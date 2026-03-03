@@ -30,7 +30,7 @@ from auto_round.inference.backend import (
 )
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe import apply_modeling_patch
+from auto_round.modeling.unfused_moe import apply_modeling_patch
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
@@ -469,6 +469,17 @@ def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
     return get_available_devices()[0]
 
 
+def convert_gptq_v1_to_v2_format(model: nn.Module):
+    """Convert gptq v1 to v2 format to ensure compatible with gptqmodel:exllamav2 backend."""
+    from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
+
+    for n, m in model.named_modules():
+        if isinstance(m, ExllamaV2QuantLinear):
+            if hasattr(m, "qzeros") and m.qzeros is not None and m.qzeros.dtype == torch.int32 and m.bits == 4:
+                m.qzeros += 0b00010001000100010001000100010001
+                logger.warning_once("Converting gptq v1 to v2 format")
+
+
 def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
@@ -504,9 +515,27 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     # GPTQModel post-init
     if need_gptqmodel_init:
+        from gptqmodel import __version__ as gptqmodel_version  # pylint: disable=E0401
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
+        from packaging import version
 
-        model = gptq_post_init(model, use_act_order=False)
+        packing_format = None
+        if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+            quant_cfg = model.config.quantization_config
+            if hasattr(quant_cfg, "packing_format"):
+                packing_format = quant_cfg.packing_format
+
+        if packing_format == "auto_round:gptq":
+            # v1: auto_round:gptq; v2: auto_round:gptqmodel
+            convert_gptq_v1_to_v2_format(model)  # Handle qzero layers if present
+        if version.parse(gptqmodel_version) <= version.parse("5.6.0"):
+            model = gptq_post_init(model, use_act_order=False)
+        else:
+            # for new version of gptqmodel, use validate_once to import kernels
+            for n, m in model.named_modules():
+                if hasattr(m, "validate_once"):
+                    m.validate_once()
+            model = gptq_post_init(model, use_act_order=False)
 
     # IPEX post-init
     if need_ipex_init:

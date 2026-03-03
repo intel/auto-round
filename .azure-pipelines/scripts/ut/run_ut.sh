@@ -2,14 +2,15 @@
 set -xe
 
 test_part=$1
-
-# install requirements
-echo "##[group]set up UT env..."
 export TQDM_MININTERVAL=60
+export HF_HUB_DISABLE_PROGRESS_BARS=1
+echo "##[group]set up UT env..."
 uv pip install pytest-cov pytest-html
-uv pip install -r /auto-round/test/test_cpu/requirements.txt \
-    --extra-index-url https://download.pytorch.org/whl/cpu
-uv pip install torch==2.8.0 torchvision --index-url https://download.pytorch.org/whl/cpu
+uv pip list
+# workaround for ark test, remove auto_round_kernel_xpu
+package_path=$(uv pip show auto-round-lib | grep Location:|cut -d: -f2)
+rm -rf $package_path/auto_round_kernel/auto_round_kernel_xpu*
+echo "##[endgroup]"
 
 # install latest gguf for ut test
 cd ~ || exit 1
@@ -49,9 +50,10 @@ end_line=$(( start_line + chunk_size - 1 ))
 selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
 printf '%s\n' "${selected_files}" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
 cat run.sh
-bash run.sh 2>&1 | tee "${ut_log_name}"
+numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" bash run.sh 2>&1 | tee "${ut_log_name}"
 
-if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
+if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || \
+[ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c 'core dumped' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
     echo "##[error]Find errors in pytest case, please check the output..."
     exit 1
 fi

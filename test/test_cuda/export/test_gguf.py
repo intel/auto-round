@@ -5,17 +5,23 @@ import sys
 import pytest
 import torch
 import transformers
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import require_gguf
 
-from ...helpers import get_model_path, get_tiny_model, save_tiny_model
+from ...envs import require_gguf
+from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, save_tiny_model, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="GGUF format saving and loading failed in transformers v5, \
+        https://github.com/huggingface/transformers/issues/43482",
+)
 class TestAutoRound:
     save_dir = "./saved"
 
@@ -60,7 +66,7 @@ class TestAutoRound:
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
-            f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
+            f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device cuda"
         )
         print(save_dir)
         assert not (res > 0 or res == -1), "qwen2 tuning fail"
@@ -117,10 +123,7 @@ class TestAutoRound:
         inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
         print(autoround.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
-        from auto_round.eval.evaluation import simple_evaluate_user_model
-
-        result = simple_evaluate_user_model(model, autoround.tokenizer, batch_size=16, tasks="piqa")
-        assert result["results"]["piqa"]["acc,none"] > 0.54
+        evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_gguf
