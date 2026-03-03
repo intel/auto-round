@@ -2127,7 +2127,6 @@ class BaseCompressor(object):
             and len(layer_names) == 0
             and not self.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
-            and getattr(self, "mllm", False) is False
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
@@ -2251,10 +2250,7 @@ class BaseCompressor(object):
             else:
                 self.model = self.model.to(torch.float32)  ##model on cpu
 
-        self.last_cache_name = last_cache_name
-        if last_cache_name is None and len(block_names) + len(layer_names) == 1:
-            self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
-        # do not set last_cache_name for multimodal models
+        self.last_cache_name = self._infer_last_cache_name(block_names, layer_names, last_cache_name)
         calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
@@ -2267,6 +2263,32 @@ class BaseCompressor(object):
             self.model = self.model.to(tmp_dtype)
 
         return res
+
+    def _infer_last_cache_name(self, block_names, layer_names=None, requested_last_cache_name=None):
+        """The latest required cache layer for early-stop forward.
+        For MLLM with multiple cache targets, infer the latest target based on
+           ``model.named_modules()`` traversal order.
+        Fallback to ``None`` if no deterministic target can be inferred.
+        """
+        if layer_names is None:
+            layer_names = []
+
+        if requested_last_cache_name is not None:
+            return requested_last_cache_name
+
+        cache_targets = list(block_names) + list(layer_names)
+        if len(cache_targets) == 1:
+            return cache_targets[0]
+
+        if not getattr(self, "mllm", False):
+            return None
+
+        target_set = set(cache_targets)
+        last_seen = None
+        for name, _ in self.model.named_modules():
+            if name in target_set:
+                last_seen = name
+        return last_seen
 
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
@@ -2395,6 +2417,8 @@ class BaseCompressor(object):
                 self.inputs[name].extend(list(torch.split(input.to("cpu"), 1, dim=0)))
             else:
                 self.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
+            if name == self.last_cache_name:
+                raise NotImplementedError
 
         return cache_input_hook
 
