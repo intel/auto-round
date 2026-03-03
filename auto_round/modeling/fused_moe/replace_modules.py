@@ -34,8 +34,7 @@ BUILTIN_MODULES = {
     "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
     # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
     "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
-    # Both custom and general solution work.
-    "gpt_oss": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
+    # supports transformers >= 5.0.0
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
@@ -43,8 +42,10 @@ BUILTIN_MODULES = {
 
 # transformers >= 5.0.0 supports the general linear_loop experts interface.
 if not is_transformers_version_greater_or_equal_5():
-    # Qwen3VLMoeTextSparseMoeBlock custom replacement only works with transformers < 5.0.0;
+    # transformers == 5.2.0: IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
     BUILTIN_MODULES["qwen3_vl_moe"] = LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe")
+    # transformers == 5.2.0: IndexError: index 4 is out of bounds for dimension 0 with size 4
+    BUILTIN_MODULES["gpt_oss"] = LazyImport("auto_round.modeling.fused_moe.gpt_oss")
 
 
 @dump_mem_usage("Applying general replacements")
