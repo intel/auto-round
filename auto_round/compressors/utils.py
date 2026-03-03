@@ -546,9 +546,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
     convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
 
-    model_architecture = convert_hf_to_gguf.get_model_architecture(
-        hparams=model.config.to_dict(), model_type=model_type
-    )
+    try:
+        model_architecture = convert_hf_to_gguf.get_model_architecture(
+            hparams=model.config.to_dict(), model_type=model_type
+        )
+    except AttributeError as e:
+        raise ImportError(
+            "Please use the latest gguf-py, you can use the following command to install it:\n"
+            "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py"
+            " && pip install . sentencepiece"
+        )
     try:
         if model_type != ModelType.TEXT:
             model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
