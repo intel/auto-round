@@ -65,6 +65,7 @@ class AutoRoundExportFormat(str, Enum):
     MX_FP_RCEIL = "mx_fp_rceil"
     NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
     INT8_W8A8 = "int8_w8a8"
+    FP8_BLOCK = "fp8_block"
 
 
 if TYPE_CHECKING:
@@ -962,6 +963,7 @@ class AutoRoundFormat(OutputFormat):
         "W2A16G32",
         "FP8_STATIC",
         "BF16",
+        "FP8_BLOCK",
     ]
     format_name = "auto_round"
 
@@ -987,6 +989,8 @@ class AutoRoundFormat(OutputFormat):
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
             elif ar.data_type.startswith("fp") and ar.bits == 8 and ar.act_bits >= 16:  # woq fp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, ar)
+            elif ar.data_type.startswith("fp") and ar.bits == 8 and ar.weight_block_size is not None:  # block_wise fp8
+                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)
             elif ar.act_bits < 16:
                 raise ValueError(
                     "AutoRound format does not support exporting "
@@ -1045,6 +1049,7 @@ class AutoRoundFormat(OutputFormat):
             f"auto_round:{AutoRoundExportFormat.FP8.value}",
             f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
             f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
+            f"auto_round:{AutoRoundExportFormat.FP8_BLOCK.value}",
         ]:
             from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
@@ -1086,7 +1091,10 @@ class AutoRoundFormat(OutputFormat):
         elif serialization_dict.get("data_type", "int") == "fp" and serialization_dict.get("bits", 16) == 8:
             from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
-            backend = "auto_round:fp8_static" if serialization_dict.get("act_bits", 16) == 8 else None
+            if "block" in backend:
+                backend = None
+            else:
+                backend = "auto_round:fp8_static" if serialization_dict.get("act_bits", 16) == 8 else None
             export_func = save_quantized_as_autoround
         else:
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
