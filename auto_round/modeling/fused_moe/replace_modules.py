@@ -25,10 +25,12 @@ from auto_round.modeling.fused_moe.moe_experts_interface import LINEAR_LOOP_IMPL
 from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
 
 BUILTIN_MODULES = {
-    "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
-    "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
-    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
-    "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    "gpt_oss": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
+    "qwen3_vl_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
+    "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
 
 
@@ -37,19 +39,11 @@ def _has_custom_replacement_only(model: torch.nn.Module) -> bool:
 
     If all MOE modules are covered by BUILTIN_MODULES, we can skip the linear_loop path entirely.
     """
-    for _, module in model.named_modules():
-        class_name = module.__class__.__name__
-        # Check if this looks like an MOE experts module (has fused 3D weights)
-        if (
-            hasattr(module, "gate_up_proj")
-            and isinstance(module.gate_up_proj, torch.nn.Parameter)
-            and module.gate_up_proj.dim() == 3
-        ):
-            # This is a fused experts module - check if it has a custom replacement
-            if class_name not in BUILTIN_MODULES and not ReplacementModuleBase.is_registered(class_name):
-                # Found a fused experts module without custom replacement - need linear_loop
-                return False
-    return True
+    if hasattr(model, "config") and hasattr(model.config, "model_type"):
+        model_type = model.config.model_type
+        if model_type in BUILTIN_MODULES:
+            return True
+    return False
 
 
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
@@ -84,15 +78,12 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
 def _import_required_replacements(model: torch.nn.Module) -> None:
     """Scan model and trigger lazy imports for registered replacement modules."""
     imported = set()
-
-    for _, module in model.named_modules():
-        class_name = module.__class__.__name__
-
-        if class_name in BUILTIN_MODULES and class_name not in imported:
-            # Trigger import by accessing the LazyImport object
-            _ = BUILTIN_MODULES[class_name].__name__  # or any attribute
-            imported.add(class_name)
-            logger.debug(f"Loaded replacement module for {class_name}")
+    if hasattr(model, "config") and hasattr(model.config, "model_type"):
+        model_type = model.config.model_type
+        if model_type in BUILTIN_MODULES:
+            _ = BUILTIN_MODULES[model_type].__name__  # or any attribute
+            imported.add(model_type)
+            logger.debug(f"Loaded replacement module for {model_type}")
 
 
 def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module) -> bool:
@@ -129,6 +120,7 @@ def materialize_model_(model: torch.nn.Module) -> None:
             module.materialize_weights()
 
     model.apply(_materialize_module)
+
     # check if any module on meta device remains
     found_meta = False
     for name, param in model.named_parameters():
@@ -332,7 +324,7 @@ def apply_replacements(
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if class_name in BUILTIN_MODULES and _should_skip_moe_replacement(module, model):
+        if ReplacementModuleBase.is_registered(class_name) and _should_skip_moe_replacement(module, model):
             logger.debug(f"Skipping replacement for {name}: linear_loop experts already unfused")
             continue
         if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
