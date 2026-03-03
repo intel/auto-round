@@ -112,6 +112,7 @@ def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module
     )
     return result
 
+
 @dump_mem_usage("Materializing model", log_level="debug")
 def materialize_model_(model: torch.nn.Module) -> None:
     def _materialize_module(module: torch.nn.Module) -> None:
