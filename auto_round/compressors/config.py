@@ -92,7 +92,7 @@ class ExtraConfig:
             group_size (int, optional): Weight quantization group size. Defaults to 128.
             sym (bool, optional): Symmetric weight quantization. Defaults to True.
             data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
-            weight_block_size (list, optional): Weight block size for weight block-wise quantization. Defaults to None,
+            weight_block_size (list, optional): Weight block size for weight block-wise quantization. Defaults to None.
             act_bits (int, optional): Activation quantization bits. Defaults to 16.
             act_group_size (int, optional): Activation group size. Defaults to None.
             act_sym (bool, optional): Symmetric activation quantization. Defaults to None.

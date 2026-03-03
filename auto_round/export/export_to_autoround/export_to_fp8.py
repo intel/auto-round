@@ -128,7 +128,7 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         return
 
     orig_device = layer.weight.device
-    scale = layer.scale if layer.weight_block_size is not None  else layer.scale.view(-1) 
+    scale = layer.scale if layer.weight_block_size is not None else layer.scale.view(-1) 
     zp = layer.zp
     weight = layer.weight
     weight, orig_shape, pad_len = (
