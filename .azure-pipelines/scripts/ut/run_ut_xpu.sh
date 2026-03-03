@@ -26,9 +26,9 @@ cat run_ark.sh
 find ./test_xpu -name "test*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run_xpu.sh
 cat run_xpu.sh
 
-numactl --physcpubind="${NUMA_CPUSET:-0-27,112-139}" --membind="${NUMA_NODE:-0}" bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
+numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" bash run_xpu.sh 2>&1 | tee  "${ut_log_name}"
 
-numactl --physcpubind="${NUMA_CPUSET:-0-27,112-139}" --membind="${NUMA_NODE:-0}" bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
+numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" bash run_ark.sh 2>&1 | tee -a "${ut_log_name}"
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
