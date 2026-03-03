@@ -421,6 +421,7 @@ class fake_triton_for_hpu(ContextDecorator):
                 del sys.modules["triton.language"]
         return False
 
+
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
     """
     Selects the packing device.
