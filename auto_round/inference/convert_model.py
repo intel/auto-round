@@ -41,6 +41,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     is_hpex_available,
+    is_transformers_version_greater_or_equal_5,
     set_module,
 )
 
@@ -607,7 +608,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         NotImplementedError: If the GPTQ model uses an unsupported `g_idx`.
         ValueError: If quantization backend is not properly specified.
     """
-    disable_moe_conversion_mapping(model)
+    if is_transformers_version_greater_or_equal_5():
+        disable_moe_conversion_mapping(model)
     quantization_config = model.config.quantization_config
 
     # Check desc_act + static_groups
