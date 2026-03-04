@@ -41,6 +41,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     is_hpex_available,
+    is_transformers_version_greater_or_equal_5,
     set_module,
 )
 
@@ -570,6 +571,23 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             logger.warning(f"Forced model to {target_dtype}")
 
 
+def disable_moe_conversion_mapping(model):
+    """Disables MoE-specific checkpoint conversion mappings to prevent unintended weight merging."""
+    from transformers.conversion_mapping import (
+        get_checkpoint_conversion_mapping,
+        register_checkpoint_conversion_mapping,
+    )
+    from transformers.core_model_loading import WeightRenaming
+
+    model_type = getattr(model.config, "model_type", None)
+    if model_type is not None:
+        conversions = get_checkpoint_conversion_mapping(model_type)
+        if conversions is not None:
+            # 只保留 WeightRenaming，跳过 WeightConverter（MoE merge 操作）
+            filtered = [c for c in conversions if isinstance(c, WeightRenaming)]
+            register_checkpoint_conversion_mapping(model_type, mapping=filtered, overwrite=True)
+
+
 def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.Module, list]:
     """Converts a HuggingFace model into an AutoRound model by replacing layers with quantized layers.
 
@@ -590,6 +608,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         NotImplementedError: If the GPTQ model uses an unsupported `g_idx`.
         ValueError: If quantization backend is not properly specified.
     """
+    if is_transformers_version_greater_or_equal_5():
+        disable_moe_conversion_mapping(model)
     quantization_config = model.config.quantization_config
 
     # Check desc_act + static_groups
