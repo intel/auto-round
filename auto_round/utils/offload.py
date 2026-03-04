@@ -62,6 +62,7 @@ __all__ = ["OffloadManager"]
 # Low-level helpers
 # =====================================================================
 
+
 def _load_state_dict_into_module(state_dict: dict, module: torch.nn.Module) -> None:
     """Assign every key in *state_dict* to the corresponding sub-module.
 
@@ -131,6 +132,7 @@ def _resolve_model_dir(model_dir: str) -> str:
         return model_dir
     try:
         from huggingface_hub import snapshot_download
+
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
         return model_dir
@@ -146,6 +148,7 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
     single_path = os.path.join(model_dir, "model.safetensors")
     if os.path.exists(single_path):
         from safetensors import safe_open
+
         with safe_open(single_path, framework="pt") as f:
             return {k: "model.safetensors" for k in f.keys()}
 
@@ -194,14 +197,15 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
         shard_path = os.path.join(model_dir, shard_file)
         if shard_file.endswith(".safetensors"):
             from safetensors import safe_open
+
             with safe_open(shard_path, framework="pt", device="cpu") as f:
                 for name in tensor_names:
-                    state_dict[name[len(prefix):]] = f.get_tensor(name)
+                    state_dict[name[len(prefix) :]] = f.get_tensor(name)
         else:
             full_state = torch.load(shard_path, map_location="cpu")
             for name in tensor_names:
                 if name in full_state:
-                    state_dict[name[len(prefix):]] = full_state[name]
+                    state_dict[name[len(prefix) :]] = full_state[name]
             del full_state
 
     _load_state_dict_into_module(state_dict, block)
@@ -405,6 +409,7 @@ class OffloadManager:
             total_gb += self.estimate_module_size_gb(module)
             self.offload(model, name, skip_if_saved=True)
         from auto_round.utils import clear_memory
+
         clear_memory(device_list=device_list)
         logger.info(f"offload done, freed {total_gb:.2f} GB")
         return total_gb
@@ -450,6 +455,7 @@ class OffloadManager:
             self.offload(model, name, skip_if_saved=True)
         gc.collect()
         from auto_round.utils import clear_memory
+
         clear_memory()
         logger.info("module weights cleared")
 
@@ -589,18 +595,12 @@ class OffloadManager:
     @staticmethod
     def estimate_model_size_gb(model: torch.nn.Module) -> float:
         """Estimate model weights size in GB."""
-        return sum(
-            p.numel() * p.element_size() / (1024**3)
-            for p in model.parameters() if p.numel() > 0
-        )
+        return sum(p.numel() * p.element_size() / (1024**3) for p in model.parameters() if p.numel() > 0)
 
     @staticmethod
     def estimate_module_size_gb(module: torch.nn.Module) -> float:
         """Estimate a module's parameter size in GB."""
-        return sum(
-            p.numel() * p.element_size() / (1024**3)
-            for p in module.parameters() if p.numel() > 0
-        )
+        return sum(p.numel() * p.element_size() / (1024**3) for p in module.parameters() if p.numel() > 0)
 
     # ------------------------------------------------------------------
     # Internal: disk operations (offload mode)
@@ -619,11 +619,7 @@ class OffloadManager:
         try:
             # Skip meta tensors: they contain no real data (e.g. quantized weights
             # already flushed to disk by an immediate-saving shard writer).
-            state_dict = {
-                k: v.cpu().contiguous()
-                for k, v in module.state_dict().items()
-                if v.device.type != "meta"
-            }
+            state_dict = {k: v.cpu().contiguous() for k, v in module.state_dict().items() if v.device.type != "meta"}
             torch.save(state_dict, save_path)
             self._saved[name] = {"save_path": save_path}
             del state_dict

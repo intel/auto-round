@@ -27,8 +27,7 @@ import torch
 from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import compute_layer_bits
 from auto_round.utils import get_block_names, get_module
-from auto_round.utils.offload import OffloadManager
-from auto_round.utils.offload import _clear_module_weights
+from auto_round.utils.offload import OffloadManager, _clear_module_weights
 
 
 class TestOffloadManager:
