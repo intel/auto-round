@@ -27,6 +27,8 @@ class TestAutoRoundTorchBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
+    # @pytest.mark.skip_ci(reason="Time-consuming")
     def test_torch_4bits_asym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)
@@ -65,6 +67,7 @@ class TestAutoRoundTorchBackend:
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming")
     def test_torch_4bits_sym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)

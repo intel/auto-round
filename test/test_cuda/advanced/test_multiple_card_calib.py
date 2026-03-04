@@ -12,6 +12,7 @@ AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skip_ci(reason="multiple card test")
 class TestAutoRound:
     save_dir = "./saved"
     tasks = "lambada_openai"

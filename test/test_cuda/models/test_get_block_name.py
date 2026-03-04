@@ -200,10 +200,6 @@ class TestAutoRound:
         )
         assert not is_pure_text_model(model)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
-    )
     def test_flux(self):
         from diffusers import AutoPipelineForText2Image
 

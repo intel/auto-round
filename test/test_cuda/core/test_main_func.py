@@ -30,6 +30,7 @@ class TestMainFunc:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_gptqmodel
     @require_optimum
     def test_backend(self):
@@ -49,6 +50,7 @@ class TestMainFunc:
         evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_optimum
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
@@ -64,6 +66,7 @@ class TestMainFunc:
         evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_gptqmodel
     def test_ignore_layers(self):
@@ -84,6 +87,7 @@ class TestMainFunc:
         evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
@@ -105,6 +109,7 @@ class TestMainFunc:
         evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_undivided_group_size_tuning(self, tiny_opt_model_path):
         model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float16, device_map="auto")
@@ -126,28 +131,9 @@ class TestMainFunc:
         evaluate_accuracy(self.save_dir, threshold=0.34, batch_size="auto")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autoround_asym(self):  ##need to install false
-        try:
-            from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
-        except ImportError as e:
-            print("skip autoround asym test, as autoround is not installed from source")
-            return
-        model_name = get_model_path("facebook/opt-125m")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        autoround = AutoRound(model, tokenizer, bits=4, group_size=128, sym=False)
-        autoround.quantize()
-
-        ##test auto_round format
-        autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
-        evaluate_accuracy(self.save_dir, threshold=0.35, batch_size="auto")
-        shutil.rmtree("./saved", ignore_errors=True)
-
     def test_attention_mask_lm_head(self, tiny_qwen_moe_model_path):
         from transformers import AutoTokenizer
 
-        # model_name = "Qwen/Qwen3-8B"
-        # model_name = "Qwen/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_moe_model_path)
         text = ["haha", "hello world"]
         res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)

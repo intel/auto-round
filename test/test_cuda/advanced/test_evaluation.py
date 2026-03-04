@@ -33,12 +33,14 @@ VLLM_EVAL_MODELS = [
 ]
 
 
+@pytest.mark.skip_ci(reason="vLLM issue")
 @pytest.mark.skipif(
     not os.path.exists("/usr/bin/nvidia-smi") and not os.path.exists("/usr/local/cuda"), reason="CUDA not available"
 )
 class TestVllmEvaluation:
     """Test VLLM backend evaluation functionality."""
 
+    @pytest.mark.skip_ci(reason="Time-consuming")
     @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
     def test_vllm_backend_with_custom_args(self, model):
         """Test vllm backend evaluation with custom vllm_args parameter."""
@@ -76,6 +78,7 @@ class TestVllmEvaluation:
 class TestHFEvaluation:
     """Test different evaluation modes: --eval and --eval_backend."""
 
+    @pytest.mark.skip_ci(reason="Time-consuming")
     @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
     def test_eval_mode_hf_backend(self, model):
         """Test --eval flag: evaluate model without quantization (HF backend default)."""

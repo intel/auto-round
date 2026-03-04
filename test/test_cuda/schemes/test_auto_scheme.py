@@ -56,7 +56,7 @@ class TestAutoScheme:
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
 
     def test_gguf(self):
-        model_name = get_model_path("qwen/Qwen3-8B")
+        model_name = get_model_path("Qwen/Qwen3-8B")
         model = get_tiny_model(model_name)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         target_bits = 3

@@ -31,16 +31,15 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
-    )
     def test_diffusion_tune(self):
         from diffusers import AutoPipelineForText2Image
 
         ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name).to("cuda")
         model = pipe.transformer
+        # build tiny model for testing since the full model is too large to quantize and evaluate in CI
+        pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
+        pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
 
         layer_config = {}
         # skip some layers since it takes much time
@@ -66,15 +65,14 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
-    )
     def test_diffusion_rtn(self):
         from diffusers import AutoPipelineForText2Image
 
         ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
+        # build tiny model for testing since the full model is too large to quantize and evaluate in CI
+        pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
+        pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
 
         ## quantize the model
         autoround = AutoRoundDiffusion(
@@ -88,6 +86,7 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
+    @pytest.mark.skip_ci(reason="Download large model; Time-consuming")
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model
 

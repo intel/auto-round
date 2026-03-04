@@ -30,11 +30,11 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_optimum
-    def test_autogptq_format(self, dataloader):
+    def test_autogptq_format(self, tiny_opt_model_path, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model_path,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -96,9 +96,8 @@ class TestAutoRound:
         #     "there there there there there there")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autogptq_format_qsave_ignore_layers(self, dataloader):
-        model_path = get_model_path("facebook/opt-125m")
-        model = AutoModelForCausalLM.from_pretrained(model_path)
+    def test_autogptq_format_qsave_ignore_layers(self, tiny_opt_model_path, dataloader):
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path)
 
         layer_config = {}
         for n, m in model.named_modules():
@@ -107,7 +106,7 @@ class TestAutoRound:
 
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model_path,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -169,11 +168,10 @@ class TestAutoRound:
 
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_autoawq_format(self, dataloader):
-        model_path = get_model_path("facebook/opt-125m")
+    def test_autoawq_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model_path,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -251,15 +249,13 @@ class TestAutoRound:
     @require_optimum
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
-    def test_autoawq_format_fp_qsave_layers(self, dataloader):
-        model_path = get_model_path("facebook/opt-125m")
+    def test_autoawq_format_fp_qsave_layers(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 16},
-            "model.decoder.layers.9.self_attn.v_proj": {"bits": 16},
         }
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model_path,
+            tiny_opt_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,

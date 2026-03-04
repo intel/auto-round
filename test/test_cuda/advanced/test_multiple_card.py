@@ -13,6 +13,7 @@ from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+@pytest.mark.skip_ci(reason="multiple card test")
 class TestAutoRound:
     save_dir = "./saved"
 
@@ -74,7 +75,7 @@ class TestAutoRound:
 
     @multi_card
     def test_lm_head(self):
-        model_path = get_model_path("qwen/Qwen2.5-7B-Instruct")
+        model_path = get_model_path("Qwen/Qwen2.5-7B-Instruct")
         model = get_tiny_model(model_path)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1", "lm_head": 1}
@@ -336,7 +337,7 @@ class TestAutoRound:
 
     @multi_card
     def test_mllm_device_map(self):
-        model_name = get_model_path("qwen/Qwen2-VL-2B-Instruct")
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         from auto_round import AutoRoundMLLM
 
         device_map = "0,1"
