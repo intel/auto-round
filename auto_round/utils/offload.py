@@ -360,7 +360,9 @@ class OffloadManager:
             logger.info(f"offload done, freed {total_gb:.2f} GB")
         return total_gb
 
-    def _offload(self, model: torch.nn.Module, name: str, *, skip_if_saved: bool = False, overwrite: bool = False) -> None:
+    def _offload(
+        self, model: torch.nn.Module, name: str, *, skip_if_saved: bool = False, overwrite: bool = False
+    ) -> None:
         """Offload a single named module (internal helper)."""
         self._model_ref = model
         module = get_module(model, name)
