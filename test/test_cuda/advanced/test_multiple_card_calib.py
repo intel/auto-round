@@ -6,7 +6,6 @@ import sys
 import pytest
 
 from ...envs import multi_card
-
 from ...helpers import get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")

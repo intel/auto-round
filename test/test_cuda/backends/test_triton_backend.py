@@ -6,8 +6,8 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import evaluate_accuracy, get_model_path, model_infer
 from ...envs import require_greater_than_050
+from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundTritonBackend:

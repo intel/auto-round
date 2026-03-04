@@ -9,7 +9,6 @@ from PIL import Image
 from transformers import AutoRoundConfig
 
 from ...envs import require_gptqmodel, require_optimum, require_vlm_env
-
 from ...helpers import get_model_path
 
 

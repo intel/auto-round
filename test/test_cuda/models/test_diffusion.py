@@ -10,9 +10,8 @@ from PIL import Image
 
 from auto_round import AutoRoundDiffusion
 
-
-from ...helpers import get_captions_dataset_path, get_model_path, transformers_version
 from ...envs import require_gptqmodel, require_optimum, require_vlm_env
+from ...helpers import get_captions_dataset_path, get_model_path, transformers_version
 
 
 class TestAutoRound:

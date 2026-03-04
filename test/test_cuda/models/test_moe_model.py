@@ -8,9 +8,7 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeFor
 
 from auto_round import AutoRound
 
-from ...helpers import check_version
-
-from ...helpers import get_model_path
+from ...helpers import check_version, get_model_path
 
 
 @pytest.fixture
