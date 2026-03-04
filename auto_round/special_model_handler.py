@@ -21,7 +21,7 @@ from auto_round.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import logger
 
-mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama", "qwen3_omni_moe")  # Limitations on batch_size
+mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama", "qwen2_5_omni", "qwen3_omni_moe")  # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
     "phi3_v",
@@ -36,6 +36,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "internvl_chat",
     "glm4v_moe",
     "qwen3_vl_moe",
+    "qwen2_5_omni",
     "qwen3_omni_moe",
 ]
 
@@ -53,6 +54,10 @@ def _handle_special_model(model):
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
+    if hasattr(model, "config") and model.config.model_type == "qwen2_5_omni":
+        from functools import partial
+
+        model.forward = partial(_qwen2_5_omni_forward, model)
     if hasattr(model, "config") and model.config.model_type == "qwen3_omni_moe":
         from functools import partial
 
@@ -81,6 +86,42 @@ def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
         block_names.append([f"vision.blocks.{i}" for i in range(len(model.vision.blocks))])
         block_names.append([f"projector.layers.{i}" for i in range(len(model.projector.layers))])
     block_names.append([f"language.model.layers.{i}" for i in range(len(model.language.model.layers))])
+    return block_names
+
+
+def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
+    """Get block names for Qwen2.5-Omni model.
+
+    Qwen2.5-Omni has the following structure:
+    - thinker: Contains audio_tower, visual, model (text decoder)
+    - talker: Contains model (talker decoder)
+    - token2wav: Audio decoder
+
+    For quantization, we focus on:
+    - thinker.model.layers (text decoder layers) - main LLM layers
+    - talker.model.layers (talker decoder layers)
+    - Optionally: visual encoder blocks, audio encoder layers
+    """
+    block_names = []
+
+    # Quantize visual encoder blocks if quant_vision is enabled
+    if quant_vision:
+        if hasattr(model, "thinker") and hasattr(model.thinker, "visual") and hasattr(model.thinker.visual, "blocks"):
+            block_names.append([f"thinker.visual.blocks.{i}" for i in range(len(model.thinker.visual.blocks))])
+        if hasattr(model, "thinker") and hasattr(model.thinker, "audio_tower"):
+            if hasattr(model.thinker.audio_tower, "layers"):
+                block_names.append(
+                    [f"thinker.audio_tower.layers.{i}" for i in range(len(model.thinker.audio_tower.layers))]
+                )
+
+    # Thinker text model layers (main LLM decoder)
+    if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
+        block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
+
+    # Talker model layers (if available)
+    if hasattr(model, "talker") and hasattr(model.talker, "model") and hasattr(model.talker.model, "layers"):
+        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
+
     return block_names
 
 
@@ -124,6 +165,7 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
 SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block,
+    "qwen2_5_omni": _get_qwen2_5_omni_multimodal_block,
     "qwen3_omni_moe": _get_qwen3_omni_moe_multimodal_block,
 }
 
@@ -165,6 +207,94 @@ def _deepseek_vl2_forward(
         return_dict=return_dict,
         cache_position=cache_position,
     )
+
+
+def _qwen2_5_omni_forward(
+    model,
+    input_ids=None,
+    input_features=None,
+    pixel_values=None,
+    pixel_values_videos=None,
+    image_grid_thw=None,
+    video_grid_thw=None,
+    attention_mask=None,
+    feature_attention_mask=None,
+    audio_feature_lengths=None,
+    position_ids=None,
+    past_key_values=None,
+    inputs_embeds=None,
+    rope_deltas=None,
+    labels=None,
+    use_cache=None,
+    use_audio_in_video=None,
+    cache_position=None,
+    video_second_per_grid=None,
+    **kwargs,
+):
+    """Forward function for Qwen2.5-Omni model.
+
+    This delegates to the thinker module for calibration, then optionally
+    runs a forward through the talker to ensure its layers are also calibrated.
+    """
+    thinker_output = model.thinker(
+        input_ids=input_ids,
+        input_features=input_features,
+        pixel_values=pixel_values,
+        pixel_values_videos=pixel_values_videos,
+        image_grid_thw=image_grid_thw,
+        video_grid_thw=video_grid_thw,
+        attention_mask=attention_mask,
+        feature_attention_mask=feature_attention_mask,
+        audio_feature_lengths=audio_feature_lengths,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        rope_deltas=rope_deltas,
+        labels=labels,
+        use_cache=use_cache,
+        use_audio_in_video=use_audio_in_video,
+        cache_position=cache_position,
+        video_second_per_grid=video_second_per_grid,
+        output_hidden_states=True,
+        return_dict=True,
+        **kwargs,
+    )
+
+    # Run talker forward if available (for calibration purposes)
+    if hasattr(model, "talker") and model.has_talker:
+        try:
+            thinker_hidden = thinker_output.hidden_states[-1] if thinker_output.hidden_states else None
+
+            if thinker_hidden is not None:
+                batch_size, seq_len, _ = thinker_hidden.shape
+
+                if hasattr(model.talker, "thinker_to_talker_proj"):
+                    thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
+                    talker_inputs_embeds = model.talker.thinker_to_talker_proj(thinker_embeds)
+                else:
+                    talker_hidden_size = model.talker.model.config.hidden_size
+                    talker_inputs_embeds = torch.zeros(
+                        batch_size,
+                        seq_len,
+                        talker_hidden_size,
+                        device=thinker_hidden.device,
+                        dtype=thinker_hidden.dtype,
+                    )
+
+                _ = model.talker.model(
+                    inputs_embeds=talker_inputs_embeds,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Qwen2.5-Omni talker forward failed during calibration; "
+                "continuing with thinker-only quantization. Error: %s",
+                exc,
+                exc_info=True,
+            )
+
+    return thinker_output
 
 
 def _qwen3_omni_moe_forward(
