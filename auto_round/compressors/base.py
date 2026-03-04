@@ -113,7 +113,7 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.utils.offload import BlockOffloadManager
+from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 SERIALIZATION_KEYS = (
@@ -372,7 +372,7 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        self._offloader = BlockOffloadManager(enabled=low_cpu_mem_usage, prefix="compressor")
+        self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", prefix="compressor")
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -1402,7 +1402,7 @@ class BaseCompressor(object):
                                 self._shard_writer._flush_shard()
                             block.to("meta")
                         if self.low_cpu_mem_usage:
-                            self._offloader.save_and_clear(block_name, block)
+                            self._offloader.offload(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1440,6 +1440,8 @@ class BaseCompressor(object):
 
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        if self.low_cpu_mem_usage:
+            self._offloader.reload_all(self.model)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1568,7 +1570,7 @@ class BaseCompressor(object):
                         self._shard_writer._flush_shard()
                     mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage:
-                    self._offloader.save_and_clear(block_name, block)
+                    self._offloader.offload(self.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1775,9 +1777,6 @@ class BaseCompressor(object):
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
-        # Log memory breakdown for calibration inputs
-        if self.low_cpu_mem_usage:
-            inputs_size_gb = BlockOffloadManager.estimate_inputs_size_gb(all_inputs)
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
@@ -1792,11 +1791,8 @@ class BaseCompressor(object):
         self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.device_list)
         logger.info("caching done")
-        # Log memory breakdown for model weights
         if self.low_cpu_mem_usage:
-            model_size_gb = BlockOffloadManager.estimate_model_size_gb(self.model)
-        if self.low_cpu_mem_usage:
-            self._offloader.stream_offload_all_blocks(self.model, all_blocks, self.device_list)
+            self._offloader.offload_all(self.model, all_blocks, device_list=self.device_list)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1843,8 +1839,7 @@ class BaseCompressor(object):
             shard_writer(self, is_finalize=True)
 
         if self.low_cpu_mem_usage:
-            self._offloader.restore_all(self.model)
-            self._offloader.cleanup()
+            self._offloader.reload_all(self.model)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -2918,11 +2913,6 @@ class BaseCompressor(object):
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
             )
 
-            # Log output cache size for first block
-            if self.low_cpu_mem_usage and not hasattr(self, "_logged_output_size"):
-                output_size = BlockOffloadManager.estimate_tensor_size_gb(output)
-                self._logged_output_size = True
-
             for handle in hook_handles:
                 handle.remove()
         else:
@@ -3195,11 +3185,6 @@ class BaseCompressor(object):
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
 
-        # Log detailed memory breakdown for first block
-        if self.low_cpu_mem_usage:
-            input_ids_size = BlockOffloadManager.estimate_tensor_size_gb(input_ids)
-            input_others_size = BlockOffloadManager.estimate_tensor_size_gb(input_others)
-
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -3218,12 +3203,10 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage:
                 if nblocks == 1:
-                    self._offloader.load_block(n, get_module(model, n))
-                    if i == 0:  # Log only for first block
-                        block_size = BlockOffloadManager.estimate_block_size_gb(get_module(model, n))
+                    self._offloader.reload(model, n)
                 else:
                     for name in names:
-                        self._offloader.load_block(name, get_module(model, name))
+                        self._offloader.reload(model, name)
 
             m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = self._quantize_block(
@@ -3247,10 +3230,10 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
-                    self._offloader.discard_and_resave(n, get_module(model, n))
+                    self._offloader.resave(model, n)
                 else:
                     for name in names:
-                        self._offloader.discard_and_resave(name, get_module(model, name))
+                        self._offloader.resave(model, name)
         if pbar is not None:
             pbar.update(1)
 

@@ -27,76 +27,124 @@ import torch
 from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import compute_layer_bits
 from auto_round.utils import get_block_names, get_module
-from auto_round.utils.offload import AutoSchemeOffloadContext
-from auto_round.utils.offload import _clear_submodule_weights as _clear_module_weights
-from auto_round.utils.offload import group_layers_by_block
+from auto_round.utils.offload import OffloadManager
+from auto_round.utils.offload import _clear_module_weights
 
 
-class TestAutoSchemeOffloadContext:
-    """Tests for AutoSchemeOffloadContext class."""
+class TestOffloadManager:
+    """Tests for OffloadManager class."""
 
     def test_context_init_disabled(self):
-        """Test that context is properly initialized when disabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
-        assert ctx.low_cpu_mem_usage is False
-        assert len(ctx._cleared_blocks) == 0
+        """Test that manager is properly initialized when disabled."""
+        mgr = OffloadManager(enabled=False)
+        assert mgr.enabled is False
 
     def test_context_init_enabled(self):
-        """Test that context is properly initialized when enabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir="/tmp/fake")
-        assert ctx.low_cpu_mem_usage is True
-        assert ctx.model_dir == "/tmp/fake"
-        assert len(ctx._cleared_blocks) == 0
+        """Test that manager is properly initialized when enabled."""
+        mgr = OffloadManager(enabled=True, mode="clean", model_dir="/tmp/fake")
+        assert mgr.enabled is True
+        assert mgr.model_dir == "/tmp/fake"
+        assert mgr.mode == "clean"
 
-    def test_clear_block_clears_weights(self):
-        """Test that _clear_block clears weights from a module."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
+    def test_clear_clears_weights(self):
+        """Test that _clear clears weights from a module."""
+        mgr = OffloadManager(enabled=True, mode="clean")
         module = torch.nn.Linear(4, 4)
-        ctx._clear_block(module)
+        mgr._clear(module)
 
         # Verify weight was cleared
         assert module.weight.numel() == 0
 
-    def test_attach_noop_when_disabled(self):
-        """Test that attach does nothing when disabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
+    def test_add_hooks_noop_when_disabled(self):
+        """Test that add_hooks does nothing when disabled."""
+        mgr = OffloadManager(enabled=False)
         model = torch.nn.Sequential(torch.nn.Linear(4, 4))
         original_numel = model[0].weight.numel()
-        ctx.attach(model, ["0"])
+        mgr.add_hooks(model, ["0"])
         assert model[0].weight.numel() == original_numel  # unchanged
 
-    def test_ensure_block_noop_when_disabled(self):
-        """Test that ensure_block_for_layer does nothing when disabled."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=False)
+    def test_ensure_loaded_noop_when_disabled(self):
+        """Test that ensure_loaded does nothing when disabled."""
+        mgr = OffloadManager(enabled=False)
         model = torch.nn.Sequential(torch.nn.Linear(4, 4))
-        ctx.ensure_block_for_layer(model, "0.weight")  # should not raise
+        mgr.ensure_loaded(model, "0.weight")  # should not raise
 
-    def test_cleanup_resets_tracking(self):
-        """Test that cleanup resets internal tracking state."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
+    def test_cleanup_resets_state(self):
+        """Test that cleanup resets internal state."""
+        mgr = OffloadManager(enabled=True, mode="clean")
         module = torch.nn.Linear(4, 4)
-        ctx._clear_block(module)
-        ctx._cleared_blocks.add("test")
-        assert len(ctx._cleared_blocks) == 1
+        mgr._clear(module)
+        mgr._module_names = ["test"]
+        assert len(mgr._module_names) == 1
 
-        ctx.cleanup()
-        assert len(ctx._cleared_blocks) == 0
+        mgr.cleanup()
+        assert len(mgr._module_names) == 0
 
-    def test_reset_scheme_state(self):
-        """Test that reset_scheme_state clears tracking."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True)
-        ctx._cleared_blocks.add("b")
-        assert len(ctx._cleared_blocks) == 1
+    def test_reset_clears_tracking(self):
+        """Test that reset clears tracking state."""
+        mgr = OffloadManager(enabled=True, mode="offload")
+        mgr._saved["b"] = {"save_path": "/tmp/x"}
+        assert len(mgr._saved) == 1
 
-        ctx.reset_scheme_state()
-        assert len(ctx._cleared_blocks) == 0
+        mgr.reset()
+        assert len(mgr._saved) == 0
 
     def test_model_dir_property(self):
         """Test model_dir getter/setter."""
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir="/path/a")
-        assert ctx.model_dir == "/path/a"
-        ctx.model_dir = "/path/b"
-        assert ctx.model_dir == "/path/b"
+        mgr = OffloadManager(enabled=True, mode="clean", model_dir="/path/a")
+        assert mgr.model_dir == "/path/a"
+        mgr.model_dir = "/path/b"
+        assert mgr.model_dir == "/path/b"
+
+    def test_context_manager(self):
+        """Test OffloadManager as context manager."""
+        with OffloadManager(enabled=True, mode="offload") as mgr:
+            assert mgr.enabled is True
+        # After exit, state should be cleaned up
+        assert mgr._saved == {}
+
+    def test_reload_auto_cleans_temp_file(self):
+        """Test that reload() removes the temp file and auto-cleans tempdir."""
+        model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+        original_weight = model[0].weight.data.clone()
+        mgr = OffloadManager(enabled=True, mode="offload")
+        mgr.offload(model, "0")
+        assert model[0].weight.numel() == 0
+        assert mgr._tempdir is not None
+        tempdir = mgr._tempdir
+
+        # reload restores weights and auto-cleans temp file + tempdir
+        mgr.reload(model, "0")
+        assert model[0].weight.numel() > 0
+        assert torch.allclose(model[0].weight.data, original_weight)
+        assert len(mgr._saved) == 0
+        assert mgr._tempdir is None  # auto-cleaned
+
+    def test_reload_all_auto_cleans(self):
+        """Test that reload_all() auto-cleans all temp files."""
+        model = torch.nn.Sequential(
+            torch.nn.Linear(4, 4),
+            torch.nn.Linear(4, 4),
+        )
+        mgr = OffloadManager(enabled=True, mode="offload")
+        mgr.offload(model, "0")
+        mgr.offload(model, "1")
+        assert len(mgr._saved) == 2
+
+        mgr.reload_all(model)
+        assert len(mgr._saved) == 0
+        assert mgr._tempdir is None  # auto-cleaned
+
+    def test_context_manager_auto_reloads(self):
+        """Test that context manager exit auto-reloads offloaded modules."""
+        model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+        original_weight = model[0].weight.data.clone()
+        with OffloadManager(enabled=True, mode="offload") as mgr:
+            mgr.offload(model, "0")
+            assert model[0].weight.numel() == 0
+        # After exiting context, weights should be restored
+        assert model[0].weight.numel() > 0
+        assert torch.allclose(model[0].weight.data, original_weight)
 
 
 class TestClearModuleWeights:
@@ -166,23 +214,6 @@ class TestAutoSchemeDataclassLowCpuMem:
         )
         assert scheme.low_cpu_mem_usage is True
         assert scheme.low_gpu_mem_usage is True
-
-
-class TestGroupLayersByBlock:
-    """Tests for group_layers_by_block helper."""
-
-    def test_basic_grouping(self):
-        layers = ["model.layers.0.attn.q", "model.layers.0.attn.k", "model.layers.1.mlp.fc1", "lm_head"]
-        blocks = ["model.layers.0", "model.layers.1"]
-        groups, non_block = group_layers_by_block(layers, blocks)
-        assert groups["model.layers.0"] == ["model.layers.0.attn.q", "model.layers.0.attn.k"]
-        assert groups["model.layers.1"] == ["model.layers.1.mlp.fc1"]
-        assert non_block == ["lm_head"]
-
-    def test_empty_layers(self):
-        groups, non_block = group_layers_by_block([], ["b0"])
-        assert groups == {"b0": []}
-        assert non_block == []
 
 
 class TestAutoSchemeIntegration:
@@ -260,8 +291,8 @@ class TestAutoSchemeIntegration:
         assert set(layer_config1.keys()) == set(layer_config2.keys())
 
 
-class TestAutoSchemeOffloadContextWithModel:
-    """Tests for AutoSchemeOffloadContext with actual model blocks."""
+class TestOffloadManagerWithModel:
+    """Tests for OffloadManager with actual model blocks."""
 
     def test_clear_and_load_model_block(self, tiny_opt_model_path):
         """Test clearing and reloading an actual model block from checkpoint files."""
@@ -278,14 +309,14 @@ class TestAutoSchemeOffloadContextWithModel:
         block_name = block_names[0]
         block = get_module(model, block_name)
 
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=tiny_opt_model_path)
+        mgr = OffloadManager(enabled=True, mode="clean", model_dir=tiny_opt_model_path, cache_numel=True)
 
         # Get original weights
         original_params = sum(p.numel() for p in block.parameters())
         original_weight = next(block.parameters()).data.clone()
 
         # Clear
-        ctx._clear_block(block)
+        mgr._clear(block)
         current_params = sum(p.numel() for p in block.parameters())
         assert current_params < original_params
 
@@ -308,7 +339,7 @@ class TestAutoSchemeOffloadContextWithModel:
         if len(block_names) == 0:
             pytest.skip("Model has no blocks")
 
-        ctx = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=tiny_opt_model_path)
+        mgr = OffloadManager(enabled=True, mode="clean", model_dir=tiny_opt_model_path, cache_numel=True)
 
         # Save original param counts
         original_counts = {}
@@ -316,15 +347,15 @@ class TestAutoSchemeOffloadContextWithModel:
             blk = get_module(model, bn)
             original_counts[bn] = sum(p.numel() for p in blk.parameters())
 
-        # Attach clears all blocks and registers hooks
-        ctx.attach(model, block_names)
+        # add_hooks clears all blocks and registers hooks
+        mgr.add_hooks(model, block_names)
         for bn in block_names:
             blk = get_module(model, bn)
             block_params = sum(p.numel() for p in blk.parameters())
             assert block_params == 0
 
-        # Detach removes hooks and reloads all blocks
-        ctx.detach(model, block_names)
+        # remove_hooks removes hooks and reloads all blocks
+        mgr.remove_hooks(model, block_names)
         for bn in block_names:
             blk = get_module(model, bn)
             block_params = sum(p.numel() for p in blk.parameters())

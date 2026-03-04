@@ -1076,33 +1076,27 @@ def mv_module_from_gpu(module):
     The module on the specified device.
     """
     if hasattr(module, "device"):
-        target_device = "cpu"
-        if module.device.type == target_device:
+        if module.device.type in ("cpu", "meta"):
             return module
-        if module.device.type == "meta":
-            return module
-        else:
-            return module.to(target_device)
-    else:
-        # Check for meta tensors inside the module before calling .to("cpu")
-        has_meta = any(p.device.type == "meta" for p in module.parameters())
-        if not has_meta:
-            has_meta = any(b.device.type == "meta" for b in module.buffers())
-        if has_meta:
-            # Selectively move only non-meta sub-modules to CPU
-            for name, child in module.named_children():
-                mv_module_from_gpu(child)
-            # Move any remaining non-meta parameters/buffers
-            for attr_name in list(module._parameters.keys()):
-                p = module._parameters[attr_name]
-                if p is not None and p.device.type != "meta" and p.device.type != "cpu":
-                    module._parameters[attr_name] = p.to("cpu")
-            for attr_name in list(module._buffers.keys()):
-                b = module._buffers[attr_name]
-                if b is not None and b.device.type != "meta" and b.device.type != "cpu":
-                    module._buffers[attr_name] = b.to("cpu")
-            return module
-        return module.to("cpu")
+
+    has_meta = any(p.device.type == "meta" for p in module.parameters())
+    if not has_meta:
+        has_meta = any(b.device.type == "meta" for b in module.buffers())
+
+    if has_meta:
+        for _, child in module.named_children():
+            mv_module_from_gpu(child)
+        for attr_name in list(module._parameters.keys()):
+            p = module._parameters[attr_name]
+            if p is not None and p.device.type != "meta" and p.device.type != "cpu":
+                module._parameters[attr_name] = p.to("cpu")
+        for attr_name in list(module._buffers.keys()):
+            b = module._buffers[attr_name]
+            if b is not None and b.device.type != "meta" and b.device.type != "cpu":
+                module._buffers[attr_name] = b.to("cpu")
+        return module
+
+    return module.to("cpu")
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:

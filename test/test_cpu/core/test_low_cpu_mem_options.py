@@ -63,12 +63,12 @@ class TestLowCpuMemUsage:
             seqlen=32,
         )
         assert autoround.low_cpu_mem_usage is False
-        # stream_offload_all_blocks should be a no-op when offloader is disabled
-        autoround._offloader.stream_offload_all_blocks(autoround.model, [["model.layers.0"]], autoround.device_list)
-        assert autoround._offloader._blocks == {}
+        # offload_all should be a no-op when offloader is disabled
+        autoround._offloader.offload_all(autoround.model, [["model.layers.0"]], device_list=autoround.device_list)
+        assert autoround._offloader._saved == {}
 
-    def test_stream_offload_blocks_records_blocks(self, tiny_opt_model_path, tmp_path, monkeypatch):
-        """Test that stream_offload_all_blocks records offloaded blocks when enabled."""
+    def test_offload_all_records_blocks(self, tiny_opt_model_path, tmp_path, monkeypatch):
+        """Test that offload_all records offloaded blocks when enabled."""
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=4,
@@ -80,12 +80,12 @@ class TestLowCpuMemUsage:
         )
 
         dummy_block = torch.nn.Linear(4, 4)
-        # Monkeypatch get_module used by stream_offload_all_blocks in offload.py
+        # Monkeypatch get_module used by offload_all in offload.py
 
         monkeypatch.setattr(offload_module, "get_module", lambda _model, _name: dummy_block)
         monkeypatch.setattr(torch, "save", lambda *args, **kwargs: None)
 
         # Force the offloader to think it has a tempdir already
         autoround._offloader._tempdir = str(tmp_path)
-        autoround._offloader.stream_offload_all_blocks(autoround.model, [["model.layers.0"]], autoround.device_list)
+        autoround._offloader.offload_all(autoround.model, [["model.layers.0"]], device_list=autoround.device_list)
         assert autoround._offloader.has("model.layers.0")

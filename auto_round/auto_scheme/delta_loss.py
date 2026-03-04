@@ -56,7 +56,7 @@ from auto_round.utils import (
     to_device,
 )
 from auto_round.utils.device import MemoryMonitor
-from auto_round.utils.offload import AutoSchemeOffloadContext
+from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
@@ -490,7 +490,7 @@ def get_score_for_scheme(
     major_device="cpu",
     batch_size=1,
     disable_opt_rtn=True,
-    offload_context: Optional[AutoSchemeOffloadContext] = None,
+    offload_context: Optional[OffloadManager] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     for n, m in model.named_modules():
@@ -510,7 +510,7 @@ def get_score_for_scheme(
 
     for name in quant_layer_names:
         if offload_context is not None:
-            offload_context.ensure_block_for_layer(model, name)
+            offload_context.ensure_loaded(model, name)
         if name in fixed_layer_scheme.keys():
             continue
         m = get_module(model, name)
@@ -553,7 +553,7 @@ def get_score_for_scheme(
             )
             set_module(model, name, new_m)
     if offload_context is not None:
-        offload_context.flush_loaded_block(model)
+        offload_context.flush_loaded(model)
     if low_gpu_mem_usage:
         dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
 
@@ -678,7 +678,7 @@ def _gen_layer_config(
         _model_dir = model_name
         if _model_dir is None and hasattr(model, "config"):
             _model_dir = getattr(model.config, "_name_or_path", None)
-        offload_context = AutoSchemeOffloadContext(low_cpu_mem_usage=True, model_dir=_model_dir)
+        offload_context = OffloadManager(enabled=True, mode="clean", model_dir=_model_dir, cache_numel=True)
 
     target_bits = auto_scheme.avg_bits
     model.eval()
@@ -787,7 +787,7 @@ def _gen_layer_config(
     # Register hooks and clear all block weights before the scheme loop.
     # Hooks will transparently reload weights on demand during forward passes.
     if offload_context is not None:
-        offload_context.attach(model, block_name)
+        offload_context.add_hooks(model, block_name)
 
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):
@@ -850,7 +850,7 @@ def _gen_layer_config(
 
     # Remove hooks and restore original weights from disk for final bit-budget computations
     if offload_context is not None:
-        offload_context.detach(model, block_name)
+        offload_context.remove_hooks(model, block_name)
 
     total_params = 0
     for n, m in model.named_modules():
