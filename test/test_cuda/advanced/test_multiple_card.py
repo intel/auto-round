@@ -32,7 +32,7 @@ class TestAutoRound:
     @multi_card
     @require_gptqmodel
     def test_device_map_str(self):
-        model_name = "/models/Qwen2-0.5B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2-0.5B-Instruct")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = ".*q_proj:0,.*k_proj:cuda:0,v_proj:1,.*up_proj:1"

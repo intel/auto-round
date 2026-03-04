@@ -146,8 +146,8 @@ class TestMainFunc:
     def test_attention_mask_lm_head(self, tiny_qwen_moe_model_path):
         from transformers import AutoTokenizer
 
-        # model_name = "/models/Qwen3-8B"
-        # model_name = "/models/Qwen3-0.6B"
+        # model_name = "Qwen/Qwen3-8B"
+        # model_name = "Qwen/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_moe_model_path)
         text = ["haha", "hello world"]
         res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)

@@ -9,6 +9,8 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
+from ...helpers import get_model_path
+
 
 class TestCustomizedData(unittest.TestCase):
     @classmethod
@@ -21,7 +23,7 @@ class TestCustomizedData(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_mixed_attention_mask(self):
-        model_name = "/models/Qwen3-0.6B"
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         texts = [
             "There is a girl who likes adventure,",
@@ -37,7 +39,7 @@ class TestCustomizedData(unittest.TestCase):
         ar.quantize()
 
     def test_batch_encoding(self):
-        model_name = "/models/Qwen3-0.6B"
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -53,7 +55,7 @@ class TestCustomizedData(unittest.TestCase):
         ar.quantize()
 
     def test_list_batch_encoding(self):
-        model_name = "/models/Qwen3-0.6B"
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         texts = [

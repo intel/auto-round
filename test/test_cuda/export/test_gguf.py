@@ -168,7 +168,7 @@ class TestAutoRound:
     def test_vlm_gguf(self):
         from ...helpers import save_tiny_model
 
-        model_name = "/models/gemma-3-4b-it"
+        model_name = get_model_path("google/gemma-3-4b-it")
         tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True)
         from auto_round import AutoRound
 

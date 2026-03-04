@@ -7,13 +7,13 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_greater_than_050
 
-from ...helpers import evaluate_accuracy, model_infer
+from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundTritonBackend:
     @classmethod
     def setup_class(self):
-        self.model_name = "/models/opt-125m"
+        self.model_name = get_model_path("facebook/opt-125m")
         self.save_folder = "./saved"
 
     @classmethod
