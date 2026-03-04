@@ -3234,12 +3234,6 @@ class BaseCompressor(object):
                 device=device,
             )
 
-            if self.low_cpu_mem_usage:
-                if nblocks == 1:
-                    self._offloader.discard_and_resave(n, get_module(model, n))
-                else:
-                    for name in names:
-                        self._offloader.discard_and_resave(name, get_module(model, name))
             if hasattr(model, "config"):
                 del m.config
             if self.is_immediate_packing:
@@ -3250,6 +3244,13 @@ class BaseCompressor(object):
 
             if self.is_immediate_saving:
                 shard_writer(self, m, is_finalize=False)
+
+            if self.low_cpu_mem_usage and not self.is_immediate_saving:
+                if nblocks == 1:
+                    self._offloader.discard_and_resave(n, get_module(model, n))
+                else:
+                    for name in names:
+                        self._offloader.discard_and_resave(name, get_module(model, name))
         if pbar is not None:
             pbar.update(1)
 
