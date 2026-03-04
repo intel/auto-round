@@ -1085,8 +1085,15 @@ def mv_module_from_gpu(module):
         return module.to("cpu")
 
 
-def safe_device_move_with_meta_handling(model, target_device="cpu", *, materialize_meta=None, logger=None):
-    """Move model to target device, handling meta parameters and buffers correctly. Skipping module move on target/meta device.
+def safe_device_move_with_meta_handling(
+    model,
+    target_device="cpu",
+    *,
+    materialize_meta=None,
+    logger=None,
+):
+    """Move model to target device, handling meta parameters and buffers correctly.
+        Skipping module move on target/meta device.
 
     Args:
         target_device: Target device ('cpu', 'cuda', etc.)
