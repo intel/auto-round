@@ -30,16 +30,17 @@ Usage patterns
 **Compressor (offload mode)**::
 
     offloader = OffloadManager(mode="offload")
-    offloader.offload(model, "model.layers.0")   # save + clear
-    offloader.reload(model, "model.layers.0")    # load back + auto-clean temp file
+    offloader.offload(model, "model.layers.0")              # save + clear one module
+    offloader.offload(model, block_names, clear_memory=True) # save + clear many + gc
+    offloader.reload(model, "model.layers.0")               # load back + auto-clean temp file
 
 **AutoScheme (clean mode with hooks)**::
 
     offloader = OffloadManager(mode="clean",
                          model_dir="/path/to/model")
-    offloader.add_hooks(model, block_names)       # clear all + register hooks
+    offloader.add_offload_hooks(model, block_names)       # clear all + register hooks
     # ... forward passes transparently reload on demand ...
-    offloader.remove_hooks(model, block_names)    # remove hooks + restore all
+    offloader.remove_offload_hooks(model, block_names)    # remove hooks + restore all
 """
 
 import gc
@@ -228,7 +229,7 @@ class OffloadManager:
     two operating modes:
 
     * ``"offload"`` -- saves ``state_dict`` to a temp directory on disk
-      before clearing.  Supports `resave` for re-saving modified
+      before clearing.  Supports ``overwrite=True`` for re-saving modified
       (e.g. quantized) weights.
     * ``"clean"`` -- simply clears weights; reloads from the original
       HuggingFace model checkpoint files.  Zero extra disk writes but
@@ -246,7 +247,7 @@ class OffloadManager:
     model_dir : str, optional
         Path to the model checkpoint directory. Required for ``"clean"``
         mode; optional for ``"offload"``.
-    prefix : str
+    offload_dir_prefix : str
         Prefix for the temp directory name (``"offload"`` mode only).
     cache_numel : bool
         If *True*, cache original ``weight.numel()`` before clearing so
@@ -258,20 +259,20 @@ class OffloadManager:
         enabled: bool = True,
         mode: str = "offload",
         model_dir: Optional[str] = None,
-        prefix: str = "autoround_offload",
+        offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
     ):
         self.enabled = enabled
         self.mode = mode
         self.model_dir = model_dir
         self.cache_numel = cache_numel
-        self._prefix = prefix
+        self._prefix = offload_dir_prefix
 
         # Disk state (offload mode)
         self._tempdir: Optional[str] = None
         self._saved: dict[str, dict] = {}  # name -> {"save_path": str}
 
-        # Hook state (for add_hooks/remove_hooks transparent offloading)
+        # Hook state (for add_offload_hooks/remove_offload_hooks transparent offloading)
         self._hook_handles: list = []
         self._model_ref: Optional[torch.nn.Module] = None
         self._module_names: list[str] = []
@@ -301,32 +302,87 @@ class OffloadManager:
     # Core API
     # ------------------------------------------------------------------
 
-    def offload(self, model: torch.nn.Module, name: str, *, skip_if_saved: bool = False) -> None:
-        """Offload a named module's weights to free CPU RAM.
+    def offload(
+        self,
+        model: torch.nn.Module,
+        names: Union[str, list[str], list[list[str]]],
+        *,
+        skip_if_saved: bool = False,
+        overwrite: bool = False,
+        clear_memory: bool = False,
+        device_list=None,
+    ) -> float:
+        """Offload one or more named modules' weights to free CPU RAM.
 
+        Accepts a single module name, a flat list, or a nested list of names.
         For ``"offload"`` mode: saves state_dict to disk, then clears weights.
         For ``"clean"`` mode: simply clears weights (will reload from
         model files later).
 
         Args:
-            model: The root model containing the module.
-            name: Dot-separated module name (e.g. ``"model.layers.0"``).
-            skip_if_saved: If *True* and this name was already saved, skip.
+            model: The root model containing the module(s).
+            names: Module name(s) -- a single string, a list of strings,
+                or a nested list (e.g. ``all_blocks``).
+            skip_if_saved: If *True* and a name was already saved, skip it.
+            overwrite: If *True*, discard any previous save and re-save the
+                current (possibly modified) weights before clearing.  Useful
+                after quantization when updated weights must be persisted.
+                Only meaningful for ``"offload"`` mode.
+            clear_memory: If *True*, call ``clear_memory()`` after offloading
+                all modules and log the total freed size.
+            device_list: Device list passed to ``clear_memory`` (only used
+                when *clear_memory* is *True*).
+
+        Returns:
+            Total offloaded size in GB (non-zero only when *clear_memory* is True).
         """
         if not self.enabled:
-            return
+            return 0.0
+        if isinstance(names, str):
+            self._offload(model, names, skip_if_saved=skip_if_saved, overwrite=overwrite)
+            return 0.0
+        flat_names = self._flatten_names(names)
+        if clear_memory:
+            logger.info("offloading module weights...")
+        total_gb = 0.0
+        for name in flat_names:
+            if skip_if_saved and self.has(name):
+                continue
+            if clear_memory:
+                module = get_module(model, name)
+                if module is not None:
+                    total_gb += self.estimate_module_size_gb(module)
+            self._offload(model, name, skip_if_saved=skip_if_saved, overwrite=overwrite)
+        if clear_memory:
+            from auto_round.utils import clear_memory as _clear_memory
+
+            _clear_memory(device_list=device_list)
+            logger.info(f"offload done, freed {total_gb:.2f} GB")
+        return total_gb
+
+    def _offload(self, model: torch.nn.Module, name: str, *, skip_if_saved: bool = False, overwrite: bool = False) -> None:
+        """Offload a single named module (internal helper)."""
         self._model_ref = model
         module = get_module(model, name)
         if module is None:
             return
         if self.mode == "offload":
-            if skip_if_saved and name in self._saved:
+            if overwrite:
+                old_meta = self._saved.pop(name, None)
+                if old_meta:
+                    old_path = old_meta.get("save_path")
+                    if old_path and os.path.exists(old_path):
+                        try:
+                            os.remove(old_path)
+                        except Exception as e:
+                            logger.warning(f"OffloadManager: could not remove {old_path}: {e}")
+            elif skip_if_saved and name in self._saved:
                 return
             self._save_to_disk(name, module)
         self._clear(module)
 
-    def reload(self, model: torch.nn.Module, name: str) -> None:
-        """Reload a previously offloaded module's weights.
+    def reload(self, model: torch.nn.Module, names: Union[str, list[str], None] = None) -> None:
+        """Reload previously offloaded module(s).
 
         For ``"offload"`` mode: loads from the temp directory, then
         removes the temp file.  When all offloaded modules have been
@@ -334,11 +390,25 @@ class OffloadManager:
         For ``"clean"`` mode: loads from original model files.
 
         Args:
-            model: The root model containing the module.
-            name: Dot-separated module name.
+            model: The root model containing the module(s).
+            names: A single module name, a list of names, or *None*
+                to reload all tracked modules.
         """
         if not self.enabled:
             return
+        if names is None:
+            if self.mode == "offload":
+                names = list(self._saved.keys())
+            else:
+                names = list(self._module_names)
+        if isinstance(names, str):
+            self._reload(model, names)
+            return
+        for name in names:
+            self._reload(model, name)
+
+    def _reload(self, model: torch.nn.Module, name: str) -> None:
+        """Reload a single named module (internal helper)."""
         module = get_module(model, name)
         if module is None:
             return
@@ -351,86 +421,11 @@ class OffloadManager:
                 return
             load_block_from_model_files(self.model_dir, name, module)
 
-    def resave(self, model: torch.nn.Module, name: str) -> None:
-        """Discard old save, re-save the (possibly modified) module, and clear it.
-
-        Only meaningful for ``"offload"`` mode.  For ``"clean"`` mode,
-        this is equivalent to `offload`.
-
-        Args:
-            model: The root model containing the module.
-            name: Dot-separated module name.
-        """
-        if not self.enabled:
-            return
-        if self.mode == "offload":
-            old_meta = self._saved.pop(name, None)
-            if old_meta:
-                old_path = old_meta.get("save_path")
-                if old_path and os.path.exists(old_path):
-                    try:
-                        os.remove(old_path)
-                    except Exception as e:
-                        logger.warning(f"OffloadManager: could not remove {old_path}: {e}")
-        self.offload(model, name)
-
-    # ------------------------------------------------------------------
-    # Bulk operations
-    # ------------------------------------------------------------------
-
-    def offload_all(
-        self,
-        model: torch.nn.Module,
-        names: Union[list[str], list[list[str]]],
-        *,
-        device_list=None,
-    ) -> float:
-        """Offload multiple modules at once.  Returns total offloaded size in GB.
-
-        Args:
-            model: The root model.
-            names: Flat list of module names, or nested list (e.g. ``all_blocks``).
-            device_list: Device list passed to ``clear_memory``.
-
-        Returns:
-            Total offloaded size in GB.
-        """
-        if not self.enabled:
-            return 0.0
-        flat_names = self._flatten_names(names)
-        logger.info("offloading module weights...")
-        total_gb = 0.0
-        for name in flat_names:
-            if self.has(name):
-                continue
-            module = get_module(model, name)
-            if module is None:
-                continue
-            total_gb += self.estimate_module_size_gb(module)
-            self.offload(model, name, skip_if_saved=True)
-        from auto_round.utils import clear_memory
-
-        clear_memory(device_list=device_list)
-        logger.info(f"offload done, freed {total_gb:.2f} GB")
-        return total_gb
-
-    def reload_all(self, model: torch.nn.Module, names: Optional[list[str]] = None) -> None:
-        """Reload multiple modules.  If *names* is None, reload all tracked."""
-        if not self.enabled:
-            return
-        if names is None:
-            if self.mode == "offload":
-                names = list(self._saved.keys())
-            else:
-                names = list(self._module_names)
-        for name in names:
-            self.reload(model, name)
-
     # ------------------------------------------------------------------
     # Hook-based transparent offloading
     # ------------------------------------------------------------------
 
-    def add_hooks(self, model: torch.nn.Module, names: list[str]) -> None:
+    def add_offload_hooks(self, model: torch.nn.Module, names: list[str]) -> None:
         """Clear all named modules and register pre-forward hooks for
         transparent reload-on-demand.
 
@@ -452,24 +447,25 @@ class OffloadManager:
         # Clear all
         logger.info("clearing module weights to free RAM...")
         for name in names:
-            self.offload(model, name, skip_if_saved=True)
+            self._offload(model, name, skip_if_saved=True)
         gc.collect()
         from auto_round.utils import clear_memory
 
         clear_memory()
         logger.info("module weights cleared")
 
-    def remove_hooks(self, model: torch.nn.Module, names: Optional[list[str]] = None) -> None:
+    def remove_offload_hooks(self, model: torch.nn.Module, names: Optional[list[str]] = None) -> None:
         """Remove hooks and reload all managed modules.
 
         Args:
             model: The root model.
-            names: Module names to reload.  If None, uses the names from `add_hooks`.
+            names: Module names to reload.  If None, uses the names from
+                `add_offload_hooks`.
         """
         self._remove_hooks()
         if names is None:
             names = self._module_names
-        self.reload_all(model, names)
+        self.reload(model, names)
         self._model_ref = None
 
     def _pre_forward_hook(self, module: torch.nn.Module, args, *, name: str) -> None:
@@ -561,7 +557,7 @@ class OffloadManager:
         # Auto-reload offloaded modules if we still have a model reference
         if not _skip_reload and self._model_ref is not None and self._saved:
             try:
-                self.reload_all(self._model_ref)
+                self.reload(self._model_ref)
             except Exception as e:
                 logger.warning(f"OffloadManager: auto-reload during cleanup failed: {e}")
         self._cleanup_tempdir()

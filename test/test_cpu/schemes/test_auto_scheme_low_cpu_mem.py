@@ -55,11 +55,11 @@ class TestOffloadManager:
         assert module.weight.numel() == 0
 
     def test_add_hooks_noop_when_disabled(self):
-        """Test that add_hooks does nothing when disabled."""
+        """Test that add_offload_hooks does nothing when disabled."""
         mgr = OffloadManager(enabled=False)
         model = torch.nn.Sequential(torch.nn.Linear(4, 4))
         original_numel = model[0].weight.numel()
-        mgr.add_hooks(model, ["0"])
+        mgr.add_offload_hooks(model, ["0"])
         assert model[0].weight.numel() == original_numel  # unchanged
 
     def test_ensure_loaded_noop_when_disabled(self):
@@ -120,7 +120,7 @@ class TestOffloadManager:
         assert mgr._tempdir is None  # auto-cleaned
 
     def test_reload_all_auto_cleans(self):
-        """Test that reload_all() auto-cleans all temp files."""
+        """Test that reload() with no names auto-cleans all temp files."""
         model = torch.nn.Sequential(
             torch.nn.Linear(4, 4),
             torch.nn.Linear(4, 4),
@@ -130,7 +130,7 @@ class TestOffloadManager:
         mgr.offload(model, "1")
         assert len(mgr._saved) == 2
 
-        mgr.reload_all(model)
+        mgr.reload(model)
         assert len(mgr._saved) == 0
         assert mgr._tempdir is None  # auto-cleaned
 
@@ -346,15 +346,15 @@ class TestOffloadManagerWithModel:
             blk = get_module(model, bn)
             original_counts[bn] = sum(p.numel() for p in blk.parameters())
 
-        # add_hooks clears all blocks and registers hooks
-        mgr.add_hooks(model, block_names)
+        # add_offload_hooks clears all blocks and registers hooks
+        mgr.add_offload_hooks(model, block_names)
         for bn in block_names:
             blk = get_module(model, bn)
             block_params = sum(p.numel() for p in blk.parameters())
             assert block_params == 0
 
-        # remove_hooks removes hooks and reloads all blocks
-        mgr.remove_hooks(model, block_names)
+        # remove_offload_hooks removes hooks and reloads all blocks
+        mgr.remove_offload_hooks(model, block_names)
         for bn in block_names:
             blk = get_module(model, bn)
             block_params = sum(p.numel() for p in blk.parameters())

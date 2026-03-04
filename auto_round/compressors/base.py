@@ -372,7 +372,7 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", prefix="compressor")
+        self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", offload_dir_prefix="compressor")
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -1441,7 +1441,7 @@ class BaseCompressor(object):
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
         if self.low_cpu_mem_usage:
-            self._offloader.reload_all(self.model)
+            self._offloader.reload(self.model)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1792,7 +1792,7 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         logger.info("caching done")
         if self.low_cpu_mem_usage:
-            self._offloader.offload_all(self.model, all_blocks, device_list=self.device_list)
+            self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1839,7 +1839,7 @@ class BaseCompressor(object):
             shard_writer(self, is_finalize=True)
 
         if self.low_cpu_mem_usage:
-            self._offloader.reload_all(self.model)
+            self._offloader.reload(self.model)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -3205,8 +3205,7 @@ class BaseCompressor(object):
                 if nblocks == 1:
                     self._offloader.reload(model, n)
                 else:
-                    for name in names:
-                        self._offloader.reload(model, name)
+                    self._offloader.reload(model, names)
 
             m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = self._quantize_block(
@@ -3229,10 +3228,10 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
-                    self._offloader.resave(model, n)
+                    self._offloader.offload(model, n, overwrite=True)
                 else:
                     for name in names:
-                        self._offloader.resave(model, name)
+                        self._offloader.offload(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)
 

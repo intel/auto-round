@@ -787,7 +787,7 @@ def _gen_layer_config(
     # Register hooks and clear all block weights before the scheme loop.
     # Hooks will transparently reload weights on demand during forward passes.
     if offload_context is not None:
-        offload_context.add_hooks(model, block_name)
+        offload_context.add_offload_hooks(model, block_name)
 
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):
@@ -850,7 +850,7 @@ def _gen_layer_config(
 
     # Remove hooks and restore original weights from disk for final bit-budget computations
     if offload_context is not None:
-        offload_context.remove_hooks(model, block_name)
+        offload_context.remove_offload_hooks(model, block_name)
 
     total_params = 0
     for n, m in model.named_modules():
