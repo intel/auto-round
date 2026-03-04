@@ -1556,7 +1556,7 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return False
 
 
-def handle_generation_config(model):
+def handle_generation_config(model: torch.nn.Module):
     if hasattr(model, "generation_config"):
         generation_config = model.generation_config
         if hasattr(generation_config, "top_p") and generation_config.top_p != 1.0:
