@@ -332,8 +332,8 @@ def save_quantized_as_autoround(
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
-    if os.path.exists(output_dir):
-        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    # if os.path.exists(output_dir):
+    #     logger.info(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
         tokenizer.save_pretrained(output_dir)
 

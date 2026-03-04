@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from auto_round.testing_utils import multi_card
+from ...envs import multi_card
 
 from ...helpers import get_model_path
 

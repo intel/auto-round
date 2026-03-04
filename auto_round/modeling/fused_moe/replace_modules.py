@@ -20,38 +20,35 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-# Import constant for expert implementation name
-from auto_round.modeling.fused_moe.moe_experts_interface import LINEAR_LOOP_IMPL
-from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
+from auto_round.utils import (
+    LazyImport,
+    dump_mem_usage,
+    dump_memory_usage_ctx,
+    global_state,
+    is_transformers_version_greater_or_equal_5,
+    logger,
+)
 
 BUILTIN_MODULES = {
-    "Llama4TextMoe": LazyImport("auto_round.modeling.fused_moe.llama4"),
-    "GptOssMLP": LazyImport("auto_round.modeling.fused_moe.gpt_oss"),
-    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe"),
-    "DeepseekV2Attention": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    # Llama4 has no use_experts_implementation, needs custom replacement to handle fused MoE blocks.
+    "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
+    "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    # supports transformers >= 5.0.0
+    "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
 
 
-def _has_custom_replacement_only(model: torch.nn.Module) -> bool:
-    """Check if all MOE-like modules in model have custom replacements registered.
-
-    If all MOE modules are covered by BUILTIN_MODULES, we can skip the linear_loop path entirely.
-    """
-    for _, module in model.named_modules():
-        class_name = module.__class__.__name__
-        # Check if this looks like an MOE experts module (has fused 3D weights)
-        if (
-            hasattr(module, "gate_up_proj")
-            and isinstance(module.gate_up_proj, torch.nn.Parameter)
-            and module.gate_up_proj.dim() == 3
-        ):
-            # This is a fused experts module - check if it has a custom replacement
-            if class_name not in BUILTIN_MODULES and not ReplacementModuleBase.is_registered(class_name):
-                # Found a fused experts module without custom replacement - need linear_loop
-                return False
-    return True
+# transformers >= 5.0.0 supports the general linear_loop experts interface.
+if not is_transformers_version_greater_or_equal_5():
+    # transformers == 5.2.0: IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+    BUILTIN_MODULES["qwen3_vl_moe"] = LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe")
+    # transformers == 5.2.0: IndexError: index 4 is out of bounds for dimension 0 with size 4
+    BUILTIN_MODULES["gpt_oss"] = LazyImport("auto_round.modeling.fused_moe.gpt_oss")
 
 
+@dump_mem_usage("Applying general replacements")
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
 
@@ -83,43 +80,29 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
 
 def _import_required_replacements(model: torch.nn.Module) -> None:
     """Scan model and trigger lazy imports for registered replacement modules."""
-    imported = set()
-
-    for _, module in model.named_modules():
-        class_name = module.__class__.__name__
-
-        if class_name in BUILTIN_MODULES and class_name not in imported:
-            # Trigger import by accessing the LazyImport object
-            _ = BUILTIN_MODULES[class_name].__name__  # or any attribute
-            imported.add(class_name)
-            logger.debug(f"Loaded replacement module for {class_name}")
+    if not is_custom_model(model):
+        return
+    model_type = model.config.model_type
+    _ = BUILTIN_MODULES[model_type].__name__  # Trigger lazy import
+    logger.debug(f"Loaded replacement module for {model_type}")
 
 
-def _should_skip_moe_replacement(module: torch.nn.Module, model: torch.nn.Module) -> bool:
-    """Skip MOE replacement if linear_loop experts are already unfused.
+def is_custom_model(model: torch.nn.Module) -> bool:
+    """Check if the model has a custom replacement registered via BUILTIN_MODULES.
 
-    This is only true when:
-    1. model.config._experts_implementation == "linear_loop" (set by prepare_model_for_moe_quantization)
-    2. The experts' gate_up_proj and down_proj are already nn.ModuleList
-
-    Note: _experts_implementation is only set when the experts class supports
-    @use_experts_implementation decorator, so we don't need to check that again here.
+    Returns True if the model's model_type matches a key in BUILTIN_MODULES.
     """
-    if not hasattr(model, "config"):
-        return False
-    if getattr(model.config, "_experts_implementation", None) != LINEAR_LOOP_IMPL:
-        return False
-    experts = getattr(module, "experts", None)
-    if experts is None:
-        return False
-    gate_up = getattr(experts, "gate_up_proj", None)
-    down = getattr(experts, "down_proj", None)
-    result = isinstance(gate_up, torch.nn.ModuleList) and isinstance(down, torch.nn.ModuleList)
-    logger.debug(
-        f"_should_skip_moe_replacement for {module.__class__.__name__}: "
-        f"gate_up type={type(gate_up).__name__}, down type={type(down).__name__}, skip={result}"
-    )
-    return result
+    if hasattr(model, "config") and hasattr(model.config, "model_type"):
+        return model.config.model_type in BUILTIN_MODULES
+    return False
+
+
+def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
+    """Log the first experts module found in the model for debugging."""
+    for name, module in model.named_modules():
+        if name.endswith(".experts"):
+            logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
+            return
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -129,6 +112,7 @@ def materialize_model_(model: torch.nn.Module) -> None:
             module.materialize_weights()
 
     model.apply(_materialize_module)
+
     # check if any module on meta device remains
     found_meta = False
     for name, param in model.named_parameters():
@@ -150,16 +134,6 @@ def release_original_module_(model: torch.nn.Module) -> None:
             module.release_original_module()
 
     model.apply(_clear_source_module)
-
-
-def _has_meta_params_or_buffers(model: PreTrainedModel) -> bool:
-    for _, param in model.named_parameters():
-        if param.device.type == "meta":
-            return True
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "meta":
-            return True
-    return False
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
@@ -317,11 +291,29 @@ def apply_replacements(
     """
     _import_required_replacements(model)
 
-    # Auto-detect and handle fused MOE modules if enabled
-    # Skip if all MOE modules already have custom replacements registered
-    if auto_detect_moe and not _has_custom_replacement_only(model):
+    _log_first_moe_block(model, "before replacement")
+
+    # Custom replacements first
+    if is_custom_model(model):
+        _apply_custom_replacements(model)
+    if auto_detect_moe and is_transformers_version_greater_or_equal_5():
         _handle_moe_modules(model)
 
+    _log_first_moe_block(model, "after replacement")
+
+    return model
+
+
+@dump_mem_usage("Applying custom replacements")
+def _apply_custom_replacements(model: torch.nn.Module) -> list:
+    """Scan model and replace registered modules with custom implementations.
+
+    Args:
+        model: The model to scan and apply replacements to (modified in-place).
+
+    Returns:
+        List of (name, replacement_class) tuples for replaced modules.
+    """
     replaced = []
 
     # Step 1: Collect all modules that need replacement
@@ -332,9 +324,6 @@ def apply_replacements(
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if class_name in BUILTIN_MODULES and _should_skip_moe_replacement(module, model):
-            logger.debug(f"Skipping replacement for {name}: linear_loop experts already unfused")
-            continue
         if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
             class_name
         ).is_to_be_replaced(module):
@@ -371,7 +360,7 @@ def apply_replacements(
         global_state.replaced_module_count = len(replaced)
         logger.info(f"Replaced {len(replaced)} modules")
 
-    return model
+    return replaced
 
 
 @dataclass

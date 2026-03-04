@@ -9,8 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils.versions import require_version
 
 from auto_round import AutoRound, AutoRoundAdam
-from auto_round.testing_utils import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
 
+from ...envs import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
 from ...helpers import evaluate_accuracy, get_model_path
 
 

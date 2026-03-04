@@ -8,7 +8,7 @@ import requests
 from PIL import Image
 from transformers import AutoRoundConfig
 
-from auto_round.testing_utils import require_gptqmodel, require_optimum, require_vlm_env
+from ...envs import require_gptqmodel, require_optimum, require_vlm_env
 
 from ...helpers import get_model_path
 

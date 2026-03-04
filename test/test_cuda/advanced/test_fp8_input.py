@@ -48,11 +48,6 @@ class TestAutoRound:
         generate_prompt(model, tokenizer)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="GGUF format saving and loading failed in transformers v5, \
-            https://github.com/huggingface/transformers/issues/43482",
-    )
     def test_gguf_imatrix(self, mock_fp8_capable_device):
         model, tokenizer = self.tiny_fp8_model()
         ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
@@ -103,11 +98,6 @@ class TestAutoRound:
         evaluate_accuracy(self.save_dir, threshold=0.33)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="GGUF format saving and loading failed in transformers v5, \
-            https://github.com/huggingface/transformers/issues/43482",
-    )
     def test_fp8_model_gguf(self, mock_fp8_capable_device):
         from llama_cpp import Llama
 

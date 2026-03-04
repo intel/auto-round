@@ -55,6 +55,17 @@ MODEL_CONFIG = {
             )
         ],
     },
+    "glm_moe_dsa": {
+        "min_transformers_version": "5.0.0",
+        "max_transformers_version": "6.0.0",
+        "checkpoint_mapping": [],
+        "block_patch": [
+            (
+                "transformers.models.glm_moe_dsa.modeling_glm_moe_dsa.GlmMoeDsaMoE",
+                "auto_round.modeling.unfused_moe.glm_moe_dsa.LinearGlmMoeDsaMoE",
+            )
+        ],
+    },
     "qwen3_next": {
         "min_transformers_version": "5.0.0",
         "max_transformers_version": "6.0.0",

@@ -3,6 +3,7 @@ set -xe
 
 test_part=$1
 export TQDM_MININTERVAL=60
+export HF_HUB_DISABLE_PROGRESS_BARS=1
 echo "##[group]set up UT env..."
 uv pip install pytest-cov pytest-html
 uv pip list
@@ -51,7 +52,8 @@ printf '%s\n' "${selected_files}" | sed "s,\.\/,python -m pytest --cov=\"${auto_
 cat run.sh
 numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" bash run.sh 2>&1 | tee "${ut_log_name}"
 
-if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
+if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || \
+[ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c 'core dumped' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
     echo "##[error]Find errors in pytest case, please check the output..."
     exit 1
 fi

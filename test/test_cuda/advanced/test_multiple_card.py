@@ -6,8 +6,8 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.testing_utils import multi_card, require_gptqmodel, require_greater_than_050
 
+from ...envs import multi_card, require_gptqmodel, require_greater_than_050
 from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 

@@ -217,15 +217,33 @@ def register_ignore_layers(
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
 
-# Qwen3MOE
 register_ignore_layers(
     matchers=[
-        ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
+        ModelTypeMatcher(r"qwen3_vl_moe", mode="full"),
     ],
     ignore_layers=[
         "mlp.gate",  # vllm inference issue
     ],
 )
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"qwen3_moe", mode="full"),
+    ],
+    ignore_layers=[
+        "mlp.gate",  # vllm inference issue
+    ],
+)
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"qwen3_5_moe", mode="full"),
+    ],
+    ignore_layers=[
+        "mlp.gate",  # vllm inference issue
+    ],
+)
+
 
 # longcat
 register_ignore_layers(
@@ -256,15 +274,14 @@ register_ignore_layers(
     ],
 )
 
-# # qwen3_next
-# register_ignore_layers(
-#     matchers=[
-#         ModelTypeMatcher(r"qwen3_next", mode="full"),
-#     ],
-#     ignore_layers=[
-#         "mlp.gate",  # vllm issue
-#     ],
-# )
+
+# glm5
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+    ],
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
+)
 
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
@@ -281,5 +298,10 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                     else:
                         layers.extend(res)
             break
+    if not layers:
+        if hasattr(model, "config") and hasattr(model.config, "model_type"):
+            model_type = model.config.model_type
+            if "moe" in model_type:  # Append gate which usually cause vllm issue
+                layers.append("mlp.gate")
 
     return list(dict.fromkeys(layers))
