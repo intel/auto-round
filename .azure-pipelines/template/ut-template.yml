@@ -65,6 +65,7 @@ steps:
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && pip install build \
           && BUILD_HPU_ONLY=1 python -m build \
           && pip install dist/*.whl \
           && pip install -r test/test_hpu/requirements.txt \
