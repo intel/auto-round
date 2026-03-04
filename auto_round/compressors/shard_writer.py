@@ -161,6 +161,8 @@ class ShardWriter:
         for pname, tensor in full_sd.items():
             if pname in all_saved_names:
                 continue
+            if tensor.device.type == "meta":
+                continue
             layer_name = ".".join(pname.split(".")[:-1])
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
