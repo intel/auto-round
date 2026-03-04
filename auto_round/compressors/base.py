@@ -3216,7 +3216,6 @@ class BaseCompressor(object):
                 q_input=q_input,
                 device=device,
             )
-
             if hasattr(model, "config"):
                 del m.config
             if self.is_immediate_packing:
