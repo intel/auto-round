@@ -1396,12 +1396,8 @@ class BaseCompressor(object):
                             # Save once at block scope to capture tensors that are not saved
                             # in per-layer branch (e.g., custom module-level params/buffers).
                             shard_writer(self, name=block_name)
-                            # Per-layer tensors have already been saved; flush once per block
-                            # to reduce I/O overhead while keeping memory bounded.
-                            if hasattr(self, "_shard_writer"):
-                                self._shard_writer._flush_shard()
                             block.to("meta")
-                        if self.low_cpu_mem_usage:
+                        if self.low_cpu_mem_usage and not self.is_immediate_saving:
                             self._offloader.offload(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
@@ -1560,16 +1556,8 @@ class BaseCompressor(object):
                         self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.global_name)
 
-                if not self.is_immediate_saving:
-                    # some modules may have been flushed and set to meta, so we could not  move to gpu
-                    mv_module_from_gpu(block)
-                else:
-                    # Flush once per block; do not force block-level save since some modules
-                    # may already be on meta and would fail during serialization.
-                    if hasattr(self, "_shard_writer"):
-                        self._shard_writer._flush_shard()
-                    mv_module_from_gpu(block)
-                if self.low_cpu_mem_usage:
+                mv_module_from_gpu(block)
+                if self.low_cpu_mem_usage and not self.is_immediate_saving:
                     self._offloader.offload(self.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
@@ -1681,7 +1669,14 @@ class BaseCompressor(object):
             self.is_immediate_saving = False
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
-            if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
+            if formats[0].is_gguf():
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported for gguf format. "
+                    "Setting `low_cpu_mem_usage` to False."
+                )
+                self.low_cpu_mem_usage = False
+                self.is_immediate_saving = False
+            elif self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
                 logger.info(
                     "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
                     "RTN path uses blockwise quantization and supports per-block offloading."
@@ -1691,12 +1686,6 @@ class BaseCompressor(object):
                     "`low_cpu_mem_usage` is not fully supported "
                     "when there are quantized layers outside blocks and optimized RTN is disabled. "
                     "Setting low_cpu_mem_usage to False."
-                )
-                self.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
-            elif formats[0].is_gguf():
-                logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported for gguf format" "Setting `low_cpu_mem_usage `to False."
                 )
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
