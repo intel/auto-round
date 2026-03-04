@@ -2140,7 +2140,7 @@ class BaseCompressor(object):
             )
             exit(-1)
         elif total_cnt < nsamples:
-            logger.warning(
+            logger.warning_once(
                 f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
                 f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )

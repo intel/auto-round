@@ -218,6 +218,13 @@ def _quant_data_with_args(
     return data
 
 
+def need_modify_tensor(cls, name):
+    hf_arch = getattr(cls, "hf_arch", "")
+    if hf_arch == "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
+        return True
+    return False
+
+
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, device=None):
     """
 
@@ -254,7 +261,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
             attr_tensor = getattr(module, attr)
             if not isinstance(attr_tensor, torch.Tensor):
                 continue
-            if hasattr(cls, "permute"):
+            if hasattr(cls, "permute") or need_modify_tensor(cls, name):
                 bs = module.weight.shape[0]
                 attr_tensors_dict = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid))
                 attr_tensor = attr_tensors_dict[new_name]
@@ -408,7 +415,6 @@ def prepare_tensors(cls):
         clean_weight_list = []
 
         modify_name = _special_name_handle(cls, name)
-        orig_device = data_torch.device
         data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
             skip = False
@@ -621,7 +627,7 @@ def prepare_tensors(cls):
                 f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}" f" --> {data_qtype.name}, shape = {shape_str}"
             )
             if not (hasattr(cls, "current_packing_block") and cls.current_packing_block is not None):
-                clear_memory(device_list=[orig_device])
+                clear_memory(device_list=[cls.device])
 
             cls.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
