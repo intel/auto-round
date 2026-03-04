@@ -101,7 +101,7 @@ function run_unit_test() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install pytest-cov pytest-html
-    uv pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.10.0 torchvision
     uv pip install git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
     uv pip install gptqmodel --extra-index-url https://pkgs.dev.azure.com/lpot-inc/neural-compressor/_packaging/gptqmodel-wheels/pypi/simple/
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v5.7.0/requirements.txt
@@ -109,7 +109,7 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
-    uv pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.10.0 torchvision
     uv pip install -U transformers
     uv pip install .
     echo "##[endgroup]"

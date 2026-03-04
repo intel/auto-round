@@ -6,13 +6,14 @@ import time
 import requests
 
 TARGET_GPUS = [
-    # "NVIDIA RTX 4000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX PRO 4500 Blackwell",
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA L40S",
     "NVIDIA GeForce RTX 5090",
 ]
 REQUIRED_COUNT = 1
-IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent-cuda-13.0.2:v1.0"
+IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:v0.1"
 
 
 def check_gpu_count(token):
