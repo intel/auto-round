@@ -36,11 +36,12 @@ class TestFP8ReQuant(unittest.TestCase):
         in_features, out_features = 128, 64
         layer = MockFP8Layer(in_features, out_features)
 
-        dq_weight = _dequant_fp8_linear_weight(layer.weight, layer.weight_scale, block_size=None)
+        tmp_weight = layer.weight.clone()
+        dq_weight = _dequant_fp8_linear_weight(layer.weight, layer.weight_scale, block_size=None)  # in-place operation
         self.assertEqual(dq_weight.shape, (out_features, in_features))
         self.assertEqual(dq_weight.dtype, torch.bfloat16)
 
-        expected = layer.weight.to(torch.bfloat16) * layer.weight_scale.to(torch.bfloat16)
+        expected = tmp_weight.to(torch.bfloat16) * layer.weight_scale.to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
     def test_per_channel_dequant(self):
@@ -50,14 +51,18 @@ class TestFP8ReQuant(unittest.TestCase):
 
         # Per-channel scale (out_features)
         scale = torch.randn(out_features)
-        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
-        expected = weight.to(torch.bfloat16) * scale.view(-1, 1).to(torch.bfloat16)
+        tmp_weight = weight.clone()
+        # in-place operation
+        dq_weight = _dequant_fp8_linear_weight(tmp_weight, scale, block_size=None)
+        expected = tmp_weight.to(torch.bfloat16) * scale.view(-1, 1).to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
         # Per-channel scale (in_features)
         scale = torch.randn(in_features)
-        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
-        expected = weight.to(torch.bfloat16) * scale.view(1, -1).to(torch.bfloat16)
+        tmp_weight = weight.clone()
+        # in-place operation
+        dq_weight = _dequant_fp8_linear_weight(tmp_weight, scale, block_size=None)
+        expected = tmp_weight.to(torch.bfloat16) * scale.view(1, -1).to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
     def test_devstral_model_structure(self):
