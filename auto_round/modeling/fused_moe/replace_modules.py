@@ -290,15 +290,15 @@ def apply_replacements(
     """
     _import_required_replacements(model)
 
-    _log_first_moe_block(model, "before replacement")
-
     # Custom replacements first
     if is_custom_model(model):
+        _log_first_moe_block(model, "before replacement")
         _apply_custom_replacements(model)
+        _log_first_moe_block(model, "after replacement")
     if auto_detect_moe and is_transformers_version_greater_or_equal_5():
+        _log_first_moe_block(model, "before replacement")
         _handle_moe_modules(model)
-
-    _log_first_moe_block(model, "after replacement")
+        _log_first_moe_block(model, "after replacement")
 
     return model
 
