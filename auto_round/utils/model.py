@@ -403,6 +403,13 @@ def mllm_load_model(
     else:
         model_type = None
 
+    if model_type == "qwen2_5_omni":
+        if version.parse(transformers.__version__) < version.parse("4.52.0"):
+            raise RuntimeError(
+                f"Qwen2.5-Omni requires transformers >= 4.52.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=4.52.0"
+            )
+
     if model_type == "qwen3_omni_moe":
         if version.parse(transformers.__version__) < version.parse("5.1.0"):
             raise RuntimeError(
@@ -633,6 +640,8 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "Qwen2MoeSparseMoeBlock".lower(),
             "Qwen3MoeSparseMoeBlock".lower(),
             "Qwen3VLMoeTextSparseMoeBlock".lower(),
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock".lower(),
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock".lower(),
         ]
     )
 
@@ -732,6 +741,8 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
             "DeepseekV2MoE",
             "DeepseekV3MoE",
             "Qwen3VLMoeTextSparseMoeBlock",
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock",
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock",
         ],
     ):
         return ["gate_proj", "down_proj", "up_proj"]
@@ -767,6 +778,8 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
             "Qwen2MoeSparseMoeBlock",
             "Qwen3MoeSparseMoeBlock",
             "Qwen3VLMoeTextSparseMoeBlock",
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock",
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock",
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",
@@ -1389,6 +1402,28 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
     return torch.max(all_values)
 
 
+# Extra non-weight files that some models require at load time but are not saved
+# by model.save_pretrained().  These are copied from the source model cache to
+# the quantized output directory so that from_pretrained() works out of the box.
+_EXTRA_MODEL_FILES = {
+    "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+}
+
+
+def _copy_extra_model_files(src_dir: str, dst_dir: str):
+    """Copy known extra model files from *src_dir* to *dst_dir* if they exist."""
+    import os
+    import shutil
+
+    for file in os.listdir(src_dir):
+        if file in _EXTRA_MODEL_FILES:
+            src_file = os.path.join(src_dir, file)
+            dst_file = os.path.join(dst_dir, file)
+            if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                logger.debug(f"Transferring extra model file {src_file} to {dst_dir}")
+                shutil.copy(src_file, dst_dir)
+
+
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
 def copy_python_files_from_model_cache(model, save_path: str):
@@ -1426,6 +1461,8 @@ def copy_python_files_from_model_cache(model, save_path: str):
             if file.endswith(".py") and os.path.isfile(full_file_name):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
+
+        _copy_extra_model_files(cache_path, save_path)
 
 
 def extract_block_names_to_str(quant_block_list):

@@ -278,7 +278,10 @@ def _qwen2_5_omni_forward(
 
                 if hasattr(model.talker, "thinker_to_talker_proj"):
                     thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
-                    talker_inputs_embeds = model.talker.thinker_to_talker_proj(thinker_embeds)
+                    proj_dtype = next(model.talker.thinker_to_talker_proj.parameters()).dtype
+                    talker_inputs_embeds = model.talker.thinker_to_talker_proj(
+                        thinker_embeds.to(proj_dtype)
+                    )
                 else:
                     talker_hidden_size = model.talker.model.config.hidden_size
                     talker_inputs_embeds = torch.zeros(
@@ -289,8 +292,10 @@ def _qwen2_5_omni_forward(
                         dtype=thinker_hidden.dtype,
                     )
 
+                # Align dtype with talker model weights
+                talker_dtype = next(model.talker.model.parameters()).dtype
                 _ = model.talker.model(
-                    inputs_embeds=talker_inputs_embeds,
+                    inputs_embeds=talker_inputs_embeds.to(talker_dtype),
                     attention_mask=attention_mask,
                     use_cache=False,
                 )
@@ -375,9 +380,10 @@ def _qwen3_omni_moe_forward(
 
                 # Use text projection to convert thinker embeddings to talker space
                 if hasattr(model.talker, "text_projection"):
-                    # Get thinker embeddings
+                    # Get thinker embeddings and align dtype with text_projection weights
                     thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
-                    talker_inputs_embeds = model.talker.text_projection(thinker_embeds)
+                    proj_dtype = next(model.talker.text_projection.parameters()).dtype
+                    talker_inputs_embeds = model.talker.text_projection(thinker_embeds.to(proj_dtype))
                 else:
                     # Fallback: create zero embeddings of correct size
                     talker_inputs_embeds = torch.zeros(
@@ -388,9 +394,10 @@ def _qwen3_omni_moe_forward(
                         dtype=thinker_hidden.dtype,
                     )
 
-                # Run talker model forward
+                # Run talker model forward — align dtype with talker model weights
+                talker_dtype = next(model.talker.model.parameters()).dtype
                 _ = model.talker.model(
-                    inputs_embeds=talker_inputs_embeds,
+                    inputs_embeds=talker_inputs_embeds.to(talker_dtype),
                     attention_mask=attention_mask,
                     use_cache=False,
                 )
