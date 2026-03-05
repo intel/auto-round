@@ -48,7 +48,6 @@ if not is_transformers_version_greater_or_equal_5():
     BUILTIN_MODULES["gpt_oss"] = LazyImport("auto_round.modeling.fused_moe.gpt_oss")
 
 
-@dump_mem_usage("Applying general replacements")
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
 
@@ -291,20 +290,20 @@ def apply_replacements(
     """
     _import_required_replacements(model)
 
+    _log_first_moe_block(model, "before replacement")
+
     # Custom replacements first
     if is_custom_model(model):
-        _log_first_moe_block(model, "before replacement")
         _apply_custom_replacements(model)
-        _log_first_moe_block(model, "after replacement")
     if auto_detect_moe and is_transformers_version_greater_or_equal_5():
-        _log_first_moe_block(model, "before replacement")
         _handle_moe_modules(model)
-        _log_first_moe_block(model, "after replacement")
+
+    _log_first_moe_block(model, "after replacement")
 
     return model
 
 
-@dump_mem_usage("Applying custom replacements")
+@dump_mem_usage("applying custom replacements")
 def _apply_custom_replacements(model: torch.nn.Module) -> list:
     """Scan model and replace registered modules with custom implementations.
 

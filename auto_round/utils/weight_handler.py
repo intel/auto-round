@@ -545,7 +545,7 @@ class FP8Handler(WeightTypeHandler):
 
         # Free intermediate CUDA tensors to avoid memory buildup
         del dq_weight
-        layer.to("cpu")
+        layer.to("meta")
 
         if to_cpu:
             new_layer = new_layer.to("cpu")
@@ -621,7 +621,7 @@ class MXFP4Handler(WeightTypeHandler):
 
         # Free intermediate CUDA tensors to avoid memory buildup
         del dq_weight
-        layer.to("cpu")
+        layer.to("meta")
 
         if to_cpu:
             new_layer = new_layer.to("cpu")
@@ -693,7 +693,7 @@ class MXFP8Handler(WeightTypeHandler):
 
         # Free intermediate CUDA tensors to avoid memory buildup
         del dq_weight
-        layer.to("cpu")
+        layer.to("meta")
 
         if to_cpu:
             new_layer = new_layer.to("cpu")
@@ -749,7 +749,7 @@ class NVFP4Handler(WeightTypeHandler):
 
         # Free intermediate CUDA tensors to avoid memory buildup
         del dq_weight
-        layer.to("cpu")
+        layer.to("meta")
 
         if to_cpu:
             new_layer = new_layer.to("cpu")
