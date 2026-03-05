@@ -49,6 +49,7 @@ class ExtraConfig:
         group_size: int = None,
         sym: bool = None,
         data_type: str = None,
+        weight_block_size: list = None,
         act_bits: int = None,
         act_group_size: int = None,
         act_sym: bool = None,
@@ -91,6 +92,7 @@ class ExtraConfig:
             group_size (int, optional): Weight quantization group size. Defaults to 128.
             sym (bool, optional): Symmetric weight quantization. Defaults to True.
             data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
+            weight_block_size (list, optional): Weight block size for weight block-wise quantization. Defaults to None.
             act_bits (int, optional): Activation quantization bits. Defaults to 16.
             act_group_size (int, optional): Activation group size. Defaults to None.
             act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
@@ -130,6 +132,7 @@ class ExtraConfig:
             group_size=group_size,
             sym=sym,
             data_type=data_type,
+            weight_block_size=weight_block_size,
             act_bits=act_bits,
             act_group_size=act_group_size,
             act_sym=act_sym,
@@ -267,6 +270,7 @@ class SchemeExtraConfig(BaseExtraConfig):
     group_size: int = None
     sym: bool = None
     data_type: str = None
+    weight_block_size: list = None
     act_bits: int = None
     act_group_size: int = None
     act_sym: bool = None
