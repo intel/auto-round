@@ -1,4 +1,4 @@
 include requirements.txt
 include requirements-cpu.txt
-include requirements-lib.txt
+include requirements-hpu.txt
 exclude test/*

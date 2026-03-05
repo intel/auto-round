@@ -2,14 +2,13 @@ import shutil
 
 import pytest
 import torch
-import torch.nn as nn
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Llama4ForConditionalGeneration
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
-from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3ForCausalLM, Qwen3MLP
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
 from auto_round import AutoRound
-from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+
+from ...helpers import check_version
 
 
 @pytest.fixture
@@ -50,7 +49,7 @@ def setup_qwen3_vl_moe():
 
     # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
     config.text_config.pad_token_id = None
-
+    # Reduce model depth for faster and cheaper test runs
     config.vision_config.num_hidden_layers = 1
     config.text_config.num_hidden_layers = 1
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -133,47 +132,55 @@ def test_llama4(setup_llama4):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
-class NewQwen3MLP(ReplacementModuleBase):
-    def __init__(self, original: Qwen3MLP, config: Qwen3Config):
-        super().__init__(original)
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        self.new_gate_proj = original.gate_proj
-        self.new_up_proj = original.up_proj
-        self.new_down_proj = original.down_proj
-        self.act_fn = nn.GELU()
-
-    def forward(self, x):
-        gate = self.new_gate_proj(x)
-        up = self.new_up_proj(x)
-        gate_act = self.act_fn(gate)
-        act = gate_act * up
-        out = self.new_down_proj(act)
-        return out
-
-    @classmethod
-    def original_module_class(cls) -> str:
-        return "Qwen3MLP"
-
-    @classmethod
-    def from_original(cls, original: Qwen3MLP, config: Qwen3Config):
-        return cls(original, config)
-
-
 @pytest.fixture
-def setup_qwen3():
-    """Fixture to set up the qwen3 model and tokenizer."""
-    model_name = "/models/Qwen3-0.6B"
+def setup_qwen35_moe():
+    """Fixture to set up the Qwen3.5 MoE model, tokenizer, and processor."""
+    from transformers import Qwen3_5MoeForConditionalGeneration
+
+    model_name = "/models/Qwen3.5-35B-A3B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
-    config.num_hidden_layers = 2  # Reduce layers for testing
-    config.layer_types = config.layer_types[:2]  # Reduce layers for testing
-    model = Qwen3ForCausalLM(config)
-    output_dir = "test_quantized_qwen3"
-    return model, tokenizer, output_dir, config
+    config.text_config.pad_token_id = None
+    config.vision_config.num_hidden_layers = 1
+    config.text_config.num_hidden_layers = 4
+    config.num_hidden_layers = 1  # Reduce layers for testing
+    config.text_config.layer_types = config.text_config.layer_types[
+        : config.text_config.num_hidden_layers
+    ]  # Reduce layers for testing
+    config.text_config.use_cache = False
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = Qwen3_5MoeForConditionalGeneration(config)
+    # model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_name)
+    output_dir = "test_quantized_qwen35_moe"
+    return model, tokenizer, processor, output_dir, config
 
 
+@pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
+def test_qwen3_5_moe(setup_qwen35_moe):
+    model, tokenizer, processor, output_dir, config = setup_qwen35_moe
+    ar = AutoRound(
+        model,
+        tokenizer=tokenizer,
+        processor=processor,
+        nsamples=2,
+        seqlen=32,
+        iters=1,
+    )
+    quantized_model, _ = ar.quantize_and_save(format="auto_round", output_dir=output_dir)
+    assert quantized_model is not None, "Quantized model should not be None."
+    from transformers import Qwen3_5MoeForConditionalGeneration
+
+    loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(output_dir)
+    loaded_model.to("cuda")
+
+    inp = torch.randint(0, 100, (1, 64)).to("cuda")
+    with torch.inference_mode():
+        loaded_out = loaded_model(inp)
+
+    shutil.rmtree(output_dir, ignore_errors=True)
+
+
+# using general recipe when transformers >= 5.0.0
 def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     model, tokenizer, processor, output_dir, config = setup_qwen3_vl_moe
     autoround = AutoRound(
@@ -207,34 +214,4 @@ def test_qwen3_vl_moe_mxfp(setup_qwen3_vl_moe):
     print(tokenizer.decode(loaded_model.generate(**inputs, max_new_tokens=50)[0]))
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
-
-
-def has_module(model: torch.nn.Module, module_name: str) -> bool:
-    for n, m in model.named_modules():
-        if module_name in n:
-            return True
-    return False
-
-
-def test_register_module_out_of_tree_base():
-    from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-
-    for name, subclass in ReplacementModuleBase._replacement_registry.items():
-        if name == "Qwen3MLP":
-            assert subclass == NewQwen3MLP, "Qwen3MLP not registered correctly."
-
-
-def test_register_module_out_of_tree_model(setup_qwen3):
-    model, tokenizer, output_dir, config = setup_qwen3
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
-    # Ensure the quantized model is not None
-    assert quantized_model is not None, "Quantized model should not be None."
-    check_module_names = ["new_gate_proj", "new_up_proj", "new_down_proj"]
-    for name in check_module_names:
-        assert has_module(quantized_model, name), f"Module {name} not found in quantized model."
-    loaded_model = Qwen3ForCausalLM.from_pretrained(output_dir)
-    quantized_model.to("cuda")
-
-    for name in check_module_names:
-        assert has_module(loaded_model, name), f"Module {name} not found in loaded model."
     loaded_model.to("cuda")

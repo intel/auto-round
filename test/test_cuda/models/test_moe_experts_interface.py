@@ -79,22 +79,26 @@ def test_unfuse_experts_weights():
     success = _unfuse_experts_weights_inplace(module, check_decorator=False)
     assert success, "Failed to unfuse weights"
 
-    # Verify structure
-    assert isinstance(module.gate_up_proj, nn.ModuleList)
-    assert isinstance(module.down_proj, nn.ModuleList)
-    assert len(module.gate_up_proj) == num_experts
-    assert len(module.down_proj) == num_experts
+    # Verify structure - per-expert containers with individual Linear layers
+    for i in range(num_experts):
+        expert = getattr(module, str(i))
+        assert isinstance(expert.gate_proj, nn.Linear), f"Expert {i} gate_proj is not nn.Linear"
+        assert isinstance(expert.up_proj, nn.Linear), f"Expert {i} up_proj is not nn.Linear"
+        assert isinstance(expert.down_proj, nn.Linear), f"Expert {i} down_proj is not nn.Linear"
 
     # Verify weights are preserved
+    # gate_up_proj was (num_experts, 2*intermediate, hidden), not transposed
+    # Split along dim 1: gate -> [:intermediate_dim], up -> [intermediate_dim:]
     for i in range(num_experts):
-        # gate_up: original (2*intermediate, hidden), linear.weight should be same
+        expert = getattr(module, str(i))
         assert torch.allclose(
-            module.gate_up_proj[i].weight.data, original_gate_up[i], atol=1e-6
-        ), f"gate_up weight mismatch for expert {i}"
-
-        # down: original (hidden, intermediate), linear.weight should be same
+            expert.gate_proj.weight.data, original_gate_up[i, :intermediate_dim, :], atol=1e-6
+        ), f"gate weight mismatch for expert {i}"
         assert torch.allclose(
-            module.down_proj[i].weight.data, original_down[i], atol=1e-6
+            expert.up_proj.weight.data, original_gate_up[i, intermediate_dim:, :], atol=1e-6
+        ), f"up weight mismatch for expert {i}"
+        assert torch.allclose(
+            expert.down_proj.weight.data, original_down[i], atol=1e-6
         ), f"down weight mismatch for expert {i}"
 
 
@@ -128,20 +132,27 @@ def test_unfuse_experts_weights_transposed():
     success = _unfuse_experts_weights_inplace(module, check_decorator=False)
     assert success, "Failed to unfuse transposed weights"
 
-    # Verify structure
-    assert isinstance(module.gate_up_proj, nn.ModuleList)
-    assert isinstance(module.down_proj, nn.ModuleList)
+    # Verify structure - per-expert containers with individual Linear layers
+    for i in range(num_experts):
+        expert = getattr(module, str(i))
+        assert isinstance(expert.gate_proj, nn.Linear), f"Expert {i} gate_proj is not nn.Linear"
+        assert isinstance(expert.up_proj, nn.Linear), f"Expert {i} up_proj is not nn.Linear"
+        assert isinstance(expert.down_proj, nn.Linear), f"Expert {i} down_proj is not nn.Linear"
 
     # Verify weights are correctly transposed
+    # gate_up_proj was (num_experts, hidden, 2*intermediate), transposed
+    # Split along dim 2: gate -> [:, :intermediate_dim], up -> [:, intermediate_dim:]
+    # Then transposed: (hidden, intermediate) -> (intermediate, hidden)
     for i in range(num_experts):
-        # gate_up: original (hidden, 2*intermediate), should be transposed to (2*intermediate, hidden)
+        expert = getattr(module, str(i))
         assert torch.allclose(
-            module.gate_up_proj[i].weight.data, original_gate_up[i].t(), atol=1e-6
-        ), f"gate_up weight mismatch for expert {i}"
-
-        # down: original (intermediate, hidden), should be transposed to (hidden, intermediate)
+            expert.gate_proj.weight.data, original_gate_up[i, :, :intermediate_dim].t(), atol=1e-6
+        ), f"gate weight mismatch for expert {i}"
         assert torch.allclose(
-            module.down_proj[i].weight.data, original_down[i].t(), atol=1e-6
+            expert.up_proj.weight.data, original_gate_up[i, :, intermediate_dim:].t(), atol=1e-6
+        ), f"up weight mismatch for expert {i}"
+        assert torch.allclose(
+            expert.down_proj.weight.data, original_down[i].t(), atol=1e-6
         ), f"down weight mismatch for expert {i}"
 
 
@@ -236,4 +247,6 @@ def test_prepare_model_for_moe_quantization():
     # Verify
     assert model.config._experts_implementation == "linear_loop"
     assert len(unfused) == 1
-    assert isinstance(model.layer["experts"].gate_up_proj, nn.ModuleList)
+    experts = model.layer["experts"]
+    expert_0 = getattr(experts, "0")
+    assert isinstance(expert_0.gate_proj, nn.Linear)

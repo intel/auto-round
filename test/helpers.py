@@ -1,6 +1,7 @@
 import copy
 import os
 import re
+import shutil
 
 import pytest
 import torch
@@ -165,6 +166,15 @@ def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=F
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
     model.save_pretrained(tiny_model_path)
     tokenizer.save_pretrained(tiny_model_path)
+    # copy tokenizer.model
+    if not os.path.isdir(model_name_or_path):
+        from auto_round.utils import download_hf_model
+
+        model_path = download_hf_model(model_name_or_path)
+    else:
+        model_path = model_name_or_path
+    if os.path.isfile(os.path.join(model_path, "tokenizer.model")):
+        shutil.copy(os.path.join(model_path, "tokenizer.model"), os.path.join(tiny_model_path, "tokenizer.model"))
     if is_mllm:
         processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, **kwargs)
         image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, **kwargs)
@@ -181,6 +191,16 @@ def is_pytest_mode_compile():
 
 def is_pytest_mode_lazy():
     return pytest.mode == "lazy"
+
+
+def check_version(lib):
+    try:
+        from transformers.utils.versions import require_version
+
+        require_version(lib)
+        return True
+    except Exception:
+        return False
 
 
 # General model inference code
@@ -242,6 +262,7 @@ def get_output(model_name_or_path):
     return outputs.detach().cpu()
 
 
+@torch.inference_mode()
 def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similarity", threshold=0.98, k=5, verbose=True):
     """
     Compare outputs from two models using specified metric and return pass/fail.
