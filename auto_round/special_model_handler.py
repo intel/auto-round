@@ -21,7 +21,14 @@ from auto_round.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import logger
 
-mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama", "qwen2_5_omni", "qwen3_omni_moe")  # Limitations on batch_size
+mllms_with_limited_bs = (
+    "llava",
+    "qwen2_vl",
+    "phi3_v",
+    "mllama",
+    "qwen2_5_omni",
+    "qwen3_omni_moe",
+)  # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
     "phi3_v",
