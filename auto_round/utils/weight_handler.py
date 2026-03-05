@@ -543,6 +543,10 @@ class FP8Handler(WeightTypeHandler):
 
         new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
 
+        # Free intermediate CUDA tensors to avoid memory buildup
+        del dq_weight
+        layer.to("cpu")
+
         if to_cpu:
             new_layer = new_layer.to("cpu")
 
@@ -615,6 +619,10 @@ class MXFP4Handler(WeightTypeHandler):
         )
         new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
 
+        # Free intermediate CUDA tensors to avoid memory buildup
+        del dq_weight
+        layer.to("cpu")
+
         if to_cpu:
             new_layer = new_layer.to("cpu")
 
@@ -683,6 +691,10 @@ class MXFP8Handler(WeightTypeHandler):
         )
         new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
 
+        # Free intermediate CUDA tensors to avoid memory buildup
+        del dq_weight
+        layer.to("cpu")
+
         if to_cpu:
             new_layer = new_layer.to("cpu")
 
@@ -734,6 +746,10 @@ class NVFP4Handler(WeightTypeHandler):
         # Use compressor.decompress_module for dequantization
         dq_weight = layer.compressor.decompress_module(layer)
         new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+
+        # Free intermediate CUDA tensors to avoid memory buildup
+        del dq_weight
+        layer.to("cpu")
 
         if to_cpu:
             new_layer = new_layer.to("cpu")
