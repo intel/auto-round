@@ -10,6 +10,8 @@ parameters:
   - name: matrix
     type: object
     default:
+      part0:
+        PART: 0
       part1:
         PART: 1
       part2:
@@ -101,15 +103,27 @@ stages:
                 clean: true
                 displayName: "Checkout Repo"
               - script: |
+                  echo "Running on GPU Agent: $(Agent.Name)"
                   nvidia-smi
                   lscpu
-                  echo "##[group]Installing Hugging Face CLI..."
-                  uv pip install -U "huggingface_hub[cli]"
+                displayName: "Verify GPU Access"
+              - script: |
+                  echo "##[group]Installing Python dependencies..."
+                  uv pip install -U "pytest-cov" "pytest-html" "requests" "huggingface_hub[cli]"
                   hf auth login --token "$(HF_TOKEN)"
                   echo "##[endgroup]"
-                  bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
-                    --test_case=all \
-                    --test_part=${{ pair.value.PART }}
+                displayName: "Install Python Dependencies"
+              - script: |
+                  if [ ${{ pair.value.PART }} -eq 0 ]; then
+                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
+                      --test_case=sglang
+                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
+                      --test_case=llmc
+                  else
+                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
+                      --test_case=all \
+                      --test_part=${{ pair.value.PART }}
+                  fi
                 displayName: "Run GPU Tests"
 
       - stage: Cleanup_Verification_${{ pair.key }}

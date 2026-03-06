@@ -100,7 +100,6 @@ function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install pytest-cov pytest-html
     uv pip install torch==2.10.0 torchvision
     uv pip install git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
 
@@ -168,7 +167,6 @@ function run_unit_test() {
 function run_unit_test_llmc() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_llmc.txt
     uv pip install .
     echo "##[endgroup]"
@@ -197,7 +195,6 @@ function run_unit_test_llmc() {
 function run_unit_test_sglang() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_sglang.txt
     uv pip install .
     echo "##[endgroup]"
@@ -242,7 +239,7 @@ function main() {
     du -sh /root/.cache/huggingface
     du -sh /root/.cache/huggingface/hub/*
     du -sh /root/.venv
-    cat "${SUMMARY_LOG}"
+    print_summary
 }
 
 main
