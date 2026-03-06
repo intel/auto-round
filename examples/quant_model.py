@@ -16,6 +16,7 @@ from auto_round import AutoRound
 
 def fix_everything(seed):
     import random
+
     import numpy as np
     import torch
 
@@ -37,7 +38,6 @@ def main(args):
         low_cpu_mem_usage=True,
         disable_opt_rtn=True,
         # disable_trust_remote_code=True,
-
         # static_kv_dtype="fp8",
     )
     model_base_name = model_name.rstrip("/").split("/")[-1]
@@ -51,11 +51,11 @@ def main(args):
         format="llm_compressor",
     )
 
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(
-        description="Auto-round quantization script."
-    )
+
+    parser = argparse.ArgumentParser(description="Auto-round quantization script.")
     parser.add_argument(
         "-m",
         "--model",
