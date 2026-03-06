@@ -132,8 +132,7 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    # find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
-    find ./test_cuda -name "test_exllamav2_backend.py" | sort > all_tests.txt
+    find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=3
     q=$(( total_lines / NUM_CHUNKS ))

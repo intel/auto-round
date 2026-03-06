@@ -12,10 +12,10 @@ parameters:
     default:
       part1:
         PART: 1
-      # part2:
-      #   PART: 2
-      # part3:
-      #   PART: 3
+      part2:
+        PART: 2
+      part3:
+        PART: 3
 
 stages:
   - ${{ each pair in parameters.matrix }}:
