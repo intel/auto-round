@@ -92,6 +92,9 @@ class TestFP8ReQuant(unittest.TestCase):
                 self.data_type = "fp8"
 
         mock_layer = FP8Linear(in_features, out_features)
+        # mock_layer will to meta after converting.
+        mock_weight = mock_layer.weight.clone()
+        mock_weight_scale = mock_layer.weight_scale.clone()
 
         # This should now pass without AttributeError for 'block_size'
         check_and_mark_quantized_module(mock_layer)
@@ -102,6 +105,6 @@ class TestFP8ReQuant(unittest.TestCase):
         self.assertEqual(new_layer.out_features, out_features)
         self.assertEqual(new_layer.weight.dtype, torch.bfloat16)
 
-        expected = mock_layer.weight.to(torch.bfloat16) * mock_layer.weight_scale.to(torch.bfloat16)
+        expected = mock_weight.to(torch.bfloat16) * mock_weight_scale.to(torch.bfloat16)
         torch.testing.assert_close(new_layer.weight, expected)
         print("Devstral layer conversion successful!")
