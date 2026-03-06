@@ -102,7 +102,7 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 pip install auto-round
 
 # CPU(Xeon)/GPU(CUDA) nightly
-pip install auto-round-nightly 
+pip install auto-round-nightly
 
 # HPU(Gaudi)
 # install inside the hpu docker container, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
