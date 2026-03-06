@@ -2314,6 +2314,8 @@ class BaseCompressor(object):
                 self.model = self.model.to(torch.float32)  ##model on cpu
 
         self.last_cache_name = self._infer_last_cache_name(block_names, layer_names, last_cache_name)
+        self._cache_target_set = set(self.to_cached_layers)
+        self._cache_seen_targets = set()
         calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
@@ -2321,6 +2323,8 @@ class BaseCompressor(object):
         self._recover_forward()
         res = self.inputs
         del self.last_cache_name
+        del self._cache_target_set
+        del self._cache_seen_targets
         del self.to_cached_layers
         if tmp_dtype is not None:
             self.model = self.model.to(tmp_dtype)
@@ -2329,9 +2333,9 @@ class BaseCompressor(object):
 
     def _infer_last_cache_name(self, block_names, layer_names=None, requested_last_cache_name=None):
         """The latest required cache layer for early-stop forward.
-        For MLLM with multiple cache targets, infer the latest target based on
-           ``model.named_modules()`` traversal order.
-        Fallback to ``None`` if no deterministic target can be inferred.
+
+        If there are multiple cache targets, return ``None`` and let runtime
+        hooks stop only after all targets are observed in real forward execution.
         """
         if layer_names is None:
             layer_names = []
@@ -2343,15 +2347,29 @@ class BaseCompressor(object):
         if len(cache_targets) == 1:
             return cache_targets[0]
 
-        if not getattr(self, "mllm", False):
-            return None
+        # return None here to enable the logic in _should_stop_cache_forward
+        return None
 
-        target_set = set(cache_targets)
-        last_seen = None
-        for name, _ in self.model.named_modules():
-            if name in target_set:
-                last_seen = name
-        return last_seen
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Determine whether current forward pass can stop after caching `name`."""
+        if name == self.last_cache_name:
+            return True
+
+        if self.last_cache_name is not None:
+            return False
+
+        if not hasattr(self, "_cache_target_set") or not hasattr(self, "_cache_seen_targets"):
+            return False
+
+        if name in self._cache_target_set:
+            self._cache_seen_targets.add(name)
+
+        if not self._cache_target_set.issubset(self._cache_seen_targets):
+            return False
+
+        # Lock the last cache name after the first full forward pass.
+        self.last_cache_name = name
+        return True
 
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
@@ -2454,7 +2472,8 @@ class BaseCompressor(object):
                             f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
                         )
             reset_params(self.inputs[name])
-            if name == self.last_cache_name:
+
+            if self._should_stop_cache_forward(name):
                 raise NotImplementedError
             else:
                 if hidden_states is not None:
@@ -2480,7 +2499,8 @@ class BaseCompressor(object):
                 self.inputs[name].extend(list(torch.split(input.to("cpu"), 1, dim=0)))
             else:
                 self.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
-            if name == self.last_cache_name:
+
+            if self._should_stop_cache_forward(name):
                 raise NotImplementedError
 
         return cache_input_hook
