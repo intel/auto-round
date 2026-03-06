@@ -17,7 +17,7 @@ IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:v0.1"
 
 
 def check_gpu_count(token):
-    url = f"https://api.runpod.io/graphql?api_key={token}"
+    url = f"https://api.runpod.io/graphql"
     ids_string = ", ".join([f'"{gid}"' for gid in TARGET_GPUS])
     graphql_query = """
     query GpuAvailability($input: GpuLowestPriceInput!) {
@@ -49,7 +49,15 @@ def check_gpu_count(token):
 
     try:
         response = requests.post(
-            url, json={"query": graphql_query, "variables": variables}, headers={"Content-Type": "application/json"}
+            url,
+            json={
+                "query": graphql_query,
+                "variables": variables,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
         )
         response.raise_for_status()
         data = response.json()
@@ -67,10 +75,8 @@ def check_gpu_count(token):
                 max_count = gpu.get("lowestPrice", {}).get("maxUnreservedGpuCount", 0)
 
                 if REQUIRED_COUNT > max_count:
-                    print(f"❌ {gpu_id}: \n   Status: Available.\n")
                     continue
                 else:
-                    print(f"✅ {gpu_id}: \n   Status: Unavailable.\n")
                     return gpu_id
 
         print("❌ No compliant GPU found.")
