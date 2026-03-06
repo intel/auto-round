@@ -17,7 +17,7 @@ IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:v0.1"
 
 
 def check_gpu_count(token):
-    url = f"https://api.runpod.io/graphql"
+    url = "https://api.runpod.io/graphql"
     ids_string = ", ".join([f'"{gid}"' for gid in TARGET_GPUS])
     graphql_query = """
     query GpuAvailability($input: GpuLowestPriceInput!) {
