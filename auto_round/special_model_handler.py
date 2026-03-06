@@ -19,7 +19,7 @@ import torch
 
 from auto_round.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
-from auto_round.utils import logger
+from auto_round.utils import is_moe_model_via_config, logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -216,16 +216,6 @@ def register_ignore_layers(
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
 
-# Qwen3MOE
-register_ignore_layers(
-    matchers=[
-        ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
 # longcat
 register_ignore_layers(
     matchers=[
@@ -255,15 +245,14 @@ register_ignore_layers(
     ],
 )
 
-# # qwen3_next
-# register_ignore_layers(
-#     matchers=[
-#         ModelTypeMatcher(r"qwen3_next", mode="full"),
-#     ],
-#     ignore_layers=[
-#         "mlp.gate",  # vllm issue
-#     ],
-# )
+
+# minimax_m2
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"minimax_m2", mode="full"),
+    ],
+    ignore_layers=["block_sparse_moe.gate"],
+)
 
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
@@ -280,5 +269,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                     else:
                         layers.extend(res)
             break
-
+    config = getattr(model, "config", None)
+    if not layers and is_moe_model_via_config(config):
+        layers.append("mlp.gate")
     return list(dict.fromkeys(layers))
