@@ -1,9 +1,12 @@
-import shutil
 import os
+import shutil
+
 import pytest
-from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText
+from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
+
 from auto_round import AutoRoundMLLM
 from auto_round.utils import get_block_names
+
 from ...helpers import get_model_path, opt_name_or_path
 
 
@@ -287,6 +290,7 @@ class TestAutoRoundMLLM:
                 }
             )
             return result
+
         autoround._should_stop_cache_forward = tracked_should_stop
 
         try:
@@ -300,9 +304,9 @@ class TestAutoRoundMLLM:
             stop_calls = [c for c in call_log if c["result"] is True]
             assert len(stop_calls) > 0, "Should trigger early-stop during calibration"
             last_cache_values = [c["last_cache_name"] for c in call_log]
-            assert last_cache_values[-1] == "model.language_model.layers.0", (
-                "last_cache_name should update to model.language_model.layers.0"
-            )
+            assert (
+                last_cache_values[-1] == "model.language_model.layers.0"
+            ), "last_cache_name should update to model.language_model.layers.0"
             assert "model.language_model.layers.0" in inputs, "Should have cached language model block"
         finally:
             autoround._should_stop_cache_forward = original_should_stop

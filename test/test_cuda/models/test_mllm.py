@@ -2,14 +2,19 @@ import copy
 import os
 import re
 import shutil
+
 import pytest
 import requests
 from PIL import Image
-from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText
+from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
+
 from auto_round import AutoRoundMLLM
 from auto_round.utils import get_block_names
+
 from ...envs import require_gptqmodel, require_optimum, require_vlm_env
 from ...helpers import get_model_path
+
+
 class VisionDataLoader:
     def __init__(self):
         self.batch_size = 1
@@ -59,7 +64,7 @@ class TestAutoRoundMLLM:
     #             res == """<s> There is a girl who likes adventure, and she is looking for a partner to go on a treasure hunt. She has found a map that leads to a hidden treasure, but she needs a partner to help her decipher the clues and find the treasure. You""")
 
     def qwen_inference(self, quantized_model_dir):
-        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
+        from transformers import AutoProcessor, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
@@ -105,7 +110,7 @@ class TestAutoRoundMLLM:
     @require_gptqmodel
     @require_optimum
     def test_vlm_tune(self):
-        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
+        from transformers import AutoProcessor, AutoTokenizer
 
         from auto_round import AutoRoundMLLM
 
@@ -231,9 +236,9 @@ class TestAutoRoundMLLM:
 
             last_cache_values = [c["last_cache_name"] for c in call_log]
             assert last_cache_values[0] is None, "last_cache_name should start as None"
-            assert last_cache_values[-1] == "model.language_model.layers.0", (
-                "last_cache_name should update to model.language_model.layers.0"
-            )
+            assert (
+                last_cache_values[-1] == "model.language_model.layers.0"
+            ), "last_cache_name should update to model.language_model.layers.0"
 
             assert "model.language_model.layers.0" in inputs, "Should have cached language model block"
             assert len(inputs) >= 3, "Should have cached at least 3 input keys"
