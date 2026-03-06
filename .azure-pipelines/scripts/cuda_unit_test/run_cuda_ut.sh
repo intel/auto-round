@@ -167,6 +167,9 @@ function run_unit_test() {
 function run_unit_test_llmc() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
+    rm -rf /root/.venv
+    uv venv --python=3.12 /root/.venv
+    uv pip install -U pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_llmc.txt
     uv pip install .
     echo "##[endgroup]"
@@ -195,6 +198,9 @@ function run_unit_test_llmc() {
 function run_unit_test_sglang() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
+    rm -rf /root/.venv
+    uv venv --python=3.12 /root/.venv
+    uv pip install -U pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_sglang.txt
     uv pip install .
     echo "##[endgroup]"
