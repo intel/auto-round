@@ -18,21 +18,10 @@ parameters:
       #   PART: 3
 
 stages:
-  - stage: Delay_Before_Pod_Creation
-    displayName: "Delay Before Pod Creation"
-    dependsOn: []
-    jobs:
-      - job: DelayTask
-        pool: server # 'server' is a reserved word for agentless jobs. Delay task must be agentless.
-        steps:
-          - task: Delay@1
-            inputs:
-              delayForMinutes: "1"
-
   - ${{ each pair in parameters.matrix }}:
       - stage: Start_Pod_${{ pair.key }}
         displayName: "Start Pod ${{ pair.value.PART }}"
-        dependsOn: [Delay_Before_Pod_Creation]
+        dependsOn: []
         jobs:
           - job: Start_Pod_Job
             displayName: "Launch Pod & Run CUDA Tests"
