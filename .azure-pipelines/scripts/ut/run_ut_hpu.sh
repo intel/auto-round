@@ -4,6 +4,7 @@ set -xe
 # install requirements
 echo "set up UT env..."
 export TQDM_MININTERVAL=60
+export HF_HUB_DISABLE_PROGRESS_BARS=1
 pip install pytest-cov pytest-html
 pip list
 
@@ -31,7 +32,8 @@ bash run_compile.sh 2>&1 | tee -a ${ut_log_name}
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
 
-if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
+if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || \
+[ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c 'core dumped' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
     echo "##[error]Find errors in pytest case, please check the output..."
     exit 1
 fi
