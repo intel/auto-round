@@ -29,7 +29,7 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, mock_fp8_capable_device):
-        model_name = get_model_path("qwen/Qwen3-0.6B-FP8")
+        model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         tiny_model_path = "./tmp/tiny_qwen3_fp8"
         save_tiny_model(model_name, tiny_model_path)
         scheme = "mxfp4"
@@ -139,8 +139,9 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="OOM")
     def test_qwen_moe_quant_infer(self, dataloader):
-        model_name = get_model_path("qwen/Qwen1.5-MoE-A2.7B")
+        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
             "layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
         }

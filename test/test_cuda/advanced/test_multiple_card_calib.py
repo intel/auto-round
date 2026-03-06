@@ -6,11 +6,13 @@ import sys
 import pytest
 
 from ...envs import multi_card
+from ...helpers import get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skip_ci(reason="multiple card test")
 class TestAutoRound:
     save_dir = "./saved"
     tasks = "lambada_openai"
@@ -31,10 +33,11 @@ class TestAutoRound:
     @multi_card
     def test_multiple_card_calib(self):
         python_path = sys.executable
+        model_path = get_model_path("meta-llama/Meta-Llama-3.1-8B-Instruct")
 
         ##test llm script
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model /models/Meta-Llama-3.1-8B-Instruct --devices '0,1' --quant_lm_head --iters 1 --nsamples 1 --output_dir None"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_path} --devices '0,1' --quant_lm_head --iters 1 --nsamples 1 --output_dir None"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

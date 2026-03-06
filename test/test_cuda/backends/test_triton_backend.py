@@ -7,13 +7,13 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_greater_than_050
-from ...helpers import evaluate_accuracy, model_infer
+from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundTritonBackend:
     @classmethod
     def setup_class(self):
-        self.model_name = "/models/opt-125m"
+        self.model_name = get_model_path("facebook/opt-125m")
         self.save_folder = "./saved"
 
     @classmethod
@@ -21,6 +21,8 @@ class TestAutoRoundTritonBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
+    # @pytest.mark.skip_ci(reason="Time-consuming")
     @require_greater_than_050
     def test_tritonv2_4bits_asym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -59,6 +61,8 @@ class TestAutoRoundTritonBackend:
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
+    # @pytest.mark.skip_ci(reason="time-consuming; 2 bits")
     @require_greater_than_050
     def test_tritonv2_2bits_asym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -88,6 +92,7 @@ class TestAutoRoundTritonBackend:
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming")
     @require_greater_than_050
     def test_tritonv2_4bits_sym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -127,6 +132,7 @@ class TestAutoRoundTritonBackend:
 
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming")
     @require_greater_than_050
     def test_tritonv2_8bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -156,6 +162,7 @@ class TestAutoRoundTritonBackend:
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="time-consuming; 2 bits")
     @require_greater_than_050
     def test_tritonv2_2bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)

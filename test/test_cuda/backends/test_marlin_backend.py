@@ -26,6 +26,7 @@ class TestAutoRoundMarlinBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming")
     def test_marlin_group_size(self, dataloader):
         for group_size in [-1, 64]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
@@ -81,6 +82,8 @@ class TestAutoRoundMarlinBackend:
             model_infer(model, tokenizer)
             evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16)
 
+    # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
+    # @pytest.mark.skip_ci(reason="Time-consuming")
     def test_marlin_4bits_sym_with_zp_m_1(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)

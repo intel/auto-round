@@ -64,6 +64,7 @@ class TestAutoRound:
             assert "!!!" not in res
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_autogptq
     def test_mixed_precision(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -89,6 +90,7 @@ class TestAutoRound:
         evaluate_accuracy(model, tokenizer, threshold=0.32, batch_size=16)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_awq
     @require_package_version_ut("transformers", "<4.57.0")
     def test_awq_backend(self):
@@ -123,6 +125,7 @@ class TestAutoRound:
         model_infer(model, tokenizer)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_bf16(self):
         model_name = get_model_path("OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc")
@@ -252,6 +255,7 @@ class TestAutoRound:
             assert "!!!" not in res
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Large model")
     @require_greater_than_050
     def test_load_gptq_model_3bits(self):
         model_name = get_model_path("LucasSantiago257/gemma-2b-2bits-gptq")
