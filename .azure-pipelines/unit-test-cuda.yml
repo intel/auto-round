@@ -56,6 +56,7 @@ stages:
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
                       --container_disk_size "100" \
+                      --part ${{ pair.value.PART }} \
                       --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
 
               - task: Bash@3

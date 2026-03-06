@@ -212,11 +212,13 @@ def main():
     parser.add_argument("--name", help="Pod name")
     parser.add_argument("--gpu_count", type=int, default=1)
     parser.add_argument("--container_disk_size", type=int, default=50)
+    parser.add_argument("--part", type=int, default=0)
     parser.add_argument("--env", nargs="*", help="Environment variables in KEY=VALUE format")
 
     args = parser.parse_args()
 
     if args.action == "create":
+        time.sleep(args.part * 15)
         create_pod(args)
     elif args.action == "terminate":
         terminate_pod(args)
