@@ -111,7 +111,7 @@ function run_unit_test() {
     WHEEL="gptqmodel-5.7.0-${CUDA_VER}${TORCH_VER}-${PY_VER}-${PY_VER}-linux_x86_64.whl"
     URL="https://pkgs.dev.azure.com/lpot-inc/b7121868-d73a-4794-90c1-23135f974d09/_packaging/4728fbab-e069-4cbd-bcca-d35f4d42256b/pypi/download/gptqmodel/5.7/${WHEEL}"
     cd /tmp
-    get -q --show-progress "$URL" -O "$WHEEL" || { echo "Download failed. Check CUDA/PyTorch/Python versions match (cu126/cu128/cu130, torch2.10, cp310-cp313)"; exit 1; }
+    wget -q --show-progress "$URL" -O "$WHEEL" || { echo "Download failed. Check CUDA/PyTorch/Python versions match (cu126/cu128/cu130, torch2.10, cp310-cp313)"; exit 1; }
     mv "$WHEEL" "${WHEEL/-${CUDA_VER}${TORCH_VER}-/+${CUDA_VER}.${TORCH_VER}-}"
     uv pip install "./${WHEEL/-${CUDA_VER}${TORCH_VER}-/+${CUDA_VER}.${TORCH_VER}-}" --no-build-isolation
     rm -f "./${WHEEL/-${CUDA_VER}${TORCH_VER}-/+${CUDA_VER}.${TORCH_VER}-}"
