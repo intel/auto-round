@@ -279,9 +279,7 @@ def _qwen2_5_omni_forward(
                 if hasattr(model.talker, "thinker_to_talker_proj"):
                     thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
                     proj_dtype = next(model.talker.thinker_to_talker_proj.parameters()).dtype
-                    talker_inputs_embeds = model.talker.thinker_to_talker_proj(
-                        thinker_embeds.to(proj_dtype)
-                    )
+                    talker_inputs_embeds = model.talker.thinker_to_talker_proj(thinker_embeds.to(proj_dtype))
                 else:
                     talker_hidden_size = model.talker.model.config.hidden_size
                     talker_inputs_embeds = torch.zeros(
