@@ -133,7 +133,6 @@ def tiny_qwen2_5_omni():
     tests while still exercising the real config structure.
     Skipped automatically when the model path does not exist locally.
     """
-    import os
 
     from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Qwen2_5OmniForConditionalGeneration
 
@@ -151,9 +150,7 @@ def tiny_qwen2_5_omni():
     config.thinker_config.audio_config.num_hidden_layers = 1
     config.talker_config.num_hidden_layers = 1
     if hasattr(config.thinker_config.text_config, "layer_types"):
-        config.thinker_config.text_config.layer_types = (
-            config.thinker_config.text_config.layer_types[:1]
-        )
+        config.thinker_config.text_config.layer_types = config.thinker_config.text_config.layer_types[:1]
     if hasattr(config.talker_config, "layer_types"):
         config.talker_config.layer_types = config.talker_config.layer_types[:1]
 
@@ -169,7 +166,6 @@ def tiny_qwen3_omni_moe():
     still exercising the real config structure.
     Skipped automatically when the model path does not exist locally.
     """
-    import os
 
     from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Qwen3OmniMoeForConditionalGeneration
 
@@ -186,9 +182,7 @@ def tiny_qwen3_omni_moe():
     config.thinker_config.vision_config.depth = 1
     config.thinker_config.audio_config.num_hidden_layers = 1
     if hasattr(config.thinker_config.text_config, "layer_types"):
-        config.thinker_config.text_config.layer_types = (
-            config.thinker_config.text_config.layer_types[:1]
-        )
+        config.thinker_config.text_config.layer_types = config.thinker_config.text_config.layer_types[:1]
     # Talker
     if hasattr(config, "talker_config"):
         if hasattr(config.talker_config, "text_config"):

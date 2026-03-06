@@ -97,12 +97,12 @@ class TestQwen2_5OmniBlockNames:
         model, _, _ = tiny_qwen2_5_omni
         block_names = get_block_names(model, quant_vision=False)
         # Should have thinker.model.layers and talker.model.layers
-        assert any("thinker.model.layers" in str(b) for b in block_names), (
-            f"Expected thinker.model.layers in block_names, got: {block_names}"
-        )
-        assert any("talker.model.layers" in str(b) for b in block_names), (
-            f"Expected talker.model.layers in block_names, got: {block_names}"
-        )
+        assert any(
+            "thinker.model.layers" in str(b) for b in block_names
+        ), f"Expected thinker.model.layers in block_names, got: {block_names}"
+        assert any(
+            "talker.model.layers" in str(b) for b in block_names
+        ), f"Expected talker.model.layers in block_names, got: {block_names}"
 
     def test_block_names_quant_vision(self, tiny_qwen2_5_omni):
         """Test that quant_vision adds visual and audio blocks."""
@@ -112,9 +112,7 @@ class TestQwen2_5OmniBlockNames:
         blocks_no_vision = get_block_names(model, quant_vision=False)
         blocks_with_vision = get_block_names(model, quant_vision=True)
 
-        assert len(blocks_with_vision) > len(blocks_no_vision), (
-            "quant_vision=True should add visual/audio blocks"
-        )
+        assert len(blocks_with_vision) > len(blocks_no_vision), "quant_vision=True should add visual/audio blocks"
 
 
 class TestQwen2_5OmniForward:
@@ -165,12 +163,12 @@ class TestQwen3OmniMoeBlockNames:
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         block_names = get_block_names(model, quant_vision=False)
-        assert any("thinker.model.layers" in str(b) for b in block_names), (
-            f"Expected thinker.model.layers, got: {block_names}"
-        )
-        assert any("talker.model.layers" in str(b) for b in block_names), (
-            f"Expected talker.model.layers, got: {block_names}"
-        )
+        assert any(
+            "thinker.model.layers" in str(b) for b in block_names
+        ), f"Expected thinker.model.layers, got: {block_names}"
+        assert any(
+            "talker.model.layers" in str(b) for b in block_names
+        ), f"Expected talker.model.layers, got: {block_names}"
 
     def test_block_names_quant_vision(self):
         """Test that quant_vision adds visual and audio blocks."""
@@ -182,9 +180,7 @@ class TestQwen3OmniMoeBlockNames:
         blocks_no_vision = get_block_names(model, quant_vision=False)
         blocks_with_vision = get_block_names(model, quant_vision=True)
 
-        assert len(blocks_with_vision) > len(blocks_no_vision), (
-            "quant_vision=True should add visual/audio blocks"
-        )
+        assert len(blocks_with_vision) > len(blocks_no_vision), "quant_vision=True should add visual/audio blocks"
 
 
 class TestQwen3OmniMoeForward:
@@ -241,15 +237,15 @@ class TestQwen3OmniMoeReplacement:
 
         # Check that thinker MoE was replaced
         thinker_mlp = model.thinker.model.layers[0].mlp
-        assert "LinearQwen3OmniThinker" in thinker_mlp.__class__.__name__, (
-            f"Expected LinearQwen3OmniThinker, got {thinker_mlp.__class__.__name__}"
-        )
+        assert (
+            "LinearQwen3OmniThinker" in thinker_mlp.__class__.__name__
+        ), f"Expected LinearQwen3OmniThinker, got {thinker_mlp.__class__.__name__}"
 
         # Check that talker MoE was replaced
         talker_mlp = model.talker.model.layers[0].mlp
-        assert "LinearQwen3OmniTalker" in talker_mlp.__class__.__name__, (
-            f"Expected LinearQwen3OmniTalker, got {talker_mlp.__class__.__name__}"
-        )
+        assert (
+            "LinearQwen3OmniTalker" in talker_mlp.__class__.__name__
+        ), f"Expected LinearQwen3OmniTalker, got {talker_mlp.__class__.__name__}"
 
     def test_weight_fidelity(self):
         """Test that unfused weights match original fused weights."""
@@ -328,9 +324,7 @@ class TestQwen3OmniMoeUtils:
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
         moe_block = model.thinker.model.layers[0].mlp
-        assert is_moe_layer(moe_block), (
-            f"Thinker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
-        )
+        assert is_moe_layer(moe_block), f"Thinker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
 
     def test_is_moe_layer_talker(self):
         from auto_round.utils.model import is_moe_layer
@@ -338,9 +332,7 @@ class TestQwen3OmniMoeUtils:
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
         moe_block = model.talker.model.layers[0].mlp
-        assert is_moe_layer(moe_block), (
-            f"Talker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
-        )
+        assert is_moe_layer(moe_block), f"Talker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
 
     def test_get_expert_linear_names(self):
         from auto_round.utils.model import get_expert_linear_names
@@ -373,9 +365,9 @@ class TestQwen3OmniMoeUtils:
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         ignore_layers = get_predefined_ignore_layers(model)
-        assert "mlp.gate" in ignore_layers, (
-            f"Expected mlp.gate in ignore_layers for qwen3_omni_moe, got: {ignore_layers}"
-        )
+        assert (
+            "mlp.gate" in ignore_layers
+        ), f"Expected mlp.gate in ignore_layers for qwen3_omni_moe, got: {ignore_layers}"
 
 
 class TestQwen2_5OmniNotMoe:

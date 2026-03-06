@@ -508,46 +508,6 @@ def register_ignore_layers(
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
 
-<<<<<<< lvl/support_omni
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_vl_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_5_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
-# Qwen3-Omni MoE (covers both thinker and talker MOE blocks)
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher("qwen3_omni_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue with MoE gates
-    ],
-)
-
-=======
->>>>>>> main
 # longcat
 register_ignore_layers(
     matchers=[

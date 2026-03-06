@@ -494,6 +494,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     """
     from auto_round.utils.common import monkey_patch_model
+
     monkey_patch_model(model)
 
     need_autogptq_init = False

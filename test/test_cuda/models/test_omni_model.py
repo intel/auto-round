@@ -48,6 +48,7 @@ pytestmark = [
     ),
 ]
 
+
 # ---------------------------------------------------------------------------
 # Fixture: tiny Qwen3-Omni-MoE
 # Priority: use real config from qwen3_omni_name_or_path (skipped if absent);
@@ -87,9 +88,7 @@ class TestQwen2_5OmniQuantization:
             seqlen=32,
             ignore_layers="self_attn,lm_head",
         )
-        quantized_model, save_folder = autoround.quantize_and_save(
-            format="auto_round", output_dir=output_dir
-        )
+        quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
         assert quantized_model is not None, "Quantized model should not be None"
 
         # Copy model-specific files required for from_pretrained (e.g. spk_dict.pt for token2wav)
@@ -132,9 +131,7 @@ class TestQwen3OmniMoeQuantization:
             seqlen=32,
             ignore_layers="self_attn,lm_head,mlp.gate",
         )
-        quantized_model, save_folder = autoround.quantize_and_save(
-            format="auto_round", output_dir=output_dir
-        )
+        quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
         assert quantized_model is not None, "Quantized model should not be None"
 
         # Reload
@@ -164,9 +161,7 @@ class TestQwen3OmniMoeQuantization:
             seqlen=32,
             ignore_layers="self_attn,lm_head,mlp.gate",
         )
-        quantized_model, save_folder = autoround.quantize_and_save(
-            format="auto_round", output_dir=output_dir
-        )
+        quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
         assert quantized_model is not None, "MXFP4 quantized model should not be None"
 
         # Reload and inference

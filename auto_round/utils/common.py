@@ -240,10 +240,9 @@ def _patch_qwen25_omni_talker(model) -> None:
         model_inputs["position_ids"] = None
         return model_inputs
 
-    talker.prepare_inputs_for_generation = types.MethodType(
-        _fixed_prepare_inputs_for_generation, talker
-    )
+    talker.prepare_inputs_for_generation = types.MethodType(_fixed_prepare_inputs_for_generation, talker)
     from auto_round.logger import logger
+
     logger.info("Patched Qwen2.5-Omni talker prepare_inputs_for_generation for transformers compat.")
 
 
@@ -260,9 +259,11 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
 
     import types
 
-    _orig_prepare = talker.prepare_inputs_for_generation.__func__ \
-        if hasattr(talker.prepare_inputs_for_generation, "__func__") \
+    _orig_prepare = (
+        talker.prepare_inputs_for_generation.__func__
+        if hasattr(talker.prepare_inputs_for_generation, "__func__")
         else talker.prepare_inputs_for_generation
+    )
 
     def _fixed_prepare_inputs_for_generation(
         self,
@@ -292,6 +293,7 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
         # Reproduce the talker's codec logic for non-first iterations
         if not is_first_iteration and kwargs.get("use_cache", True):
             import torch
+
             input_ids_last = input_ids[:, -1:]
             generation_step = kwargs.get("generation_step")
             trailing_text_hidden = kwargs.get("trailing_text_hidden")
@@ -308,13 +310,9 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
                 output_hidden_states=True,
                 return_dict_in_generate=True,
             )
-            residual_codes = torch.cat(
-                (input_ids_last, predictor_result.sequences.to(input_ids_last.device)), dim=-1
-            )
+            residual_codes = torch.cat((input_ids_last, predictor_result.sequences.to(input_ids_last.device)), dim=-1)
 
-            mid_residual_hiddens = [
-                hid[0].to(last_id_hidden.device) for hid in predictor_result.hidden_states[1:]
-            ]
+            mid_residual_hiddens = [hid[0].to(last_id_hidden.device) for hid in predictor_result.hidden_states[1:]]
             last_residual_hidden = self.code_predictor.get_input_embeddings()[-1](
                 predictor_result.sequences[..., -1:]
             ).to(last_id_hidden.device)
@@ -325,9 +323,9 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
             inputs_embeds_new = codec_hiddens.sum(1, keepdim=True)
 
             if generation_step < trailing_text_hidden.shape[1]:
-                inputs_embeds_new = inputs_embeds_new + trailing_text_hidden[
-                    :, generation_step
-                ].unsqueeze(1).to(inputs_embeds_new.device)
+                inputs_embeds_new = inputs_embeds_new + trailing_text_hidden[:, generation_step].unsqueeze(1).to(
+                    inputs_embeds_new.device
+                )
             else:
                 inputs_embeds_new = inputs_embeds_new + tts_pad_embed.to(inputs_embeds_new.device)
             inputs["inputs_embeds"] = inputs_embeds_new
@@ -335,10 +333,9 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
 
         return inputs
 
-    talker.prepare_inputs_for_generation = types.MethodType(
-        _fixed_prepare_inputs_for_generation, talker
-    )
+    talker.prepare_inputs_for_generation = types.MethodType(_fixed_prepare_inputs_for_generation, talker)
     from auto_round.logger import logger
+
     logger.info("Patched Qwen3-Omni MoE talker prepare_inputs_for_generation for transformers compat.")
 
 
