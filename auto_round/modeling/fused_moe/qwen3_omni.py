@@ -12,7 +12,6 @@ into individual nn.Linear layers, enabling per-expert quantization with meta dev
 """
 
 import torch
-import torch.nn.functional as F
 
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
@@ -52,7 +51,7 @@ class LinearQwen3OmniThinkerSparseMoeBlock(ReplacementModuleBase):
     def experts_forward(self, hidden_states, top_k_index, top_k_weights):
         final_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
-            expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
             expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
 
@@ -116,7 +115,7 @@ class LinearQwen3OmniTalkerSparseMoeBlock(ReplacementModuleBase):
     def experts_forward(self, hidden_states, top_k_index, top_k_weights):
         final_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
-            expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
             expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
 
@@ -139,7 +138,7 @@ class LinearQwen3OmniTalkerSparseMoeBlock(ReplacementModuleBase):
         _, routing_weights, selected_experts = self.gate(hidden_states_reshaped)
         expert_output = self.experts_forward(hidden_states_reshaped, selected_experts, routing_weights)
 
-        shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states_reshaped)) * shared_expert_output
+        shared_expert_output = torch.sigmoid(self.shared_expert_gate(hidden_states_reshaped)) * shared_expert_output
 
         expert_output = expert_output + shared_expert_output
         return expert_output.reshape(batch_size, sequence_length, hidden_dim)
