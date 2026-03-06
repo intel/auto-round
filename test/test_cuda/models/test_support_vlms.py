@@ -9,8 +9,6 @@ from packaging import version
 from PIL import Image
 from transformers import AutoRoundConfig  # # must import for auto-round format
 
-from auto_round.testing_utils import require_gptqmodel, require_package_version_ut, require_vlm_env
-
 from ...envs import require_gptqmodel, require_package_version_ut, require_vlm_env
 from ...helpers import get_model_path, transformers_version
 
