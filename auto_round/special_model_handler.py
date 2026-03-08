@@ -17,10 +17,9 @@ from typing import Any, Callable
 
 import torch
 
-import auto_round.modelling as auto_round_modelling
 from auto_round.formats import OutputFormat
-from auto_round.modelling.replace_modules import apply_replacements, materialize_model_, release_original_module_
-from auto_round.utils import LazyImport, logger, unsupported_meta_device
+from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
+from auto_round.utils import is_moe_model_via_config, logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -37,6 +36,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "internvl_chat",
     "glm4v_moe",
     "qwen3_vl_moe",
+    "gemma3",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -179,6 +179,28 @@ class ArchitectureMatcher:
             raise ValueError(f"unsupported mode {self.mode}")
 
 
+class ModelTypeMatcher:
+    """match config.architectures"""
+
+    def __init__(self, model_type: str, mode="in"):
+        self.model_type = model_type
+        self.mode = mode
+
+    def __call__(self, model) -> bool:
+        model_type = getattr(model.config, "model_type", None)
+        if model_type is None:
+            return False
+
+        if self.mode == "full":
+            return model_type == self.model_type
+        elif self.mode == "in":
+            return self.model_type in model_type
+        elif self.mode == "regex":
+            return re.search(self.model_type, model_type) is not None
+        else:
+            raise ValueError(f"unsupported mode {self.mode}")
+
+
 @dataclass
 class PreDefinedIgnoreLayers:
     matchers: list[Callable[[Any], bool]]
@@ -194,16 +216,6 @@ def register_ignore_layers(
     rule = PreDefinedIgnoreLayers(matchers, ignore_layers)
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
-
-# Qwen3MOE
-register_ignore_layers(
-    matchers=[
-        ArchitectureMatcher(r"Qwen3.*Moe", mode="regex"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
 
 # longcat
 register_ignore_layers(
@@ -235,6 +247,15 @@ register_ignore_layers(
 )
 
 
+# glm5
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+    ],
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
+)
+
+
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
@@ -249,5 +270,8 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                     else:
                         layers.extend(res)
             break
+    config = getattr(model, "config", None)
+    if not layers and is_moe_model_via_config(config):
+        layers.append("mlp.gate")
 
     return list(dict.fromkeys(layers))

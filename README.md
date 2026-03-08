@@ -10,13 +10,15 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.9.6-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.10.2-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
 
-English | [User Guide](./docs/step_by_step.md) | [简体中文](README_CN.md)
+&nbsp;&nbsp;&nbsp;&nbsp;English | [简体中文](README_CN.md)
+
+[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
 
 ---
 <div align="left">
@@ -95,32 +97,44 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 ### Install from pypi
 
 ```bash
-# CPU/Intel GPU/CUDA
+# CPU(Xeon)/GPU(CUDA)
 pip install auto-round
 
-# HPU
+# HPU(Gaudi)
+# install inside the hpu docker container, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
 pip install auto-round-hpu
+
+# XPU(Intel GPU)
+pip install torch --index-url https://download.pytorch.org/whl/xpu
+pip install auto-round
 ```
 
 <details>
   <summary>Build from Source</summary>
 
   ```bash
-  # CPU/Intel GPU/CUDA
+  # CPU(Xeon)/GPU(CUDA)
   pip install .
 
-  # HPU
+  # HPU(Gaudi)
   python setup.py install hpu
+  
+  # XPU(Intel GPU)
+  pip install torch --index-url https://download.pytorch.org/whl/xpu
+  pip install .
   ```
 
 </details>
 
 ## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
+>If you encounter issues during quantization, try using pure RTN mode with iters=0, disable_opt_rtn=True. Additionally, using group_size=32 or mixed bits is recommended for better results.
+
 ### CLI Usage
 The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 > **ModelScope is supported for model downloads, simply set `AR_USE_MODELSCOPE=1`.**
+
 
 ```bash
 auto-round \
@@ -266,10 +280,6 @@ ar.quantize_and_save()
 </details>
 
 ### API Usage for VLMs
-
-If you encounter issues during quantization, try setting iters=0 (to enable RTN) and group_size=32 for better
-results.
-
 
 <details>
   <summary>Click to expand</summary>

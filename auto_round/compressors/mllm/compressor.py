@@ -41,7 +41,6 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_max_vram,
-    is_fp8_model,
     mllm_load_model,
     mv_module_from_gpu,
     to_device,
@@ -66,20 +65,47 @@ def _only_text_test(model, tokenizer, device, model_type):
         new_tokenizer.pad_token = new_tokenizer.eos_token
     inputs = new_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
 
+    # Estimate model size and check if it fits in GPU memory.
+    # When the model is too large, we skip the GPU transfer and test on CPU only.
+    use_gpu = True if device != "cpu" else False
+    if device != "cpu" and torch.cuda.is_available():
+        model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+        dev_idx_str = device.split(":")[-1] if ":" in device else "0"
+        if dev_idx_str.isdigit():
+            dev_idx = int(dev_idx_str)
+            if 0 <= dev_idx < torch.cuda.device_count():
+                free_bytes, _ = torch.cuda.mem_get_info(dev_idx)
+                if model_bytes > free_bytes * 0.9:
+                    use_gpu = False
+
+    if use_gpu:
+        try:
+            inputs = inputs.to(device)
+            model = model.to(device)
+            model(**inputs)
+            return True
+        except RuntimeError as e:
+            model = model.to("cpu")
+            inputs = inputs.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            try:
+                model(**inputs)
+            except Exception:
+                return False
+            return True
+        except Exception as e:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return False
+
+    # Model too large for GPU — run the test on CPU directly
     try:
-        inputs = inputs.to(device)
-        model = model.to(device)
+        inputs = inputs.to("cpu")
+        model = model.to("cpu")
         model(**inputs)
         return True
-    except RuntimeError as e:
-        model = model.to("cpu")
-        inputs = inputs.to("cpu")
-        try:
-            model(**inputs)
-        except:
-            return False
-        return True
-    except Exception as e:
+    except Exception:
         return False
 
 
@@ -184,12 +210,16 @@ class MLLMCompressor(BaseCompressor):
         self.model = model
         quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         if quant_nontext_module and iters > 0:
+            logger.warning(
+                "quant_nontext_module is experimental feature and not work well for all models,"
+                "please remove --quant_nontext_module and retry if you meet some errors."
+            )
             import importlib.util
 
             missing_libs = []
-            for require_lib in ["pillow", "torchvision"]:
+            for require_lib in ["PIL", "torchvision"]:
                 if importlib.util.find_spec(require_lib) is None:
-                    missing_libs.append(require_lib)
+                    missing_libs.append(require_lib.replace("PIL", "pillow"))
             if len(missing_libs) > 0:
                 logger.error(
                     f"{', '.join(missing_libs)} are required for quantizing non-text modules,"
@@ -214,21 +244,22 @@ class MLLMCompressor(BaseCompressor):
             # TODO: Remove after fixing https://github.com/huggingface/transformers/issues/43005
             model.config.model_type = model.config.to_dict()["model_type"]
 
+            # try default template if model_type not in preset templates
             if template is None and model.config.model_type not in TEMPLATES:
-                self.template = None
+                self.template = "default"
             else:
                 self.template = template if template is not None else model.config.model_type
-                if not isinstance(dataset, torch.utils.data.DataLoader):
-                    self.template = get_template(
-                        self.template,
-                        model=model,
-                        tokenizer=tokenizer,
-                        processor=processor,
-                        image_processor=image_processor,
-                        use_rtn=iters == 0,
-                        quiet=not self.quant_nontext_module,
-                    )
-                    dataset = self.template.default_dataset if dataset is None else dataset
+            if not isinstance(dataset, torch.utils.data.DataLoader):
+                self.template = get_template(
+                    self.template,
+                    model=model,
+                    tokenizer=tokenizer,
+                    processor=processor,
+                    image_processor=image_processor,
+                    use_rtn=iters == 0,
+                    quiet=not self.quant_nontext_module,
+                )
+                dataset = self.template.default_dataset if dataset is None else dataset
         else:
             self.template = None
 

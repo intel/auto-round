@@ -212,8 +212,8 @@ def save_quantized_as_autogptq(
 
     # --- Save metadata (tokenizer, processor, etc.) ---
     if output_dir:
-        if os.path.exists(output_dir):
-            logger.warning(f"{output_dir} already exists, may cause overwrite conflicts.")
+        # if os.path.exists(output_dir):
+        #     logger.info(f"{output_dir} already exists, may cause overwrite conflicts.")
         for comp in (tokenizer, processor, image_processor):
             if comp is not None and hasattr(comp, "save_pretrained"):
                 comp.save_pretrained(output_dir)

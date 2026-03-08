@@ -47,6 +47,7 @@ def save_model(
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
+
     if unsupported_meta_device(model):
         if hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(save_dir)
@@ -54,12 +55,7 @@ def save_model(
         if hasattr(model, "generation_config") and model.generation_config is not None:
             model.generation_config.save_pretrained(save_dir)
     else:
-        try:
-            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-        except ValueError as e:
-            if hasattr(model, "generation_config"):
-                setattr(model.generation_config, "do_sample", True)
-            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
@@ -68,6 +64,7 @@ def save_model(
         data["torch_dtype"] = str(dtype).split(".")[-1]
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
+
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:

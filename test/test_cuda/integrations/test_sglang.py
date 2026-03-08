@@ -1,3 +1,4 @@
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -59,8 +60,8 @@ class TestAutoRound:
 
     def test_mixed_ar_format_sglang(self, dataloader):
         layer_config = {
-            "self_attn": {"bits": 16, "act_bits": 16},
-            "lm_head": {"bits": 16, "act_bits": 16},
+            "self_attn": {"bits": 8},
+            "lm_head": {"bits": 16},
             "fc1": {"bits": 16, "act_bits": 16},
         }
 
@@ -78,7 +79,16 @@ class TestAutoRound:
             inplace=True,
             format="auto_round",
         )
-
+        config_file = Path(self.save_dir) / "config.json"
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        quant_config = config.get("quantization_config", {})
+        extra_config = quant_config.get("extra_config", {})
+        # check extra_config only saved attributes differing from Scheme values
+        assert "act_bits" not in extra_config[".*fc1.*"].keys()
+        assert "group_size" not in extra_config[".*fc1.*"].keys()
+        assert "bits" in extra_config[".*fc1.*"].keys() and extra_config[".*fc1.*"]["bits"] == 16
+        assert "bits" in extra_config[".*self_attn.*"].keys() and extra_config[".*self_attn.*"]["bits"] == 8
         generated_text = self._run_sglang_inference(self.save_dir)
         print(generated_text)
 

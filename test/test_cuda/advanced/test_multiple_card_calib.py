@@ -5,20 +5,10 @@ import sys
 
 import pytest
 
-from auto_round.testing_utils import multi_card
+from ...envs import multi_card
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
-
-
-def get_accuracy(data):
-    match = re.search(r"\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|", data)
-
-    if match:
-        accuracy = float(match.group(1))
-        return accuracy
-    else:
-        return 0.0
 
 
 class TestAutoRound:

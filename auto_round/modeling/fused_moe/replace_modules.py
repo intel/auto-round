@@ -20,28 +20,89 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from auto_round.utils import LazyImport, dump_mem_usage, dump_memory_usage_ctx, global_state, logger
+from auto_round.utils import (
+    LazyImport,
+    dump_mem_usage,
+    dump_memory_usage_ctx,
+    global_state,
+    is_transformers_version_greater_or_equal_5,
+    logger,
+)
 
 BUILTIN_MODULES = {
-    "Llama4TextMoe": LazyImport("auto_round.modelling.llama4"),
-    "GptOssMLP": LazyImport("auto_round.modelling.gpt_oss"),
-    "Qwen3VLMoeTextSparseMoeBlock": LazyImport("auto_round.modelling.qwen3_vl_moe"),
-    "DeepseekV2Attention": LazyImport("auto_round.modelling.deepseek_v2"),
+    # Llama4 has no use_experts_implementation, needs custom replacement to handle fused MoE blocks.
+    "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
+    # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
+    "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    # supports transformers >= 5.0.0
+    "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
 }
+
+
+# transformers >= 5.0.0 supports the general linear_loop experts interface.
+if not is_transformers_version_greater_or_equal_5():
+    # transformers == 5.2.0: IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+    BUILTIN_MODULES["qwen3_vl_moe"] = LazyImport("auto_round.modeling.fused_moe.qwen3_vl_moe")
+    # transformers == 5.2.0: IndexError: index 4 is out of bounds for dimension 0 with size 4
+    BUILTIN_MODULES["gpt_oss"] = LazyImport("auto_round.modeling.fused_moe.gpt_oss")
+
+
+@dump_mem_usage("Applying general replacements")
+def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
+    """Handle fused MOE modules using transformers' linear_loop backend.
+
+    Args:
+        model: The model to process
+
+    Returns:
+        List of module names that were processed
+    """
+    from auto_round.modeling.fused_moe.moe_experts_interface import (
+        is_linear_loop_available,
+        prepare_model_for_moe_quantization,
+    )
+
+    if not is_linear_loop_available():
+        logger.warning(
+            "transformers' linear_loop experts interface not available (requires transformers 5.0+). "
+            "MOE modules with @use_experts_implementation decorator will fall back to custom replacements "
+            "if registered."
+        )
+        return []
+
+    # Use transformers' experts interface
+    unfused = prepare_model_for_moe_quantization(model)
+    if unfused:
+        logger.info(f"Prepared {len(unfused)} MOE modules for quantization")
+    return unfused
 
 
 def _import_required_replacements(model: torch.nn.Module) -> None:
     """Scan model and trigger lazy imports for registered replacement modules."""
-    imported = set()
+    if not is_custom_model(model):
+        return
+    model_type = model.config.model_type
+    _ = BUILTIN_MODULES[model_type].__name__  # Trigger lazy import
+    logger.debug(f"Loaded replacement module for {model_type}")
 
-    for _, module in model.named_modules():
-        class_name = module.__class__.__name__
 
-        if class_name in BUILTIN_MODULES and class_name not in imported:
-            # Trigger import by accessing the LazyImport object
-            _ = BUILTIN_MODULES[class_name].__name__  # or any attribute
-            imported.add(class_name)
-            logger.debug(f"Loaded replacement module for {class_name}")
+def is_custom_model(model: torch.nn.Module) -> bool:
+    """Check if the model has a custom replacement registered via BUILTIN_MODULES.
+
+    Returns True if the model's model_type matches a key in BUILTIN_MODULES.
+    """
+    if hasattr(model, "config") and hasattr(model.config, "model_type"):
+        return model.config.model_type in BUILTIN_MODULES
+    return False
+
+
+def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
+    """Log the first experts module found in the model for debugging."""
+    for name, module in model.named_modules():
+        if name.endswith(".experts"):
+            logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
+            return
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -51,6 +112,7 @@ def materialize_model_(model: torch.nn.Module) -> None:
             module.materialize_weights()
 
     model.apply(_materialize_module)
+
     # check if any module on meta device remains
     found_meta = False
     for name, param in model.named_parameters():
@@ -72,16 +134,6 @@ def release_original_module_(model: torch.nn.Module) -> None:
             module.release_original_module()
 
     model.apply(_clear_source_module)
-
-
-def _has_meta_params_or_buffers(model: PreTrainedModel) -> bool:
-    for _, param in model.named_parameters():
-        if param.device.type == "meta":
-            return True
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "meta":
-            return True
-    return False
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
@@ -219,6 +271,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
 def apply_replacements(
     model: torch.nn.Module,
+    auto_detect_moe: bool = True,
 ) -> torch.nn.Module:
     """
     Function to apply module replacements to a model.
@@ -230,11 +283,37 @@ def apply_replacements(
 
     Args:
         model: The model to apply module replacement to (modified in-place).
+        auto_detect_moe: If True, automatically detect and handle fused MOE modules
+            (transformers 5.0+ pattern). Default is True.
 
     Returns:
         The model with modules replaced.
     """
     _import_required_replacements(model)
+
+    _log_first_moe_block(model, "before replacement")
+
+    # Custom replacements first
+    if is_custom_model(model):
+        _apply_custom_replacements(model)
+    if auto_detect_moe and is_transformers_version_greater_or_equal_5():
+        _handle_moe_modules(model)
+
+    _log_first_moe_block(model, "after replacement")
+
+    return model
+
+
+@dump_mem_usage("Applying custom replacements")
+def _apply_custom_replacements(model: torch.nn.Module) -> list:
+    """Scan model and replace registered modules with custom implementations.
+
+    Args:
+        model: The model to scan and apply replacements to (modified in-place).
+
+    Returns:
+        List of (name, replacement_class) tuples for replaced modules.
+    """
     replaced = []
 
     # Step 1: Collect all modules that need replacement
@@ -255,8 +334,18 @@ def apply_replacements(
         logger.info(f"Found {len(modules_to_replace)} modules to replace")
         for name, module, class_name in tqdm(modules_to_replace, desc="Replacing modules"):
             module = model.get_submodule(name)
+            # The module might have been replaced earlier in the loop (parent-first replacement).
+            # Skip if the class has changed or it no longer matches replacement criteria.
+            if module.__class__.__name__ != class_name:
+                logger.debug(
+                    f"Skipping replacement for {name}: class changed from {class_name} to {module.__class__.__name__}"
+                )
+                continue
             with dump_memory_usage_ctx(f"Replacing module {name}", log_level="debug"):
                 replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+                if not replacement_cls.is_to_be_replaced(module):
+                    logger.debug(f"Skipping replacement for {name}: no longer matches replacement criteria")
+                    continue
                 replacement = replacement_cls.from_original(
                     module,
                     model.config,
@@ -271,7 +360,7 @@ def apply_replacements(
         global_state.replaced_module_count = len(replaced)
         logger.info(f"Replaced {len(replaced)} modules")
 
-    return model
+    return replaced
 
 
 @dataclass

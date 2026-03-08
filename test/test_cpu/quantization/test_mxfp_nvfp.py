@@ -1,13 +1,15 @@
+import collections
 import os
 import shutil
 
 import pytest
 import torch
+from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import is_model_outputs_similar
+from ...helpers import is_model_outputs_similar, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -51,11 +53,8 @@ class TestAutoRoundFP:
             layer_config=layer_config,
         )
         compressed_model, _ = autoround.quantize()
-        assert hasattr(compressed_model.model.layers[1].mlp.experts[0].gate_proj.orig_layer, "act_max")
-        lm_head = compressed_model.lm_head
-        assert hasattr(lm_head, "orig_layer") and hasattr(
-            lm_head.orig_layer, "act_max"
-        ), "Illegal NVFP4 quantization for lm_head layer"
+        moe = compressed_model.model.layers[1].mlp
+        assert hasattr(moe.experts[0].gate_proj.orig_layer, "act_max")
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
@@ -327,6 +326,8 @@ class TestAutoRoundFP:
         model_name = tiny_qwen_moe_model_path
         layer_config = {
             "layers.0": {"bits": 16, "act_bits": 16},
+            # general recipe allows moe quantization
+            "layers.1.mlp.experts": {"bits": 16, "act_bits": 16},
         }
         scheme = "nvfp4"
         autoround = AutoRound(

@@ -1,1 +1,1 @@
-sglang>=0.5.4.post2
+sglang @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python

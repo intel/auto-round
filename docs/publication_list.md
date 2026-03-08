@@ -1,6 +1,9 @@
 Full Publications/Events
 ==========
 
+### 2026
+- AutoRound algorithms presented in vLLM Office Hours (in collaboration with LLM Compressor Team). [Recording](https://www.youtube.com/watch?v=lXub9qlQ1YM&list=PLbMP1JcGBmSHxp4-lubU5WYmJ9YgAQcf3&index=1) (Jan 2026)
+
 ## 2025
 
 - LLM Compressor related:

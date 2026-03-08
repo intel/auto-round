@@ -150,6 +150,14 @@ class WrapperLinear(torch.nn.Module):
             self.enable_transform = True
             self.transform_config = transform_config
 
+    @property
+    def weight(self):
+        return self.orig_layer.weight
+
+    @property
+    def bias(self):
+        return self.orig_layer.bias
+
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
 
@@ -530,6 +538,16 @@ class WrapperWALayer(torch.nn.Module):
 
             self.in_transform = build_transform(**self.orig_layer.transform_config)
             self.enable_transform = True
+
+    @property
+    def weight(self):
+        """Exposes the weight of the wrapped layer for external access."""
+        return self.orig_layer.weight
+
+    @property
+    def bias(self):
+        """Exposes the bias of the wrapped layer for external access."""
+        return self.orig_layer.bias
 
     def forward(self, x):
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None

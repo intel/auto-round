@@ -15,16 +15,14 @@
 import torch
 import transformers
 from packaging import version
-from torch import nn
-from transformers.activations import ACT2FN
 
-from auto_round.modelling.replace_modules import ReplacementModuleBase
-from auto_round.utils import clear_memory, logger, unsupported_meta_device
+from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+from auto_round.utils import clear_memory, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-from auto_round.modelling.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
@@ -94,19 +92,23 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
 
         # convert router indices into OHE list
         # reshape to be (num_experts, top_k, batch_size * sequence_length)
-        expert_mask = torch.nn.functional.one_hot(router_indices, num_classes=self.num_experts).permute(2, 1, 0)
-
-        for expert_idx, expert_layer in enumerate(self.experts):
-            idx, token_idx = torch.where(expert_mask[expert_idx].squeeze(0))
-
-            if self.calibrate_all_experts:
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(router_indices, num_classes=self.num_experts).permute(2, 1, 0)
+        if self.calibrate_all_experts:
+            for expert_idx, expert_layer in enumerate(self.experts):
+                idx, token_idx = torch.where(expert_mask[expert_idx])
                 expert_out = expert_layer(hidden_states)[token_idx]
-            else:
-                expert_out = expert_layer(hidden_states[token_idx])
-
-            if len(token_idx) > 0:
-                # if there are tokens meant for this expert, further scale the expert
-                # output by the score
+                if len(token_idx) > 0:
+                    weighted_output = expert_out * routing_weights[token_idx, idx, None]
+                    next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
+        else:
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+            for expert_idx in expert_hit:
+                expert_idx = expert_idx[0]
+                if expert_idx == self.num_experts:
+                    continue
+                idx, token_idx = torch.where(expert_mask[expert_idx])
+                expert_out = self.experts[expert_idx](hidden_states[token_idx])
                 weighted_output = expert_out * routing_weights[token_idx, idx, None]
                 next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
@@ -156,9 +158,9 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
                 gate_proj = gate_up[:, :intermediate_size]
                 up_proj = gate_up[:, intermediate_size:]
 
-                _update_parameter(self[i].gate_proj, "weight", gate_proj.t())
-                _update_parameter(self[i].up_proj, "weight", up_proj.t())
-                _update_parameter(self[i].down_proj, "weight", down.t())
+                _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
+                _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
+                _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
             del gate_up, down, gate_proj, up_proj
             original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
