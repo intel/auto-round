@@ -145,6 +145,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
+    "transform_config",
 )
 
 
@@ -195,6 +196,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        transform_config: dict = {},
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -216,6 +218,8 @@ class BaseCompressor(object):
             minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
             low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
+            transform_config (dict, optional): transform matrix config like hadamard,
+                                               like {"transform_class": "hadamard"}.
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.
@@ -526,6 +530,8 @@ class BaseCompressor(object):
                 wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
+
+        self.transform_config = transform_config
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1223,6 +1229,7 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
+                    transform_config=self.transform_config,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -1238,6 +1245,7 @@ class BaseCompressor(object):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.enable_torch_compile,
+                        transform_config=self.transform_config,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -2898,6 +2906,7 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            transform_config=self.transform_config,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
