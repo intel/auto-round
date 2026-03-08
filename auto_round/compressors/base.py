@@ -41,6 +41,7 @@ from auto_round.compressors.utils import (
     check_need_act_calibration,
     check_skippable_keywords,
     collect_best_params,
+    get_fp_layer_names,
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
@@ -1406,8 +1407,10 @@ class BaseCompressor(object):
                             shard_writer(self, name=n)
                         m.to("meta")
 
-        # Convert remaining fp8
-        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        # Convert remaining fp8, but keep ignored layers in their original format
+        convert_module_to_hp_if_necessary(
+            self.model, self.amp_dtype, self.device, ignore_layers=self._resolved_ignore_layers
+        )
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1479,7 +1482,9 @@ class BaseCompressor(object):
                 materialize_model_(block)
                 block.to("cpu")
 
-                block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+                block = convert_module_to_hp_if_necessary(
+                    block, dtype=self.amp_dtype, device=self.device, ignore_layers=self._resolved_ignore_layers
+                )
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
                 self._register_act_max_hook(block)
                 if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
@@ -1602,6 +1607,7 @@ class BaseCompressor(object):
             is_mllm=self.mllm,
             fill_default_value=fill_default_value,
         )
+        self._resolved_ignore_layers = get_fp_layer_names(self.model, self.ignore_layers)
 
     def _adjust_immediate_packing_and_saving(self):
         formats = getattr(self, "formats", [])
@@ -1788,7 +1794,9 @@ class BaseCompressor(object):
         pbar.close()
         self._quantize_layers(layer_names, all_inputs)
 
-        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
+        convert_module_to_hp_if_necessary(
+            self.model, self.amp_dtype, self.device, to_cpu=True, ignore_layers=self._resolved_ignore_layers
+        )
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -2833,7 +2841,7 @@ class BaseCompressor(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         materialize_model_(block)
-        convert_module_to_hp_if_necessary(block, self.amp_dtype, device)
+        convert_module_to_hp_if_necessary(block, self.amp_dtype, device, ignore_layers=self._resolved_ignore_layers)
 
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
