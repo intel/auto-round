@@ -28,10 +28,10 @@ import torch.nn as nn
 from auto_round.special_model_handler import _get_glm_image_multimodal_block
 from auto_round.utils.model import _find_pipeline_model_subfolder_local
 
-
 # ---------------------------------------------------------------------------
 # Helpers – fake model hierarchy
 # ---------------------------------------------------------------------------
+
 
 def _make_glm_image_model(n_vision_blocks: int = 4, n_lm_layers: int = 28):
     """Return a minimal fake GlmImageForConditionalGeneration-like model.
@@ -76,6 +76,7 @@ def _make_glm_image_model(n_vision_blocks: int = 4, n_lm_layers: int = 28):
 # Tests for _get_glm_image_multimodal_block
 # ---------------------------------------------------------------------------
 
+
 class TestGetGlmImageMultimodalBlock:
     """Unit tests for the GLM-Image block-name discovery helper."""
 
@@ -105,9 +106,7 @@ class TestGetGlmImageMultimodalBlock:
         block_names = _get_glm_image_multimodal_block(model, quant_vision=False)
 
         flat = [name for group in block_names for name in group]
-        assert not any("visual" in name for name in flat), (
-            "visual blocks must be excluded when quant_vision=False"
-        )
+        assert not any("visual" in name for name in flat), "visual blocks must be excluded when quant_vision=False"
 
     def test_missing_language_model_returns_empty(self):
         """If the model has no language_model attribute, result is empty."""
@@ -127,9 +126,7 @@ class TestGetGlmImageMultimodalBlock:
             def __init__(self):
                 super().__init__()
                 self.model = types.SimpleNamespace(
-                    language_model=types.SimpleNamespace(
-                        layers=nn.ModuleList([nn.Linear(8, 8) for _ in range(6)])
-                    )
+                    language_model=types.SimpleNamespace(layers=nn.ModuleList([nn.Linear(8, 8) for _ in range(6)]))
                     # no .visual attribute
                 )
 
@@ -150,6 +147,7 @@ class TestGetGlmImageMultimodalBlock:
 # ---------------------------------------------------------------------------
 # Helpers – temp filesystem for pipeline loading tests
 # ---------------------------------------------------------------------------
+
 
 def _make_pipeline_dir(tmp_path, components, has_processor=True):
     """Write a minimal diffusers-style pipeline directory.
@@ -176,6 +174,7 @@ def _make_pipeline_dir(tmp_path, components, has_processor=True):
 # ---------------------------------------------------------------------------
 # Tests for _find_pipeline_model_subfolder_local
 # ---------------------------------------------------------------------------
+
 
 class TestFindPipelineModelSubfolderLocal:
     """Unit tests for the local pipeline subfolder discovery helper."""
@@ -273,6 +272,7 @@ class TestFindPipelineModelSubfolderLocal:
 # Tests for GlmImageProcessor construction path
 # ---------------------------------------------------------------------------
 
+
 class TestGlmImageProcessorConstruction:
     """Unit-test the GlmImageProcessor assembly logic in mllm_load_model.
 
@@ -298,7 +298,9 @@ class TestGlmImageProcessorConstruction:
         mock_cls = MagicMock(return_value=fake_processor)
 
         # Patch away the real GlmImageProcessor so we only test the branch logic
-        with patch.dict("sys.modules", {"transformers.models.glm_image.processing_glm_image": types.ModuleType("_fake")}):
+        with patch.dict(
+            "sys.modules", {"transformers.models.glm_image.processing_glm_image": types.ModuleType("_fake")}
+        ):
             import sys
 
             sys.modules["transformers.models.glm_image.processing_glm_image"].GlmImageProcessor = mock_cls
@@ -341,6 +343,7 @@ class TestGlmImageProcessorConstruction:
 # Helpers – minimal PIL Image factory (no file I/O)
 # ---------------------------------------------------------------------------
 
+
 def _make_rgb_image(width: int = 64, height: int = 64):
     """Return a tiny solid-colour PIL Image in RGB mode."""
     from PIL import Image
@@ -351,6 +354,7 @@ def _make_rgb_image(width: int = 64, height: int = 64):
 # ---------------------------------------------------------------------------
 # Tests for image-to-image inference call logic (run_glm_image.py)
 # ---------------------------------------------------------------------------
+
 
 class TestGlmImageI2ICallLogic:
     """Unit tests for the image-to-image pipeline invocation logic.
@@ -445,6 +449,7 @@ class TestGlmImageI2ICallLogic:
 # Tests for load_image helper (run_glm_image.py)
 # ---------------------------------------------------------------------------
 
+
 class TestLoadImage:
     """Unit tests for the load_image() helper in run_glm_image.
 
@@ -459,9 +464,7 @@ class TestLoadImage:
         import sys
 
         # Ensure the workspace root is on sys.path so run_glm_image can be imported
-        root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        )
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         if root not in sys.path:
             sys.path.insert(0, root)
         mod = importlib.import_module("run_glm_image")
@@ -494,8 +497,9 @@ class TestLoadImage:
 
     def test_url_branch_calls_requests_get(self):
         """http/https paths must use requests.get, not PIL.Image.open directly."""
-        from unittest.mock import MagicMock, patch
         from io import BytesIO
+        from unittest.mock import MagicMock, patch
+
         from PIL import Image
 
         fake_img = Image.new("RGB", (8, 8), color=(0, 128, 255))
@@ -516,6 +520,7 @@ class TestLoadImage:
     def test_local_path_does_not_call_requests(self, tmp_path):
         """Local file paths must not trigger requests.get."""
         from unittest.mock import patch
+
         from PIL import Image
 
         img = Image.new("RGB", (4, 4))

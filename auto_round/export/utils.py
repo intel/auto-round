@@ -123,7 +123,9 @@ def resolve_pipeline_export_layout(model: nn.Module, output_dir: str) -> tuple[s
     processor_component = None
     if source_dir is not None:
         try:
-            model_index_path = os.path.join(source_dir, "model_index.json") if is_local_pipeline_model_dir(source_dir) else None
+            model_index_path = (
+                os.path.join(source_dir, "model_index.json") if is_local_pipeline_model_dir(source_dir) else None
+            )
             if model_index_path:
                 with open(model_index_path, "r", encoding="utf-8") as f:
                     model_index = json.load(f)
