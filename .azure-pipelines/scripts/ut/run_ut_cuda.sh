@@ -117,8 +117,10 @@ function run_unit_test() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report.html ${LOG_DIR}/
-    mv coverage.xml ${LOG_DIR}/
+    if [ -f "report.html" ] && [ -f "coverage.xml" ]; then
+        mv report.html ${LOG_DIR}/
+        mv coverage.xml ${LOG_DIR}/
+    fi
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
@@ -154,8 +156,10 @@ function run_unit_test_vlm() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vlms.html --self-contained-html --cov-report xml:coverage_vlms.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report_vlms.html ${LOG_DIR}/
-    mv coverage_vlms.xml ${LOG_DIR}/
+    if [ -f "report_vlms.html" ] && [ -f "coverage_vlms.xml" ]; then
+        mv report_vlms.html ${LOG_DIR}/
+        mv coverage_vlms.xml ${LOG_DIR}/
+    fi
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_vlm_test*.log" "CUDA VLM Tests"; then
@@ -184,8 +188,10 @@ function run_unit_test_llmc() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report_llmc.html ${LOG_DIR}/
-    mv coverage_llmc.xml ${LOG_DIR}/
+    if [ -f "report_llmc.html" ] && [ -f "coverage_llmc.xml" ]; then
+        mv report_llmc.html ${LOG_DIR}/
+        mv coverage_llmc.xml ${LOG_DIR}/
+    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
         echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
@@ -214,8 +220,10 @@ function run_unit_test_sglang() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report_sglang.html ${LOG_DIR}/
-    mv coverage_sglang.xml ${LOG_DIR}/
+    if [ -f "report_sglang.html" ] && [ -f "coverage_sglang.xml" ]; then
+        mv report_sglang.html ${LOG_DIR}/
+        mv coverage_sglang.xml ${LOG_DIR}/
+    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
         echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
