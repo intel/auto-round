@@ -27,6 +27,7 @@ VISUAL_KEYS = [
     "audio",
     "talker",
     "token2wav",
+    "vqmodel",
     "multi_modal_projector",
     "vision_tower",
     "multimodal_projector",

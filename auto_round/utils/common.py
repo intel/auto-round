@@ -193,6 +193,7 @@ MM_KEYS = [
     "audio",
     "talker",
     "token2wav",
+    "vqmodel",
     "vision_model",
     "audio_tower",
     "vision_encoder",

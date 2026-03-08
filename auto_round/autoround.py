@@ -161,7 +161,13 @@ class AutoRound:
 
         model_cls = []
 
-        if (extra_config and not extra_config.mllm_config.is_default()) or is_mllm_model(model, platform=platform):
+        has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None
+
+        if (
+            (extra_config and not extra_config.mllm_config.is_default())
+            or has_multimodal_assets
+            or is_mllm_model(model, platform=platform)
+        ):
             logger.info("using MLLM mode for multimodal model.")
             model_cls.append(MLLMCompressor)
             if extra_config:

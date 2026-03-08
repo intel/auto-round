@@ -35,6 +35,7 @@ from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
     release_layer_safely,
+    resolve_pipeline_export_layout,
     save_model,
 )
 from auto_round.formats import AutoRoundExportFormat
@@ -334,19 +335,24 @@ def save_quantized_as_autoround(
         return model
     # if os.path.exists(output_dir):
     #     logger.info(f"{output_dir} already exists, this may cause model conflict")
+    model_output_dir = output_dir
+    processor_output_dir = output_dir
+    if output_dir:
+        model_output_dir, processor_output_dir, _ = resolve_pipeline_export_layout(model, output_dir)
+
     if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-        tokenizer.save_pretrained(output_dir)
+        tokenizer.save_pretrained(processor_output_dir)
 
     if processor is not None:
-        processor.save_pretrained(output_dir)
+        processor.save_pretrained(processor_output_dir)
     if image_processor is not None:
-        image_processor.save_pretrained(output_dir)
+        image_processor.save_pretrained(processor_output_dir)
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
     elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
         dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:
         dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
