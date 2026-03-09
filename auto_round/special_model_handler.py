@@ -246,12 +246,12 @@ register_ignore_layers(
 )
 
 
-# minimax_m2
+# glm5
 register_ignore_layers(
     matchers=[
-        ModelTypeMatcher(r"minimax_m2", mode="full"),
+        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
     ],
-    ignore_layers=["block_sparse_moe.gate"],
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
 )
 
 
@@ -271,5 +271,8 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
             break
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
-        layers.append("mlp.gate")
+        for name, _ in model.named_modules():
+            if name.endswith(".gate"):
+                layers.append(name)
+
     return list(dict.fromkeys(layers))
