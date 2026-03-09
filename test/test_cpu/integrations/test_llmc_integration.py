@@ -3,10 +3,11 @@ import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
 from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
-from tests.testing_utils import requires_gpu
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round.calib_dataset import get_dataset
+from ...envs import multi_card
+
 
 recipe_str = """
 quant_stage:
@@ -75,7 +76,6 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
 )
 
 
-@requires_gpu(1)
 @pytest.mark.parametrize(
     "recipe",
     [
@@ -130,7 +130,7 @@ def test_oneshot_application(recipe, tmp_path):
     assert not hasattr(not_targeted, "quantization_scheme")
 
 
-@requires_gpu(2)
+@multi_card
 def test_oneshot_with_device_ids(tmp_path):
     output = tmp_path / "oneshot_output"
     model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -188,7 +188,6 @@ def test_oneshot_with_device_ids(tmp_path):
     assert not hasattr(not_targeted, "quantization_scheme")
 
 
-@requires_gpu(1)
 @pytest.mark.parametrize(
     "recipe",
     [w8a8_dynamic_recipe_modifier, w8a8_static_recipe_modifier],
