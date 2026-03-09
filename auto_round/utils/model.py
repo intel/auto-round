@@ -1143,10 +1143,9 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 
 
 def is_moe_model_via_config(config) -> bool:
-    if hasattr(config, "to_dict"):
-        for key in config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+    config_str = str(config).lower()
+    if "moe" in config_str or "expert" in config_str:
+        return True
     return False
 
 
