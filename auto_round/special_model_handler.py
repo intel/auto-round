@@ -272,6 +272,9 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
             break
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
-        layers.append("mlp.gate")
+        for name, _ in model.named_modules():
+            if name.endswith(".gate"):
+                print(name)
+                layers.append(name)
 
     return list(dict.fromkeys(layers))
