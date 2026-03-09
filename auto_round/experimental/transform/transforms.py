@@ -51,9 +51,7 @@ class HadamardTransform(nn.Module):
         return hadamard_transform(x.view(-1, self.dim), scale=self.scale).view(x_shape)
 
     def get_transform_matrix(self, device: torch.device = None, dtype: torch.dtype = None):
-        return hadamard_transform(
-            torch.eye(self.dim, device=device, dtype=dtype), scale=1 / math.sqrt(self.dim)
-        )
+        return hadamard_transform(torch.eye(self.dim, device=device, dtype=dtype), scale=1 / math.sqrt(self.dim))
 
 
 TRANSFORMS = {
