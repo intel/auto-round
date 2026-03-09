@@ -23,7 +23,7 @@ from tqdm import tqdm
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 from auto_round.compressors.utils import block_forward
-from auto_round.formats import OutputFormat, get_formats
+from auto_round.formats import OutputFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
