@@ -1,6 +1,10 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
 
 import transformers
+
 from ...wrapper import WrapperLinear
+
 
 def patch_wrapperlinear_qdq_weight_to_apply_transform(transform_attr: str = "forward_hadamard"):
     """
