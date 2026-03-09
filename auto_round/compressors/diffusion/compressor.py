@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from collections import defaultdict
 from copy import deepcopy
 from typing import Union
 
-import os
 import torch
 from tqdm import tqdm
 
@@ -414,16 +414,16 @@ class DiffusionCompressor(BaseCompressor):
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
             sub_module_path = (
-                os.path.join(output_dir, name)
-                if os.path.basename(os.path.normpath(output_dir)) != name
-                else output_dir
+                os.path.join(output_dir, name) if os.path.basename(os.path.normpath(output_dir)) != name else output_dir
             )
             if (
                 hasattr(val, "config")
                 and hasattr(val.config, "_name_or_path")
                 and val.config._name_or_path == self.model.config._name_or_path
             ):
-                compressed_model = super().save_quantized(output_dir=sub_module_path, format=format, inplace=inplace, **kwargs)
+                compressed_model = super().save_quantized(
+                    output_dir=sub_module_path, format=format, inplace=inplace, **kwargs
+                )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
         self.pipe.config.save_pretrained(output_dir)

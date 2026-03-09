@@ -529,6 +529,7 @@ def diffusion_load_model(
     ):
         import os
         from functools import partial
+
         def save_pretrained(config, file_name, save_directory):
             if os.path.isfile(save_directory):
                 raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
@@ -543,6 +544,7 @@ def diffusion_load_model(
 
             with open(output_config_file, "w", encoding="utf-8") as writer:
                 writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+
         setattr(model.config, "save_pretrained", partial(save_pretrained, model.config, "config.json"))
         setattr(pipe.config, "save_pretrained", partial(save_pretrained, pipe.config, "model_index.json"))
     return pipe, model.to(device)
