@@ -1,5 +1,5 @@
 #!/bin/bash
-set -xe
+set -e
 
 PATTERN='[-a-zA-Z0-9_]*='
 
@@ -81,8 +81,7 @@ function print_test_results_table() {
 }
 
 function print_summary() {
-    echo "##[group]Test Summary"
-    for line in $(cat "${SUMMARY_LOG}"); do
+    while IFS= read -r line; do
         if [[ "$line" == *"FAILED"* ]]; then
             echo "::error::$line"
         elif [[ "$line" == *"PASSED"* ]]; then
@@ -92,8 +91,7 @@ function print_summary() {
         else
             echo "$line"
         fi
-    done
-    echo "##[endgroup]"
+    done < "${SUMMARY_LOG}"
 }
 
 function run_unit_test() {
