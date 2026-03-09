@@ -1,1 +1,1 @@
-compressed_tensors<0.14 # Temporary restrictions
+compressed_tensors
