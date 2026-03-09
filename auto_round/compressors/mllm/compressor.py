@@ -135,7 +135,7 @@ class MLLMCompressor(BaseCompressor):
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
+        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -186,7 +186,7 @@ class MLLMCompressor(BaseCompressor):
         nsamples: int = 128,
         batch_size: int = 8,
         gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = True,
+        low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
