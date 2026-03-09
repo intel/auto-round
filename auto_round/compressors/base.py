@@ -145,6 +145,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
+    "transform_config",
 )
 
 
@@ -195,6 +196,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        transform_config: dict = {},
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -526,6 +528,8 @@ class BaseCompressor(object):
                 wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
+
+        self.transform_config = transform_config
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
