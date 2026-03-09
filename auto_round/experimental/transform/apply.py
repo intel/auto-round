@@ -1,16 +1,19 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
 
 import torch
 import tqdm
+
+from ..qmodules.mx import MXQuantLinearBase
 from .transform_config import TransformConfig
 from .transforms import build_transform
-from ..qmodules.mx import MXQuantLinearBase
 
 __all__ = ["apply_transform"]
 
 
 def apply_transform(model: torch.nn.Module, config: TransformConfig, use_tqdm=True, desc=None):
     """
-    Apply a transform config to a model. Add weight transforms and 
+    Apply a transform config to a model. Add weight transforms and
     activation transforms are attached as submodules and trigger via pytorch hooks
 
     :param model: model to apply config to
@@ -19,8 +22,9 @@ def apply_transform(model: torch.nn.Module, config: TransformConfig, use_tqdm=Tr
 
     modules_config = [
         (name, module, config)
-        for name, module in model.named_modules() \
-        if isinstance(module, torch.nn.Linear) or isinstance(module, MXQuantLinearBase)]
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear) or isinstance(module, MXQuantLinearBase)
+    ]
 
     desc = f"Applying {config.transform_type} transforms" if desc is None else desc
     for name, module, config in tqdm.tqdm(modules_config, desc=desc, disable=(not use_tqdm)):
@@ -34,7 +38,11 @@ def apply_transform(model: torch.nn.Module, config: TransformConfig, use_tqdm=Tr
     return model
 
 
-def _apply_to_module(model: torch.nn.Module, module: torch.nn.Module, config: TransformConfig,):
+def _apply_to_module(
+    model: torch.nn.Module,
+    module: torch.nn.Module,
+    config: TransformConfig,
+):
     """
     Create transforms and apply them to the module
 
@@ -49,14 +57,14 @@ def _apply_to_module(model: torch.nn.Module, module: torch.nn.Module, config: Tr
 
     if config.location == "input":
         from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
+
         def input_hook(_, args):
             input = args[0]
             # transform(input)
             orig_shape = input.shape
             x_flat = input.contiguous().flatten(end_dim=-2)
             qdq_input, _ = mxfp4_forward_kernel_wrapper(
-                x_flat,
-                transform.get_transform_matrix(input.device, input.dtype)
+                x_flat, transform.get_transform_matrix(input.device, input.dtype)
             )
             return qdq_input.reshape(orig_shape)
 
@@ -77,4 +85,3 @@ def _apply_to_module(model: torch.nn.Module, module: torch.nn.Module, config: Tr
     else:
         # TODO: apply transform to output/q/k
         raise NotImplementedError()
-

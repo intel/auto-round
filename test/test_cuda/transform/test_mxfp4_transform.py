@@ -35,8 +35,10 @@ class TestAutoRound:
 
         from auto_round.experimental.transform.apply import apply_transform
         from auto_round.experimental.transform.transform_config import TransformConfig
+
         transform_config = TransformConfig()
         from auto_round.utils import llm_load_model
+
         model, tokenizer = llm_load_model(
             model_name,
             platform="hf",
@@ -45,8 +47,8 @@ class TestAutoRound:
             trust_remote_code=True,
         )
 
-        from auto_round.experimental.transform.apply import apply_transform
         from auto_round.experimental.transform.transform_config import TransformConfig
+
         transform_config = TransformConfig()
         model = apply_transform(
             model,
@@ -67,6 +69,5 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         from ...helpers import generate_prompt
+
         generate_prompt(model, tokenizer)
-
-
