@@ -16,4 +16,6 @@ class TransformConfig(BaseModel):
 
     transform_type: str = Field(default="hadamard")
 
-    location: str = Field(default="weight")
+    location: str = Field(default="weight", exclude=True)
+
+    requires_grad: bool = Field(default=False, exclude=True)

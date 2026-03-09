@@ -196,7 +196,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        transform_config: dict = {},
+        transform_config: dict | None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -529,7 +529,7 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        self.transform_config = transform_config
+        self.transform_config = {} if transform_config is None else dict(transform_config)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:

@@ -79,8 +79,15 @@ def _apply_to_module(
         assert hasattr(module, "weight")
         with torch.no_grad():
             getattr(module, "weight").copy_(transform(module.weight.to("cuda")).to(module.weight.device))
-        # transform is no longer needed (unfusing is not supported)
-        delattr(module, transform_name)
+
+        if config.requires_grad:
+            # for training, the weight changes with every forward pass
+            # so we can leverage parametrization to propagate the gradient
+            torch.nn.utils.parametrize.register_parametrization(module, "weight", transform)
+
+        else:
+            # transform is no longer needed (unfusing is not supported)
+            delattr(module, transform_name)
 
     else:
         # TODO: apply transform to output/q/k

@@ -145,10 +145,14 @@ class MXQuantLinearBase(QModuleBase):
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        qdq_input = self.qdq_input(input)
+        if not self.pre_dequantized_input:
+            input = self.qdq_input(input)
+        else:
+            # pre dequant weight
+            self.pre_dequantize()
         qdq_weight = self.dequant_weight_online()
-        qdq_weight = qdq_weight.to(qdq_input.dtype)
-        out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
+        qdq_weight = qdq_weight.to(input.dtype)
+        out = torch.nn.functional.linear(input, qdq_weight, self.bias)
         return out
 
     @classmethod
