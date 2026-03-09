@@ -429,7 +429,10 @@ class DiffusionCompressor(BaseCompressor):
                 and val.config._name_or_path == self.model.config._name_or_path
             ):
                 compressed_model = super().save_quantized(
-                    output_dir=sub_module_path if not self.is_immediate_saving else output_dir, format=format, inplace=inplace, **kwargs
+                    output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
+                    format=format,
+                    inplace=inplace,
+                    **kwargs,
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)

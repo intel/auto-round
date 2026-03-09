@@ -499,9 +499,10 @@ def diffusion_load_model(
     model_dtype: str = None,
     **kwargs,
 ):
+    from functools import partial
+
     from auto_round.utils.common import LazyImport
     from auto_round.utils.device import get_device_and_parallelism
-    from functools import partial
 
     _check_accelerate_version()
 
