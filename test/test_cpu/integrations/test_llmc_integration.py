@@ -6,8 +6,8 @@ from llmcompressor.modifiers.autoround import AutoRoundModifier
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round.calib_dataset import get_dataset
-from ...envs import multi_card
 
+from ...envs import multi_card
 
 recipe_str = """
 quant_stage:
