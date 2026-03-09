@@ -19,7 +19,7 @@ import torch
 
 from auto_round.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
-from auto_round.utils import logger
+from auto_round.utils import is_moe_model_via_config, logger
 
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
@@ -217,34 +217,6 @@ def register_ignore_layers(
     _PRE_DEFINED_IGNORE_LAYERS.append(rule)
 
 
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_vl_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_5_moe", mode="full"),
-    ],
-    ignore_layers=[
-        "mlp.gate",  # vllm inference issue
-    ],
-)
-
-
 # longcat
 register_ignore_layers(
     matchers=[
@@ -284,6 +256,15 @@ register_ignore_layers(
 )
 
 
+# minimax_m2
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"minimax_m2", mode="full"),
+    ],
+    ignore_layers=["block_sparse_moe.gate"],
+)
+
+
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
@@ -298,10 +279,8 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                     else:
                         layers.extend(res)
             break
-    if not layers:
-        if hasattr(model, "config") and hasattr(model.config, "model_type"):
-            model_type = model.config.model_type
-            if "moe" in model_type:  # Append gate which usually cause vllm issue
-                layers.append("mlp.gate")
+    config = getattr(model, "config", None)
+    if not layers and is_moe_model_via_config(config):
+        layers.append("mlp.gate")
 
     return list(dict.fromkeys(layers))
