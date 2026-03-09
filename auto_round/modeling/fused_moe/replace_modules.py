@@ -37,6 +37,8 @@ BUILTIN_MODULES = {
     # supports transformers >= 5.0.0
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    # Qwen3-Omni MoE: thinker (no shared expert) + talker (with shared expert)
+    "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
 }
 
 

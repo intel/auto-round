@@ -19,6 +19,7 @@ extend-exclude = [
 [tool.typos.default.extend-words]
 ue = "ue"
 endianess = "endianess"
+thw = "thw"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
