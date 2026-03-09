@@ -16,12 +16,14 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Union
 
+import os
 import torch
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 from auto_round.compressors.utils import block_forward
+from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -373,6 +375,29 @@ class DiffusionCompressor(BaseCompressor):
 
         # torch.cuda.empty_cache()
 
+    def _get_save_folder_name(self, format: OutputFormat) -> str:
+        """Generates the save folder name based on the provided format string.
+
+        If there are multiple formats to handle, the function creates a subfolder
+        named after the format string with special characters replaced. If there's
+        only one format, it returns the original output directory directly.
+
+        Args:
+            format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+
+        Returns:
+            str: The path to the folder where results should be saved.
+        """
+        # Replace special characters to make the folder name filesystem-safe
+        sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+
+        # Use a subfolder only if there are multiple formats
+        if len(self.formats) > 1:
+            return os.path.join(self.orig_output_dir, sanitized_format, "transformer")
+
+        # save quantized model to self.orig_output_dir/transformer, other components are under self.orig_output_dir
+        return os.path.join(self.orig_output_dir, "transformer")
+
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
 
@@ -385,5 +410,21 @@ class DiffusionCompressor(BaseCompressor):
         Returns:
             object: The compressed model object.
         """
-        compressed_model = super().save_quantized(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+        compressed_model = None
+        for name in self.pipe.components.keys():
+            val = getattr(self.pipe, name)
+            sub_module_path = (
+                os.path.join(output_dir, name)
+                if os.path.basename(os.path.normpath(output_dir)) != name
+                else output_dir
+            )
+            if (
+                hasattr(val, "config")
+                and hasattr(val.config, "_name_or_path")
+                and val.config._name_or_path == self.model.config._name_or_path
+            ):
+                compressed_model = super().save_quantized(output_dir=sub_module_path, format=format, inplace=inplace, **kwargs)
+            elif val is not None and hasattr(val, "save_pretrained"):
+                val.save_pretrained(sub_module_path)
+        self.pipe.config.save_pretrained(output_dir)
         return compressed_model

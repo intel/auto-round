@@ -1,3 +1,4 @@
+import os
 import shutil
 
 import pytest
@@ -30,10 +31,13 @@ def test_flux(setup_flux):
     autoround = AutoRound(
         pipe,
         tokenizer=None,
-        scheme="MXFP4",
+        scheme="W4A16",
         iters=0,
         num_inference_steps=2,
+        disable_opt_rtn=True,
     )
     # skip model saving since it takes much time
-    autoround.quantize()
+    autoround.quantize_and_save(output_dir)
+    assert os.path.exists(os.path.join(output_dir, "model_index.json"))
+    assert os.path.exists(os.path.join(output_dir, "transformer", "quantization_config.json"))
     shutil.rmtree(output_dir, ignore_errors=True)

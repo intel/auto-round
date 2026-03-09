@@ -521,6 +521,30 @@ def diffusion_load_model(
     )
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
+
+    if (
+        hasattr(model, "config")
+        and model.config.__class__.__name__ == "FrozenDict"
+        and not hasattr(model.config, "save_pretrained")
+    ):
+        import os
+        from functools import partial
+        def save_pretrained(config, file_name, save_directory):
+            if os.path.isfile(save_directory):
+                raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+            os.makedirs(save_directory, exist_ok=True)
+            output_config_file = os.path.join(save_directory, file_name)
+
+            config_dict = {}
+            for key in config.keys():
+                config_dict[key] = getattr(config, key)
+            if hasattr(model.config, "quantization_config"):
+                config_dict["quantization_config"] = model.config.quantization_config
+
+            with open(output_config_file, "w", encoding="utf-8") as writer:
+                writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+        setattr(model.config, "save_pretrained", partial(save_pretrained, model.config, "config.json"))
+        setattr(pipe.config, "save_pretrained", partial(save_pretrained, pipe.config, "model_index.json"))
     return pipe, model.to(device)
 
 
