@@ -1101,7 +1101,7 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 def is_moe_model_via_config(config) -> bool:
     config_str = str(config).lower()
     if "moe" in config_str or "expert" in config_str:
-                return True
+        return True
     return False
 
 
