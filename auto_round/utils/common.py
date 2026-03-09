@@ -407,3 +407,10 @@ def is_transformers_version_greater_or_equal_5():
     from packaging import version
 
     return version.parse(transformers.__version__) >= version.parse("5.0.0")
+
+@lru_cache(None)
+def is_transformers_version_greater_or_equal_4():
+    import transformers
+    from packaging import version
+
+    return version.parse(transformers.__version__) >= version.parse("4.0.0")

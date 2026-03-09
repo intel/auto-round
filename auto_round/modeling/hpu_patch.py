@@ -16,12 +16,20 @@ def patch_finegrained_fp8():
         import sys
 
         # Import auto-round's HPU-compatible finegrained_fp8_patch module
-        from auto_round.utils import is_transformers_version_greater_or_equal_5
+        from auto_round.utils import is_transformers_version_greater_or_equal_5, is_transformers_version_greater_or_equal_4
 
         if is_transformers_version_greater_or_equal_5():
             patch_file_name = "auto_round.modeling.finegrained_fp8_patch"
-        else:
+        elif is_transformers_version_greater_or_equal_4():
             patch_file_name = "auto_round.modeling.finegrained_fp8_patch_v4"
+        else:
+            logger.warning(
+                (
+                "Transformers version is below 4.0.0, skipping finegrained_fp8 patching.",
+                " Please upgrade to Transformers 4.x or later for HPU support."
+                )
+            )
+            return
 
         finegrained_fp8_patch = importlib.import_module(patch_file_name)
 
