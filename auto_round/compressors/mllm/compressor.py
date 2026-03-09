@@ -135,7 +135,7 @@ class MLLMCompressor(BaseCompressor):
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
+        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -217,9 +217,13 @@ class MLLMCompressor(BaseCompressor):
             import importlib.util
 
             missing_libs = []
-            for require_lib in ["PIL", "torchvision"]:
-                if importlib.util.find_spec(require_lib) is None:
-                    missing_libs.append(require_lib.replace("PIL", "pillow"))
+            required_libs = {
+                "pillow": "PIL",
+                "torchvision": "torchvision",
+            }
+            for pip_name, module_name in required_libs.items():
+                if importlib.util.find_spec(module_name) is None:
+                    missing_libs.append(pip_name)
             if len(missing_libs) > 0:
                 logger.error(
                     f"{', '.join(missing_libs)} are required for quantizing non-text modules,"
@@ -372,14 +376,16 @@ class MLLMCompressor(BaseCompressor):
             )
         else:
             self.dataloader = self.dataset
-        total_cnt = 0
 
+        total_cnt = 0
+        calib_kwargs = {"use_cache": False}
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for data in self.dataloader:
                 if data is None:
                     pbar.update(1)
                     continue
+
                 if isinstance(data, torch.Tensor):
                     input_ids = data.to(self.model.device)
                     data_new = input_ids
@@ -387,16 +393,13 @@ class MLLMCompressor(BaseCompressor):
                     if self.tokenizer is None:
                         logger.error("please provide tokenizer for string input")
                         exit()
-                    # data = self.template._encode(data)
                     data = self.template.processor.get_input(
                         text=data,
                         images=None,
                         max_length=self.seqlen,
                         squeeze=False,
                     )
-                    data_new = {}
-                    for key in data.keys():
-                        data_new[key] = data[key].to(self.model.device)
+                    data_new = {k: v.to(self.model.device) for k, v in data.items()}
                     input_ids = data_new["input_ids"]
                 elif isinstance(data, dict) and "text" in data.keys():
                     text = data["text"]
@@ -410,41 +413,44 @@ class MLLMCompressor(BaseCompressor):
                         squeeze=False,
                     )
                     data_new = {}
-                    for key in data.keys():
-                        data_new[key] = torch.tensor(data[key])
-                        data_new[key] = to_device(data_new[key], self.model.device)
+                    for key, value in data.items():
+                        if isinstance(value, torch.Tensor):
+                            tensor_value = value
+                        else:
+                            tensor_value = torch.as_tensor(value)
+                        tensor_value = to_device(tensor_value, self.model.device)
                         if key == "images":
-                            data_new[key] = to_dtype(data_new[key], self.model.dtype)
+                            tensor_value = to_dtype(tensor_value, self.model.dtype)
+                        data_new[key] = tensor_value
                     input_ids = data_new["input_ids"]
-                elif isinstance(data, tuple) or isinstance(data, list):
+                elif isinstance(data, (tuple, list)):
                     data_new = to_device(data, self.model.device)
                     input_ids = data_new[0]
                 else:
                     data_new = {}
-                    for key in data.keys():
-                        data_new[key] = to_device(data[key], self.model.device)
+                    for key, value in data.items():
+                        tensor_value = to_device(value, self.model.device)
                         if key in ["images", "pixel_values"]:
-                            data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                    if "input_ids" in data_new:
-                        input_ids = data_new["input_ids"]
-                    else:
-                        input_ids = data_new["inputs_embeds"]
+                            tensor_value = to_dtype(tensor_value, self.model.dtype)
+                        data_new[key] = tensor_value
+                    input_ids = data_new["input_ids"] if "input_ids" in data_new else data_new["inputs_embeds"]
 
                 if input_ids.shape[-1] < self.seqlen:
                     pbar.update(1)
                     continue
+
                 try:
                     if isinstance(data_new, torch.Tensor):
-                        data_new = data_new.to(self.model.device)
-                        self.model(data_new)
-                    elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                        self.model(*data_new)
+                        self.model(data_new, **calib_kwargs)
+                    elif isinstance(data_new, (tuple, list)):
+                        self.model(*data_new, **calib_kwargs)
                     else:
-                        self.model(**data_new)
+                        self.model(**data_new, **calib_kwargs)
                 except NotImplementedError:
                     pass
                 except Exception as error:
                     raise error
+
                 step = input_ids.shape[0] if len(input_ids.shape) > 1 else 1
                 total_cnt += step
                 pbar.update(step)
@@ -471,6 +477,9 @@ class MLLMCompressor(BaseCompressor):
                 for key in v:
                     if isinstance(v[key], list) and len(v[key]) == total_cnt:
                         self.inputs[k][key] = v[key][:max_len]
+
+        if hasattr(self.dataloader, "dataset") and hasattr(self.dataloader.dataset, "clear_runtime_cache"):
+            self.dataloader.dataset.clear_runtime_cache()
 
         # torch.cuda.empty_cache()
 
