@@ -149,10 +149,11 @@ def mxfp4_forward_kernel_wrapper(
     """
     # Pick a device — we require CUDA
     device = x.device
-    if not device.type == "cuda":
-        # Either move to cuda or raise, depending on your design
-        device = torch.device("cuda")
-        x = x.to(device)
+    if device.type != "cuda":
+        raise RuntimeError(
+            f"mxfp4_forward_kernel_wrapper requires a CUDA tensor for 'x', "
+            f"but got device '{device.type}'. Please move inputs to CUDA before calling."
+        )
 
     # Ensure hadamard_matrix is on the same CUDA device
     if hadamard_matrix.device != device:
