@@ -83,11 +83,11 @@ function print_test_results_table() {
 function print_summary() {
     while IFS= read -r line; do
         if [[ "$line" == *"FAILED"* ]]; then
-            echo "::error::$line"
+            echo "##[error]$line"
         elif [[ "$line" == *"PASSED"* ]]; then
-            echo "::notice::$line"
+            echo "##[section]$line"
         elif [[ "$line" == *"NO_TESTS"* ]]; then
-            echo "::warning::$line"
+            echo "##[warning]$line"
         else
             echo "$line"
         fi
@@ -161,7 +161,7 @@ function run_unit_test() {
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
-        echo "Some CUDA unit tests failed. Please check the individual log files for details."
+        echo "##[error]Some CUDA unit tests failed. Please check the individual log files for details."
     fi
 }
 
@@ -194,7 +194,7 @@ function run_unit_test_llmc() {
     fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
-        echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
+        echo "##[error]Some CUDA LLMC tests failed. Please check the individual log files for details."
     fi
 }
 
@@ -226,7 +226,7 @@ function run_unit_test_sglang() {
         mv coverage_sglang.xml ${LOG_DIR}/
     fi
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
-        echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
+        echo "##[error]Some CUDA SGLang unit tests failed. Please check the individual log files for details."
     fi
 }
 
@@ -242,7 +242,7 @@ function main() {
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
     else
-        echo "Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', or 'all'."
+        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', or 'all'."
         exit 1
     fi
     df -h
