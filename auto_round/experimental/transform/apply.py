@@ -51,7 +51,7 @@ def _apply_to_module(
     """
 
     # create transform as submodule
-    transform_name = "forward_hadamard_matrix"
+    transform_name = "forward_hadamard"
     transform = build_transform(**config.dict())
     module.register_module(transform_name, transform)
 
@@ -82,8 +82,9 @@ def _apply_to_module(
 
         if config.requires_grad:
             # for training, the weight changes with every forward pass
-            # so we can leverage parametrization to propagate the gradient
-            torch.nn.utils.parametrize.register_parametrization(module, "weight", transform)
+            # patch wrapper linear qdq_weight func
+            from .utils import patch_wrapperlinear_qdq_weight_to_apply_transform
+            patch_wrapperlinear_qdq_weight_to_apply_transform(transform_name)
 
         else:
             # transform is no longer needed (unfusing is not supported)
