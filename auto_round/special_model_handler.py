@@ -256,6 +256,15 @@ register_ignore_layers(
 )
 
 
+# minimax_m2
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"minimax_m2", mode="full"),
+    ],
+    ignore_layers=["block_sparse_moe.gate"],
+)
+
+
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
