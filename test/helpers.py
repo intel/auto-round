@@ -183,6 +183,7 @@ def get_output(model_name_or_path):
     return outputs.detach().cpu()
 
 
+@torch.inference_mode()
 def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similarity", threshold=0.98, k=5, verbose=True):
     """
     Compare outputs from two models using specified metric and return pass/fail.
