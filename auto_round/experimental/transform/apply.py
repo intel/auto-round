@@ -82,9 +82,8 @@ def _apply_to_module(
 
         if config.requires_grad:
             # for training, the weight changes with every forward pass
-            # patch wrapper linear qdq_weight func
+            # for autoround tuning: patch wrapper linear qdq_weight func
             from .utils import patch_wrapperlinear_qdq_weight_to_apply_transform
-
             patch_wrapperlinear_qdq_weight_to_apply_transform(transform_name)
 
         else:
