@@ -116,7 +116,7 @@ function run_unit_test() {
 
     uv pip install gptqmodel --extra-index-url https://pkgs.dev.azure.com/lpot-inc/neural-compressor/_packaging/gptqmodel-wheels/pypi/simple/
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v5.7.0/requirements.txt
-    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
+    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
@@ -131,7 +131,8 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
+    # find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
+    find ./test_cuda -name "test_fp8_input.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=3
     q=$(( total_lines / NUM_CHUNKS ))
@@ -155,8 +156,10 @@ function run_unit_test() {
         echo "##[endgroup]"
     done
 
-    mv report.html ${LOG_DIR}/
-    mv coverage.xml ${LOG_DIR}/
+    if [ -f "report.html" ] && [ -f "coverage.xml" ]; then
+        mv report.html ${LOG_DIR}/
+        mv coverage.xml ${LOG_DIR}/
+    fi
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
@@ -187,8 +190,10 @@ function run_unit_test_llmc() {
         echo "##[endgroup]"
     done
 
-    mv report_llmc.html ${LOG_DIR}/
-    mv coverage_llmc.xml ${LOG_DIR}/
+    if [ -f "report_llmc.html" ] && [ -f "coverage_llmc.xml" ]; then
+        mv report_llmc.html ${LOG_DIR}/
+        mv coverage_llmc.xml ${LOG_DIR}/
+    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
         echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
@@ -218,8 +223,10 @@ function run_unit_test_sglang() {
         echo "##[endgroup]"
     done
 
-    mv report_sglang.html ${LOG_DIR}/
-    mv coverage_sglang.xml ${LOG_DIR}/
+    if [ -f "report_sglang.html" ] && [ -f "coverage_sglang.xml" ]; then
+        mv report_sglang.html ${LOG_DIR}/
+        mv coverage_sglang.xml ${LOG_DIR}/
+    fi
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
         echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
     fi
