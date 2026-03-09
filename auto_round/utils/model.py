@@ -516,6 +516,19 @@ def diffusion_load_model(
 
     pipelines = LazyImport("diffusers.pipelines")
 
+    if torch_dtype == "auto":
+        torch_dtype = {}
+        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        with open(model_index, "r", encoding="utf-8") as file:
+            config = json.load(file)
+        for k, v in config.items():
+            component_folder = os.path.join(pretrained_model_name_or_path, k)
+            if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
+                component_folder = os.path.join(pretrained_model_name_or_path, k)
+                with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
+                    component_config = json.load(file)
+                torch_dtype[k] = component_config.get("torch_dtype", "auto")
+
     pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
         pretrained_model_name_or_path, torch_dtype=torch_dtype
     )
@@ -527,7 +540,6 @@ def diffusion_load_model(
         and model.config.__class__.__name__ == "FrozenDict"
         and not hasattr(model.config, "save_pretrained")
     ):
-        import os
         from functools import partial
 
         def save_pretrained(config, file_name, save_directory):
