@@ -501,6 +501,7 @@ def diffusion_load_model(
 ):
     from auto_round.utils.common import LazyImport
     from auto_round.utils.device import get_device_and_parallelism
+    from functools import partial
 
     _check_accelerate_version()
 
@@ -532,33 +533,42 @@ def diffusion_load_model(
     pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
         pretrained_model_name_or_path, torch_dtype=torch_dtype
     )
+
+    # add missing key
+    pipe_config = pipe.load_config(pretrained_model_name_or_path)
+    for k, v in pipe_config.items():
+        if k not in pipe.config:
+            pipe.config[k] = v
+
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
 
-    if (
-        hasattr(model, "config")
-        and model.config.__class__.__name__ == "FrozenDict"
-        and not hasattr(model.config, "save_pretrained")
-    ):
-        from functools import partial
+    def config_save_pretrained(config, file_name, save_directory):
+        if os.path.isfile(save_directory):
+            raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+        os.makedirs(save_directory, exist_ok=True)
+        output_config_file = os.path.join(save_directory, file_name)
 
-        def save_pretrained(config, file_name, save_directory):
-            if os.path.isfile(save_directory):
-                raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
-            os.makedirs(save_directory, exist_ok=True)
-            output_config_file = os.path.join(save_directory, file_name)
+        config_dict = dict(config)
+        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
+            config_dict["quantization_config"] = model.config.quantization_config
 
-            config_dict = {}
-            for key in config.keys():
-                config_dict[key] = getattr(config, key)
-            if hasattr(model.config, "quantization_config"):
-                config_dict["quantization_config"] = model.config.quantization_config
+        with open(output_config_file, "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
 
-            with open(output_config_file, "w", encoding="utf-8") as writer:
-                writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+    # meta model uses model.config.save_pretrained for config saving
+    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json"))
+    setattr(pipe.config, "save_pretrained", partial(config_save_pretrained, pipe.config, "model_index.json"))
 
-        setattr(model.config, "save_pretrained", partial(save_pretrained, model.config, "config.json"))
-        setattr(pipe.config, "save_pretrained", partial(save_pretrained, pipe.config, "model_index.json"))
+    def model_save_pretrained(model, save_directory, **kwargs):
+        super(model.__class__, model).save_pretrained(save_directory, **kwargs)
+        if hasattr(model.config, "quantization_config"):
+            model.config["quantization_config"] = model.config.quantization_config
+        with open(os.path.join(save_directory, "config.json"), "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(dict(model.config), indent=2, sort_keys=True) + "\n")
+
+    # non-meta model uses model.save_pretrained for model and config saving
+    setattr(model, "save_pretrained", partial(model_save_pretrained, model))
     return pipe, model.to(device)
 
 

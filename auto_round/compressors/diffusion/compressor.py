@@ -393,10 +393,14 @@ class DiffusionCompressor(BaseCompressor):
 
         # Use a subfolder only if there are multiple formats
         if len(self.formats) > 1:
-            return os.path.join(self.orig_output_dir, sanitized_format, "transformer")
+            return (
+                os.path.join(self.orig_output_dir, sanitized_format, "transformer")
+                if self.is_immediate_saving
+                else os.path.join(self.orig_output_dir, sanitized_format, "transformer")
+            )
 
-        # save quantized model to self.orig_output_dir/transformer, other components are under self.orig_output_dir
-        return os.path.join(self.orig_output_dir, "transformer")
+        # if use is_immediate_saving, we need to save model in self.orig_output_dir/transformer folder
+        return os.path.join(self.orig_output_dir, "transformer") if self.is_immediate_saving else self.orig_output_dir
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
@@ -410,6 +414,9 @@ class DiffusionCompressor(BaseCompressor):
         Returns:
             object: The compressed model object.
         """
+        if output_dir is None:
+            return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
+
         compressed_model = None
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
@@ -422,7 +429,7 @@ class DiffusionCompressor(BaseCompressor):
                 and val.config._name_or_path == self.model.config._name_or_path
             ):
                 compressed_model = super().save_quantized(
-                    output_dir=sub_module_path, format=format, inplace=inplace, **kwargs
+                    output_dir=sub_module_path if not self.is_immediate_saving else output_dir, format=format, inplace=inplace, **kwargs
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
