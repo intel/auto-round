@@ -18,6 +18,8 @@ for i in "$@"; do
     esac
 done
 
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/change_color.sh
+
 LOG_DIR="${BUILD_SOURCESDIRECTORY}/ut_log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
@@ -83,11 +85,11 @@ function print_test_results_table() {
 function print_summary() {
     while IFS= read -r line; do
         if [[ "$line" == *"FAILED"* ]]; then
-            echo "##[error]$line"
+            $LIGHT_RED && echo "$line" && $RESET
         elif [[ "$line" == *"PASSED"* ]]; then
-            echo "##[section]$line"
+            $LIGHT_GREEN && echo "$line" && $RESET
         elif [[ "$line" == *"NO_TESTS"* ]]; then
-            echo "##[warning]$line"
+            $LIGHT_YELLOW && echo "$line" && $RESET
         else
             echo "$line"
         fi
