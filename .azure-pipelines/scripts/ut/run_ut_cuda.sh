@@ -27,13 +27,10 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
-    uv pip install torch==2.10.0 torchvision
-    uv pip install -r requirements.txt
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake
 }
 
@@ -94,6 +91,7 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
+    uv pip install torch==2.10.0 torchvision
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
     uv pip install gptqmodel --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
@@ -101,8 +99,8 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
-    uv pip install torch==2.10.0 torchvision
     uv pip install -U transformers
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
@@ -134,6 +132,7 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
+    uv pip install torch==2.10.0 torchvision
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     local site_path=$(python -c "import site; print(site.getsitepackages()[0])")
     # reference https://github.com/haotian-liu/LLaVA/issues/1448#issuecomment-2119845242
@@ -142,6 +141,7 @@ function run_unit_test_vlm() {
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.7.4.post1 --no-build-isolation
     uv pip install -r test_cuda/requirements_vlm.txt
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
@@ -174,6 +174,7 @@ function run_unit_test_llmc() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
     uv pip install -r test_cuda/requirements_llmc.txt
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
@@ -204,8 +205,8 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install torch==2.9.1 torchvision
     uv pip install -r test_cuda/requirements_sglang.txt
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
