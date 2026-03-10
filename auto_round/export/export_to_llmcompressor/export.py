@@ -68,11 +68,19 @@ def pack_layer(name, model, device=None):
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
+    if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
+        wp_layer = layer
+        layer = wp_layer.orig_layer
+        set_module(model, name, layer)
+
     if not check_to_quantized(layer):
         return
 
     if hasattr(layer, "quantization_status") and layer.quantization_status == QuantizationStatus.COMPRESSED:
         return
+
+    # explicitly obtain the underlying device to prevent RuntimeError mismatched tensors
+    device = layer.weight.device
 
     scheme = construct_ct_scheme(layer)
     setattr(layer, "quantization_scheme", scheme)
