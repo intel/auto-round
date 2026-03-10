@@ -32,7 +32,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel twine
+          python -m pip install --upgrade pip setuptools wheel twine uv
 
       - name: Set nightly version
         id: set_version
@@ -50,7 +50,7 @@ jobs:
 
       - name: Build binary
         run: |
-          python setup.py sdist bdist_wheel
+          uv build
 
       - name: Publish to PyPI or TestPyPI
         env:

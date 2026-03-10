@@ -1371,10 +1371,10 @@ class BaseCompressor(object):
                                 not any(m.children())
                                 and len(m.state_dict()) > 0
                                 and m.global_name not in tied_weights_layers
+                                and self.is_immediate_saving
                             ):
                                 set_module(self.model, m.global_name, copy.deepcopy(m))
-                                if self.is_immediate_saving:
-                                    shard_writer(self, name=m.global_name)
+                                shard_writer(self, name=m.global_name)
                                 m.to("meta")
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
@@ -1405,10 +1405,14 @@ class BaseCompressor(object):
                             clear_memory(device_list=self.device_list)
                             memory_monitor.log_summary()
 
-                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weights_layers:
+                    elif (
+                        not any(m.children())
+                        and len(m.state_dict()) > 0
+                        and n not in tied_weights_layers
+                        and self.is_immediate_saving
+                    ):
                         set_module(self.model, n, copy.deepcopy(m))
-                        if self.is_immediate_saving:
-                            shard_writer(self, name=n)
+                        shard_writer(self, name=n)
                         m.to("meta")
 
         # Convert remaining fp8
