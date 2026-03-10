@@ -119,3 +119,48 @@ class TestLoadGgufModelIfNeeded:
         assert tokenizer is None
         assert is_gguf is False
         assert gguf_file is None
+
+
+class TestEvalDiffusionModelBranch:
+    """Test that eval() takes the diffusion-model branch and calls evaluate_diffusion_model."""
+
+    def _make_args(self, model_path="some/diffusion-model"):
+        """Create a minimal namespace that satisfies the eval() function."""
+        args = MagicMock()
+        args.model = model_path
+        return args
+
+    def test_diffusion_branch_taken(self):
+        """When is_diffusion_model returns True, eval() should call evaluate_diffusion_model."""
+        mock_pipe = MagicMock(name="pipe")
+
+        with (
+            patch("auto_round.eval.eval_cli.require_version"),
+            patch("auto_round.eval.eval_cli.is_diffusion_model", return_value=True),
+            patch("auto_round.utils.diffusion_load_model", return_value=(mock_pipe, MagicMock())) as mock_load,
+            patch("auto_round.eval.evaluation.evaluate_diffusion_model") as mock_eval,
+        ):
+            from auto_round.eval.eval_cli import eval as eval_fn
+
+            args = self._make_args()
+            eval_fn(args)
+
+        mock_load.assert_called_once_with(args.model)
+        mock_eval.assert_called_once_with(args, pipe=mock_pipe)
+
+    def test_non_diffusion_model_skips_branch(self):
+        """When is_diffusion_model returns False, evaluate_diffusion_model should NOT be called."""
+        with (
+            patch("auto_round.eval.eval_cli.require_version"),
+            patch("auto_round.eval.eval_cli.is_diffusion_model", return_value=False),
+            patch("auto_round.eval.evaluation.evaluate_diffusion_model") as mock_eval,
+            patch("auto_round.eval.eval_cli.eval_with_vllm") as mock_vllm,
+        ):
+            from auto_round.eval.eval_cli import eval as eval_fn
+
+            args = self._make_args()
+            args.eval_backend = "vllm"
+            eval_fn(args)
+
+        mock_eval.assert_not_called()
+        mock_vllm.assert_called_once_with(args)
