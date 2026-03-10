@@ -261,16 +261,24 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
         return False
     from transformers import AutoConfig
 
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _MXFP4_SUPPORTED_MODEL_TYPES:
+        return False
+
     quant_config = getattr(config, "quantization_config", None)
     if quant_config is None:
         return False
+
     quant_method = (
         quant_config.get("quant_method", "")
         if isinstance(quant_config, dict)
         else getattr(quant_config, "quant_method", "")
     )
-    model_type = getattr(config, "model_type", "")
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
 
 
