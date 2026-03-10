@@ -59,3 +59,4 @@ def test_flux(setup_flux):
     )
     # skip model saving since it takes much time
     autoround.quantize()
+    shutil.rmtree(output_dir, ignore_errors=True)
