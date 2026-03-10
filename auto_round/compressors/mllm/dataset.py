@@ -14,6 +14,8 @@
 
 import json
 import os
+from collections import OrderedDict
+from inspect import signature
 from typing import Dict
 
 import torch
@@ -75,6 +77,7 @@ class LlavaDataset(Dataset):
         padding=True,
         truncation=True,
         nsamples=512,
+        cache_size=0,
     ) -> None:
         super().__init__()
         self.model = model
@@ -104,7 +107,8 @@ class LlavaDataset(Dataset):
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
         self.role_mapping = {"human": "user", "gpt": "assistant"}
-        self.cached_data_dict = {}
+        self.cache_size = max(int(cache_size), 0)
+        self.cached_data_dict = OrderedDict() if self.cache_size > 0 else None
 
         self.image_fold = None
         if extra_data_dir is not None:
@@ -149,7 +153,8 @@ class LlavaDataset(Dataset):
         return len(self.questions)
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        if i in self.cached_data_dict:
+        if self.cached_data_dict is not None and i in self.cached_data_dict:
+            self.cached_data_dict.move_to_end(i)
             return self.cached_data_dict[i]
 
         text = self.questions[i]["conversations"]
@@ -177,8 +182,16 @@ class LlavaDataset(Dataset):
             max_length=max_length,
             truncation_strategy=truncation_strategy,
         )
-        self.cached_data_dict[i] = ret
+        if self.cached_data_dict is not None:
+            self.cached_data_dict[i] = ret
+            self.cached_data_dict.move_to_end(i)
+            while len(self.cached_data_dict) > self.cache_size:
+                self.cached_data_dict.popitem(last=False)
         return ret
+
+    def clear_runtime_cache(self):
+        if self.cached_data_dict is not None:
+            self.cached_data_dict.clear()
 
     def covert_conversations(self, data):
         new_data = []
@@ -240,9 +253,15 @@ def get_mllm_dataloader(
                 f" reset to {MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN}"
             )
             seqlen = 512
-        dataset = MLLM_DATASET[dataset](
-            template, model, tokenizer, dataset, extra_data_dir, seqlen=seqlen, truncation=truncation, nsamples=nsamples
-        )
+        dataset_cls = MLLM_DATASET[dataset]
+        dataset_kwargs = {
+            "seqlen": seqlen,
+            "truncation": truncation,
+            "nsamples": nsamples,
+        }
+        if "cache_size" in signature(dataset_cls.__init__).parameters:
+            dataset_kwargs["cache_size"] = int(os.getenv("AR_MLLM_DATASET_CACHE_SIZE", "0"))
+        dataset = dataset_cls(template, model, tokenizer, dataset, extra_data_dir, **dataset_kwargs)
 
         bs, gradient_accumulate_steps = check_mllm_model_batch(
             model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps

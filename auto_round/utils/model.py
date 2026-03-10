@@ -1115,6 +1115,50 @@ def mv_module_from_gpu(module):
         return module.to("cpu")
 
 
+def safe_device_move_with_meta_handling(
+    model,
+    target_device="cpu",
+    *,
+    materialize_meta=None,
+    logger=None,
+):
+    """Move model to target device, handling meta parameters and buffers correctly.
+        Skipping module move on target/meta device.
+
+    Args:
+        target_device: Target device ('cpu', 'cuda', etc.)
+        materialize_meta: Optional callable to materialize meta tensors before movement
+        logger: Optional logger for warnings if needed
+    """
+    target_type = torch.device(target_device).type
+
+    # Materialize meta tensors if handler provided
+    if materialize_meta is not None:
+        materialize_meta(model)
+
+    meta_count = 0
+
+    # Move parameters
+    for p in model.parameters():
+        if p.device.type in (target_type, "meta"):
+            meta_count += p.device.type == "meta"
+            continue
+        p.data = p.data.to(target_device)
+
+    # Move buffers
+    for m in model.modules():
+        for n, b in m._buffers.items():
+            if b is None or b.device.type in (target_type, "meta"):
+                meta_count += b is not None and b.device.type == "meta"
+                continue
+            m._buffers[n] = b.to(target_device)
+
+    if meta_count and logger is not None:
+        logger.warning(f"{meta_count} tensors still on meta device after movement")
+
+    return model
+
+
 def is_moe_model(model: torch.nn.Module) -> bool:
     if hasattr(model, "config") and hasattr(model.config, "to_dict"):
         for key in model.config.to_dict().keys():
@@ -1127,10 +1171,9 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 
 
 def is_moe_model_via_config(config) -> bool:
-    if hasattr(config, "to_dict"):
-        for key in config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+    config_str = str(config).lower()
+    if "moe" in config_str or "expert" in config_str:
+        return True
     return False
 
 

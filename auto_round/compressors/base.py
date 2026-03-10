@@ -98,6 +98,7 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
+    safe_device_move_with_meta_handling,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -1742,7 +1743,7 @@ class BaseCompressor(object):
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 all_first_block_names, self.nsamples, layer_names=layer_names
             )
-        self.model = mv_module_from_gpu(self.model)
+        self.model = safe_device_move_with_meta_handling(self.model, "cpu")
         clear_memory(device_list=self.device_list)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
@@ -2169,7 +2170,6 @@ class BaseCompressor(object):
             and len(layer_names) == 0
             and not self.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
-            and getattr(self, "mllm", False) is False
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
@@ -2313,10 +2313,9 @@ class BaseCompressor(object):
             else:
                 self.model = self.model.to(torch.float32)  ##model on cpu
 
-        self.last_cache_name = last_cache_name
-        if last_cache_name is None and len(block_names) + len(layer_names) == 1:
-            self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
-        # do not set last_cache_name for multimodal models
+        self.last_cache_name = self._infer_last_cache_name(block_names, layer_names, last_cache_name)
+        self._cache_target_set = set(self.to_cached_layers)
+        self._cache_seen_targets = set()
         calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
@@ -2324,11 +2323,53 @@ class BaseCompressor(object):
         self._recover_forward()
         res = self.inputs
         del self.last_cache_name
+        del self._cache_target_set
+        del self._cache_seen_targets
         del self.to_cached_layers
         if tmp_dtype is not None:
             self.model = self.model.to(tmp_dtype)
 
         return res
+
+    def _infer_last_cache_name(self, block_names, layer_names=None, requested_last_cache_name=None):
+        """The latest required cache layer for early-stop forward.
+
+        If there are multiple cache targets, return ``None`` and let runtime
+        hooks stop only after all targets are observed in real forward execution.
+        """
+        if layer_names is None:
+            layer_names = []
+
+        if requested_last_cache_name is not None:
+            return requested_last_cache_name
+
+        cache_targets = list(block_names) + list(layer_names)
+        if len(cache_targets) == 1:
+            return cache_targets[0]
+
+        # return None here to enable the logic in _should_stop_cache_forward
+        return None
+
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Determine whether current forward pass can stop after caching `name`."""
+        if name == self.last_cache_name:
+            return True
+
+        if self.last_cache_name is not None:
+            return False
+
+        if not hasattr(self, "_cache_target_set") or not hasattr(self, "_cache_seen_targets"):
+            return False
+
+        if name in self._cache_target_set:
+            self._cache_seen_targets.add(name)
+
+        if not self._cache_target_set.issubset(self._cache_seen_targets):
+            return False
+
+        # Lock the last cache name after the first full forward pass.
+        self.last_cache_name = name
+        return True
 
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
@@ -2431,7 +2472,8 @@ class BaseCompressor(object):
                             f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
                         )
             reset_params(self.inputs[name])
-            if name == self.last_cache_name:
+
+            if self._should_stop_cache_forward(name):
                 raise NotImplementedError
             else:
                 if hidden_states is not None:
@@ -2457,6 +2499,9 @@ class BaseCompressor(object):
                 self.inputs[name].extend(list(torch.split(input.to("cpu"), 1, dim=0)))
             else:
                 self.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
+
+            if self._should_stop_cache_forward(name):
+                raise NotImplementedError
 
         return cache_input_hook
 
