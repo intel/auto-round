@@ -70,6 +70,7 @@ def diffusion_eval(
     image_save_dir,
     batch_size,
     gen_kwargs,
+    limit=-1,
 ):
     if (
         not importlib.util.find_spec("clip")
@@ -82,6 +83,7 @@ def diffusion_eval(
     dataloader, _, _ = get_diffusion_dataloader(prompt_file, nsamples=-1, bs=batch_size)
     prompt_list = []
     image_list = []
+    num_samples = 0
     for image_ids, prompts in dataloader:
         prompt_list.extend(prompts)
 
@@ -95,6 +97,9 @@ def diffusion_eval(
                 continue
             new_ids.append(image_id)
             new_prompts.append(prompts[idx])
+            num_samples += 1
+            if num_samples >= limit > 0:
+                break
 
         if len(new_prompts) == 0:
             continue
@@ -102,6 +107,9 @@ def diffusion_eval(
         output = pipe(prompt=new_prompts, **gen_kwargs)
         for idx, image_id in enumerate(new_ids):
             output.images[idx].save(os.path.join(image_save_dir, str(image_id) + ".png"))
+
+        if num_samples >= limit > 0:
+            break
 
     result = {}
     for metric in metrics:

@@ -189,9 +189,11 @@ def eval(args):
     )
 
     if is_diffusion_model(args.model):
-        from auto_round.eval.diffusion_eval import eval_diffusion_model
+        from auto_round.eval.evaluation import evaluate_diffusion_model
+        from auto_round.utils import diffusion_load_model
 
-        eval_diffusion_model(args)
+        pipe, model = diffusion_load_model(args.model)
+        evaluate_diffusion_model(args, pipe=pipe)
         return
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
