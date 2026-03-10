@@ -1,8 +1,8 @@
 import os
 import shutil
 
-import torch
 import pytest
+import torch
 from packaging import version
 
 from auto_round import AutoRound
