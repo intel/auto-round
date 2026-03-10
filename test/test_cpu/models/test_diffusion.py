@@ -1,6 +1,7 @@
 import os
 import shutil
 
+import torch
 import pytest
 from packaging import version
 
@@ -17,7 +18,8 @@ def setup_flux():
     from diffusers import AutoPipelineForText2Image
 
     model_name = flux_name_or_path
-    pipe = AutoPipelineForText2Image.from_pretrained(model_name)
+    # use bf16 to reduce the saved model size
+    pipe = AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.bfloat16)
     output_dir = "./tmp/test_quantized_flux"
     return pipe, output_dir
 

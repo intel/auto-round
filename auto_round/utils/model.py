@@ -516,27 +516,35 @@ def diffusion_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+
     pipelines = LazyImport("diffusers.pipelines")
-
-    if torch_dtype == "auto":
-        torch_dtype = {}
-        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
-        with open(model_index, "r", encoding="utf-8") as file:
-            config = json.load(file)
-        for k, v in config.items():
-            component_folder = os.path.join(pretrained_model_name_or_path, k)
-            if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
+    if isinstance(pretrained_model_name_or_path, str):
+        if torch_dtype == "auto":
+            torch_dtype = {}
+            model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+            with open(model_index, "r", encoding="utf-8") as file:
+                config = json.load(file)
+            for k, v in config.items():
                 component_folder = os.path.join(pretrained_model_name_or_path, k)
-                with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
-                    component_config = json.load(file)
-                torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
+                    component_folder = os.path.join(pretrained_model_name_or_path, k)
+                    with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
+                        component_config = json.load(file)
+                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-        pretrained_model_name_or_path, torch_dtype=torch_dtype
-    )
+        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+            pretrained_model_name_or_path, torch_dtype=torch_dtype
+        )
+        pipe_config = pipe.load_config(pretrained_model_name_or_path)
+
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+        pipe = pretrained_model_name_or_path
+        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+
+    else:
+        raise ValueError(f"Only support str or DiffusionPipeline class for model, but get {type(model)}")
 
     # add missing key
-    pipe_config = pipe.load_config(pretrained_model_name_or_path)
     for k, v in pipe_config.items():
         if k not in pipe.config:
             pipe.config[k] = v

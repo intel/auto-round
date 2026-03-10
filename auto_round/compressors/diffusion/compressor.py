@@ -114,13 +114,7 @@ class DiffusionCompressor(BaseCompressor):
             device_map = 0
         self._set_device(device_map)
 
-        if isinstance(model, str):
-            pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
-        elif isinstance(model, pipeline_utils.DiffusionPipeline):
-            pipe = model
-            model = pipe.transformer
-        else:
-            raise ValueError(f"Only support str or DiffusionPipeline class for model, but get {type(model)}")
+        pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
 
         self.model = model
         self.pipe = pipe
