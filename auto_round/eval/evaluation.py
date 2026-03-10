@@ -136,7 +136,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         logger.info(f"Image generated with prompt {args.prompt} is saved as {save_path}")
 
     # Batch prompt evaluation
-    if args.prompt_file is not None:
+    elif args.prompt_file is not None:
         from auto_round.compressors.diffusion import diffusion_eval
 
         metrics = args.metrics.split(",")

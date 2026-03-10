@@ -192,7 +192,7 @@ def eval(args):
         from auto_round.eval.evaluation import evaluate_diffusion_model
         from auto_round.utils import diffusion_load_model
 
-        pipe, model = diffusion_load_model(args.model)
+        pipe, _ = diffusion_load_model(args.model)
         evaluate_diffusion_model(args, pipe=pipe)
         return
     if args.eval_backend == "vllm":

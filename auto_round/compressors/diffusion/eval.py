@@ -70,7 +70,7 @@ def diffusion_eval(
     image_save_dir,
     batch_size,
     gen_kwargs,
-    limit=-1,
+    limit=None,
 ):
     if (
         not importlib.util.find_spec("clip")
@@ -98,7 +98,7 @@ def diffusion_eval(
             new_ids.append(image_id)
             new_prompts.append(prompts[idx])
             num_samples += 1
-            if num_samples >= limit > 0:
+            if limit is not None and num_samples >= limit > 0:
                 break
 
         if len(new_prompts) == 0:
@@ -108,7 +108,7 @@ def diffusion_eval(
         for idx, image_id in enumerate(new_ids):
             output.images[idx].save(os.path.join(image_save_dir, str(image_id) + ".png"))
 
-        if num_samples >= limit > 0:
+        if limit is not None and num_samples >= limit > 0:
             break
 
     result = {}
