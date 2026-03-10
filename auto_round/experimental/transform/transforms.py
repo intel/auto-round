@@ -45,6 +45,7 @@ class HadamardTransform(nn.Module):
         self.dim = transform_block_size
         self.scale = 1 / math.sqrt(self.dim)
 
+    # @torch.no_grad()
     def forward(self, x: torch.Tensor):
         # Hadamard transform is it own inverse
         x_shape = x.shape

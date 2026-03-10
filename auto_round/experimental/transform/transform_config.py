@@ -18,4 +18,5 @@ class TransformConfig(BaseModel):
 
     location: str = Field(default="weight", exclude=True)
 
-    requires_grad: bool = Field(default=False, exclude=True)
+    # apply transform inside modules for nvfp4, autoround tuning etc.
+    need_calibration: bool = Field(default=False, exclude=True)

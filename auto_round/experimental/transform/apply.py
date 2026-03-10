@@ -53,7 +53,7 @@ def _apply_to_module(
     # create transform as submodule
     transform_name = "forward_hadamard"
     transform = build_transform(**config.dict())
-    module.register_module(transform_name, transform)
+    # module.register_module(transform_name, transform)
 
     if config.location == "input":
         from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
@@ -70,26 +70,29 @@ def _apply_to_module(
 
         # for fused transform + quantization kernel
         module.pre_dequantized_input = True
-
         module.register_forward_pre_hook(input_hook, prepend=True)
 
     elif config.location == "weight":
         # eagerly apply transformation to weight
         # fuse transform into weight
         assert hasattr(module, "weight")
-        with torch.no_grad():
-            getattr(module, "weight").copy_(transform(module.weight.to("cuda")).to(module.weight.device))
 
-        if config.requires_grad:
+        if config.need_calibration:
             # for training, the weight changes with every forward pass
             # for autoround tuning: patch wrapper linear qdq_weight func
-            from .utils import patch_wrapperlinear_qdq_weight_to_apply_transform
-
-            patch_wrapperlinear_qdq_weight_to_apply_transform(transform_name)
+            from .patch_modules import (
+                patch_wrapperlinear_to_apply_transform,
+                patch_wrapperwalayer_forward_to_apply_transform
+            )
+            patch_wrapperlinear_to_apply_transform(transform)
+            patch_wrapperwalayer_forward_to_apply_transform(transform)
 
         else:
             # transform is no longer needed (unfusing is not supported)
-            delattr(module, transform_name)
+            # delattr(module, transform_name)
+            # fuse transform into weight
+            with torch.no_grad():
+                getattr(module, "weight").copy_(transform(module.weight.to("cuda")).to(module.weight.device))
 
     else:
         # TODO: apply transform to output/q/k
