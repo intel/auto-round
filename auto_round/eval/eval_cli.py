@@ -24,8 +24,8 @@ from auto_round.utils import (
     get_device_and_parallelism,
     get_device_str,
     get_model_dtype,
-    set_cuda_visible_devices,
     is_diffusion_model,
+    set_cuda_visible_devices,
 )
 
 
