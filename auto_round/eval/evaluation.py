@@ -95,6 +95,11 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         model: Diffusion model instance (option 1)
         pipe: Diffusion pipeline instance (option 2)
     """
+    if pipe is None and (autoround is None or model is None):
+        raise ValueError(
+            "Either 'pipe' must be provided, or both 'autoround' and 'model' must be provided."
+        )
+
     import torch
 
     from auto_round.utils import detect_device, get_model_dtype, logger
