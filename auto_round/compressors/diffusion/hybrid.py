@@ -412,6 +412,7 @@ class HybridCompressor(DiffusionCompressor):
         )
         if hasattr(self, "formats"):
             ar.formats = self.formats
+        ar.inplace = False
         # Required by base.quantize() → _adjust_immediate_packing_and_saving();
         # None disables immediate packing (correct since we call quantize() directly).
         ar.orig_output_dir = None
@@ -519,8 +520,7 @@ class HybridCompressor(DiffusionCompressor):
     # Saving
     # ------------------------------------------------------------------
 
-    def save_quantized(self, output_dir=None, format="auto_round", ar_format=None,
-                        dit_format=None, inplace=True, **kwargs):
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save both quantized AR and DiT models into a pipeline directory structure.
 
         The output directory mirrors the original pipeline layout::
@@ -532,8 +532,7 @@ class HybridCompressor(DiffusionCompressor):
               ...               (unchanged auxiliary components)
 
         Args:
-            ar_format: Export format for the AR component.  Falls back to *format*.
-            dit_format: Export format for the DiT component.  Falls back to *format*.
+            format: Export format for both the AR and DiT components.
         """
         if output_dir is None:
             logger.warning("output_dir is None, skipping save")
@@ -542,17 +541,12 @@ class HybridCompressor(DiffusionCompressor):
         from auto_round.formats import get_formats
         from auto_round.compressors.base import BaseCompressor
 
-        if ar_format is None:
-            ar_format = format
-        if dit_format is None:
-            dit_format = format
-
         saved_formats = self.formats  # preserve original
 
         # Save DiT
         if self.quant_dit:
             dit_subdir = "transformer"
-            logger.info(f"Saving quantized DiT model ({dit_subdir}) [format={dit_format}]")
+            logger.info(f"Saving quantized DiT model ({dit_subdir}) [format={format}]")
             dit_output_dir = os.path.join(output_dir, dit_subdir)
             os.makedirs(dit_output_dir, exist_ok=True)
 
@@ -560,15 +554,15 @@ class HybridCompressor(DiffusionCompressor):
             if hasattr(self, "dit_layer_config"):
                 self.layer_config = self.dit_layer_config
 
-            self.formats = get_formats(dit_format, self)
+            self.formats = get_formats(format, self)
             BaseCompressor.save_quantized(
-                self, output_dir=dit_output_dir, format=dit_format, inplace=inplace, **kwargs
+                self, output_dir=dit_output_dir, format=format, inplace=inplace, **kwargs
             )
 
         # Save AR
         if self.quant_ar and self.ar_model is not None:
             ar_subdir = self.ar_component_name  # e.g. "vision_language_encoder"
-            logger.info(f"Saving quantized AR model ({ar_subdir}) [format={ar_format}]")
+            logger.info(f"Saving quantized AR model ({ar_subdir}) [format={format}]")
             ar_output_dir = os.path.join(output_dir, ar_subdir)
             os.makedirs(ar_output_dir, exist_ok=True)
 
@@ -584,9 +578,9 @@ class HybridCompressor(DiffusionCompressor):
                 saved_attrs[k] = getattr(self, k, None)
                 setattr(self, k, v)
 
-            self.formats = get_formats(ar_format, self)
+            self.formats = get_formats(format, self)
             BaseCompressor.save_quantized(
-                self, output_dir=ar_output_dir, format=ar_format, inplace=inplace, **kwargs
+                self, output_dir=ar_output_dir, format=format, inplace=inplace, **kwargs
             )
 
             # Restore DiT serialization attributes
@@ -641,28 +635,24 @@ class HybridCompressor(DiffusionCompressor):
         self,
         output_dir: str = "tmp_autoround",
         format: str = "auto_round",
-        ar_format: str = None,
-        dit_format: str = None,
         inplace: bool = True,
         **kwargs,
     ):
         """Quantize both components and save the complete pipeline.
 
         Args:
-            format: Default export format (used when *ar_format* / *dit_format* is None).
-            ar_format: Export format for the AR component.  Falls back to *format*.
-            dit_format: Export format for the DiT component.  Falls back to *format*.
+            format: Export format for both the AR and DiT components.
         """
         from auto_round.formats import get_formats
 
         format_list = get_formats(format, self)
         self.formats = format_list
         self.orig_output_dir = output_dir  # required by base.quantize() → _adjust_immediate_packing_and_saving()
+        self.inplace = inplace
 
         self.quantize()
         self.save_quantized(
-            output_dir, format=format, ar_format=ar_format,
-            dit_format=dit_format, inplace=inplace, **kwargs,
+            output_dir, format=format, inplace=inplace, **kwargs,
         )
         logger.info(f"Hybrid quantized model saved to {output_dir}")
         return self.model, [output_dir]

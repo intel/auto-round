@@ -10,7 +10,8 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.10.2-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.10.2-green)](https://github.com/intel/auto-round/releases)
+[![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -99,6 +100,9 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 ```bash
 # CPU(Xeon)/GPU(CUDA)
 pip install auto-round
+
+# CPU(Xeon)/GPU(CUDA) nightly
+pip install auto-round-nightly
 
 # HPU(Gaudi)
 # install inside the hpu docker container, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  

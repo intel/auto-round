@@ -105,7 +105,10 @@ def compute_avg_bits_for_scheme(
         #     continue
         if not hasattr(module, "weight"):
             continue
-        total_params += module.weight.numel()
+        n_param = module.weight.numel()
+        if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+            n_param = module._cached_weight_numel
+        total_params += n_param
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
     avg_bits = float(total_quantized_bits) / total_params
@@ -133,7 +136,10 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
             continue
         if not hasattr(module, "weight"):
             continue
-        total_params += module.weight.numel()
+        n_param = module.weight.numel()
+        if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+            n_param = module._cached_weight_numel
+        total_params += n_param
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
 
@@ -157,6 +163,9 @@ def compute_layer_bits(
     """
     weight = layer.weight
     n_param = weight.numel()
+    # Use cached numel when weight has been cleared to an empty tensor (low_cpu_mem_usage offload)
+    if n_param == 0 and hasattr(layer, "_cached_weight_numel"):
+        n_param = layer._cached_weight_numel
     weight_bits = getattr(layer, "bits", 16)
     group_size = getattr(layer, "group_size", 128)
     data_type = getattr(layer, "data_type", "int")

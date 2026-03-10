@@ -58,6 +58,7 @@ class ShardWriter:
         # Stats
         self.total_param_elems = 0
         self.total_param_size_bytes = 0
+        self.skipped_meta_tensors = []
 
         # Directory Setup
         base_dir = rounder._get_save_folder_name(rounder.formats[0])
@@ -99,6 +100,9 @@ class ShardWriter:
             self._add_tensor(param_name, v)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
+            self.skipped_meta_tensors.append(name)
+            return
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
@@ -152,7 +156,11 @@ class ShardWriter:
 
             module = get_module(self.model, module_path)
             # Check if all parameters of this module are now in 'all_saved'
-            if module is not None and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys()):
+            if (
+                module is not None
+                and isinstance(module, torch.nn.Module)
+                and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys())
+            ):
                 module.to("meta")
 
     def finalize(self):
@@ -162,6 +170,7 @@ class ShardWriter:
         tie_word_embeddings = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
         all_saved_names = {p for meta in self.shard_meta for p in meta["params"]}
 
+        finalize_skipped_meta_tensors = []
         for pname, tensor in full_sd.items():
             if pname in all_saved_names:
                 continue
@@ -175,6 +184,10 @@ class ShardWriter:
             self._add_tensor(pname, tensor.detach().to("cpu"))
 
         self._flush_shard()
+
+        total_skipped = len(self.skipped_meta_tensors) + len(finalize_skipped_meta_tensors)
+        if total_skipped > 0:
+            examples = (self.skipped_meta_tensors + finalize_skipped_meta_tensors)[:5]
 
         # 2. Rename temp files to HF standard and map weights
         if self.shard_counter == 0:
