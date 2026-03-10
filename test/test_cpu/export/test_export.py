@@ -510,14 +510,7 @@ class TestAutoRound:
     def test_llmc_dynamic_wint8aint8_export_with_tuning(self, dataloader):
         from safetensors import safe_open
 
-        autoround = AutoRound(
-            self.model_name,
-            iters=1,
-            nsamples=2,
-            seqlen=2,
-            dataset=dataloader,
-            scheme="INT8_W8A8"
-        )
+        autoround = AutoRound(self.model_name, iters=1, nsamples=2, seqlen=2, dataset=dataloader, scheme="INT8_W8A8")
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
