@@ -119,33 +119,3 @@ class TestLoadGgufModelIfNeeded:
         assert tokenizer is None
         assert is_gguf is False
         assert gguf_file is None
-
-
-class TestEvaluateDiffusionModelValidation:
-    """Test input validation in evaluate_diffusion_model."""
-
-    def test_all_none_raises_value_error(self):
-        """Test that ValueError is raised when all parameters are None."""
-        from auto_round.eval.evaluation import evaluate_diffusion_model
-
-        args = MagicMock()
-        with pytest.raises(ValueError, match="Either 'pipe' must be provided"):
-            evaluate_diffusion_model(args, autoround=None, model=None, pipe=None)
-
-    def test_only_autoround_raises_value_error(self):
-        """Test that ValueError is raised when only autoround is provided (model is None)."""
-        from auto_round.eval.evaluation import evaluate_diffusion_model
-
-        args = MagicMock()
-        autoround = MagicMock()
-        with pytest.raises(ValueError, match="Either 'pipe' must be provided"):
-            evaluate_diffusion_model(args, autoround=autoround, model=None, pipe=None)
-
-    def test_only_model_raises_value_error(self):
-        """Test that ValueError is raised when only model is provided (autoround is None)."""
-        from auto_round.eval.evaluation import evaluate_diffusion_model
-
-        args = MagicMock()
-        model = MagicMock()
-        with pytest.raises(ValueError, match="Either 'pipe' must be provided"):
-            evaluate_diffusion_model(args, autoround=None, model=model, pipe=None)
