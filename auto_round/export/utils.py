@@ -16,7 +16,12 @@ import os
 
 import torch.nn as nn
 
-from auto_round.utils import copy_python_files_from_model_cache, logger, unsupported_meta_device
+from auto_round.utils import (
+    copy_missing_tensors_from_source,
+    copy_python_files_from_model_cache,
+    logger,
+    unsupported_meta_device,
+)
 
 
 def save_model(
@@ -56,6 +61,13 @@ def save_model(
             model.generation_config.save_pretrained(save_dir)
     else:
         model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    try:
+        copy_missing_tensors_from_source(
+            source_dir=model.config._name_or_path,
+            target_dir=save_dir,
+        )
+    except Exception as e:
+        logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):

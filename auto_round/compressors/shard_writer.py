@@ -95,6 +95,10 @@ class ShardWriter:
             self._add_tensor(param_name, v)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
+        # Guard against duplicate saving of the same parameter
+        all_saved = {p for meta in self.shard_meta for p in meta["params"]}
+        if name in all_saved or name in self.current_shard_tensors:
+            return
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
