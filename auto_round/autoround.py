@@ -25,6 +25,7 @@ from auto_round.compressors import (
     LLMCompressor,
     MLLMCompressor,
 )
+from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
@@ -163,7 +164,13 @@ class AutoRound:
 
         has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None
 
-        if (
+        if is_hybrid_diffusion_model(model):
+            logger.info("using Hybrid AR+Diffusion mode for hybrid model.")
+            model_cls.append(HybridCompressor)
+            if extra_config:
+                extra_config.mllm_config = None
+                extra_config.diffusion_config = None
+        elif (
             (extra_config and not extra_config.mllm_config.is_default())
             or has_multimodal_assets
             or is_mllm_model(model, platform=platform)

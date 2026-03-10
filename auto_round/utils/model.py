@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import collections
+import inspect
 import json
 import os
 import re
@@ -1654,3 +1655,67 @@ def handle_generation_config(model: torch.nn.Module):
             model.generation_config.do_sample = True
         if hasattr(generation_config, "temperature") and generation_config.temperature != 1.0:
             model.generation_config.do_sample = True
+
+
+def merge_block_output_keys(block, input_others, extra_keys):
+    """Merge block output keys into input_others, resolving positional/keyword conflicts.
+
+    When a block is called with positional args (stored in input_others["positional_inputs"]),
+    and the block output produces updated values for those same parameters (e.g.,
+    encoder_hidden_states), we must update the positional arg rather than adding a duplicate
+    keyword arg, which would cause "got multiple values for argument" errors.
+    """
+    positional_inputs = input_others.get("positional_inputs")
+    if not positional_inputs or not extra_keys:
+        input_others.update(extra_keys)
+        return
+
+    try:
+        sig = inspect.signature(block.forward)
+    except (ValueError, TypeError):
+        input_others.update(extra_keys)
+        return
+
+    params = [p for p in sig.parameters.keys() if p != "self"]
+    # params[0] = hidden_states (passed as input_ids separately)
+    # params[1:] correspond to positional_inputs[0], [1], ...
+
+    positional_inputs = list(positional_inputs)
+    for key, value in extra_keys.items():
+        if key in params:
+            pos_idx = params.index(key) - 1  # -1 because hidden_states is params[0]
+            if 0 <= pos_idx < len(positional_inputs):
+                positional_inputs[pos_idx] = value
+                continue
+        input_others[key] = value
+    input_others["positional_inputs"] = tuple(positional_inputs)
+
+
+def wrap_block_forward_positional_to_kwargs(base_hook):
+    """Wrap a block forward hook to convert positional inputs to keyword args.
+
+    Models like GLM-Image call transformer blocks with positional args
+    (e.g. block(hidden_states, encoder_hidden_states, temb, ...)).  The base
+    hook only stores positional_inputs once (from the first sample), losing
+    per-sample variation for encoder_hidden_states etc.  By converting
+    positional args to keyword args, all inputs are properly accumulated
+    across calibration samples.
+    """
+    _param_names = None
+
+    def forward(m, hidden_states=None, *positional_inputs, **kwargs):
+        nonlocal _param_names
+        if positional_inputs:
+            if _param_names is None:
+                sig = inspect.signature(m.orig_forward)
+                _param_names = [p for p in sig.parameters.keys() if p != "self"]
+            for i, val in enumerate(positional_inputs):
+                param_idx = i + 1  # hidden_states is params[0]
+                if param_idx < len(_param_names):
+                    param_name = _param_names[param_idx]
+                    if param_name not in kwargs:
+                        kwargs[param_name] = val
+            positional_inputs = ()
+        return base_hook(m, hidden_states, *positional_inputs, **kwargs)
+
+    return forward
