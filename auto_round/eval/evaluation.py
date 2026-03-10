@@ -96,9 +96,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         pipe: Diffusion pipeline instance (option 2)
     """
     if pipe is None and (autoround is None or model is None):
-        raise ValueError(
-            "Either 'pipe' must be provided, or both 'autoround' and 'model' must be provided."
-        )
+        raise ValueError("Either 'pipe' must be provided, or both 'autoround' and 'model' must be provided.")
 
     import torch
 
