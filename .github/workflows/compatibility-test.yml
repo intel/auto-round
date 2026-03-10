@@ -60,7 +60,7 @@ jobs:
           python -m pip install --upgrade pip uv setuptools
           uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
           uv pip install datasets --upgrade
-          python setup.py sdist bdist_wheel
+          uv build
           uv pip install dist/*.tar.gz && uv pip uninstall auto-round
           uv pip install dist/*.whl
           uv pip list
@@ -72,7 +72,7 @@ jobs:
 
       - name: Run compatibility test
         run: |
-          set -xe
+          set -e
           python -c "import auto_round; print(auto_round.__version__)"
           echo "============================================================================"
           auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 0 --nsamples 8
