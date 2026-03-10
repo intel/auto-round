@@ -460,6 +460,7 @@ def _unfuse_single_projection(
 
 _logged_memory_before_replacement = False  # To ensure we only log memory once before replacements
 
+
 def _unfuse_experts_weights_inplace(
     module: nn.Module,
     check_decorator: bool = True,

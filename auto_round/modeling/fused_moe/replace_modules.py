@@ -297,14 +297,14 @@ def apply_replacements(
 
         if not _raw_expert_is_logged:
             _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-        
+
         _apply_custom_replacements(model)
 
     if auto_detect_moe and is_transformers_version_greater_or_equal_5():
 
         if not _raw_expert_is_logged:
             _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-        
+
         _handle_moe_modules(model)
 
     if _raw_expert_is_logged:
