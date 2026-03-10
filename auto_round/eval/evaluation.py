@@ -105,7 +105,9 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
     # Prepare inference pipeline
     if pipe is None:
         if model is not None and unsupported_meta_device(model):
-            logger.error("Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit.")
+            logger.error(
+                "Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit."
+            )
             exit(0)
         pipe = autoround.pipe
         pipe.to(model.dtype)
