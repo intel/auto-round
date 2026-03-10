@@ -24,6 +24,7 @@ from auto_round.utils import (
     get_device_and_parallelism,
     get_device_str,
     get_model_dtype,
+    is_diffusion_model,
     set_cuda_visible_devices,
 )
 
@@ -113,6 +114,59 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="(for vllm) Custom vllm arguments in format: 'arg1=value1,arg2=value2'. "
             "Example: 'tensor_parallel_size=2,gpu_memory_utilization=0.9'",
         )
+        # Diffusion model specific arguments
+        diffusion_args = self.add_argument_group("diffusion model arguments")
+        diffusion_args.add_argument(
+            "--prompt_file",
+            default=None,
+            type=str,
+            help="File containing prompts for evaluation, one per line. "
+            "Use this for batch evaluation with multiple prompts.",
+        )
+        diffusion_args.add_argument(
+            "--prompt",
+            default=None,
+            type=str,
+            help="Single prompt for quick testing. " "Overrides prompt_file if both are specified.",
+        )
+        diffusion_args.add_argument(
+            "--metrics",
+            "--metric",
+            default="clip",
+            help="Evaluation metrics for generated images. "
+            "'clip': CLIP score measuring text-image alignment. "
+            "'clip-iqa': CLIP-based image quality assessment. "
+            "'imagereward': Learned metric for image quality.",
+        )
+        diffusion_args.add_argument(
+            "--image_save_dir",
+            default="./tmp_image_save",
+            type=str,
+            help="Directory to save generated images during evaluation. " "Useful for visual inspection of results.",
+        )
+        diffusion_args.add_argument(
+            "--guidance_scale",
+            default=7.5,
+            type=float,
+            help="Classifier-free guidance scale for diffusion models. "
+            "Higher values (7-20) make the model follow the prompt more closely. "
+            "Lower values give more creative/random results.",
+        )
+        diffusion_args.add_argument(
+            "--num_inference_steps",
+            default=50,
+            type=int,
+            help="Number of denoising steps in the diffusion process. "
+            "More steps (50-100) usually give better quality but take longer. "
+            "Fewer steps (10-30) are faster but lower quality.",
+        )
+        diffusion_args.add_argument(
+            "--generator_seed",
+            default=None,
+            type=int,
+            help="Random seed for image generation reproducibility. "
+            "Using the same seed produces identical results across runs.",
+        )
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -134,6 +188,13 @@ def eval(args):
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
+    if is_diffusion_model(args.model):
+        from auto_round.eval.evaluation import evaluate_diffusion_model
+        from auto_round.utils import diffusion_load_model
+
+        pipe, _ = diffusion_load_model(args.model)
+        evaluate_diffusion_model(args, pipe=pipe)
+        return
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
         eval_with_vllm(args)
