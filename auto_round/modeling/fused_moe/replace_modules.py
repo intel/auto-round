@@ -101,7 +101,8 @@ def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
     for name, module in model.named_modules():
         if name.endswith(".experts"):
             logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
-            return
+            return True
+    return False
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -289,15 +290,24 @@ def apply_replacements(
         The model with modules replaced.
     """
     _import_required_replacements(model)
+    _raw_expert_is_logged = False
 
     # Custom replacements first
     if is_custom_model(model):
-        _log_first_moe_block(model, "before replacement")
+
+        if not _raw_expert_is_logged:
+            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
+        
         _apply_custom_replacements(model)
-        _log_first_moe_block(model, "after replacement")
+
     if auto_detect_moe and is_transformers_version_greater_or_equal_5():
-        _log_first_moe_block(model, "before replacement")
+
+        if not _raw_expert_is_logged:
+            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
+        
         _handle_moe_modules(model)
+
+    if _raw_expert_is_logged:
         _log_first_moe_block(model, "after replacement")
 
     return model
