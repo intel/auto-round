@@ -15,7 +15,7 @@
 import copy
 from dataclasses import asdict
 from functools import wraps
-from typing import Iterable, Union
+from typing import Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model
@@ -55,6 +55,8 @@ from auto_round.utils import (
     set_non_auto_device_map,
     to_device,
 )
+from auto_round.utils.device import MemoryMonitor
+from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
@@ -488,6 +490,7 @@ def get_score_for_scheme(
     major_device="cpu",
     batch_size=1,
     disable_opt_rtn=True,
+    offload_context: Optional[OffloadManager] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     for n, m in model.named_modules():
@@ -506,6 +509,8 @@ def get_score_for_scheme(
             break
 
     for name in quant_layer_names:
+        if offload_context is not None:
+            offload_context.ensure_loaded(model, name)
         if name in fixed_layer_scheme.keys():
             continue
         m = get_module(model, name)
@@ -547,6 +552,8 @@ def get_score_for_scheme(
                 disable_opt_rtn=disable_opt_rtn,
             )
             set_module(model, name, new_m)
+    if offload_context is not None:
+        offload_context.flush_loaded(model)
     if low_gpu_mem_usage:
         dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
 
@@ -658,6 +665,21 @@ def _gen_layer_config(
     major_device="cpu",
     device_list=None,
 ):
+    # Initialize memory tracking for AutoScheme
+    memory_monitor = MemoryMonitor()
+    memory_monitor.reset()
+    memory_monitor.update_cpu()
+
+    # Create offload context for CPU RAM optimization
+    # Note: low_cpu_mem_usage only works when low_gpu_mem_usage is also enabled,
+    # because it requires layer-by-layer processing
+    offload_context = None
+    if auto_scheme.low_cpu_mem_usage and auto_scheme.low_gpu_mem_usage:
+        _model_dir = model_name
+        if _model_dir is None and hasattr(model, "config"):
+            _model_dir = getattr(model.config, "_name_or_path", None)
+        offload_context = OffloadManager(enabled=True, mode="clean", model_dir=_model_dir, cache_numel=True)
+
     target_bits = auto_scheme.avg_bits
     model.eval()
 
@@ -762,6 +784,11 @@ def _gen_layer_config(
             cal_imatrix(model, dataloader)
             logger.info("finish calculating imatrix")
 
+    # Register hooks and clear all block weights before the scheme loop.
+    # Hooks will transparently reload weights on demand during forward passes.
+    if offload_context is not None:
+        offload_context.add_offload_hooks(model, block_name)
+
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):
         apply_quant_scheme(
@@ -792,7 +819,11 @@ def _gen_layer_config(
                 major_device=major_device,
                 batch_size=batch_size,
                 disable_opt_rtn=auto_scheme.disable_opt_rtn,
+                offload_context=offload_context,
             )
+        # Track peak RAM after each scheme scoring
+        memory_monitor.update_cpu()
+
         new_scores = {}
         for share_layer in shared_layers:
             param_bits = 0
@@ -817,10 +848,17 @@ def _gen_layer_config(
         options_scores.append(options_total_loss)
         clear_memory(device_list=device_list)
 
+    # Remove hooks and restore original weights from disk for final bit-budget computations
+    if offload_context is not None:
+        offload_context.remove_offload_hooks(model, block_name)
+
     total_params = 0
     for n, m in model.named_modules():
         if n in quant_layer_names + embedding_layers_names:
-            total_params += m.weight.numel()
+            n_param = m.weight.numel()
+            if n_param == 0 and hasattr(m, "_cached_weight_numel"):
+                n_param = m._cached_weight_numel
+            total_params += n_param
 
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
@@ -902,6 +940,12 @@ def _gen_layer_config(
     global last_grad_input
     last_grad_input = None
     clear_memory(device_list=device_list)
+
+    # Log AutoScheme memory usage
+    memory_monitor.update_cpu()
+    low_cpu_str = "enabled" if auto_scheme.low_cpu_mem_usage else "disabled"
+    memory_monitor.log_summary(f"AutoScheme complete (low_cpu_mem_usage={low_cpu_str})")
+
     pbar.close()
     return layer_config
 
