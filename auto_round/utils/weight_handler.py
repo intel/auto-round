@@ -347,6 +347,7 @@ def convert_module_to_hp_if_necessary(
     dtype: torch.dtype = torch.bfloat16,
     device: str = "cpu",
     to_cpu: bool = False,
+    ignore_layers: Optional[list] = None,
 ) -> torch.nn.Module:
     """Convert quantized layer(s) to high-precision Linear layer(s) if necessary.
 
@@ -358,6 +359,8 @@ def convert_module_to_hp_if_necessary(
         dtype: Target dtype for the converted layer(s). Defaults to torch.bfloat16.
         device: Target device for the conversion. Defaults to "cpu".
         to_cpu: If True, move converted layers to CPU. Defaults to False.
+        ignore_layers: List of layer names to keep in their original format
+            instead of converting to high precision. Defaults to None.
 
     Returns:
         If input is a quantized layer: A new high-precision layer with dequantized weights.
@@ -366,6 +369,9 @@ def convert_module_to_hp_if_necessary(
     """
     from auto_round.utils.device import clear_memory
     from auto_round.utils.model import set_module
+
+    if ignore_layers is None:
+        ignore_layers = []
 
     # Check if it's a single quantized layer (has the attribute directly)
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
@@ -377,6 +383,8 @@ def convert_module_to_hp_if_necessary(
     cnt = 0
     for n, m in model_or_layer.named_modules():
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
+            if n in ignore_layers:
+                continue
             handler = get_handler(m.quantized_weight_type)
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
             set_module(model_or_layer, n, new_module)
