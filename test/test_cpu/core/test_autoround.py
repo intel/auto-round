@@ -632,16 +632,16 @@ class TestAutoRound:
         with patch("auto_round.utils.device.is_gaudi2", return_value=True):
             check_and_mark_quantized_module(mock_layer)
             convert_module_to_hp_if_necessary(mock_layer, device="hpu")
-            # Verify it was moved to CPU
-            mock_layer.to.assert_called_with("cpu")
+            # Verify it was moved to meta
+            mock_layer.to.assert_called_with("meta")
 
         with patch("auto_round.utils.device.is_gaudi2", return_value=False):
             # Reset mock
             mock_layer.to.reset_mock()
             check_and_mark_quantized_module(mock_layer)
             convert_module_to_hp_if_necessary(mock_layer, device="hpu")
-            # Verify it was moved to HPU (as requested in device arg)
-            mock_layer.to.assert_called_with("hpu")
+            # Verify it was moved to meta
+            mock_layer.to.assert_called_with("meta")
 
     def test_mixed_bit_setting(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path

@@ -152,7 +152,11 @@ class ShardWriter:
 
             module = get_module(self.model, module_path)
             # Check if all parameters of this module are now in 'all_saved'
-            if module is not None and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys()):
+            if (
+                module is not None
+                and isinstance(module, torch.nn.Module)
+                and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys())
+            ):
                 module.to("meta")
 
     def finalize(self):

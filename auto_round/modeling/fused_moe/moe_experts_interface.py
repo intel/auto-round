@@ -494,6 +494,8 @@ def _unfuse_experts_weights_inplace(
         logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
+    memory_monitor.update()
+    memory_monitor.log_summary("Before applying custom replacements")
     # Get first projection to determine num_experts and layout
     first_proj_name = next(iter(detected_projections))
     first_param = getattr(module, first_proj_name)
@@ -591,6 +593,9 @@ def _unfuse_experts_weights_inplace(
 
     # Install compact repr to collapse identical expert containers in print output
     _install_compact_expert_repr(module)
+
+    memory_monitor.update()
+    memory_monitor.log_summary("After applying custom replacements")
 
     return True
 

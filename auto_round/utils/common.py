@@ -104,6 +104,55 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
     setattr(cls, method_name, classmethod(patched))
 
 
+def _patch_transpose_for_buffers():
+    """Patch Transpose.convert() to skip transposition for buffer tensors.
+
+    transformers 5.2.0 calls model.get_parameter() inside Transpose.convert(),
+    but auto_round registers weight_packed/weight_scale as buffers, not Parameters,
+    causing AttributeError. This patch returns buffer tensors unchanged.
+    """
+    try:
+        from transformers.core_model_loading import Transpose
+    except ImportError:
+        return  # Not present in this transformers version
+
+    _original_convert = Transpose.convert
+
+    @wraps(_original_convert)
+    def _patched_convert(self, input_dict, source_patterns, target_patterns, **kwargs):
+        if not self.check_dims:
+            return _original_convert(self, input_dict, source_patterns, target_patterns, **kwargs)
+
+        model = kwargs.get("model")
+        full_layer_name = kwargs.get("full_layer_name")
+
+        if model is not None and full_layer_name is not None:
+            module_path, _, param_name = full_layer_name.rpartition(".")
+            try:
+                module_obj = model.get_submodule(module_path) if module_path else model
+                buffer_tensor = module_obj.get_buffer(param_name) if hasattr(module_obj, "get_buffer") else None
+                if buffer_tensor is not None:
+                    # Buffer tensors must not be transposed – return as-is.
+                    target_pattern = self.get_target_pattern(input_dict, source_patterns, target_patterns)
+                    tensors = next(iter(input_dict.values()))
+                    tensor = tensors[0] if isinstance(tensors, list) else tensors
+                    return {target_pattern: tensor}
+            except Exception as exc:
+                logger.debug(
+                    "Failed to apply buffer transpose patch for model=%r, full_layer_name=%r, module_path=%r; "
+                    "falling back to original Transpose.convert behavior. Error: %s",
+                    model,
+                    full_layer_name,
+                    module_path,
+                    exc,
+                    exc_info=True,
+                )
+
+        return _original_convert(self, input_dict, source_patterns, target_patterns, **kwargs)
+
+    Transpose.convert = _patched_convert
+
+
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
@@ -124,6 +173,10 @@ def monkey_patch_transformers():
         from transformers.initialization import no_init_weights
 
         setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
+    if parsed_version >= version.parse("5.2.0"):
+        # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
+        # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
+        _patch_transpose_for_buffers()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
@@ -407,3 +460,12 @@ def is_transformers_version_greater_or_equal_5():
     from packaging import version
 
     return version.parse(transformers.__version__) >= version.parse("5.0.0")
+
+
+# TODO: (yiliu30) refine version check logic
+@lru_cache(None)
+def is_transformers_version_greater_or_equal_4():
+    import transformers
+    from packaging import version
+
+    return version.parse(transformers.__version__) >= version.parse("4.0.0")
