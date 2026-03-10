@@ -82,8 +82,9 @@ def _apply_to_module(
             # for autoround tuning: patch wrapper linear qdq_weight func
             from .patch_modules import (
                 patch_wrapperlinear_to_apply_transform,
-                patch_wrapperwalayer_forward_to_apply_transform
+                patch_wrapperwalayer_forward_to_apply_transform,
             )
+
             patch_wrapperlinear_to_apply_transform(transform)
             patch_wrapperwalayer_forward_to_apply_transform(transform)
 

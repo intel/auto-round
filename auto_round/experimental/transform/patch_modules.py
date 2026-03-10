@@ -2,10 +2,11 @@
 # # SPDX-License-Identifier: Apache-2.0
 
 import transformers
+
 from ...wrapper import WrapperLinear, WrapperWALayer
 
 
-#def patch_wrapperlinear_to_apply_transform(transform_attr: str = "forward_hadamard"):
+# def patch_wrapperlinear_to_apply_transform(transform_attr: str = "forward_hadamard"):
 def patch_wrapperlinear_to_apply_transform(transform):
     """
     Globally monkey-patch WrapperLinear._qdq_weight and WrapperLinear._qdq_act so that it applies
@@ -98,7 +99,7 @@ def patch_wrapperlinear_to_apply_transform(transform):
     WrapperLinear._hadamard_patched = True
 
 
-#def patch_wrapperwalayer_forward_to_apply_transform(transform_attr: str = "forward_hadamard"):
+# def patch_wrapperwalayer_forward_to_apply_transform(transform_attr: str = "forward_hadamard"):
 def patch_wrapperwalayer_forward_to_apply_transform(transform):
     """
     Globally monkey-patch WrapperWALayer.forward so that it applies
@@ -134,7 +135,6 @@ def patch_wrapperwalayer_forward_to_apply_transform(transform):
             tensor_max=act_max,
         )
         return self.orig_layer.forward(x)
-
 
     WrapperWALayer.forward = _forward_patched
     WrapperWALayer._hadamard_forward_patched = True
