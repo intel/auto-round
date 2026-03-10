@@ -48,7 +48,7 @@ stages:
               utArtifact: "ut"
               imageTag: $(IMAGE_TAG)
               dockerFileName: $(DOCKERFILE_NAME)
-              utContainerName: "AutoRoundUnitTestXPU"
+              utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'
