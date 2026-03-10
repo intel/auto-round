@@ -100,10 +100,15 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
 
     import torch
 
-    from auto_round.utils import detect_device, get_model_dtype, logger
+    from auto_round.utils import detect_device, get_model_dtype, logger, unsupported_meta_device
 
     # Prepare inference pipeline
     if pipe is None:
+        if model is not None and unsupported_meta_device(model):
+            logger.error(
+                "Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit."
+            )
+            exit(0)
         pipe = autoround.pipe
         pipe.to(model.dtype)
         pipe.transformer = model
