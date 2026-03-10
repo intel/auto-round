@@ -34,6 +34,17 @@ def is_commit_on_tag():
 
 
 def get_build_version():
+    # When building a wheel from an extracted sdist (e.g. via `uv build` or
+    # `python -m build`), the sdist root contains a PKG-INFO file that already
+    # carries the correct version computed during the sdist step.  Reading from
+    # it avoids the sdist/wheel version mismatch that occurs because git is not
+    # available inside the extracted sdist directory.
+    if os.path.exists("PKG-INFO"):
+        with open("PKG-INFO", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+
     if is_commit_on_tag():
         return __version__
     try:
@@ -133,14 +144,15 @@ HPU_INSTALL_CFG = {
     "install_requires": fetch_requirements(HPU_REQUIREMENTS_FILE),
 }
 
+
+# Support legacy `python setup.py hpu install` invocation for backward compatibility.
+# For python -m build / uv build, use the BUILD_HPU_ONLY=1 environment variable instead.
 if __name__ == "__main__":
-
-    package_name = "auto-round"
-
     hpu_build = "hpu" in sys.argv
     if hpu_build:
         sys.argv.remove("hpu")
 
+    package_name = "auto-round"
     should_build_hpu = hpu_build or BUILD_HPU_ONLY
     if should_build_hpu:
         package_name = "auto-round-hpu"
