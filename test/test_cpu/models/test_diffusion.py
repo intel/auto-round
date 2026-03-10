@@ -28,7 +28,7 @@ def setup_flux():
     transformers_version >= version.parse("5.0.0"),
     reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
 )
-def test_flux(setup_flux):
+def test_flux_saving(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(
         pipe,
@@ -38,8 +38,24 @@ def test_flux(setup_flux):
         num_inference_steps=2,
         disable_opt_rtn=True,
     )
-    # skip model saving since it takes much time
     autoround.quantize_and_save(output_dir)
     assert os.path.exists(os.path.join(output_dir, "model_index.json"))
     assert os.path.exists(os.path.join(output_dir, "transformer", "quantization_config.json"))
     shutil.rmtree(output_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(
+    transformers_version >= version.parse("5.0.0"),
+    reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
+)
+def test_flux(setup_flux):
+    pipe, output_dir = setup_flux
+    autoround = AutoRound(
+        pipe,
+        tokenizer=None,
+        scheme="MXFP4",
+        iters=0,
+        num_inference_steps=2,
+    )
+    # skip model saving since it takes much time
+    autoround.quantize()
