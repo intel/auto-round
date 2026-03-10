@@ -541,7 +541,9 @@ def diffusion_load_model(
         pipe_config = pipe.load_config(pipe.config["_name_or_path"])
 
     else:
-        raise ValueError(f"Only support str or DiffusionPipeline class for model, but get {type(model)}")
+        raise ValueError(
+            f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
+        )
 
     # add missing key
     for k, v in pipe_config.items():
