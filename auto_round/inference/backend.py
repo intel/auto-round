@@ -716,6 +716,10 @@ def dynamic_import_inference_linear(backend, config):
     if "torch_mxfp8" in backend:
         return ar_qmodules.MXFP8QuantLinear
     if "torch_mxfp4" in backend:
+        if getattr(config, "transform_config", None) is not None:
+            transform_config = config.transform_config
+            if transform_config["transform_type"] == "random_hadamard":
+                return ar_qmodules.TransformMXFP4QuantLinear
         return ar_qmodules.MXFP4QuantLinear
     if "torch_nvfp4" in backend:
         return ar_qmodules.NVFP4QuantLinear

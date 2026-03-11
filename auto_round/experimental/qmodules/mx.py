@@ -197,6 +197,25 @@ class MXFP4QuantLinear(MXQuantLinearBase):
         return unpacked_data
 
 
+class TransformMXFP4QuantLinear(MXFP4QuantLinear):
+    """
+    Quantized linear layer using the MXFP4 quantization scheme.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.weight_name = "weight_packed"
+        super().__init__(*args, **kwargs)
+        self.enable_transform = True
+        self.register_buffer(
+            "forward_hadamard_transform",
+            torch.empty(
+                self.group_size,
+                self.group_size,
+                dtype=self.dtype,
+            ),
+        )
+
+
 class MXFP8QuantLinear(MXQuantLinearBase):
     """
     Quantized linear layer using the MXFP8 quantization scheme.

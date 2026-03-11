@@ -20,3 +20,6 @@ class TransformConfig(BaseModel):
 
     # apply transform inside modules for nvfp4, autoround tuning etc.
     need_calibration: bool = Field(default=False, exclude=True)
+
+    # for random hadamard transform 
+    random_seed: bool = Field(default=False, exclude=True)

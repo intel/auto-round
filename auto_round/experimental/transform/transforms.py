@@ -19,7 +19,10 @@ from typing import Any, Callable, Dict
 import torch
 import torch.nn as nn
 
-from auto_round.experimental.transform.utils.hadamard import deterministic_hadamard_matrix
+from auto_round.experimental.transform.utils.hadamard import (
+    deterministic_hadamard_matrix,
+    random_hadamard_matrix
+)
 from auto_round.experimental.transform.utils.matrix import apply_transform_weight
 
 
@@ -49,12 +52,14 @@ class HadamardTransform(nn.Module):
         precision: torch.dtype = None,
         location: str = "weight",
         module_type: type[torch.nn.Module] = torch.nn.Linear,
+        inverse: bool = False,
     ):
         super().__init__()
         self.size = transform_block_size
         self.scale = 1 / math.sqrt(self.size)
         self.location = location
         self.module_type = module_type
+        self.inverse = inverse
         self.weight = self._create_weight(self.size, device, precision)
 
     def _create_weight(
@@ -72,25 +77,54 @@ class HadamardTransform(nn.Module):
         ori_shape = x.shape
         x = x.view(-1, self.size)
         return (
-            (
-                apply_transform_weight(
-                    self.weight.to(device=x.device),
-                    x.to(dtype=self.weight.dtype),
-                    self.location,
-                    self.module_type,
-                )
+            apply_transform_weight(
+                self.weight.to(device=x.device),
+                x.to(dtype=self.weight.dtype),
+                self.location,
+                self.module_type,
             )
-            .to(x.dtype)
-            .view(ori_shape)
-        )
+        ).to(x.dtype).view(ori_shape)
+
+
+class RandomHadamardTransform(HadamardTransform):
+    def __init__(
+        self,
+        *args,
+        seed: int | None = None,
+        generator: torch.Generator | None = None,
+        **kwargs,
+    ):
+        if generator is not None:
+            self.generator = generator
+        else:
+            self.generator = torch.Generator()
+            if seed is not None:
+                self.generator.manual_seed(seed)
+        super().__init__(*args, **kwargs)
+
+    def _create_weight(
+        self,
+        size: int,
+        device: torch.device = None,
+        precision: torch.dtype = None,
+    ) -> torch.nn.Parameter:
+        data = random_hadamard_matrix(size, precision, device, self.generator) * self.scale
+        # activation needs transpose
+        if self.inverse:
+            data = data.T
+        # data = deterministic_hadamard_matrix(size, precision, device) * self.scale
+        # TODO: implement SpinQuant, which rotation matrix is learnable
+        return nn.Parameter(data, requires_grad=False)
 
 
 TRANSFORMS = {
     "identity": IdentityTransform,
     "hadamard": HadamardTransform,
+    "random_hadamard": RandomHadamardTransform,
 }
 
 
 def build_transform(transform_type: str, **transform_kwargs):
     transform = TRANSFORMS[transform_type]
     return transform(**filter_kwarg_dict(transform.__init__, transform_kwargs))
+

@@ -51,19 +51,33 @@ def _apply_to_module(
     """
 
     # create transform as submodule
-    transform_name = "forward_hadamard"
+    transform_name = "forward_hadamard_transform"
 
     if config.location == "input":
         from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
-        transform = build_transform(**config.dict(), device="cpu", precision=module.dtype, location="input")
+        # activation needs transpose
+        inp_transform = build_transform(
+            **config.dict(),
+            inverse=True,
+            device="cpu",
+            precision=module.dtype,
+        )
+        if config.transform_type != "random_hadamard":
+            transform_weight = inp_transform.weight
+        else:
+            transform_weight = None
 
-        def input_hook(_, args):
+        def input_hook(self, args):
             input = args[0]
             # transform(input)
             orig_shape = input.shape
             x_flat = input.contiguous().flatten(end_dim=-2)
-            qdq_input, _ = mxfp4_forward_kernel_wrapper(x_flat, transform.weight)
+            qdq_input, _ = mxfp4_forward_kernel_wrapper(
+                x_flat,
+                transform_weight if transform_weight is not None \
+                        else self.forward_hadamard_transform.T    # this matrix from w_transform, needs transpose
+            )
             return qdq_input.reshape(orig_shape)
 
         # for fused transform + quantization kernel
@@ -75,11 +89,18 @@ def _apply_to_module(
         # fuse transform into weight
         assert hasattr(module, "weight")
 
-        transform = build_transform(
+        w_transform = build_transform(
             **config.dict(),
             device=module.weight.device,
             precision=module.weight.dtype,
         )
+
+        # need save random hadamard matrix needed when inference
+        if config.transform_type == "random_hadamard":
+            module.register_module(transform_name, w_transform)
+            # for saving transform weight
+            from .patch_modules import patch_quantlinear
+            patch_quantlinear()
 
         if config.need_calibration:
             # for training, the weight changes with every forward pass
@@ -89,15 +110,23 @@ def _apply_to_module(
                 patch_wrapperwalayer_forward_to_apply_transform,
             )
 
-            patch_wrapperlinear_to_apply_transform(transform)
-            patch_wrapperwalayer_forward_to_apply_transform(transform)
+            inp_transform = build_transform(
+                **config.dict(),
+                location="input",
+                inverse=True,
+                device=module.weight.device,
+                precision=module.weight.dtype,
+            )
+
+            patch_wrapperlinear_to_apply_transform(w_transform, inp_transform)
+            patch_wrapperwalayer_forward_to_apply_transform(inp_transform)
 
         else:
             # transform is no longer needed (unfusing is not supported)
             # delattr(module, transform_name)
             # fuse transform into weight
             with torch.no_grad():
-                getattr(module, "weight").copy_(transform(module.weight).to(module.weight.device))
+                getattr(module, "weight").copy_(w_transform(module.weight).to(module.weight.device))
 
     else:
         # TODO: apply transform to output/q/k

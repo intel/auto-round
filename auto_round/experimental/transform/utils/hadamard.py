@@ -1,11 +1,10 @@
-# # Copyright (C) 2026 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
 
 import math
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
+
 
 REPO_PATH = Path(__file__).parent / "hadamards.safetensors"
 
@@ -26,7 +25,7 @@ def deterministic_hadamard_matrix(
     Construct an n-by-n Hadamard matrix, using Sylvester's construction.
     `n` must be a power of 2.
 
-    Adapted from https://github.com/scipy/scipy/blob/v1.15.2/scipy/linalg/_special_matrices.py  # noqa: E501
+    Adapated from https://github.com/scipy/scipy/blob/v1.15.2/scipy/linalg/_special_matrices.py  # noqa: E501
 
     :param size: order of the matrix, must be a power of 2
     :param dtype: data type of matrix
@@ -60,8 +59,9 @@ def random_hadamard_matrix(
     `deterministic_hadamard_matrix` in that this function supports non powers of 2
     and randomization using a seeded generator
 
-    Adapted from https://github.com/facebookresearch/SpinQuant/blob/main/utils/hadamard_utils.py  # noqa: E501
-    Known matrices were retrieved from N. J. A. Sloane's Library of Hadamard Matrices http://www.neilsloane.com/hadamard/  # noqa: E501
+    Adapated from https://github.com/facebookresearch/SpinQuant/blob/main/utils/hadamard_utils.py  # noqa: E501
+    Known matrices were retrieved from N. J. A. Sloane's Library of Hadamard Matrices
+    http://www.neilsloane.com/hadamard/  # noqa: E501
 
     :param size: The dimension of the hamadard matrix
     :param dtype: data type of matrix
