@@ -73,7 +73,7 @@ For diffusion models, currently we only validate quantizaion on the FLUX.1-dev, 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
 
-For diffusion models, we used [**coco2014**]("https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv") calibration dataset as our default.
+For diffusion models, we used [**coco2014**](https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv) calibration dataset as our default.
 
 If users want to use their own dataset, please build the dataset file in ".tsv" format following below structure and use it through argument --dataset (tsv file):
 ```

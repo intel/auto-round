@@ -287,7 +287,7 @@ ar.quantize_and_save()
 
 **该功能仍在实验阶段**
 
-默认情况下，AutoRound 只会量化 VLM 的文本模块，并默认采用 `NeelNanda/pile-10k`​ 作为标定数据集。若需量化整个模型，可设置 `quant_nontext_module = True` （但目前为止该功能的适用范围仍较为有限）。更多信息请参考 [readme](./auto_round/mllm/README.md)
+默认情况下，AutoRound 只会量化 VLM 的文本模块，并默认采用 `NeelNanda/pile-10k`​ 作为标定数据集。若需量化整个模型，可设置 `quant_nontext_module = True` （但目前为止该功能的适用范围仍较为有限）。更多信息请参考 [readme](auto_round/compressors/mllm/README.md)
 
 ```python
 from auto_round import AutoRound
