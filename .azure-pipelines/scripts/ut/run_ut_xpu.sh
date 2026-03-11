@@ -10,9 +10,18 @@ git config --global --add safe.directory /auto-round
 rm -rf /auto-round/auto_round
 cd /auto-round/test || exit 1
 
+echo "##[group]check xpu env..."
+echo "ZE_AFFINITY_MASK: ${ZE_AFFINITY_MASK}"
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("xpu available:", torch.xpu.is_available())
+print("xpu count:", torch.xpu.device_count())
+PY
+echo "##[endgroup]"
+
 export TQDM_MININTERVAL=60
 export HF_HUB_DISABLE_PROGRESS_BARS=1
-export ZE_AFFINITY_MASK=2,3 # set xpu affinity
 export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
