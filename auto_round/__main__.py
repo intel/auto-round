@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import json
 import os
+import re
 import sys
 
 from auto_round.auto_scheme import AutoScheme
@@ -130,6 +132,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         basic.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         basic.add_argument("--adam", action="store_true", help="Use Adam optimizer instead of SignSGD.")
+        basic.add_argument(
+            "--layer_config",
+            default=None,
+            type=str,
+            help="Per-layer quantization config for missing tensors (e.g., MTP layers) as a JSON string. "
+            "Keys are name prefixes, values are config dicts with optional bits/group_size/sym. "
+            'Example: "{mtp:{bits:8,data_type:int},mtp.fc:{bits:16}}". '
+            "These settings are saved to extra_config and override the global quantization config.",
+        )
         basic.add_argument(
             "--low_gpu_mem_usage",
             action="store_true",
@@ -495,6 +506,45 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
 
+def _parse_layer_config_arg(s: str) -> dict:
+    """Parse --layer_config with unquoted keys/values.
+
+    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
+    auto-typed: numeric strings become ``int``, everything else stays ``str``.
+
+    Example::
+
+        {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
+    """
+    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
+    pos = [0]
+
+    def _val():
+        tok = tokens[pos[0]]
+        if tok == "{":
+            return _dict()
+        pos[0] += 1
+        try:
+            return int(tok)
+        except ValueError:
+            return tok
+
+    def _dict():
+        pos[0] += 1  # consume '{'
+        result = {}
+        while tokens[pos[0]] != "}":
+            key = tokens[pos[0]]
+            pos[0] += 1  # key
+            pos[0] += 1  # consume ':'
+            result[key] = _val()
+            if tokens[pos[0]] == ",":
+                pos[0] += 1  # consume ','
+        pos[0] += 1  # consume '}'
+        return result
+
+    return _dict()
+
+
 def list_item():
     args = argparse.ArgumentParser()
     args.add_argument("item", type=str, help="item to list, e.g., format")
@@ -655,6 +705,9 @@ def tune(args):
     extra_config.diffusion_config = diffusion_config
 
     layer_config = {}
+    if args.layer_config:
+        layer_config = _parse_layer_config_arg(args.layer_config)
+        args.layer_config = layer_config
 
     if args.avg_bits is not None:
         if args.options is None:

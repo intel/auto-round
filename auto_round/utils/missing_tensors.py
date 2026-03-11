@@ -390,6 +390,14 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
 
     Non-weight tensors (bias, norms, embeddings, etc.) are kept as-is.
 
+    Per-layer resolution:
+        For each weight, ``extra_config`` is checked first (exact layer name,
+        then regex pattern match), and the result is merged with global
+        defaults.  This means entries like ``".*mtp.*": {"bits": 8}`` or
+        ``"mtp.fc": {"bits": 16, "data_type": "fp"}`` are honoured, while
+        layers absent from ``extra_config`` fall back to global ``bits`` /
+        ``group_size`` / ``sym``.
+
     Args:
         target_dir: Output directory that contains ``config.json``.
         missing_tensors_dict: Dict mapping tensor names to tensor values.
@@ -397,15 +405,56 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     Returns:
         Updated dict with quantized+packed tensors replacing original weight tensors.
     """
+    import re as _re
+
     BLOCK_NAME_TO_IGNORE = ["mtp.fc", "shared_expert_gate", "mlp.gate"]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
 
-    bits = qconfig["bits"]
-    group_size = qconfig["group_size"]
-    sym = qconfig["sym"]
+    global_bits = qconfig["bits"]
+    global_group_size = qconfig["group_size"]
+    global_sym = qconfig["sym"]
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
+    extra_config: dict = qconfig.get("extra_config", {}) or {}
+
+    def _resolve_layer_cfg(layer_name: str) -> dict:
+        """Return effective {bits, group_size, sym, data_type} for *layer_name*.
+
+        Lookup order:
+          1. Exact key match in extra_config.
+          2. Among all regex keys that match layer_name, pick the longest pattern
+             (longer pattern == more specific, e.g. ``.*mtp\\.fc.*`` beats ``.*mtp.*``).
+          3. Global defaults.
+        """
+        override: dict = {}
+        # 1. exact match
+        if layer_name in extra_config:
+            override = extra_config[layer_name]
+        else:
+            # 2. collect all matching regex patterns, keep the most specific (longest)
+            best_pattern: str | None = None
+            for pattern, cfg in extra_config.items():
+                if pattern == layer_name:
+                    continue  # already handled above
+                try:
+                    if _re.search(pattern, layer_name):
+                        if best_pattern is None or len(pattern) > len(best_pattern):
+                            best_pattern = pattern
+                            override = cfg
+                except _re.error:
+                    pass  # not a valid regex → skip
+        return {
+            "bits": override.get("bits", global_bits),
+            "group_size": override.get("group_size", global_group_size),
+            "sym": override.get("sym", global_sym),
+            "data_type": override.get("data_type", "int"),
+        }
+
+    def _is_fp_layer(layer_cfg: dict) -> bool:
+        """Return True when the resolved config indicates full-precision (no quantization)."""
+        dt = layer_cfg.get("data_type", "int")
+        return layer_cfg["bits"] >= 16 or dt in ("fp", "float", "float16", "bfloat16", "float32")
 
     # Identify weight tensors eligible for quantization (2D Linear weights)
     def _is_eligible(k: str) -> bool:
@@ -413,20 +462,25 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             return False
         if missing_tensors_dict[k].dim() != 2:
             return False
-        # Never quantize MTP fully-connected layers
+        layer_name = k[: -len(".weight")]
+        layer_cfg = _resolve_layer_cfg(layer_name)
+        # If extra_config explicitly covers this layer, trust its decision
+        if layer_name in extra_config or any(
+            _re.search(p, layer_name) for p in extra_config if p != layer_name and _is_valid_regex(p)
+        ):
+            return not _is_fp_layer(layer_cfg)
+        # Fall back to BLOCK_NAME_TO_IGNORE heuristic
         if any(block in k for block in BLOCK_NAME_TO_IGNORE):
             return False
-        return True
+        return not _is_fp_layer(layer_cfg)
 
     weight_keys = [k for k in missing_tensors_dict if _is_eligible(k)]
 
-    # Collect 2-D weight tensors skipped due to BLOCK_NAME_TO_IGNORE.
+    # Collect 2-D weight tensors that will NOT be quantized (for extra_config bookkeeping).
     ignored_weight_keys = [
         k
         for k in missing_tensors_dict
-        if k.endswith(".weight")
-        and missing_tensors_dict[k].dim() == 2
-        and any(block in k for block in BLOCK_NAME_TO_IGNORE)
+        if k.endswith(".weight") and missing_tensors_dict[k].dim() == 2 and k not in weight_keys
     ]
 
     # Update quantization config: extra_config for ignored layers + block_name_to_quantize for new blocks
@@ -434,11 +488,11 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
 
         def _update_qcfg(qcfg):
             if ignored_weight_keys:
-                extra_config = qcfg.get("extra_config", {})
+                ec = qcfg.get("extra_config", {})
                 for k in ignored_weight_keys:
                     layer_name = k[: -len(".weight")]
-                    extra_config.setdefault(layer_name, {"bits": 16, "data_type": "fp"})
-                qcfg["extra_config"] = extra_config
+                    ec.setdefault(layer_name, {"bits": 16, "data_type": "fp"})
+                qcfg["extra_config"] = ec
                 logger.info(
                     f"Updated extra_config for {len(ignored_weight_keys)} ignored layer(s): "
                     f"{[k[: -len('.weight')] for k in ignored_weight_keys]}"
@@ -457,7 +511,6 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 added = sorted(new_prefixes - existing_set)
                 if added:
                     merged = existing + added
-                    # Remove any entry that is already covered by a shorter prefix in the list
                     merged = [
                         b for b in merged if not any(b != other and b.startswith(other + ".") for other in merged)
                     ]
@@ -473,7 +526,6 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             try:
                 with open(cfg_path) as f:
                     cfg_data = json.load(f)
-                # config.json wraps under "quantization_config"; quantization_config.json is the dict itself
                 if cfg_file == "config.json":
                     cfg_data["quantization_config"] = _update_qcfg(cfg_data.get("quantization_config", {}))
                 else:
@@ -487,8 +539,8 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         return missing_tensors_dict
 
     logger.info(
-        f"Applying WOQ (bits={bits}, group_size={group_size}, sym={sym}) to "
-        f"{len(weight_keys)} missing Linear weight(s)..."
+        f"Applying WOQ to "
+        f"{len(weight_keys)} missing Linear weight(s) (per-layer overrides from extra_config applied)..."
     )
 
     new_tensors: dict = {}
@@ -498,11 +550,21 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         weight = missing_tensors_dict[weight_key]
         out_features, in_features = weight.shape
 
+        layer_name = weight_key[: -len(".weight")]
+        layer_cfg = _resolve_layer_cfg(layer_name)
+        bits = layer_cfg["bits"]
+        group_size = layer_cfg["group_size"]
+        sym = layer_cfg["sym"]
+
         effective_gs = group_size if group_size != -1 else in_features
         if effective_gs <= 0:
             continue
 
-        base_name = weight_key[: -len(".weight")]
+        logger.debug(
+            f"WOQ [{layer_name}]: bits={bits}, group_size={effective_gs}, sym={sym}, " f"shape={list(weight.shape)}"
+        )
+
+        base_name = layer_name
 
         try:
             qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=effective_gs, sym=sym)
@@ -531,6 +593,17 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         f"({len(new_tensors)} packed tensor(s) created)."
     )
     return result
+
+
+def _is_valid_regex(pattern: str) -> bool:
+    """Return True if *pattern* is a valid regular expression."""
+    import re as _re
+
+    try:
+        _re.compile(pattern)
+        return True
+    except _re.error:
+        return False
 
 
 def _get_woq_config_from_dir(target_dir: str) -> dict | None:
@@ -586,4 +659,11 @@ def _get_woq_config_from_dir(target_dir: str) -> dict | None:
         return None
 
     block_name_to_quantize = qcfg.get("block_name_to_quantize", None)
-    return {"bits": bits, "group_size": group_size, "sym": sym, "block_name_to_quantize": block_name_to_quantize}
+    extra_config = qcfg.get("extra_config", {})
+    return {
+        "bits": bits,
+        "group_size": group_size,
+        "sym": sym,
+        "block_name_to_quantize": block_name_to_quantize,
+        "extra_config": extra_config,
+    }

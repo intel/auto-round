@@ -351,8 +351,9 @@ def set_layer_config(
 
         regex = re.compile(name)
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
-        if not matched:
-            raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
+        # skip it for mtp layers not loaded in transformers
+        # if not matched:
+        #     raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
         for match in matched:
