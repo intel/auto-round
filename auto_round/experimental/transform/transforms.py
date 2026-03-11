@@ -19,10 +19,7 @@ from typing import Any, Callable, Dict
 import torch
 import torch.nn as nn
 
-from auto_round.experimental.transform.utils.hadamard import (
-    deterministic_hadamard_matrix,
-    random_hadamard_matrix
-)
+from auto_round.experimental.transform.utils.hadamard import deterministic_hadamard_matrix, random_hadamard_matrix
 from auto_round.experimental.transform.utils.matrix import apply_transform_weight
 
 
@@ -77,13 +74,17 @@ class HadamardTransform(nn.Module):
         ori_shape = x.shape
         x = x.view(-1, self.size)
         return (
-            apply_transform_weight(
-                self.weight.to(device=x.device),
-                x.to(dtype=self.weight.dtype),
-                self.location,
-                self.module_type,
+            (
+                apply_transform_weight(
+                    self.weight.to(device=x.device),
+                    x.to(dtype=self.weight.dtype),
+                    self.location,
+                    self.module_type,
+                )
             )
-        ).to(x.dtype).view(ori_shape)
+            .to(x.dtype)
+            .view(ori_shape)
+        )
 
 
 class RandomHadamardTransform(HadamardTransform):
@@ -127,4 +128,3 @@ TRANSFORMS = {
 def build_transform(transform_type: str, **transform_kwargs):
     transform = TRANSFORMS[transform_type]
     return transform(**filter_kwarg_dict(transform.__init__, transform_kwargs))
-

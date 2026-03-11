@@ -4,9 +4,9 @@
 import torch
 import transformers
 
+from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear, pack_fp4_to_uint8
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
-from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear, pack_fp4_to_uint8
 
 def patch_wrapperlinear_to_apply_transform(w_transform, inp_transform):
     """
@@ -140,17 +140,20 @@ def patch_wrapperwalayer_forward_to_apply_transform(inp_transform):
 
 
 def patch_quantlinear():
-    """
-    """
+    """ """
 
     if getattr(QuantLinear, "_pack_patched", False):
         return
 
-    from auto_round.utils import get_packing_device
     from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+    from auto_round.utils import get_packing_device
+
     E8M0_EXPONENT_BIAS = 127
     E8M0_EXPONENT_NAN_VAL = 255
-    def _pack_patched(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None, device=None):
+
+    def _pack_patched(
+        self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None, device=None
+    ):
         device = get_packing_device(device)
         if getattr(linear, "bias", None) is not None:
             self.bias = linear.bias.detach().to(torch.float16)

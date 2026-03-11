@@ -75,8 +75,9 @@ def _apply_to_module(
             x_flat = input.contiguous().flatten(end_dim=-2)
             qdq_input, _ = mxfp4_forward_kernel_wrapper(
                 x_flat,
-                transform_weight if transform_weight is not None \
-                        else self.forward_hadamard_transform.T    # this matrix from w_transform, needs transpose
+                (
+                    transform_weight if transform_weight is not None else self.forward_hadamard_transform.T
+                ),  # this matrix from w_transform, needs transpose
             )
             return qdq_input.reshape(orig_shape)
 
@@ -100,6 +101,7 @@ def _apply_to_module(
             module.register_module(transform_name, w_transform)
             # for saving transform weight
             from .patch_modules import patch_quantlinear
+
             patch_quantlinear()
 
         if config.need_calibration:
