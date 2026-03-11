@@ -395,13 +395,6 @@ def set_layer_config(
     # Also include layer names from safetensor files not loaded into the model
     # (e.g. MTP layers that transformers does not instantiate).
     safetensor_only_names = _get_safetensor_layer_names_not_in_model(model, all_module_names)
-    if safetensor_only_names:
-        logger.debug(
-            f"Found {len(safetensor_only_names)} layer(s) in safetensor files not loaded "
-            f"into the model (e.g. MTP layers): {safetensor_only_names[:5]}"
-            f"{'...' if len(safetensor_only_names) > 5 else ''}"
-        )
-        all_supported_layer_names.extend(safetensor_only_names)
 
     # 6. expand regex configs
     regex_config = {}
@@ -417,8 +410,9 @@ def set_layer_config(
 
         regex = re.compile(name)
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
+        safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
         # skip it for mtp layers not loaded in transformers
-        if not matched:
+        if not matched and not safetensor_only_matched:
             raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
@@ -965,6 +959,7 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
+    not_to_quantized_layers.extend(ignore_layers)  # keep regex name for later use
     logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
     return not_to_quantized_layers
 

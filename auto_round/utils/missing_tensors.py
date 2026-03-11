@@ -435,7 +435,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = ["mtp.fc", "shared_expert_gate", "mlp.gate"]
+    BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "g_proj."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
