@@ -248,6 +248,40 @@ def _check_accelerate_version():
         )
 
 
+_MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+
+
+def _is_mxfp4_model(model_path, trust_remote_code=True):
+    """Check if a model is an MXFP4 quantized model supported for direct loading.
+
+    Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
+    adding zero overhead to non-MXFP4 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        return False
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _MXFP4_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -284,6 +318,18 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    load_kwargs = {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": trust_remote_code,
+        "device_map": "auto" if use_auto_mapping else None,
+    }
+    if is_mxfp4:
+        from transformers import Mxfp4Config
+
+        load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
+        logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
+
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -295,29 +341,14 @@ def llm_load_model(
     if is_hpex_available():
         # For loading FP8 model on HPU
         with fake_cuda_for_hpu(), fake_triton_for_hpu(), override_cuda_device_capability():
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
     else:
         try:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
         except ValueError as e:
             if "FP8 quantized" in str(e):
                 with override_cuda_device_capability():
-                    model = model_cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
+                    model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
@@ -325,14 +356,12 @@ def llm_load_model(
         except OSError as e:
             logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=False,
-                device_map="auto" if use_auto_mapping else None,
+                pretrained_model_name_or_path, **{**load_kwargs, "trust_remote_code": False}
             )
 
     model = model.eval()
     check_and_mark_quantized_module(model)
+    handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
@@ -482,6 +511,7 @@ def mllm_load_model(
 
     model = model.eval()
     check_and_mark_quantized_module(model)
+    handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
@@ -497,6 +527,8 @@ def diffusion_load_model(
     model_dtype: str = None,
     **kwargs,
 ):
+    from functools import partial
+
     from auto_round.utils.common import LazyImport
     from auto_round.utils.device import get_device_and_parallelism
 
@@ -513,12 +545,68 @@ def diffusion_load_model(
         torch_dtype = torch.bfloat16
 
     pipelines = LazyImport("diffusers.pipelines")
+    if isinstance(pretrained_model_name_or_path, str):
+        if torch_dtype == "auto":
+            torch_dtype = {}
+            model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+            with open(model_index, "r", encoding="utf-8") as file:
+                config = json.load(file)
+            for k, v in config.items():
+                component_folder = os.path.join(pretrained_model_name_or_path, k)
+                if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
+                    component_folder = os.path.join(pretrained_model_name_or_path, k)
+                    with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
+                        component_config = json.load(file)
+                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-        pretrained_model_name_or_path, torch_dtype=torch_dtype
-    )
+        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+            pretrained_model_name_or_path, torch_dtype=torch_dtype
+        )
+        pipe_config = pipe.load_config(pretrained_model_name_or_path)
+
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+        pipe = pretrained_model_name_or_path
+        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+
+    else:
+        raise ValueError(
+            f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
+        )
+
+    # add missing key
+    for k, v in pipe_config.items():
+        if k not in pipe.config:
+            pipe.config[k] = v
+
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
+
+    def config_save_pretrained(config, file_name, save_directory):
+        if os.path.isfile(save_directory):
+            raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+        os.makedirs(save_directory, exist_ok=True)
+        output_config_file = os.path.join(save_directory, file_name)
+
+        config_dict = dict(config)
+        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
+            config_dict["quantization_config"] = model.config.quantization_config
+
+        with open(output_config_file, "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+
+    # meta model uses model.config.save_pretrained for config saving
+    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json"))
+    setattr(pipe.config, "save_pretrained", partial(config_save_pretrained, pipe.config, "model_index.json"))
+
+    def model_save_pretrained(model, save_directory, **kwargs):
+        super(model.__class__, model).save_pretrained(save_directory, **kwargs)
+        if hasattr(model.config, "quantization_config"):
+            model.config["quantization_config"] = model.config.quantization_config
+        with open(os.path.join(save_directory, "config.json"), "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(dict(model.config), indent=2, sort_keys=True) + "\n")
+
+    # non-meta model uses model.save_pretrained for model and config saving
+    setattr(model, "save_pretrained", partial(model_save_pretrained, model))
     return pipe, model.to(device)
 
 
@@ -1076,13 +1164,71 @@ def mv_module_from_gpu(module):
     The module on the specified device.
     """
     if hasattr(module, "device"):
-        target_device = "cpu"
-        if module.device.type == target_device:
+        if module.device.type in ("cpu", "meta"):
             return module
-        else:
-            return module.to(target_device)
-    else:
-        return module.to("cpu")
+
+    has_meta = any(p.device.type == "meta" for p in module.parameters())
+    if not has_meta:
+        has_meta = any(b.device.type == "meta" for b in module.buffers())
+
+    if has_meta:
+        for _, child in module.named_children():
+            mv_module_from_gpu(child)
+        for attr_name in list(module._parameters.keys()):
+            p = module._parameters[attr_name]
+            if p is not None and p.device.type != "meta" and p.device.type != "cpu":
+                module._parameters[attr_name] = p.to("cpu")
+        for attr_name in list(module._buffers.keys()):
+            b = module._buffers[attr_name]
+            if b is not None and b.device.type != "meta" and b.device.type != "cpu":
+                module._buffers[attr_name] = b.to("cpu")
+        return module
+
+    return module.to("cpu")
+
+
+def safe_device_move_with_meta_handling(
+    model,
+    target_device="cpu",
+    *,
+    materialize_meta=None,
+    logger=None,
+):
+    """Move model to target device, handling meta parameters and buffers correctly.
+        Skipping module move on target/meta device.
+
+    Args:
+        target_device: Target device ('cpu', 'cuda', etc.)
+        materialize_meta: Optional callable to materialize meta tensors before movement
+        logger: Optional logger for warnings if needed
+    """
+    target_type = torch.device(target_device).type
+
+    # Materialize meta tensors if handler provided
+    if materialize_meta is not None:
+        materialize_meta(model)
+
+    meta_count = 0
+
+    # Move parameters
+    for p in model.parameters():
+        if p.device.type in (target_type, "meta"):
+            meta_count += p.device.type == "meta"
+            continue
+        p.data = p.data.to(target_device)
+
+    # Move buffers
+    for m in model.modules():
+        for n, b in m._buffers.items():
+            if b is None or b.device.type in (target_type, "meta"):
+                meta_count += b is not None and b.device.type == "meta"
+                continue
+            m._buffers[n] = b.to(target_device)
+
+    if meta_count and logger is not None:
+        logger.warning(f"{meta_count} tensors still on meta device after movement")
+
+    return model
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
@@ -1097,10 +1243,9 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 
 
 def is_moe_model_via_config(config) -> bool:
-    if hasattr(config, "to_dict"):
-        for key in config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+    config_str = str(config).lower()
+    if "moe" in config_str or "expert" in config_str:
+        return True
     return False
 
 
@@ -1237,10 +1382,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         expert_input_proj_names = get_expert_input_proj_names(sub_module)
 
         # Check experts structure and handle accordingly
-        if _is_unfused_experts_module(sub_module.experts):
-            # Unfused experts: gate_up_proj/down_proj are nn.ModuleList
-            _set_amax_for_unfused_experts(sub_module.experts, attr_name=attr_name)
-        elif _is_fused_experts_module(sub_module.experts):
+        if _is_fused_experts_module(sub_module.experts):
             # Fused experts: 3D Parameters (e.g., DeepseekV2Experts)
             # For fused experts, act_max is set on the parent MOE module, not individual experts
             # Skip processing here as they don't have individual Linear layers to calibrate
@@ -1281,13 +1423,6 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
             )
 
 
-def _is_unfused_experts_module(module: torch.nn.Module) -> bool:
-    """Check if the module is an unfused experts module (has ModuleList gate_up_proj/down_proj)."""
-    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
-        return False
-    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(module.down_proj, torch.nn.ModuleList)
-
-
 def _is_fused_experts_module(module: torch.nn.Module) -> bool:
     """Check if the module is a fused experts module (has 3D Parameter gate_up_proj/down_proj)."""
     if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
@@ -1298,29 +1433,6 @@ def _is_fused_experts_module(module: torch.nn.Module) -> bool:
         and module.gate_up_proj.dim() == 3
         and module.down_proj.dim() == 3
     )
-
-
-def _set_amax_for_unfused_experts(experts_module: torch.nn.Module, attr_name: str = "act_max"):
-    """Set amax for unfused experts module with ModuleList attributes.
-
-    This handles experts modules that have been unfused to have:
-    - gate_up_proj: nn.ModuleList of nn.Linear (input projections, unified scale)
-    - down_proj: nn.ModuleList of nn.Linear (output projections)
-    """
-    if hasattr(experts_module, "gate_up_proj") and isinstance(experts_module.gate_up_proj, torch.nn.ModuleList):
-        unify_scale = envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
-        set_amax_for_uncalibrated_experts(
-            list(experts_module.gate_up_proj),
-            attr_name=attr_name,
-            unify_all=unify_scale,
-        )
-
-    if hasattr(experts_module, "down_proj") and isinstance(experts_module.down_proj, torch.nn.ModuleList):
-        set_amax_for_uncalibrated_experts(
-            list(experts_module.down_proj),
-            attr_name=attr_name,
-            unify_all=False,
-        )
 
 
 def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: str = "act_max"):
@@ -1393,17 +1505,8 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 
     experts = moe_module.experts
 
-    # Handle unfused experts (ModuleList)
-    if _is_unfused_experts_module(experts):
-        for proj_list in [getattr(experts, "gate_up_proj", None), getattr(experts, "down_proj", None)]:
-            if proj_list is not None and isinstance(proj_list, torch.nn.ModuleList):
-                for layer in proj_list:
-                    amax = get_nested_attr(layer, attr_name)
-                    if amax is not None:
-                        amax_values.append(amax)
-
     # Handle iterable experts (list of modules)
-    elif isinstance(experts, collections.abc.Iterable):
+    if isinstance(experts, collections.abc.Iterable):
         expert_linear_names = get_expert_linear_names(moe_module)
         for expert in experts:
             for linear_name in expert_linear_names:
@@ -1552,3 +1655,14 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return True
         else:
             return False
+
+
+def handle_generation_config(model: torch.nn.Module):
+    if hasattr(model, "generation_config"):
+        generation_config = model.generation_config
+        if hasattr(generation_config, "top_p") and generation_config.top_p != 1.0:
+            model.generation_config.do_sample = True
+        if hasattr(generation_config, "top_k") and generation_config.top_k != 0:
+            model.generation_config.do_sample = True
+        if hasattr(generation_config, "temperature") and generation_config.temperature != 1.0:
+            model.generation_config.do_sample = True
