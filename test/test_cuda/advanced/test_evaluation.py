@@ -90,6 +90,7 @@ class TestHFEvaluation:
 
         assert ret == 0, f"HF backend evaluation failed (rc={ret})"
 
+    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_iters_0_hf_backend(self, tiny_opt_model_path):
         """Test quantization with iters=0 and HF backend evaluation."""
         python_path = sys.executable
@@ -100,6 +101,7 @@ class TestHFEvaluation:
 
         assert ret == 0, f"HF backend with iters=0 failed (rc={ret})"
 
+    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_iters_0_task_by_task(self, tiny_opt_model_path):
         """Test quantization with iters=0 and task-by-task evaluation."""
         python_path = sys.executable

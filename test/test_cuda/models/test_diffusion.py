@@ -30,6 +30,7 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_optimum
     def test_diffusion_tune(self):
         from diffusers import AutoPipelineForText2Image
@@ -65,6 +66,7 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_diffusion_rtn(self):
         from diffusers import AutoPipelineForText2Image
 

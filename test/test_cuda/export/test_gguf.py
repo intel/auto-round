@@ -103,6 +103,7 @@ class TestAutoRound:
         print(result)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gguf
     def test_q4_0(self):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")

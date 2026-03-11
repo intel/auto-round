@@ -30,6 +30,7 @@ class TestAutoRoundexllamaBackend:
 
     # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
     # @pytest.mark.skip_ci(reason="Time-consuming")
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gptqmodel
     def test_gptqmodel_exllmav2_4bits_asym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")

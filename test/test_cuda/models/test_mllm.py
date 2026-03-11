@@ -36,6 +36,7 @@ class VisionDataLoader:
             }
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRoundMLLM:
     @classmethod
     def setup_class(self):

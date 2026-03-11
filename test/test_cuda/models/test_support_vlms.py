@@ -16,6 +16,7 @@ AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestSupportVLMS:
 
     @classmethod

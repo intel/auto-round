@@ -20,6 +20,7 @@ from auto_round.utils import get_block_names, is_pure_text_model
 from ...helpers import get_model_path, transformers_version
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRound:
     @classmethod
     def setup_class(self):

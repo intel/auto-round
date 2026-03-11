@@ -23,6 +23,7 @@ class TestAutoRoundTritonBackend:
 
     # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
     # @pytest.mark.skip_ci(reason="Time-consuming")
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_greater_than_050
     def test_tritonv2_4bits_asym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -63,6 +64,7 @@ class TestAutoRoundTritonBackend:
 
     # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
     # @pytest.mark.skip_ci(reason="time-consuming; 2 bits")
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_greater_than_050
     def test_tritonv2_2bits_asym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)

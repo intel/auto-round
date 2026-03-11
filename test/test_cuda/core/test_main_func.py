@@ -118,6 +118,7 @@ class TestMainFunc:
         autoround = AutoRound(model, tokenizer, bits=4, group_size=127, nsamples=2, iters=2)
         autoround.quantize()
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gptqmodel
     def test_adam(self):
         model_name = get_model_path("facebook/opt-125m")

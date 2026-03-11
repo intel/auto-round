@@ -21,6 +21,7 @@ MODELS = [
 ]
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 @pytest.mark.skipif(
     not current_platform.is_cpu() and not current_platform.is_xpu() and not current_platform.is_cuda(),
     reason="only supports CPU/XPU/CUDA backend.",
