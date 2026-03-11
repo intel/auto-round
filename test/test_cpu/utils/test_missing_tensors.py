@@ -232,7 +232,9 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
 
             # Target has a different tensor (already saved)
             saved_tensor = torch.randn(32, 64)
-            _save_safetensors({"model.embed_tokens.weight": saved_tensor}, os.path.join(target_dir, "model.safetensors"))
+            _save_safetensors(
+                {"model.embed_tokens.weight": saved_tensor}, os.path.join(target_dir, "model.safetensors")
+            )
             _write_config(target_dir)
 
             copy_missing_tensors_from_source(source_dir, target_dir)
