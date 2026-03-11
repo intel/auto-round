@@ -23,10 +23,11 @@
 #
 # This module provides :func:`copy_missing_tensors_from_source`, which detects
 # and copies such tensors from the original checkpoint into the saved output
-# directory.  Detection relies on a user-supplied list of name-component
-# prefixes (``missing_param_prefix``, default ``["mtp"]``): a source tensor is
-# considered "missing" when it is absent from the saved output *and* at least
-# one dot-separated segment of its name starts with one of those prefixes.
+# directory.  Detection works by loading the model architecture on a **meta
+# device** (no memory overhead) and comparing its ``state_dict`` keys against
+# the source checkpoint: any source tensor whose name does NOT appear in the
+# meta model's state dict (and is also absent from the saved output) is
+# considered "missing".
 #
 # Before writing, the function optionally:
 #   - **dequantizes FP8 weights** to BF16 (when a matching ``weight_scale_inv``
@@ -45,13 +46,41 @@ import torch
 from auto_round.logger import logger
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-MISSING_PARAM_PREFIX_DEFAULT = ["mtp"]
+
+def _get_model_param_names_on_meta(target_dir: str) -> set | None:
+    """Load the model architecture on a **meta** device and return its state-dict keys.
+
+    This lets us discover which parameter names the model class actually
+    declares *without* allocating any real memory.
+
+    Returns ``None`` when the model cannot be instantiated (import errors,
+    unsupported architecture, etc.).
+    """
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM
+    except ImportError:
+        return None
+
+    try:
+        config = AutoConfig.from_pretrained(target_dir, trust_remote_code=True)
+    except Exception as e:
+        logger.debug("Could not load config from %s for meta-device detection: %s", target_dir, e)
+        return None
+
+    try:
+        with torch.device("meta"):
+            meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+        param_names = set(meta_model.state_dict().keys())
+        del meta_model
+        return param_names
+    except Exception as e:
+        logger.debug("Could not instantiate model on meta device: %s", e)
+        return None
 
 
 def copy_missing_tensors_from_source(
     source_dir: str,
     target_dir: str,
-    missing_param_prefix: list[str] | None = MISSING_PARAM_PREFIX_DEFAULT,
 ) -> None:
     """Copy tensors from the source checkpoint that are absent from the saved output.
 
@@ -59,10 +88,12 @@ def copy_missing_tensors_from_source(
     therefore not written by ``model.save_pretrained``.  This function copies
     those tensors from the original checkpoint into the quantized output dir.
 
-    A tensor is considered "missing" when:
+    Detection works by loading the model on a **meta device** (zero memory
+    cost) and collecting its ``state_dict`` keys.  A source tensor is
+    considered "missing" when:
       1. its name is **not** already present in the saved output, **and**
-      2. at least one dot-separated component of its name *starts with* one of
-         the strings in ``missing_param_prefix``.
+      2. its name is **not** among the meta model's state-dict keys
+         (i.e. the model class does not declare that parameter).
 
     FP8 handling:
         Missing weight tensors in FP8 dtype that have a corresponding
@@ -79,16 +110,7 @@ def copy_missing_tensors_from_source(
             or a HuggingFace repo id.
         target_dir: Directory to which the quantized model was saved.  Must
             contain a ``config.json``.
-        missing_param_prefix: List of name-component prefixes that identify
-            "extra" parameters not handled by ``transformers``.  A source tensor
-            matches when any of its dot-separated path segments *starts with*
-            one of the given strings.  Defaults to ``["mtp"]``.
     """
-    if missing_param_prefix is None:
-        missing_param_prefix = ["mtp"]
-
-    if not missing_param_prefix:
-        return
 
     try:
         from safetensors import safe_open
@@ -153,16 +175,22 @@ def copy_missing_tensors_from_source(
         return
 
     # ------------------------------------------------------------------ #
-    # Identify missing tensors via explicit prefix list                    #
+    # Identify missing tensors via meta-device model loading               #
     # ------------------------------------------------------------------ #
-    # A tensor is "missing" when it is absent from the saved output AND
-    # at least one of its dot-separated name components starts with a
-    # user-supplied prefix (e.g. "mtp" matches "mtp_block", "mtp_layers").
-    def _matches_prefix(name: str) -> bool:
-        return any(part.startswith(pfx) for part in name.split(".") for pfx in missing_param_prefix)
+    # Load the model architecture on a meta device to discover which
+    # parameter names the model class declares.  Source tensors that are
+    # NOT among those names (and also absent from the saved output) are
+    # the ones that ``save_pretrained`` could never have written.
+    model_param_names = _get_model_param_names_on_meta(target_dir)
+    if model_param_names is None:
+        logger.warning(
+            "Could not load model on meta device to detect missing tensors. "
+            "Skipping copy of missing tensors from source checkpoint."
+        )
+        return
 
     missing_tensor_names: list = [
-        name for name in source_tensor_to_file if name not in saved_tensor_names and _matches_prefix(name)
+        name for name in source_tensor_to_file if name not in saved_tensor_names and name not in model_param_names
     ]
 
     if not missing_tensor_names:

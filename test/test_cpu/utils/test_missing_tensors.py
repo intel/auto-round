@@ -16,6 +16,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -224,7 +225,7 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
         }
 
     def test_plain_copy_of_missing_mtp_tensor(self):
-        """Non-weight tensors tagged with 'mtp' prefix are copied verbatim."""
+        """Non-weight tensors not known to the model are copied verbatim."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
             # Source has an MTP norm tensor (1-D, not a weight)
             mtp_norm = torch.randn(64)
@@ -237,7 +238,12 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             )
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir)
+            # Mock: the model only knows about "model.embed_tokens.weight"
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={"model.embed_tokens.weight"},
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertTrue(os.path.exists(extra_shard), "Extra shard should be created")
@@ -246,8 +252,8 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             self.assertIn("mtp.0.norm.weight", result)
             torch.testing.assert_close(result["mtp.0.norm.weight"], mtp_norm)
 
-    def test_non_mtp_tensors_are_not_copied(self):
-        """Tensors without the 'mtp' prefix should not be copied."""
+    def test_model_known_tensors_are_not_copied(self):
+        """Tensors that the model architecture declares should not be copied."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
             _save_safetensors(
                 {
@@ -261,10 +267,18 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             )
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir)
+            # Mock: the model knows about both tensors
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={
+                    "model.layers.0.self_attn.q_proj.weight",
+                    "model.embed_tokens.weight",
+                },
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected when all tensors match")
+            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected when all tensors are model-known")
 
     def test_already_saved_tensors_are_not_duplicated(self):
         """Tensors already present in target should not appear in the extra shard."""
@@ -281,7 +295,12 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             )
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir)
+            # Mock: model knows about model.norm.weight but NOT mtp tensors
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={"model.norm.weight"},
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertFalse(os.path.exists(extra_shard))
@@ -305,7 +324,12 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             )
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir)
+            # Mock: model only knows about embed_tokens, not mtp layers
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={"model.embed_tokens.weight"},
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertTrue(os.path.exists(extra_shard))
@@ -331,7 +355,12 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             with open(os.path.join(target_dir, "config.json"), "w") as f:
                 json.dump(self._make_auto_round_config(bits=4, group_size=128, sym=True), f)
 
-            copy_missing_tensors_from_source(source_dir, target_dir)
+            # Mock: model only knows about embed_tokens
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={"model.embed_tokens.weight"},
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertTrue(os.path.exists(extra_shard))
@@ -360,7 +389,12 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
                 json.dump(index, f)
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir)
+            # Mock: model only knows about embed_tokens
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={"model.embed_tokens.weight"},
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             with open(os.path.join(target_dir, "model.safetensors.index.json")) as f:
                 updated_index = json.load(f)
@@ -368,8 +402,8 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             self.assertIn("mtp.0.norm.weight", updated_index["weight_map"])
             self.assertEqual(updated_index["weight_map"]["mtp.0.norm.weight"], "model_extra_tensors.safetensors")
 
-    def test_empty_prefix_list_skips_copy(self):
-        """Passing an empty prefix list should result in no copying."""
+    def test_meta_device_failure_skips_copy(self):
+        """When meta device model loading fails, no tensors should be copied."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
             _save_safetensors({"mtp.0.norm.weight": torch.randn(64)}, os.path.join(source_dir, "model.safetensors"))
             _save_safetensors(
@@ -378,18 +412,24 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             )
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir, missing_param_prefix=[])
+            # Mock: meta device loading fails (returns None)
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value=None,
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertFalse(os.path.exists(extra_shard))
 
-    def test_custom_prefix_matches_correctly(self):
-        """A custom prefix should match only tensors whose components start with that prefix."""
+    def test_detects_any_unknown_params(self):
+        """Any source tensor not in the model's state dict should be detected as missing."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
             _save_safetensors(
                 {
                     "custom_block.0.norm.weight": torch.randn(64),
                     "mtp.0.norm.weight": torch.randn(64),
+                    "model.embed_tokens.weight": torch.randn(8, 64),
                 },
                 os.path.join(source_dir, "model.safetensors"),
             )
@@ -399,14 +439,22 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             )
             _write_config(target_dir)
 
-            copy_missing_tensors_from_source(source_dir, target_dir, missing_param_prefix=["custom_block"])
+            # Mock: model only knows about embed_tokens
+            with patch(
+                "auto_round.utils.missing_tensors._get_model_param_names_on_meta",
+                return_value={"model.embed_tokens.weight"},
+            ):
+                copy_missing_tensors_from_source(source_dir, target_dir)
 
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertTrue(os.path.exists(extra_shard))
 
             result = _load_safetensors(extra_shard)
+            # Both non-model tensors should be copied
             self.assertIn("custom_block.0.norm.weight", result)
-            self.assertNotIn("mtp.0.norm.weight", result)
+            self.assertIn("mtp.0.norm.weight", result)
+            # Model-known tensor should NOT be in extra shard
+            self.assertNotIn("model.embed_tokens.weight", result)
 
 
 if __name__ == "__main__":
