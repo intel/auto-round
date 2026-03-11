@@ -13,6 +13,7 @@ from ...envs import require_autogptq, require_greater_than_050, require_greater_
 from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRound:
     save_dir = "./saved"
 

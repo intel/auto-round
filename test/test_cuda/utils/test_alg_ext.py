@@ -29,6 +29,7 @@ class TestAlgExt:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_2bits(self):
         model_name = get_model_path("facebook/opt-125m")
         ar = AutoRound(model=model_name, bits=2, group_size=64, enable_alg_ext=True)

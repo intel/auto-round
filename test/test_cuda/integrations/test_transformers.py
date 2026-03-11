@@ -78,6 +78,7 @@ class TestAutoRound:
         torch.cuda.empty_cache()
         gc.collect()
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_quantized_model(self):
         """
         Simple test that checks if the quantized model is working properly
@@ -92,6 +93,7 @@ class TestAutoRound:
         with pytest.raises(ValueError):
             _ = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_quantized_model_bf16(self):
         """
         Simple test that checks if the quantized model is working properly with bf16
@@ -109,6 +111,7 @@ class TestAutoRound:
         output_sentence = self.tokenizer.decode(output[0], skip_special_tokens=True)
         assert output_sentence in self.EXPECTED_OUTPUTS
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch")
     def test_quantized_model_on_cpu(self):
         """
@@ -121,6 +124,7 @@ class TestAutoRound:
 
         assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_save_pretrained(self):
         """
         Simple test that checks if the quantized model is working properly after being saved and loaded
@@ -144,6 +148,7 @@ class TestAutoRound:
             output = model.generate(**input_ids, max_new_tokens=40, do_sample=False)
             assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_torch_multi_gpu
     def test_quantized_model_multi_gpu(self):
         """
@@ -157,6 +162,7 @@ class TestAutoRound:
         output = quantized_model.generate(**input_ids, max_new_tokens=40, do_sample=False)
         assert self.tokenizer.decode(output[0], skip_special_tokens=True) in self.EXPECTED_OUTPUTS
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_convert_from_gptq(self):
         """
         Simple test that checks if auto-round work properly with gptq format
@@ -174,6 +180,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skipif(not is_ipex_available(), reason="test requires intel-extension-for-pytorch")
     def test_convert_from_awq_cpu(self):
         """
@@ -192,6 +199,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_mixed_bits(self):
         """
         Simple test that checks if auto-round work properly with mixed bits

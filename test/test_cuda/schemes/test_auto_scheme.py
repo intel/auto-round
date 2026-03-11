@@ -67,6 +67,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_shared_layers(self):
         model_name = get_model_path("facebook/opt-125m")
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -163,6 +164,7 @@ class TestAutoScheme:
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
     #
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_max_target_bits(self):
         target_bits = 8.025
         model_path = get_model_path("facebook/opt-125m")
@@ -185,6 +187,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_layer_config(self):
         target_bits = 3.0
         model_name = get_model_path("facebook/opt-125m")
@@ -234,6 +237,7 @@ class TestAutoScheme:
         # cause using tiny model
         assert 5.78 < avg_bits <= target_bits + 1e-3
 
+    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_auto_scheme_export(self):
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
@@ -247,6 +251,7 @@ class TestAutoScheme:
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, nsamples=1)
         ar.quantize_and_save(self.save_dir)
 
+    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_enable_torch_compile(self):
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)

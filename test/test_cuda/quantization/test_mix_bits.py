@@ -205,6 +205,7 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_mixed_MXFP_autoround_format_loading(self, dataloader):
         layer_config = {
             "k_proj": {"bits": 8, "act_bits": 8},

@@ -84,6 +84,7 @@ class TestAutoRoundMarlinBackend:
 
     # A necessary test even it's time-consuming, verifies the accuracy of quantized model.
     # @pytest.mark.skip_ci(reason="Time-consuming")
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_marlin_4bits_sym_with_zp_m_1(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)

@@ -123,6 +123,7 @@ class TestAutoRound:
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skipif(
         transformers_version >= version.parse("5.0.0"),
         reason="We need this patch for fp8 model loading without dequantization."

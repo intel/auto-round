@@ -94,6 +94,7 @@ class TestAutoRound:
         assert ar.act_dynamic is False
         ar.quantize_and_save()
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_scheme_in_layer_config(self):
         model_path = get_model_path("facebook/opt-125m")
         layer_config = {
@@ -119,6 +120,7 @@ class TestAutoRound:
     @pytest.mark.skipif(
         transformers_version >= version.parse("5.0.0"), reason="transformers v5 MOE model has breaking changes"
     )
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     def test_q2k_mixed(self):
         model_path = "/data0/MiroThinker-v1.5-30B"
         saved_tiny_model_path = save_tiny_model(
