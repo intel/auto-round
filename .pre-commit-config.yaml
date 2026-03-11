@@ -71,4 +71,4 @@ repos:
     rev: v3.14.2
     hooks:
       - id: markdown-link-check
-        args: [-q]
+        args: [-q, -c .azure-pipelines/scripts/codeScan/markdown-link-check/markdown-link-check.json]
