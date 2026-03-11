@@ -21,7 +21,7 @@ from auto_round.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import is_moe_model_via_config, logger
 
-mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
+mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama", "glm_image")  # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
     "phi3_v",
@@ -35,6 +35,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "llama4",
     "internvl_chat",
     "glm4v_moe",
+    "glm_image",
     "qwen3_vl_moe",
     "gemma3",
 ]
@@ -80,7 +81,35 @@ def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     return block_names
 
 
-SPECIAL_MULTIMODAL_BLOCK = {"deepseek_vl_v2": _get_deepseek_vl2_multimodal_block}
+def _get_glm_image_multimodal_block(model, quant_vision=False):
+    """Get block names for GLM-Image AR model.
+
+    GLM-Image AR model structure:
+    - model.visual.blocks: vision encoder
+    - model.language_model.layers: autoregressive text backbone
+
+    By default, only text backbone is quantized. Set quant_vision=True to include
+    the visual encoder blocks.
+    """
+    block_names = []
+
+    if quant_vision and hasattr(model, "model") and hasattr(model.model, "visual"):
+        if hasattr(model.model.visual, "blocks"):
+            block_names.append([f"model.visual.blocks.{i}" for i in range(len(model.model.visual.blocks))])
+
+    if hasattr(model, "model") and hasattr(model.model, "language_model"):
+        if hasattr(model.model.language_model, "layers"):
+            block_names.append(
+                [f"model.language_model.layers.{i}" for i in range(len(model.model.language_model.layers))]
+            )
+
+    return block_names
+
+
+SPECIAL_MULTIMODAL_BLOCK = {
+    "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block,
+    "glm_image": _get_glm_image_multimodal_block,
+}
 
 
 def _deepseek_vl2_forward(

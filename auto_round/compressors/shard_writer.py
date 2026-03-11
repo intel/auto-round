@@ -61,7 +61,11 @@ class ShardWriter:
         self.skipped_meta_tensors = []
 
         # Directory Setup
-        self.output_dir = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
+        base_dir = rounder._get_save_folder_name(rounder.formats[0])
+        subfolder = getattr(self.model, "_autoround_pipeline_subfolder", None)
+        if subfolder:
+            base_dir = os.path.join(base_dir, subfolder)
+        self.output_dir = os.path.join(base_dir, "")
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _parse_size(self, size_str: str) -> int:

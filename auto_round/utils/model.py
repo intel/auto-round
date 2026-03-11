@@ -367,6 +367,97 @@ def llm_load_model(
     return model, tokenizer
 
 
+def _find_pipeline_model_subfolder_local(model_dir: str) -> tuple:
+    """Find model/processor subfolders from a local pipeline directory with model_index.json.
+
+    Scans component subdirectories to find the one whose config.json has 'architectures',
+    and looks for a 'processor' component.
+
+    Returns:
+        (model_subfolder, processor_subfolder, config_dict)
+    """
+    index_path = os.path.join(model_dir, "model_index.json")
+    if not os.path.exists(index_path):
+        raise FileNotFoundError(f"No config.json or model_index.json found under {model_dir}")
+
+    with open(index_path, "r", encoding="utf-8") as f:
+        model_index = json.load(f)
+
+    processor_subfolder = None
+    for name, value in model_index.items():
+        if name == "processor" and isinstance(value, list):
+            processor_subfolder = "processor"
+            break
+
+    candidates = []
+    for name, value in model_index.items():
+        if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
+            continue
+        comp_config_path = os.path.join(model_dir, name, "config.json")
+        if not os.path.isfile(comp_config_path):
+            continue
+        with open(comp_config_path, "r", encoding="utf-8") as f:
+            comp_config = json.load(f)
+        if "architectures" in comp_config:
+            candidates.append((name, comp_config))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"model_index.json found in {model_dir} but no component with 'architectures' in its config.json"
+        )
+
+    for name, comp_config in candidates:
+        arch = comp_config["architectures"][0]
+        if "CausalLM" in arch or "ConditionalGeneration" in arch:
+            return name, processor_subfolder, comp_config
+
+    return candidates[0][0], processor_subfolder, candidates[0][1]
+
+
+def _find_pipeline_model_subfolder_remote(repo_id: str, file_list: list) -> tuple:
+    """Find model/processor subfolders from a remote HF repo with model_index.json.
+
+    Returns:
+        (model_subfolder, processor_subfolder, config_dict)
+    """
+    from huggingface_hub import hf_hub_download
+
+    index_path = hf_hub_download(repo_id, "model_index.json")
+    with open(index_path, "r", encoding="utf-8") as f:
+        model_index = json.load(f)
+
+    processor_subfolder = None
+    for name, value in model_index.items():
+        if name == "processor" and isinstance(value, list):
+            processor_subfolder = "processor"
+            break
+
+    candidates = []
+    for name, value in model_index.items():
+        if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
+            continue
+        comp_config_file = f"{name}/config.json"
+        if comp_config_file not in file_list:
+            continue
+        comp_config_path = hf_hub_download(repo_id, comp_config_file)
+        with open(comp_config_path, "r", encoding="utf-8") as f:
+            comp_config = json.load(f)
+        if "architectures" in comp_config:
+            candidates.append((name, comp_config))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"model_index.json found for {repo_id} but no component with 'architectures' in its config.json"
+        )
+
+    for name, comp_config in candidates:
+        arch = comp_config["architectures"][0]
+        if "CausalLM" in arch or "ConditionalGeneration" in arch:
+            return name, processor_subfolder, comp_config
+
+    return candidates[0][0], processor_subfolder, candidates[0][1]
+
+
 def mllm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -405,17 +496,29 @@ def mllm_load_model(
     torch_dtype = "auto"
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
+    model_subfolder = None
+    processor_subfolder = None
     if os.path.isdir(pretrained_model_name_or_path):
-        config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
+        config_path = os.path.join(pretrained_model_name_or_path, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder_local(
+                pretrained_model_name_or_path
+            )
     else:
         from huggingface_hub import hf_hub_download, list_repo_files
 
         file_list = list_repo_files(pretrained_model_name_or_path)
         if "config.json" in file_list:
-            # Load plain JSON
             config_path = hf_hub_download(pretrained_model_name_or_path, "config.json")
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
+        elif "model_index.json" in file_list:
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder_remote(
+                pretrained_model_name_or_path, file_list
+            )
         elif "config.json.gz" in file_list:
             # Load gzipped JSON
             import gzip
@@ -464,20 +567,28 @@ def mllm_load_model(
             else:
                 cls = AutoModelForCausalLM
             try:
+                model_load_kwargs = {}
+                if model_subfolder is not None:
+                    model_load_kwargs["subfolder"] = model_subfolder
                 model = cls.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
                     torch_dtype=torch_dtype,
                     device_map="auto" if use_auto_mapping else None,
+                    **model_load_kwargs,
                 )
             except ValueError as e:
                 if "FP8 quantized" in str(e):
                     with override_cuda_device_capability():
+                        model_load_kwargs = {}
+                        if model_subfolder is not None:
+                            model_load_kwargs["subfolder"] = model_subfolder
                         model = cls.from_pretrained(
                             pretrained_model_name_or_path,
                             trust_remote_code=trust_remote_code,
                             torch_dtype=torch_dtype,
                             device_map="auto" if use_auto_mapping else None,
+                            **model_load_kwargs,
                         )
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 else:
@@ -491,11 +602,18 @@ def mllm_load_model(
                 else:
                     tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
             else:
+                processor_load_kwargs = {}
+                if processor_subfolder is not None:
+                    processor_load_kwargs["subfolder"] = processor_subfolder
                 tokenizer = AutoTokenizer.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **processor_load_kwargs,
                 )
             try:
                 if platform == "model_scope":
@@ -503,16 +621,29 @@ def mllm_load_model(
                 else:
                     from transformers import AutoImageProcessor
 
+                image_processor_load_kwargs = {}
+                if processor_subfolder is not None:
+                    image_processor_load_kwargs["subfolder"] = processor_subfolder
                 image_processor = AutoImageProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **image_processor_load_kwargs,
                 )
             except Exception as e:
                 pass
+
+            if model_type == "glm_image" and image_processor is not None:
+                from transformers.models.glm_image.processing_glm_image import GlmImageProcessor
+
+                processor = GlmImageProcessor(image_processor=image_processor, tokenizer=tokenizer)
 
     model = model.eval()
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
+
+    if model_subfolder is not None:
+        model._autoround_pipeline_subfolder = model_subfolder
 
     return model, processor, tokenizer, image_processor
 
