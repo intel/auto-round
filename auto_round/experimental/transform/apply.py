@@ -52,11 +52,16 @@ def _apply_to_module(
 
     # create transform as submodule
     transform_name = "forward_hadamard"
-    transform = build_transform(**config.dict())
-    # module.register_module(transform_name, transform)
 
     if config.location == "input":
         from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
+
+        transform = build_transform(
+            **config.dict(),
+            device="cpu",
+            precision=module.dtype,
+            location="input"
+        )
 
         def input_hook(_, args):
             input = args[0]
@@ -64,7 +69,7 @@ def _apply_to_module(
             orig_shape = input.shape
             x_flat = input.contiguous().flatten(end_dim=-2)
             qdq_input, _ = mxfp4_forward_kernel_wrapper(
-                x_flat, transform.get_transform_matrix(input.device, input.dtype)
+                x_flat, transform.weight
             )
             return qdq_input.reshape(orig_shape)
 
@@ -76,6 +81,12 @@ def _apply_to_module(
         # eagerly apply transformation to weight
         # fuse transform into weight
         assert hasattr(module, "weight")
+
+        transform = build_transform(
+            **config.dict(),
+            device=module.weight.device,
+            precision=module.weight.dtype,
+        )
 
         if config.need_calibration:
             # for training, the weight changes with every forward pass
@@ -93,7 +104,7 @@ def _apply_to_module(
             # delattr(module, transform_name)
             # fuse transform into weight
             with torch.no_grad():
-                getattr(module, "weight").copy_(transform(module.weight.to("cuda")).to(module.weight.device))
+                getattr(module, "weight").copy_(transform(module.weight).to(module.weight.device))
 
     else:
         # TODO: apply transform to output/q/k
