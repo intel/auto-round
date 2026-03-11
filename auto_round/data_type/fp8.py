@@ -52,7 +52,10 @@ def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 
         new_M, new_N = tensor.shape
         block_M, block_N = group_size
         max_tensor = (
-            tensor.view(new_M // block_M, block_M, new_N // block_N, block_N).permute(0, 2, 1, 3).abs().amax(dim=(-2, -1))
+            tensor.view(new_M // block_M, block_M, new_N // block_N, block_N)
+            .permute(0, 2, 1, 3)
+            .abs()
+            .amax(dim=(-2, -1))
             * max_scale
         )
     elif isinstance(tensor_max, torch.Tensor):

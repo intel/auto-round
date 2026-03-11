@@ -238,7 +238,9 @@ class OutputFormat(ABC):
 
         w_fp8 = ar.data_type.startswith("fp") and ar.bits == 8
         act_fp8 = ar.act_data_type.startswith("fp") and ar.act_bits == 8
-        is_block_dynamic_fp8 = self.format_name in ["fp8", "auto_round:fp8"] and isinstance(ar.group_size, list) and ar.act_dynamic
+        is_block_dynamic_fp8 = (
+            self.format_name in ["fp8", "auto_round:fp8"] and isinstance(ar.group_size, list) and ar.act_dynamic
+        )
         if (w_fp8 or act_fp8) and not is_block_dynamic_fp8:
             error_msg = (
                 f"is only supported to export auto_round or llm_compressor format,"
@@ -993,6 +995,7 @@ class FP8Format(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
+
         backend = self.get_backend_name()
 
         # weight_block_size & ignored_layers are required by fp8 format, skip them in auto_round:fp8 format

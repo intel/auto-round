@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from math import ceil
+
 import torch
 import transformers
-from math import ceil
 from torch.functional import F
 
 from auto_round.compressors.utils import is_nv_fp
@@ -44,9 +45,7 @@ def get_scale_shape(weight, group_size):
       The shape of the scale tensor to be used for quantization.
     """
     if isinstance(group_size, list):
-        assert len(weight.shape) == len(
-            group_size
-        ), f"Expected group_size is {len(weight.shape)}D but get {group_size}"
+        assert len(weight.shape) == len(group_size), f"Expected group_size is {len(weight.shape)}D but get {group_size}"
         return (weight.shape[0] // group_size[0], weight.shape[1] // group_size[1])
     if group_size == 0:
         return 1

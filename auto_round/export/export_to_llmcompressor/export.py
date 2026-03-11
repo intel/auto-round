@@ -70,7 +70,7 @@ def construct_ct_scheme(layer):
         symmetric=layer.act_sym,
         dynamic=layer.act_dynamic,
         group_size=layer.act_group_size if _get_scheme_strategy(layer.act_group_size) == "group" else None,
-        strategy=_get_scheme_strategy(layer.act_group_size)
+        strategy=_get_scheme_strategy(layer.act_group_size),
     )
     scheme = QuantizationScheme(
         targets=[layer.__class__.__name__],
@@ -89,7 +89,7 @@ def _get_quant_format(model):
 
 def pack_layer(name, model, device=None):
     from compressed_tensors.compressors import NaiveQuantizationCompressor  # pylint: disable=E0401
-    from compressed_tensors.config.format import set_per_module_format # pylint: disable=E0401
+    from compressed_tensors.config.format import set_per_module_format  # pylint: disable=E0401
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
     from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter  # pylint: disable=E0401
 

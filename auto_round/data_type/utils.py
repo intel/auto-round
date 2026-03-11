@@ -99,9 +99,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
         return data_new
 
 
-def get_quant_func(
-    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None
-) -> tuple[callable, str]:
+def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
     This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
