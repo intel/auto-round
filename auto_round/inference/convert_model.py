@@ -654,8 +654,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
     if getattr(quantization_config, "transform_config", None) is not None:
-        from ..experimental.transform.apply import apply_transform
-        from ..experimental.transform.transform_config import TransformConfig
+        from auto_round.experimental.transform.apply import apply_transform
+        from auto_round.experimental.transform.transform_config import TransformConfig
 
         transform_config = quantization_config.transform_config
         # apply forward hook
@@ -664,7 +664,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             transform_type=transform_config["transform_type"],
             location="input",
         )  # apply to activation
-        model = apply_transform(model, act_transform_config, desc="Register pre forward hood for transform")
+        model = apply_transform(model, act_transform_config, desc="Register pre forward hook for transform")
 
     # Suggest a better backend if available
     if backend == "auto":
