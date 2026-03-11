@@ -1,5 +1,25 @@
 trigger: none
 
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round
+      - auto_round_extension
+      - test/test_cuda
+      - setup.py
+      - requirements.txt
+      - .azure-pipelines/scripts/cuda_unit_test
+      - .azure-pipelines/unit-test-cuda.yml
+
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
 variables:
   - name: POOL_NAME
     value: "RunPod-GPU-Pool"
@@ -111,7 +131,7 @@ stages:
 
               - script: |
                   echo "##[group]Installing Python dependencies..."
-                  uv pip install -U "pytest-cov" "pytest-html" "requests" "huggingface_hub[cli]"
+                  uv pip install -U "pytest-cov" "pytest-html" "requests" "huggingface_hub"
                   hf auth login --token "$(HF_TOKEN)"
                   echo "##[endgroup]"
                 displayName: "Install Python Dependencies"
