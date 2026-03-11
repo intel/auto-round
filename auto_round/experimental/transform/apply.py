@@ -56,21 +56,14 @@ def _apply_to_module(
     if config.location == "input":
         from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
-        transform = build_transform(
-            **config.dict(),
-            device="cpu",
-            precision=module.dtype,
-            location="input"
-        )
+        transform = build_transform(**config.dict(), device="cpu", precision=module.dtype, location="input")
 
         def input_hook(_, args):
             input = args[0]
             # transform(input)
             orig_shape = input.shape
             x_flat = input.contiguous().flatten(end_dim=-2)
-            qdq_input, _ = mxfp4_forward_kernel_wrapper(
-                x_flat, transform.weight
-            )
+            qdq_input, _ = mxfp4_forward_kernel_wrapper(x_flat, transform.weight)
             return qdq_input.reshape(orig_shape)
 
         # for fused transform + quantization kernel

@@ -1,10 +1,13 @@
-import torch
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
 
+import torch
 
 __all__ = ["apply_transform_weight"]
 
 # note that apply_transform_weight reuses some code from
 # https://github.com/vllm-project/compressed-tensors/blob/main/src/compressed_tensors/transform/utils/matrix.py
+
 
 def apply_transform_weight(
     transform_weight: torch.Tensor,
@@ -75,7 +78,7 @@ def _multihead_matmul(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
          [  B  ]
          [    B]]
 
-    This function will error out if the shapes are not evenly divisble
+    This function will error out if the shapes are not evenly divisible
 
     :param A: left-hand tensor
     :param B: right-hand tensor

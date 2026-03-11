@@ -72,13 +72,17 @@ class HadamardTransform(nn.Module):
         ori_shape = x.shape
         x = x.view(-1, self.size)
         return (
-            apply_transform_weight(
-                self.weight.to(device=x.device),
-                x.to(dtype=self.weight.dtype),
-                self.location,
-                self.module_type,
+            (
+                apply_transform_weight(
+                    self.weight.to(device=x.device),
+                    x.to(dtype=self.weight.dtype),
+                    self.location,
+                    self.module_type,
+                )
             )
-        ).to(x.dtype).view(ori_shape)
+            .to(x.dtype)
+            .view(ori_shape)
+        )
 
 
 TRANSFORMS = {
@@ -90,4 +94,3 @@ TRANSFORMS = {
 def build_transform(transform_type: str, **transform_kwargs):
     transform = TRANSFORMS[transform_type]
     return transform(**filter_kwarg_dict(transform.__init__, transform_kwargs))
-
