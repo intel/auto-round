@@ -45,7 +45,7 @@ class AutoRound:
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
-        group_size (int): Per-group size for weight quantization.
+        group_size (int or list): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
@@ -55,10 +55,9 @@ class AutoRound:
     SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config", "enable_adam")
 
     bits: int | None
-    group_size: int | None
+    group_size: int | list[int] | None
     sym: bool | None
     data_type: str | None
-    weight_block_size: list | None
     act_bits: int | None
     act_group_size: int | None
     act_sym: bool | None
@@ -119,10 +118,9 @@ class AutoRound:
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
 
             bits (int, optional): Weight quantization bits. Defaults to 4.
-            group_size (int, optional): Weight quantization group size. Defaults to 128.
+            group_size (int or list, optional): Weight quantization group size. Defaults to 128.
             sym (bool, optional): Symmetric weight quantization. Defaults to True.
             data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
-            weight_block_size (list, optional): Weight quantization block size. Defaults to None.
             act_bits (int, optional): Activation quantization bits. Defaults to 16.
             act_group_size (int, optional): Activation group size. Defaults to None.
             act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
@@ -255,7 +253,7 @@ class AutoRoundLLM(LLMCompressor):
         tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int, optional): Weight quantization bits. Defaults to 4.
-        group_size (int, optional): Weight quantization group size. Defaults to 128.
+        group_size (int or list, optional): Weight quantization group size. Defaults to 128.
         sym (bool, optional): Symmetric weight quantization. Defaults to True.
         layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
         batch_size (int, optional): Calibration batch size. Defaults to 8.
@@ -272,7 +270,6 @@ class AutoRoundLLM(LLMCompressor):
         seed (int, optional): Random seed. Defaults to 42.
         gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
         data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
-        weight_block_size (list, optional): Weight quantization block size. Defaults to None.
         act_bits (int, optional): Activation quantization bits. Defaults to 16.
         act_group_size (int, optional): Activation group size. Defaults to None.
         act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
@@ -310,10 +307,9 @@ class AutoRoundLLM(LLMCompressor):
     """
 
     bits: int | None
-    group_size: int | None
+    group_size: int | list[int] | None
     sym: bool | None
     data_type: str | None
-    weight_block_size: list | None
     act_bits: int | None
     act_group_size: int | None
     act_sym: bool | None
@@ -358,7 +354,7 @@ class AutoRoundAdam(AdamCompressor):
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
-        group_size (int): Size of the quantization group (default is 128).
+        group_size (int or list): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
         batch_size (int): Batch size for training (default is 8).
@@ -381,7 +377,6 @@ class AutoRoundAdam(AdamCompressor):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        weight_block_size (list, optional): Weight quantization block size. Defaults to None.
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
         act_bits (int): Number of bits for activation quantization. Default is 16.
@@ -401,10 +396,9 @@ class AutoRoundAdam(AdamCompressor):
     """
 
     bits: int | None
-    group_size: int | None
+    group_size: int | list[int] | None
     sym: bool | None
     data_type: str | None
-    weight_block_size: list | None
     act_bits: int | None
     act_group_size: int | None
     act_sym: bool | None
@@ -452,7 +446,7 @@ class AutoRoundMLLM(MLLMCompressor):
                    decode the data that groups several modalities (among text, vision and audio).
         image_processor: Image processor for special model like llava.
         bits (int): Number of bits for quantization (default is 4).
-        group_size (int): Size of the quantization group (default is 128).
+        group_size (int or list): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
         batch_size (int): Batch size for training (default is 8).
@@ -478,7 +472,6 @@ class AutoRoundMLLM(MLLMCompressor):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        weight_block_size (list, optional): Weight quantization block size. Defaults to None.
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
         act_bits (int): Number of bits for activation quantization. Default is 32.
@@ -492,10 +485,9 @@ class AutoRoundMLLM(MLLMCompressor):
     """
 
     bits: int | None
-    group_size: int | None
+    group_size: int | list[int] | None
     sym: bool | None
     data_type: str | None
-    weight_block_size: list | None
     act_bits: int | None
     act_group_size: int | None
     act_sym: bool | None
@@ -560,10 +552,9 @@ class AutoRoundDiffusion(DiffusionCompressor):
     """
 
     bits: int | None
-    group_size: int | None
+    group_size: int | list[int] | None
     sym: bool | None
     data_type: str | None
-    weight_block_size: list | None
     act_bits: int | None
     act_group_size: int | None
     act_sym: bool | None
