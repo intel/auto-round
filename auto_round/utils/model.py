@@ -19,6 +19,7 @@ from collections import UserDict
 from pathlib import Path
 from typing import Union
 
+import psutil
 import torch
 import transformers
 from packaging import version
@@ -28,7 +29,10 @@ from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils.weight_handler import (
+    _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
+    convert_module_to_hp_if_necessary,
+    is_quantized_input_module,
 )
 
 
