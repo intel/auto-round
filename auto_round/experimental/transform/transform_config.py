@@ -39,7 +39,5 @@ class TransformConfig(BaseModel):
     def validate_transform_type(cls, v: str) -> str:
         allowed = {"hadamard", "random_hadamard"}
         if v not in allowed:
-            raise ValueError(
-                f"Unsupported transform_type: {v}. Supported values: {sorted(allowed)}"
-            )
+            raise ValueError(f"Unsupported transform_type: {v}. Supported values: {sorted(allowed)}")
         return v

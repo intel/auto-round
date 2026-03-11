@@ -145,9 +145,9 @@ def patch_quantlinear():
     if getattr(QuantLinear, "_pack_patched", False):
         return
 
+    from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
     from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
     from auto_round.utils import get_packing_device
-    from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 
     E8M0_EXPONENT_BIAS = 127
     E8M0_EXPONENT_NAN_VAL = 255
