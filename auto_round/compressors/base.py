@@ -288,7 +288,9 @@ class BaseCompressor(object):
                     e,
                 )
 
-            self.is_model_patched = apply_model_monkey_patches(model_name=model)
+            self.is_model_patched = apply_model_monkey_patches(
+                model_name=model, trust_remote_code=self.trust_remote_code
+            )
             import transformers
 
             if (
