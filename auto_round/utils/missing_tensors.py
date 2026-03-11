@@ -206,7 +206,10 @@ def copy_missing_tensors_from_source(
         scale_inv_name = base + ".weight_scale_inv"
         scale_name = base + ".weight_scale"
 
-        weight_scale = missing_tensors_dict.get(scale_inv_name) or missing_tensors_dict.get(scale_name)
+        weight_scale = missing_tensors_dict.get(scale_inv_name)
+        if weight_scale is None:
+            weight_scale = missing_tensors_dict.get(scale_name)
+
         if weight_scale is None:
             continue
 
