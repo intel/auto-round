@@ -26,7 +26,7 @@ from auto_round.utils import is_gaudi2, logger
 
 
 @register_dtype(("block_fp8_sym", "block_fp8", "block_fp8_e4m3"))
-def quant_block_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 128], v=0, **kwargs):
+def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 128], v=0, **kwargs):
     """Symmetric quantization using block float8 format.
 
     Args:
@@ -52,7 +52,7 @@ def quant_block_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128,
         new_M, new_N = tensor.shape
         block_M, block_N = group_size
         max_tensor = (
-            tensor.view(new_M // block_M, block_M, new_N // block_N, block_N).permute(0, 2, 1, 3).amax(dim=(-2, -1))
+            tensor.view(new_M // block_M, block_M, new_N // block_N, block_N).permute(0, 2, 1, 3).abs().amax(dim=(-2, -1))
             * max_scale
         )
     elif isinstance(tensor_max, torch.Tensor):

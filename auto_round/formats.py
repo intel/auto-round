@@ -27,6 +27,8 @@ import torch
 import transformers
 
 from auto_round.compressors.utils import (
+    is_block_wfp8,
+    is_dynamic_afp8,
     is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
@@ -330,7 +332,7 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
-    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8"]
+    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8", "FP8_BLOCK"]
     format_name = "llm_compressor"
 
     def __init__(self, format, ar):
@@ -349,6 +351,8 @@ class LLMCompressorFormat(OutputFormat):
 
                 check_compressed_tensors_supported()
                 self.backend = LLMCompressorFormat(ar.data_type, ar)
+            elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)
             elif is_static_wfp8afp8(ar):
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
                 if ar.act_group_size != 0:
@@ -401,6 +405,8 @@ class LLMCompressorFormat(OutputFormat):
         if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic):
             if (is_nv_fp(ar.act_data_type) and "static_gs" in ar.act_data_type) or (is_mx_fp(ar.act_data_type)):
                 return None
+            elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
+                return None
             else:
                 bits, group_size, sym, act_bits = 8, -1, True, 8
                 assert (
@@ -430,6 +436,10 @@ class LLMCompressorFormat(OutputFormat):
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
         elif re.search(f"{AutoRoundExportFormat.INT8_W8A8.value}", self.output_format):
+            from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+            return pack_layer(layer_name, model, device=device)
+        elif re.search(f"{AutoRoundExportFormat.FP8_BLOCK.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
@@ -966,9 +976,6 @@ class FP8Format(OutputFormat):
             )
         return True
 
-    # def check_and_reset_format(self, ar):
-    #     return super().check_and_reset_format(ar)
-
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
@@ -988,10 +995,17 @@ class FP8Format(OutputFormat):
         from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
         backend = self.get_backend_name()
 
-        if isinstance(serialization_dict["group_size"], list):
+        # weight_block_size & ignored_layers are required by fp8 format, skip them in auto_round:fp8 format
+        if isinstance(serialization_dict["group_size"], list) and "auto_round" not in backend:
             serialization_dict["weight_block_size"] = serialization_dict["group_size"]
 
-        import pdb;pdb.set_trace()
+            ignored_layers = []
+            for layer_name, cfg in layer_config.items():
+                if cfg["bits"] >= 16 and cfg["act_bits"] >= 16:
+                    ignored_layers.append(layer_name)
+            if len(ignored_layers) > 0:
+                serialization_dict["ignored_layers"] = ignored_layers
+
         return save_quantized_as_autoround(
             output_dir=output_dir,
             model=model,
@@ -1051,14 +1065,14 @@ class AutoRoundFormat(OutputFormat):
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
             elif ar.data_type.startswith("fp") and ar.bits == 8 and ar.act_bits >= 16:  # woq fp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, ar)
+            elif ar.data_type.startswith("fp") and ar.bits == 8 and isinstance(ar.group_size, list):
+                self.backend = AutoRoundFormat("auto_round:fp8", ar)
             elif ar.act_bits < 16:
                 raise ValueError(
                     "AutoRound format does not support exporting "
                     "for the current quantization configuration, "
                     "please change to `fake` format for research purpose"
                 )
-        elif format == "fp8":
-            self.backend = FP8Format(AutoRoundExportFormat.FP8_BLOCK.value, ar)
         # for auto_round:fp8_static, auto_round:nv_fp etc.
         elif not format.startswith("auto_round"):
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):

@@ -14,6 +14,7 @@
 
 import torch
 import transformers
+from math import ceil
 from torch.functional import F
 
 from auto_round.compressors.utils import is_nv_fp
@@ -52,7 +53,7 @@ def get_scale_shape(weight, group_size):
     elif group_size == -1 or weight.shape[1] < group_size:
         shape = weight.shape[0]
     else:
-        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
+        shape = weight.shape[0] * ceil(weight.shape[1] / group_size)
 
     return shape
 
@@ -70,8 +71,8 @@ def reshape_and_pad_tensor(v, group_size=-1):
     if isinstance(group_size, list):
         assert len(group_size) == 2, f"Only support 2D group_size, but get {group_size}"
         M, N = group_size
-        pad_len_m = (v.shape[0] + M - 1) // M * M - v.shape[0]
-        pad_len_n = (v.shape[1] + M - 1) // N * N - v.shape[1]
+        pad_len_m = ceil(v.shape[0] / M) * M - v.shape[0]
+        pad_len_n = ceil(v.shape[1] / N) * N - v.shape[1]
         v = torch.nn.functional.pad(v, (pad_len_m, pad_len_n))
     else:
         if group_size == 0:
@@ -81,7 +82,7 @@ def reshape_and_pad_tensor(v, group_size=-1):
         if v.shape[1] % group_size == 0:
             v = v.reshape(-1, group_size)
         else:
-            pad_len = (v.shape[1] + group_size - 1) // group_size * group_size - v.shape[1]
+            pad_len = ceil(v.shape[1] / group_size) * group_size - v.shape[1]
             v = torch.nn.functional.pad(v, (0, pad_len))
             v = v.reshape(-1, group_size)
     return v

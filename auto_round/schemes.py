@@ -250,9 +250,10 @@ FP8_BLOCK = QuantizationScheme.from_dict(
         "group_size": [128, 128],
         "data_type": "fp",
         "act_bits": 8,
-        "act_group_size": -1,
+        "act_group_size": 128,
         "act_data_type": "fp",
         "act_dynamic": True,
+        "act_sym": True,
     }
 )
 

@@ -862,8 +862,7 @@ class BaseCompressor(object):
             logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
 
         if isinstance(self.group_size, list) and not is_block_wfp8(self):
-            logger.error("only support block-wise quantization for fp8 weight quantization.")
-            exit(-1)
+            raise NotImplementedError("only support block-wise quantization for fp8 weight quantization.")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:

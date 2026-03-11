@@ -14,6 +14,7 @@
 
 import math
 from functools import lru_cache
+from math import ceil
 from typing import List, Union
 
 import torch
@@ -47,9 +48,9 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
     if isinstance(group_size, list):
         assert len(group_size) == 2, f"Only support 2D group_size, but get {len(group_size)}"
         M, N = group_size
-        pad_len_m = (orig_shape[0] + M - 1) // M * M - orig_shape[0]
-        pad_len_n = (orig_shape[1] + M - 1) // N * N - orig_shape[1]
-        data_new = torch.nn.functional.pad(data, (pad_len_m, pad_len_n))
+        pad_len_m = ceil(orig_shape[0] / M) * M - orig_shape[0]
+        pad_len_n = ceil(orig_shape[1] / N) * N - orig_shape[1]
+        data_new = torch.nn.functional.pad(data, (0, pad_len_n, 0, pad_len_m))
         return data_new, orig_shape, [pad_len_m, pad_len_n]
     if group_size == 0:
         data = data.reshape(1, -1)
@@ -62,7 +63,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
         data = data.reshape(-1, group_size)
         return data, orig_shape, pad_len
     else:
-        pad_len = (data.shape[1] + group_size - 1) // group_size * group_size - data.shape[1]
+        pad_len = ceil(data.shape[1] / group_size) * group_size - data.shape[1]
         data_new = torch.nn.functional.pad(data, (0, pad_len), value=val)
         data_new = data_new.reshape(-1, group_size)
         return data_new, orig_shape, pad_len
