@@ -51,6 +51,7 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize()
         moe = compressed_model.model.layers[1].mlp
@@ -75,6 +76,7 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
         lm_head = compressed_model.lm_head
@@ -107,6 +109,7 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
         lm_head = compressed_model.lm_head

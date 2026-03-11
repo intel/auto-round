@@ -458,6 +458,9 @@ def _unfuse_single_projection(
     return linears
 
 
+_logged_memory_before_replacement = False  # To ensure we only log memory once before replacements
+
+
 def _unfuse_experts_weights_inplace(
     module: nn.Module,
     check_decorator: bool = True,
@@ -494,8 +497,12 @@ def _unfuse_experts_weights_inplace(
         logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
-    memory_monitor.update()
-    memory_monitor.log_summary("Before applying custom replacements")
+    global _logged_memory_before_replacement
+    if not _logged_memory_before_replacement:
+        _logged_memory_before_replacement = True
+        memory_monitor.update()
+        memory_monitor.log_summary("Before applying custom replacements")
+
     # Get first projection to determine num_experts and layout
     first_proj_name = next(iter(detected_projections))
     first_param = getattr(module, first_proj_name)
@@ -594,9 +601,6 @@ def _unfuse_experts_weights_inplace(
     # Install compact repr to collapse identical expert containers in print output
     _install_compact_expert_repr(module)
 
-    memory_monitor.update()
-    memory_monitor.log_summary("After applying custom replacements")
-
     return True
 
 
@@ -644,6 +648,9 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
             impl_to_set = saved_impl if saved_impl else implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
+
+        memory_monitor.update()
+        memory_monitor.log_summary("After applying custom replacements")
 
     return unfused_modules
 
