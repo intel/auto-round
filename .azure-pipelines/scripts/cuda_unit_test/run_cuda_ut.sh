@@ -120,7 +120,6 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
-    uv pip install torch==2.10.0 torchvision
     uv pip install -U transformers
     uv pip install .
     echo "##[endgroup]"
@@ -131,8 +130,7 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    # find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
-    find ./test_cuda -name "test_fp8_input.py" | sort > all_tests.txt
+    find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=3
     q=$(( total_lines / NUM_CHUNKS ))
@@ -152,12 +150,11 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "report.html" ] && [ -f "coverage.xml" ]; then
-        mv report.html ${LOG_DIR}/
+    if [ -f "coverage.xml" ]; then
         mv coverage.xml ${LOG_DIR}/
     fi
 
@@ -186,12 +183,11 @@ function run_unit_test_llmc() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "report_llmc.html" ] && [ -f "coverage_llmc.xml" ]; then
-        mv report_llmc.html ${LOG_DIR}/
+    if [ -f "coverage_llmc.xml" ]; then
         mv coverage_llmc.xml ${LOG_DIR}/
     fi
     # Print test results table and check for failures
@@ -219,12 +215,11 @@ function run_unit_test_sglang() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "report_sglang.html" ] && [ -f "coverage_sglang.xml" ]; then
-        mv report_sglang.html ${LOG_DIR}/
+    if [ -f "coverage_sglang.xml" ]; then
         mv coverage_sglang.xml ${LOG_DIR}/
     fi
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
