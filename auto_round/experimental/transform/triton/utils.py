@@ -3,6 +3,7 @@
 
 import torch
 
+
 def is_triton_available() -> bool:
     """
     Best-effort check for whether Triton kernel path can be used.
