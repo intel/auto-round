@@ -76,7 +76,7 @@ class HadamardTransform(nn.Module):
         return (
             (
                 apply_transform_weight(
-                    self.weight.to(device=x.device),
+                    self.weight,
                     x.to(dtype=self.weight.dtype),
                     self.location,
                     self.module_type,

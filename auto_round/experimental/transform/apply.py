@@ -54,7 +54,6 @@ def _apply_to_module(
     transform_name = "forward_hadamard_transform"
 
     if config.location == "input":
-        from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
         # activation needs transpose
         inp_transform = build_transform(
@@ -63,27 +62,49 @@ def _apply_to_module(
             device="cpu",
             precision=module.dtype,
         )
+
         if config.transform_type != "random_hadamard":
             transform_weight = inp_transform.weight
         else:
             transform_weight = None
 
-        def input_hook(self, args):
-            input = args[0]
-            # transform(input)
-            orig_shape = input.shape
-            x_flat = input.contiguous().flatten(end_dim=-2)
-            qdq_input, _ = mxfp4_forward_kernel_wrapper(
-                x_flat,
-                (
-                    transform_weight if transform_weight is not None else self.forward_hadamard_transform.T
-                ),  # this matrix from w_transform, needs transpose
-            )
-            return qdq_input.reshape(orig_shape)
+        if is_triton_available():
+            from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
-        # for fused transform + quantization kernel
-        module.pre_dequantized_input = True
-        module.register_forward_pre_hook(input_hook, prepend=True)
+            def input_hook(self, args):
+                input = args[0]
+                # transform(input)
+                orig_shape = input.shape
+                x_flat = input.contiguous().flatten(end_dim=-2)
+                qdq_input, _ = mxfp4_forward_kernel_wrapper(
+                    x_flat,
+                    transform_weight if transform_weight is not None \
+                            else self.forward_hadamard_transform.T    # this matrix from w_transform, needs transpose
+                )
+                return qdq_input.reshape(orig_shape)
+
+            # for fused transform + quantization kernel
+            module.pre_dequantized_input = True
+            module.register_forward_pre_hook(input_hook, prepend=True)
+        else:
+
+            from .utils.matrix import _multihead_matmul
+
+            def input_hook(self, args):
+                input = args[0]
+
+                ori_shape = input.shape
+
+                if transform_weight is not None:
+                    input = input.view(-1, transform_weight.shape[0])
+                    return _multihead_matmul(input, transform_weight.to(input.device)).view(ori_shape)
+                else:
+                    input = input.view(-1, self.forward_hadamard_transform.shape[0])
+                    return _multihead_matmul(input, self.forward_hadamard_transform.T).view(ori_shape)
+
+            # for fused transform + quantization kernel
+            module.pre_dequantized_input = False
+            module.register_forward_pre_hook(input_hook, prepend=True)
 
     elif config.location == "weight":
         # eagerly apply transformation to weight
