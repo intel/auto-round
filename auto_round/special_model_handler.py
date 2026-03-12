@@ -264,6 +264,9 @@ register_ignore_layers(
     ignore_layers=[
         "g_proj",  # shape issue [96, 4096], 96 is not divisible by 64
         "moe.gate",
+        "eh_proj",  # MTP layer
+        "shared_head",  # MTP layer
+        "layers.45",  # MTP layer, requiring g_idx in vLLM, skip it
     ],
 )
 
