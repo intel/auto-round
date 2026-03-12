@@ -14,7 +14,6 @@
 
 import copy
 import os
-import re
 import sys
 import time
 import traceback
@@ -99,7 +98,6 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
-    safe_device_move_with_meta_handling,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -512,8 +510,8 @@ class BaseCompressor(object):
         # after setting iters
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
-
-        self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+        self.block_forward = block_forward
+        # self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
