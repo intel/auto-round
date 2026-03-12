@@ -511,6 +511,8 @@ class BaseCompressor(object):
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
         self.block_forward = block_forward
+        # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
+        # To avoid issues, remove it in all scenarios.
         # self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
