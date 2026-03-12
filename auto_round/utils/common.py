@@ -153,6 +153,53 @@ def _patch_transpose_for_buffers():
     Transpose.convert = _patched_convert
 
 
+def _patch_tensor_get_dtype_for_prequantized_loading():
+    """Add a minimal ``torch.Tensor.get_dtype()`` shim for transformers 5.3.0.
+
+    transformers 5.3.0 added a pre-quantized loading branch in
+    ``core_model_loading.convert_and_load_state_dict_in_model()`` that calls
+    ``tensor.get_dtype()`` on checkpoint values. During actual weight loading,
+    those values are plain ``torch.Tensor`` instances returned by
+    ``modeling_utils.load_state_dict()``, which do not implement that method.
+
+    Older transformers versions only disabled dtype casting when a key was
+    renamed. The new version additionally inspects non-floating tensors, but it
+    does so through a safetensors-slice API that is not available on regular
+    tensors. Providing the method here preserves the new intent while restoring
+    compatibility for plain tensors.
+    """
+    if hasattr(torch.Tensor, "get_dtype"):
+        return
+
+    torch_to_safetensors_dtype = {
+        torch.int8: "I8",
+        torch.uint8: "U8",
+        torch.int16: "I16",
+        torch.int32: "I32",
+        torch.int64: "I64",
+        torch.float16: "F16",
+        torch.float32: "F32",
+        torch.float64: "F64",
+        torch.bfloat16: "BF16",
+    }
+
+    if hasattr(torch, "uint16"):
+        torch_to_safetensors_dtype[torch.uint16] = "U16"
+    if hasattr(torch, "uint32"):
+        torch_to_safetensors_dtype[torch.uint32] = "U32"
+    if hasattr(torch, "uint64"):
+        torch_to_safetensors_dtype[torch.uint64] = "U64"
+    if hasattr(torch, "float8_e4m3fn"):
+        torch_to_safetensors_dtype[torch.float8_e4m3fn] = "F8_E4M3"
+    if hasattr(torch, "float8_e5m2"):
+        torch_to_safetensors_dtype[torch.float8_e5m2] = "F8_E5M2"
+
+    def _tensor_get_dtype(self):
+        return torch_to_safetensors_dtype.get(self.dtype, str(self.dtype).removeprefix("torch.").upper())
+
+    torch.Tensor.get_dtype = _tensor_get_dtype
+
+
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
@@ -177,6 +224,10 @@ def monkey_patch_transformers():
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
         # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
         _patch_transpose_for_buffers()
+    if parsed_version >= version.parse("5.3.0"):
+        # transformers 5.3.0 calls tensor.get_dtype() on plain torch.Tensor objects
+        # while loading pre-quantized checkpoints.
+        _patch_tensor_get_dtype_for_prequantized_loading()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
