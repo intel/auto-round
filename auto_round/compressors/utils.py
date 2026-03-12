@@ -225,8 +225,17 @@ def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> l
     name_or_path = None
     if hasattr(model, "config") and hasattr(model.config, "name_or_path"):
         name_or_path = model.config.name_or_path
-    if not name_or_path or not os.path.isdir(name_or_path):
+    if not name_or_path:
         return []
+
+    if not os.path.isdir(name_or_path):
+        try:
+            from auto_round.utils.model import download_hf_model
+
+            name_or_path = download_hf_model(name_or_path)
+        except Exception as e:
+            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
+            return []
 
     try:
         from safetensors import safe_open
@@ -405,7 +414,7 @@ def set_layer_config(
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
                 layer_config.pop(name)
-                logger.warning(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
+                logger.debug(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
                 continue
 
         regex = re.compile(name)
