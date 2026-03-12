@@ -17,8 +17,6 @@ import torch
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.logger import logger
-
 
 # taken from
 # https://github.com/vllm-project/vllm/blob/ebb554cdb7cd9cc54b2feec20c45ab9cd9067d52/tests/kernels/test_nvfp4_quant.py
@@ -205,6 +203,20 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
     clipped_x = torch.clamp(scaled_x, -6.0, 6.0)
     return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
 
+def ref_fp4_quant_v3(x, global_scale, block_size=16, v=0, max_scale=1.0):
+    assert (not isinstance(global_scale, torch.Tensor)) or global_scale.dtype == torch.float32
+    assert x.ndim == 2
+    m, n = x.shape
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.unsqueeze(dim=-1).to(x.device)
+    vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0]* max_scale
+    scale = global_scale * (vec_max.to(torch.bfloat16) * get_reciprocal(FLOAT4_E2M1_MAX))
+    output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
+    scaled_x = x.to(torch.float32) * output_scale + v
+    clipped_x = torch.clamp(scaled_x, -6.0, 6.0)
+    return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
+
+
 
 @register_dtype("fp4_v2_with_global_scale")
 def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None, max_scale=1.0, **kwargs):
@@ -233,6 +245,19 @@ def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
+
+
+@register_dtype("fp4_v3")
+def fp4_v3(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    global_scale = 1.0
+    qdq_res, scale = ref_fp4_quant_v3(tensor, global_scale, group_size, v, max_scale)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
+
 
 
 if __name__ == "__main__":
