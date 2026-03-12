@@ -1,3 +1,7 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
+
 def is_triton_available() -> bool:
     """
     Best-effort check for whether Triton kernel path can be used.
