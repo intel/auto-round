@@ -37,6 +37,8 @@ BUILTIN_MODULES = {
     # supports transformers >= 5.0.0
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
+    "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
 }
 
 
@@ -99,7 +101,7 @@ def is_custom_model(model: torch.nn.Module) -> bool:
 def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
     """Log the first experts module found in the model for debugging."""
     for name, module in model.named_modules():
-        if name.endswith(".experts"):
+        if name.endswith(".experts") or name.endswith(".moe"):
             logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
             return True
     return False
