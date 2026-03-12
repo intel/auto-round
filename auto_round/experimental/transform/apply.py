@@ -8,6 +8,7 @@ from ..qmodules.mx import MXQuantLinearBase
 from .transform_config import TransformConfig
 from .transforms import build_transform
 
+
 __all__ = ["apply_transform"]
 
 
@@ -54,6 +55,7 @@ def _apply_to_module(
     transform_name = "forward_hadamard_transform"
 
     if config.location == "input":
+        from .triton.utils import is_triton_available
 
         # activation needs transpose
         inp_transform = build_transform(
