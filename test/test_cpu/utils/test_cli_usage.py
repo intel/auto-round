@@ -2,7 +2,7 @@ import os
 import shutil
 import sys
 
-from auto_round.__main__ import _parse_layer_config_arg
+from auto_round.utils import parse_layer_config_arg
 
 from ...helpers import get_model_path
 
@@ -88,8 +88,8 @@ class TestAutoRoundCmd:
 
 
 def test_parse_layer_config():
-    """Unit test for _parse_layer_config_arg parsing logic."""
-    result = _parse_layer_config_arg("{mtp:{bits:8,data_type:int},mtp.fc:{bits:16,data_type:int}}")
+    """Unit test for parse_layer_config_arg parsing logic."""
+    result = parse_layer_config_arg("{mtp:{bits:8,data_type:int},mtp.fc:{bits:16,data_type:int}}")
     assert result == {
         "mtp": {"bits": 8, "data_type": "int"},
         "mtp.fc": {"bits": 16, "data_type": "int"},
