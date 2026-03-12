@@ -8,7 +8,6 @@ from ..qmodules.mx import MXQuantLinearBase
 from .transform_config import TransformConfig
 from .transforms import build_transform
 
-
 __all__ = ["apply_transform"]
 
 
