@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import json
+import os
 import random
 import re
 import sys
@@ -219,9 +221,6 @@ def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> l
         List of layer names (the path without the ``.weight`` suffix) for weight
         tensors present in the safetensor files but absent from *all_module_names*.
     """
-    import json
-    import os
-
     name_or_path = None
     if hasattr(model, "config") and hasattr(model.config, "name_or_path"):
         name_or_path = model.config.name_or_path

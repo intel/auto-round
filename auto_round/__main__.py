@@ -133,15 +133,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         basic.add_argument("--adam", action="store_true", help="Use Adam optimizer instead of SignSGD.")
         basic.add_argument(
-            "--layer_config",
-            default=None,
-            type=str,
-            help="Per-layer quantization config for missing tensors (e.g., MTP layers) as a JSON string. "
-            "Keys are name prefixes, values are config dicts with optional bits/group_size/sym. "
-            'Example: "{mtp:{bits:8,data_type:int},mtp.fc:{bits:16}}". '
-            "These settings are saved to extra_config and override the global quantization config.",
-        )
-        basic.add_argument(
             "--low_gpu_mem_usage",
             action="store_true",
             help="Enable memory-efficient mode by offloading intermediate features to CPU. "
@@ -322,6 +313,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         scheme.add_argument(
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--layer_config",
+            default=None,
+            type=str,
+            help="Per-layer quantization config for missing tensors (e.g., MTP layers) as a JSON string. "
+            "Keys are name prefixes, values are config dicts with optional bits/group_size/sym. "
+            'Example: "{mtp:{bits:8,data_type:int},mtp.fc:{bits:16}}". '
+            "These settings are saved to extra_config and override the global quantization config.",
         )
         scheme.add_argument(
             "--shared_layers",

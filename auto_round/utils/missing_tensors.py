@@ -47,11 +47,14 @@ from auto_round.logger import logger
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
-def _get_model_param_names_on_meta(source_dir: str) -> set | None:
-    """Load the model architecture on a **meta** device and return its state-dict keys.
+def _get_model_layer_names_on_meta(source_dir: str) -> set | None:
+    """Load the model architecture on a **meta** device and return its module names.
 
-    This lets us discover which parameter names the model class actually
-    declares *without* allocating any real memory.
+    This lets us discover which layer (module) names the model class actually
+    declares *without* allocating any real memory.  Compared to returning
+    ``state_dict`` keys, module names are suffix-agnostic (no ``.weight`` /
+    ``.bias`` distinction) and naturally align with the layer-name convention
+    used elsewhere (e.g. ``_get_safetensor_layer_names_not_in_model``).
 
     Returns ``None`` when the model cannot be instantiated (import errors,
     unsupported architecture, etc.).
@@ -67,9 +70,9 @@ def _get_model_param_names_on_meta(source_dir: str) -> set | None:
     try:
         with torch.device("meta"):
             meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-        param_names = set(meta_model.state_dict().keys())
+        layer_names = set(n for n, _ in meta_model.named_modules())
         del meta_model
-        return param_names
+        return layer_names
     except Exception as e:
         logger.debug("Could not instantiate model on meta device: %s", e)
         return None
@@ -86,11 +89,13 @@ def copy_missing_tensors_from_source(
     those tensors from the original checkpoint into the quantized output dir.
 
     Detection works by loading the model on a **meta device** (zero memory
-    cost) and collecting its ``state_dict`` keys.  A source tensor is
-    considered "missing" when:
+    cost) and collecting its module (layer) names via ``named_modules()``.
+    A source tensor is considered "missing" when:
       1. its name is **not** already present in the saved output, **and**
-      2. its name is **not** among the meta model's state-dict keys
-         (i.e. the model class does not declare that parameter).
+      2. its parent layer name (tensor name with the last ``.``-suffix
+         stripped, e.g. ``layer.weight`` → ``layer``) is **not** among the
+         meta model's module names (i.e. the model class does not declare
+         that layer).
 
     FP8 handling:
         Missing weight tensors in FP8 dtype that have a corresponding
@@ -175,17 +180,17 @@ def copy_missing_tensors_from_source(
     # Identify missing tensors via meta-device model loading               #
     # ------------------------------------------------------------------ #
     # Load the model architecture on a meta device to discover which
-    # parameter names the model class declares.  Source tensors that are
-    # NOT among those names (and also absent from the saved output) are
-    # the ones that ``save_pretrained`` could never have written.
+    # layer (module) names the model class declares.  Source tensors whose
+    # parent layer is NOT among those names (and also absent from the saved
+    # output) are the ones that ``save_pretrained`` could never have written.
     from auto_round.utils.model import _is_mxfp4_model
 
     # Skip MXFP4 model due to its special naming.
     if _is_mxfp4_model(source_dir):
         return
 
-    model_param_names = _get_model_param_names_on_meta(source_dir)
-    if model_param_names is None:
+    all_layer_names = _get_model_layer_names_on_meta(source_dir)
+    if all_layer_names is None:
         logger.warning(
             "Could not load model on meta device to detect missing tensors. "
             "Skipping copy of missing tensors from source checkpoint."
@@ -193,7 +198,9 @@ def copy_missing_tensors_from_source(
         return
 
     missing_tensor_names: list = [
-        name for name in source_tensor_to_file if name not in saved_tensor_names and name not in model_param_names
+        name
+        for name in source_tensor_to_file
+        if name not in saved_tensor_names and name.rsplit(".", 1)[0] not in all_layer_names
     ]
 
     if not missing_tensor_names:
