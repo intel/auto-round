@@ -263,6 +263,7 @@ register_ignore_layers(
     ],
     ignore_layers=[
         "g_proj",  # shape issue [96, 4096], 96 is not divisible by 64
+        "moe.gate",
     ],
 )
 
