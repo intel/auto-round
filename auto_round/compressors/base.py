@@ -510,12 +510,19 @@ class BaseCompressor(object):
         # after setting iters
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
-        if self.act_bits>=16 and self.super_group_size is None and not self.enable_alg_ext and self.data_type=="int":
+        if (
+            self.act_bits >= 16
+            and self.super_group_size is None
+            and not self.enable_alg_ext
+            and self.data_type == "int"
+        ):
             self.block_forward = block_forward
         else:
             # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
             # To avoid issues, remove it in all scenarios except WOQ.
-            self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+            self.block_forward = (
+                compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+            )
 
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
