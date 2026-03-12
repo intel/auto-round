@@ -23,11 +23,11 @@
 #
 # This module provides :func:`copy_missing_tensors_from_source`, which detects
 # and copies such tensors from the original checkpoint into the saved output
-# directory.  Detection works by loading the model architecture on a **meta
-# device** (no memory overhead) and comparing its ``state_dict`` keys against
-# the source checkpoint: any source tensor whose name does NOT appear in the
-# meta model's state dict (and is also absent from the saved output) is
-# considered "missing".
+# directory.  Detection works by comparing the **parent layer names**
+# (``tensor_name.rsplit(".", 1)[0]``) present in the source checkpoint against
+# those present in the saved output: any source tensor whose parent layer has
+# no tensors at all in the saved output (and is itself absent) is considered
+# "missing".  This requires no model/config loading.
 #
 # Before writing, the function optionally:
 #   - **dequantizes FP8 weights** to BF16 (when a matching ``weight_scale_inv``
@@ -47,37 +47,6 @@ from auto_round.logger import logger
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
-def _get_model_layer_names_on_meta(source_dir: str) -> set | None:
-    """Load the model architecture on a **meta** device and return its module names.
-
-    This lets us discover which layer (module) names the model class actually
-    declares *without* allocating any real memory.  Compared to returning
-    ``state_dict`` keys, module names are suffix-agnostic (no ``.weight`` /
-    ``.bias`` distinction) and naturally align with the layer-name convention
-    used elsewhere (e.g. ``_get_safetensor_layer_names_not_in_model``).
-
-    Returns ``None`` when the model cannot be instantiated (import errors,
-    unsupported architecture, etc.).
-    """
-    from transformers import AutoConfig, AutoModelForCausalLM
-
-    try:
-        config = AutoConfig.from_pretrained(source_dir, trust_remote_code=True)
-    except Exception as e:
-        logger.debug("Could not load config from %s for meta-device detection: %s", source_dir, e)
-        return None
-
-    try:
-        with torch.device("meta"):
-            meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-        layer_names = set(n for n, _ in meta_model.named_modules())
-        del meta_model
-        return layer_names
-    except Exception as e:
-        logger.debug("Could not instantiate model on meta device: %s", e)
-        return None
-
-
 def copy_missing_tensors_from_source(
     source_dir: str,
     target_dir: str,
@@ -88,14 +57,15 @@ def copy_missing_tensors_from_source(
     therefore not written by ``model.save_pretrained``.  This function copies
     those tensors from the original checkpoint into the quantized output dir.
 
-    Detection works by loading the model on a **meta device** (zero memory
-    cost) and collecting its module (layer) names via ``named_modules()``.
-    A source tensor is considered "missing" when:
+    Detection works by comparing **parent layer names**
+    (``tensor_name.rsplit(".", 1)[0]``) between the source checkpoint and the
+    saved output.  A source tensor is considered "missing" when:
       1. its name is **not** already present in the saved output, **and**
-      2. its parent layer name (tensor name with the last ``.``-suffix
-         stripped, e.g. ``layer.weight`` → ``layer``) is **not** among the
-         meta model's module names (i.e. the model class does not declare
-         that layer).
+      2. its parent layer name is **not** among the parent layer names of any
+         saved tensor (i.e. the layer was entirely skipped by
+         ``save_pretrained``).
+
+    No model or config loading is required.
 
     FP8 handling:
         Missing weight tensors in FP8 dtype that have a corresponding
@@ -177,31 +147,58 @@ def copy_missing_tensors_from_source(
         return
 
     # ------------------------------------------------------------------ #
-    # Identify missing tensors via meta-device model loading               #
+    # Identify missing tensors via block-prefix statistics                 #
     # ------------------------------------------------------------------ #
-    # Load the model architecture on a meta device to discover which
-    # layer (module) names the model class declares.  Source tensors whose
-    # parent layer is NOT among those names (and also absent from the saved
-    # output) are the ones that ``save_pretrained`` could never have written.
-    from auto_round.utils.model import _is_mxfp4_model
+    # A source tensor is considered "missing" when:
+    #   1. its name is absent from the saved output, AND
+    #   2. its parent layer name is NOT among the parent layers of any saved
+    #      tensor (catches layers whose suffix changed, e.g. .weight →
+    #      .qweight after quantization), AND
+    #   3. its "block prefix" — the path up to and including the first
+    #      numeric segment, e.g. ``model.layers.0`` — is NOT present in the
+    #      set of block prefixes collected from the saved output.
 
-    # Skip MXFP4 model due to its special naming.
-    if _is_mxfp4_model(source_dir):
-        return
+    saved_parent_layers: set = {name.rsplit(".", 1)[0] for name in saved_tensor_names}
 
-    all_layer_names = _get_model_layer_names_on_meta(source_dir)
-    if all_layer_names is None:
-        logger.warning(
-            "Could not load model on meta device to detect missing tensors. "
-            "Skipping copy of missing tensors from source checkpoint."
-        )
-        return
+    def _first_numeric_prefix(tensor_name: str) -> str | None:
+        """Return the path up to and including the first numeric segment, or None.
 
-    missing_tensor_names: list = [
-        name
-        for name in source_tensor_to_file
-        if name not in saved_tensor_names and name.rsplit(".", 1)[0] not in all_layer_names
-    ]
+        e.g. ``model.layers.0.mlp.gate.qweight`` → ``model.layers.0``
+             ``model.embed_tokens.weight``         → ``None``
+        """
+        parts = tensor_name.split(".")
+        for i, p in enumerate(parts):
+            if p.isdigit():
+                return ".".join(parts[: i + 1])
+        return None
+
+    # Collect block prefixes from the saved output: path up to the first
+    # numeric segment in each saved tensor name (e.g. "model.layers.0",
+    # "mlp.experts.0").
+    saved_block_prefix: set = set()
+    for tensor_name in saved_tensor_names:
+        bp = _first_numeric_prefix(tensor_name)
+        if bp is not None:
+            saved_block_prefix.add(bp)
+
+    def _is_truly_missing(name: str) -> bool:
+        # For Qwen/Qwen3-0.6B-FP8, lm_head is tied but still in source_dir → not missing
+        if name == "lm_head.weight":
+            return False
+        if name in saved_tensor_names:
+            return False
+        parent = name.rsplit(".", 1)[0]
+        if parent in saved_parent_layers:
+            return False
+        src_block = _first_numeric_prefix(name)
+        if src_block is not None:
+            # Source tensor belongs to a numbered block; if that exact block
+            # appears in the saved output it was processed (possibly renamed
+            # or split) rather than omitted.
+            return src_block not in saved_block_prefix
+        return True
+
+    missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]
 
     if not missing_tensor_names:
         return

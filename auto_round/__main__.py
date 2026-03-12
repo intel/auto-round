@@ -26,6 +26,7 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
+    parse_layer_config_arg,
 )
 
 RECIPES = {
@@ -506,45 +507,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
 
-def _parse_layer_config_arg(s: str) -> dict:
-    """Parse --layer_config with unquoted keys/values.
-
-    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
-    auto-typed: numeric strings become ``int``, everything else stays ``str``.
-
-    Example::
-
-        {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
-    """
-    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
-    pos = [0]
-
-    def _val():
-        tok = tokens[pos[0]]
-        if tok == "{":
-            return _dict()
-        pos[0] += 1
-        try:
-            return int(tok)
-        except ValueError:
-            return tok
-
-    def _dict():
-        pos[0] += 1  # consume '{'
-        result = {}
-        while tokens[pos[0]] != "}":
-            key = tokens[pos[0]]
-            pos[0] += 1  # key
-            pos[0] += 1  # consume ':'
-            result[key] = _val()
-            if tokens[pos[0]] == ",":
-                pos[0] += 1  # consume ','
-        pos[0] += 1  # consume '}'
-        return result
-
-    return _dict()
-
-
 def list_item():
     args = argparse.ArgumentParser()
     args.add_argument("item", type=str, help="item to list, e.g., format")
@@ -706,7 +668,7 @@ def tune(args):
 
     layer_config = {}
     if args.layer_config:
-        layer_config = _parse_layer_config_arg(args.layer_config)
+        layer_config = parse_layer_config_arg(args.layer_config)
         args.layer_config = layer_config
 
     if args.avg_bits is not None:
