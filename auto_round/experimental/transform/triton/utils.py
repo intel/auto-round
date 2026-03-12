@@ -1,6 +1,7 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
+import torch
 
 def is_triton_available() -> bool:
     """
@@ -15,7 +16,7 @@ def is_triton_available() -> bool:
         return False
 
     try:
-        from .triton.mxfp4 import mxfp4_forward_kernel_wrapper  # noqa: F401
+        from .mxfp4 import mxfp4_forward_kernel_wrapper  # noqa: F401
     except Exception:
         return False
 

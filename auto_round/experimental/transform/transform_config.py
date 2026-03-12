@@ -13,7 +13,7 @@ class TransformConfig(BaseModel):
     """
 
     # required, currently only supports mxfp4
-    quant_scheme: str = Field(..., description="Quantization scheme. Currently only supports 'mxfp4'.")
+    quant_scheme: str = Field(..., description="Quantization scheme. Currently supports 'mxfp4/mxfp8'.")
 
     transform_block_size: int = Field(default=32)
 
@@ -30,7 +30,7 @@ class TransformConfig(BaseModel):
     @field_validator("quant_scheme")
     @classmethod
     def validate_quant_scheme(cls, v: str) -> str:
-        if v != "mxfp4":
+        if v not in ["mxfp4", "mxfp8"]:
             raise ValueError(f"Unsupported quant_scheme: {v}. Currently only 'mxfp4' is supported.")
         return v
 
