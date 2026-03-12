@@ -122,6 +122,7 @@ class TestAutoRound:
         evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gguf
     def test_all_format(self):
         for model_name in ["Qwen/Qwen3-8B", "meta-llama/Llama-3.2-3B"]:
