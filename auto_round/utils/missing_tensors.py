@@ -47,7 +47,7 @@ from auto_round.logger import logger
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
-def _get_model_param_names_on_meta(target_dir: str) -> set | None:
+def _get_model_param_names_on_meta(source_dir: str) -> set | None:
     """Load the model architecture on a **meta** device and return its state-dict keys.
 
     This lets us discover which parameter names the model class actually
@@ -56,15 +56,12 @@ def _get_model_param_names_on_meta(target_dir: str) -> set | None:
     Returns ``None`` when the model cannot be instantiated (import errors,
     unsupported architecture, etc.).
     """
-    try:
-        from transformers import AutoConfig, AutoModelForCausalLM
-    except ImportError:
-        return None
+    from transformers import AutoConfig, AutoModelForCausalLM
 
     try:
-        config = AutoConfig.from_pretrained(target_dir, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(source_dir, trust_remote_code=True)
     except Exception as e:
-        logger.debug("Could not load config from %s for meta-device detection: %s", target_dir, e)
+        logger.debug("Could not load config from %s for meta-device detection: %s", source_dir, e)
         return None
 
     try:
@@ -181,7 +178,13 @@ def copy_missing_tensors_from_source(
     # parameter names the model class declares.  Source tensors that are
     # NOT among those names (and also absent from the saved output) are
     # the ones that ``save_pretrained`` could never have written.
-    model_param_names = _get_model_param_names_on_meta(target_dir)
+    from auto_round.utils.model import _is_mxfp4_model
+
+    # Skip MXFP4 model due to its special naming.
+    if _is_mxfp4_model(source_dir):
+        return
+
+    model_param_names = _get_model_param_names_on_meta(source_dir)
     if model_param_names is None:
         logger.warning(
             "Could not load model on meta device to detect missing tensors. "
@@ -195,6 +198,8 @@ def copy_missing_tensors_from_source(
 
     if not missing_tensor_names:
         return
+
+    logger.debug(f"Missing tensors detected: {missing_tensor_names}")
 
     logger.info(
         f"Found {len(missing_tensor_names)} tensor(s) in the source checkpoint that are "
