@@ -10,7 +10,7 @@ from transformers.utils.versions import require_version
 
 from auto_round import AutoRound, AutoRoundAdam
 
-from ...envs import require_awq, require_gptqmodel, require_optimum, require_package_version_ut
+from ...envs import require_awq, require_gptqmodel, require_optimum
 from ...helpers import evaluate_accuracy, get_model_path
 
 
@@ -51,7 +51,7 @@ class TestMainFunc:
 
     @require_optimum
     @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_backend_awq(self):
         model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
@@ -86,7 +86,7 @@ class TestMainFunc:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_ignore_layers_awq(self):
         model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")

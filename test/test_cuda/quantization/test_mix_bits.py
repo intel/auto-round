@@ -12,7 +12,6 @@ from auto_round import AutoRound
 from ...envs import (
     require_awq,
     require_gptqmodel,
-    require_package_version_ut,
 )
 from ...helpers import get_model_path
 
@@ -130,7 +129,6 @@ class TestAutoRound:
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_fallback_regex_for_awq_format(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "lm_head": {"bits": 16},

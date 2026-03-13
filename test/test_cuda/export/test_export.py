@@ -9,7 +9,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 
 from auto_round import AutoRound
 
-from ...envs import require_awq, require_optimum, require_package_version_ut
+from ...envs import require_awq, require_gptqmodel, require_optimum
 from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
@@ -168,7 +168,7 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_autoawq_format(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, False
@@ -249,7 +249,7 @@ class TestAutoRound:
 
     @require_optimum
     @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_autoawq_format_fp_qsave_layers(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         layer_config = {
@@ -271,9 +271,7 @@ class TestAutoRound:
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         from transformers import AutoRoundConfig
 
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="auto", quantization_config=AutoRoundConfig()
-        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
