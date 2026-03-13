@@ -41,7 +41,7 @@ class TestAutoRound:
 
     def test_small_model_rtn_generation(self, mock_fp8_capable_device):
         model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
+        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0, disable_opt_rtn=True)
         ar.quantize_and_save(output_dir=self.save_dir)
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
