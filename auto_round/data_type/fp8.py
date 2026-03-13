@@ -62,7 +62,7 @@ def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 
         max_tensor = tensor_max.to(tensor.device) * max_scale
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
-    scale = max_tensor.to(torch.float32) / info.max
+    scale = max_tensor / info.max
     assert len(scale.shape) == 2, f"Only support 2D group_size, but get {len(scale.shape)}"
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
