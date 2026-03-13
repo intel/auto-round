@@ -338,7 +338,7 @@ class OffloadManager:
         """
         if not self.enabled:
             return 0.0
-        if not self._check_disk_space(model, names):
+        if self.mode == "offload" and not self._check_disk_space(model, names):
             self.enabled = False
             return 0.0
         if isinstance(names, str):
