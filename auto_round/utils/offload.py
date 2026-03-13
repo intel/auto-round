@@ -396,11 +396,11 @@ class OffloadManager:
         tmpdir = tempfile.gettempdir()
         free_bytes = shutil.disk_usage(tmpdir).free
         if free_bytes < required_bytes:
-            total_gb = total_bytes / (1024**3)
+            required_gb = required_bytes / (1024**3)
             free_gb = free_bytes / (1024**3)
             logger.warning(
-                f"Insufficient disk space for offloading: need ~{total_gb:.2f} GB "
-                f"but only {free_gb:.2f} GB available at {tmpdir}. Skipping offload."
+                f"Insufficient disk space for offloading: need ~{required_gb:.2f} GB "
+                f"(including safety margin) but only {free_gb:.2f} GB available at {tmpdir}. Skipping offload."
             )
             return False
         return True
