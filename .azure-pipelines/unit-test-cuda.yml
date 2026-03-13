@@ -148,7 +148,7 @@ stages:
                 displayName: "Run GPU Tests"
 
               - task: PublishPipelineArtifact@1
-                condition: succeeded()
+                condition: succeededOrFailed()
                 inputs:
                   targetPath: $(Build.SourcesDirectory)/ut_log_dir
                   artifact: PART_${{ pair.value.PART }}_logs

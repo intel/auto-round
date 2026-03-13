@@ -83,9 +83,11 @@ function print_test_results_table() {
 }
 
 function print_summary() {
+    local status=0
     while IFS= read -r line; do
         if [[ "$line" == *"FAILED"* ]]; then
             $LIGHT_RED && echo "$line" && $RESET
+            status=1
         elif [[ "$line" == *"PASSED"* ]]; then
             $LIGHT_GREEN && echo "$line" && $RESET
         elif [[ "$line" == *"NO_TESTS"* ]]; then
@@ -94,6 +96,7 @@ function print_summary() {
             echo "$line"
         fi
     done < "${SUMMARY_LOG}"
+    exit $status
 }
 
 function run_unit_test() {
