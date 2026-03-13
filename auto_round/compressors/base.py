@@ -1668,14 +1668,6 @@ class BaseCompressor(object):
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
 
-        if self.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.info(
-                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
-                "Setting `low_cpu_mem_usage` to False."
-            )
-            self.low_cpu_mem_usage = False
-            self.is_immediate_saving = False
-
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():
                 logger.warning(
@@ -1789,7 +1781,12 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         logger.info("caching done")
         if self.low_cpu_mem_usage:
-            self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+            if self.is_model_patched and not self.is_immediate_saving:
+                self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                if not self._offloader.enabled:
+                    self.low_cpu_mem_usage = False
+            else:
+                self.low_cpu_mem_usage = False
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
