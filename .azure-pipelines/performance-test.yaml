@@ -1,0 +1,54 @@
+trigger: none
+
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round
+      - auto_round_extension
+      - .azure-pipelines/scripts/performance
+      - .azure-pipelines/performance-test.yaml
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
+variables:
+  CONTAINER_NAME: "AutoRoundPerfTest"
+
+pool: GAUDI
+
+stages:
+  - stage: Unit_test
+    displayName: Unit Test
+    dependsOn: []
+    jobs:
+      steps:
+        - template: docker-template.yml
+          parameters:
+            containerName: $(CONTAINER_NAME)
+            imageSource: pull
+
+        - script: |
+            docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \
+              && pip install -r test/test_hpu/requirements.txt \
+              && pip list"
+          displayName: "HPU Env Setup"
+
+        - script: |
+            docker exec $(CONTAINER_NAME) \
+            bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
+              && bash perf_test.sh"
+          displayName: "Run UT"
+
+        - task: Bash@3
+          condition: always()
+          inputs:
+            targetType: "inline"
+            script: |
+              docker stop $(CONTAINER_NAME)
+              docker rm -vf $(CONTAINER_NAME) || true
+          displayName: "Docker clean up"
