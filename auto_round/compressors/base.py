@@ -830,7 +830,9 @@ class BaseCompressor(object):
         if self.act_bits <= 0:
             raise ValueError("`act_bits` must be positive")
         if not isinstance(self.group_size, list) and not (self.group_size == -1 or self.group_size >= 0):
-            raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer or a list of length 2")
+            raise ValueError(
+                "`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer or a list of length 2"
+            )
         if not (self.act_group_size == -1 or self.act_group_size >= 0):
             raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
         if isinstance(self.group_size, list) and len(self.group_size) != 2:

@@ -5,7 +5,7 @@ import torch
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, evaluate_accuracy
+from ...helpers import evaluate_accuracy, get_model_path
 
 
 class TestAutoRoundBlockFP:
