@@ -512,7 +512,7 @@ class BaseCompressor(object):
         self._adjust_torch_compile(enable_torch_compile)
 
         if (
-            (self.act_bits <16 and (not self.is_act_dynamic or self.data_type=="nvfp")) # have hooks
+            (self.act_bits <16 and (not self.act_dynamic or self.data_type=="nvfp")) # have hooks
             or self.enable_alg_ext # Use imatrix
             or not self.disable_opt_rtn # Use imatrix
         ):
