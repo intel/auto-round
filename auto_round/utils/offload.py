@@ -338,6 +338,9 @@ class OffloadManager:
         """
         if not self.enabled:
             return 0.0
+        if self.mode == "offload" and not self._check_disk_space(model, names):
+            self.enabled = False
+            return 0.0
         if isinstance(names, str):
             self._offload(model, names, skip_if_saved=skip_if_saved, overwrite=overwrite)
             return 0.0
@@ -359,6 +362,48 @@ class OffloadManager:
             _clear_memory(device_list=device_list)
             logger.info(f"offload done, freed {total_gb:.2f} GB")
         return total_gb
+
+    def _check_disk_space(self, model: torch.nn.Module, names: Union[str, list[str], list[list[str]]]) -> bool:
+        """Check whether there is enough disk space to offload the given modules.
+
+        Args:
+            model: The root model containing the module(s).
+            names: Module name(s) to check.
+
+        Returns:
+            True if sufficient disk space is available, False otherwise.
+        """
+        if isinstance(names, str):
+            flat_names = [names]
+        else:
+            flat_names = self._flatten_names(names)
+        total_bytes = 0
+        for name in flat_names:
+            module = get_module(model, name)
+            if module is None:
+                continue
+            # Estimate size based on state_dict (parameters + buffers), excluding meta tensors,
+            # to match what is actually written by the offload logic.
+            state_dict = module.state_dict()
+            for tensor in state_dict.values():
+                if not isinstance(tensor, torch.Tensor):
+                    continue
+                if tensor.is_meta or tensor.numel() == 0:
+                    continue
+                total_bytes += tensor.numel() * tensor.element_size()
+        # torch.save adds serialization overhead; use 1.2x safety margin
+        required_bytes = int(total_bytes * 1.2)
+        tmpdir = tempfile.gettempdir()
+        free_bytes = shutil.disk_usage(tmpdir).free
+        if free_bytes < required_bytes:
+            required_gb = required_bytes / (1024**3)
+            free_gb = free_bytes / (1024**3)
+            logger.warning(
+                f"Insufficient disk space for offloading: need ~{required_gb:.2f} GB "
+                f"(including safety margin) but only {free_gb:.2f} GB available at {tmpdir}. Skipping offload."
+            )
+            return False
+        return True
 
     def _offload(
         self, model: torch.nn.Module, name: str, *, skip_if_saved: bool = False, overwrite: bool = False
