@@ -73,6 +73,32 @@ class FP8QLinear(torch.nn.Module):
             self.register_buffer("input_scale", input_scale.to(dtype))
 
 
+class FP8BlockQLinear(torch.nn.Module):
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        weight,
+        weight_scale,
+        bias=None,
+        weight_zp=None,
+        input_scale=None,
+        dtype=torch.bfloat16,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = torch.nn.Parameter(weight, requires_grad=False)
+
+        if bias is not None:
+            self.bias = torch.nn.Parameter(bias, requires_grad=False)
+        else:
+            self.register_parameter("bias", None)
+
+        self.register_buffer("weight_scale_inv", weight_scale.to(dtype))
+
+
 def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
     """
      Packs a model layer for quantization based on its type and configuration.
@@ -102,7 +128,7 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         return
 
     orig_device = layer.weight.device
-    scale = layer.scale.view(-1)
+    scale = layer.scale if isinstance(layer.group_size, list) else layer.scale.view(-1)
     zp = layer.zp
     weight = layer.weight
     weight, orig_shape, pad_len = reshape_pad_tensor_by_group_size(weight, layer.group_size)
@@ -114,9 +140,23 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
     if zp is not None:
         if isinstance(zp, torch.Tensor):
             zp = zp.to(packing_device)
-        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
+        if isinstance(layer.group_size, list):
+            q_weight = (
+                weight.to(packing_device)
+                / scale.repeat_interleave(layer.group_size[0], dim=0)
+                .repeat_interleave(layer.group_size[1], dim=1)
+                .to(packing_device)
+                + zp
+            )
+        else:
+            q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
-        q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
+        if isinstance(layer.group_size, list):
+            q_weight = weight.to(packing_device) / scale.repeat_interleave(
+                layer.group_size[0], dim=0
+            ).repeat_interleave(layer.group_size[1], dim=1).to(packing_device)
+        else:
+            q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
     q_weight = torch.clamp(q_weight, info.min, info.max)
     q_weight = q_weight.to(torch_dtype)
@@ -130,7 +170,8 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias
-    my_linear = FP8QLinear(
+    linear_cls = FP8BlockQLinear if isinstance(layer.group_size, list) else FP8QLinear
+    my_linear = linear_cls(
         in_features,
         out_features,
         weight=q_weight,
@@ -140,7 +181,12 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         input_scale=act_scale,
         dtype=model.dtype,
     )
-    if unsqueeze and len(my_linear.weight_scale.shape) and my_linear.weight_scale.shape[0] != 1:
+    if (
+        unsqueeze
+        and isinstance(linear_cls, FP8QLinear)
+        and len(my_linear.weight_scale.shape)
+        and my_linear.weight_scale.shape[0] != 1
+    ):
         my_linear.weight_scale = my_linear.weight_scale.reshape(-1, 1)
 
     my_linear.to(orig_device)
@@ -158,6 +204,7 @@ def save_quantized_as_autoround(
     backend: str = None,
     device: Union[str, torch.device] = "cpu",
     serialization_dict: dict = None,
+    quant_method: str = "auto-round",
     **kwargs,
 ):
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
@@ -165,7 +212,7 @@ def save_quantized_as_autoround(
         model = copy.deepcopy(model.to("cpu"))
     quantization_config = serialization_dict
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-    quantization_config["quant_method"] = "auto-round"
+    quantization_config["quant_method"] = quant_method
     if backend:
         quantization_config["packing_format"] = backend
     if "e5m2" in serialization_dict.get("data_type", "fp8"):

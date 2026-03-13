@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from math import ceil
+
 import torch
 import transformers
 from torch.functional import F
@@ -37,17 +39,20 @@ def get_scale_shape(weight, group_size):
 
     Args:
       weight (torch.Tensor): The weight tensor of the layer.
-      group_size (int): The size of the groups for quantization.
+      group_size (int or list): The size of the groups for quantization.
 
     Returns:
       The shape of the scale tensor to be used for quantization.
     """
+    if isinstance(group_size, list):
+        assert len(weight.shape) == len(group_size), f"Expected group_size is {len(weight.shape)}D but get {group_size}"
+        return (weight.shape[0] // group_size[0], weight.shape[1] // group_size[1])
     if group_size == 0:
         return 1
     elif group_size == -1 or weight.shape[1] < group_size:
         shape = weight.shape[0]
     else:
-        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
+        shape = weight.shape[0] * ceil(weight.shape[1] / group_size)
 
     return shape
 
@@ -57,21 +62,28 @@ def reshape_and_pad_tensor(v, group_size=-1):
 
     Args:
         v (torch.Tensor): The input tensor to be reshaped.
-        group_size (int, optional): The number of elements to group together.
+        group_size (int or list, optional): The number of elements to group together.
 
     Returns:
         torch.Tensor: The reshaped tensor. If padding is applied, the padded tensor is returned.
     """
-    if group_size == 0:
-        return v.reshape(1, -1)
-    if group_size == -1 or v.shape[1] < group_size:
-        return v
-    if v.shape[1] % group_size == 0:
-        v = v.reshape(-1, group_size)
+    if isinstance(group_size, list):
+        assert len(group_size) == 2, f"Only support 2D group_size, but get {group_size}"
+        M, N = group_size
+        pad_len_m = ceil(v.shape[0] / M) * M - v.shape[0]
+        pad_len_n = ceil(v.shape[1] / N) * N - v.shape[1]
+        v = torch.nn.functional.pad(v, (0, pad_len_n, 0, pad_len_m))
     else:
-        pad_len = (v.shape[1] + group_size - 1) // group_size * group_size - v.shape[1]
-        v = torch.nn.functional.pad(v, (0, pad_len))
-        v = v.reshape(-1, group_size)
+        if group_size == 0:
+            return v.reshape(1, -1)
+        if group_size == -1 or v.shape[1] < group_size:
+            return v
+        if v.shape[1] % group_size == 0:
+            v = v.reshape(-1, group_size)
+        else:
+            pad_len = ceil(v.shape[1] / group_size) * group_size - v.shape[1]
+            v = torch.nn.functional.pad(v, (0, pad_len))
+            v = v.reshape(-1, group_size)
     return v
 
 
@@ -164,8 +176,36 @@ class WrapperLinear(torch.nn.Module):
             orig_weight = orig_weight.t()
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
         if self.enable_round_tuning:
-            self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
-            self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
+            self.weight_min = (
+                torch.clamp(
+                    weight_reshape.view(
+                        weight_reshape.shape[0] // orig_layer.group_size[0],
+                        orig_layer.group_size[0],
+                        weight_reshape.shape[1] // orig_layer.group_size[1],
+                        orig_layer.group_size[1],
+                    )
+                    .permute(0, 2, 1, 3)
+                    .amin(dim=(-2, -1)),
+                    max=0,
+                )
+                if isinstance(orig_layer.group_size, list)
+                else torch.clamp(weight_reshape.min(1)[0], max=0)
+            )
+            self.weight_max = (
+                torch.clamp(
+                    weight_reshape.view(
+                        weight_reshape.shape[0] // orig_layer.group_size[0],
+                        orig_layer.group_size[0],
+                        weight_reshape.shape[1] // orig_layer.group_size[1],
+                        orig_layer.group_size[1],
+                    )
+                    .permute(0, 2, 1, 3)
+                    .amax(dim=(-2, -1)),
+                    min=0,
+                )
+                if isinstance(orig_layer.group_size, list)
+                else torch.clamp(weight_reshape.max(1)[0], min=0)
+            )
         else:
             self.weight_min = None
             self.weight_max = None
@@ -178,7 +218,7 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(
-            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn
+            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn, orig_layer.group_size
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
@@ -346,14 +386,17 @@ class WrapperLinear(torch.nn.Module):
                     name = "w_" + key
                     setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
 
-        if isinstance(scale, dict):
-            _set_dict_attr(scale, "scale")
-        elif scale is None:
-            self.orig_layer.scale = None
-        elif scale.numel() > 1:
-            self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+        if not isinstance(self.orig_layer.group_size, list):
+            if isinstance(scale, dict):
+                _set_dict_attr(scale, "scale")
+            elif scale is None:
+                self.orig_layer.scale = None
+            elif scale.numel() > 1:
+                self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+            else:
+                self.orig_layer.scale = scale.view(-1).to("cpu")
         else:
-            self.orig_layer.scale = scale.view(-1).to("cpu")
+            self.orig_layer.scale = scale.to("cpu")
 
         if zp is not None:
             if isinstance(zp, dict):
