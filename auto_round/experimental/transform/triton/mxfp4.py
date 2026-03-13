@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import torch
-import triton # pylint: disable=E0401
-import triton.language as tl # pylint: disable=E0401
+import triton  # pylint: disable=E0401
+import triton.language as tl  # pylint: disable=E0401
 
 
 @triton.autotune(
