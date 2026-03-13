@@ -14,7 +14,6 @@
 
 import copy
 import os
-import re
 import sys
 import time
 import traceback
@@ -99,7 +98,6 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
-    safe_device_move_with_meta_handling,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -515,7 +513,20 @@ class BaseCompressor(object):
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
 
-        self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+        if (
+            (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
+            or self.enable_alg_ext  # Use imatrix
+            or not self.disable_opt_rtn  # Use imatrix
+        ):
+            self.block_forward = block_forward
+        else:
+            # TODO FIXME
+            # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
+            # To avoid issues, remove it in all scenarios except WOQ.
+            self.block_forward = (
+                compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+            )
+
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
