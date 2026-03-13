@@ -381,9 +381,7 @@ class OffloadManager:
         for name in flat_names:
             module = get_module(model, name)
             if module is not None:
-                total_bytes += sum(
-                    p.numel() * p.element_size() for p in module.parameters() if p.numel() > 0
-                )
+                total_bytes += sum(p.numel() * p.element_size() for p in module.parameters() if p.numel() > 0)
         # torch.save adds serialization overhead; use 1.2x safety margin
         required_bytes = int(total_bytes * 1.2)
         tmpdir = self._ensure_dir()
