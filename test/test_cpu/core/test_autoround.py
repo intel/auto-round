@@ -733,7 +733,6 @@ class TestAutoRound:
         from transformers import AutoTokenizer
 
         model_name = qwen_name_or_path
-        # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         text = ["haha", "hello world"]
         res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)
@@ -751,7 +750,6 @@ class TestAutoRound:
         from transformers import AutoTokenizer
 
         model_name = qwen_name_or_path
-        # model_name = "/models/Qwen3-0.6B"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         text = ["haha", "hello world"]
         res = tokenizer(text, return_tensors="pt", max_length=8, padding="max_length", truncation=True)

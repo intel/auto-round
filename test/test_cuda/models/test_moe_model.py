@@ -137,7 +137,7 @@ def setup_qwen35_moe():
     """Fixture to set up the Qwen3.5 MoE model, tokenizer, and processor."""
     from transformers import Qwen3_5MoeForConditionalGeneration
 
-    model_name = "/models/Qwen3.5-35B-A3B"
+    model_name = get_model_path("Qwen/Qwen3.5-35B-A3B")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
     config.text_config.pad_token_id = None

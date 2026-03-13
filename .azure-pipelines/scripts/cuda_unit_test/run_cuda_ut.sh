@@ -132,7 +132,7 @@ function run_unit_test() {
 
     find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
-    NUM_CHUNKS=3
+    NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
     if [ "$test_part" -le "$r" ]; then
