@@ -68,15 +68,23 @@ def pack_layer(name, model, device=None):
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
 
+    if hasattr(layer, "orig_layer"):  # revert WrapperWALayer for offline usage
+        wp_layer = layer
+        layer = wp_layer.orig_layer
+        set_module(model, name, layer)
+
     if not check_to_quantized(layer):
         return
 
     if hasattr(layer, "quantization_status") and layer.quantization_status == QuantizationStatus.COMPRESSED:
         return
 
+    # explicitly obtain the underlying device to prevent RuntimeError mismatched tensors
+    weight_device = layer.weight.device
+
     scheme = construct_ct_scheme(layer)
     setattr(layer, "quantization_scheme", scheme)
-    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(device)))
+    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(weight_device)))
     if not isinstance(layer.zp, torch.Tensor):
         if layer.sym:
             zp = torch.full_like(layer.weight_scale, 0).to(torch.int8)
@@ -85,7 +93,7 @@ def pack_layer(name, model, device=None):
     else:
         zp = layer.zp
 
-    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(device), requires_grad=False))
+    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(weight_device), requires_grad=False))
     delattr(layer, "scale")
 
     compressor = IntQuantizationCompressor()
