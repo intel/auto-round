@@ -188,13 +188,14 @@ def save_quantized_as_llmcompressor(
         for n, m in model.named_modules():
             pack_layer(n, model, device)
 
+    quant_format = _get_quant_format(model)
+    quantization_config = QuantizationConfig.from_pretrained(model, format=quant_format)
+    model.config.quantization_config = quantization_config.to_dict()
+
     if output_dir is None:
         return model
 
-    quant_format = _get_quant_format(model)
-    quantization_config = QuantizationConfig.from_pretrained(model, format=quant_format)
     # save model.config, model.state_dict()
-    model.config.quantization_config = quantization_config.to_dict()
     model.config.save_pretrained(output_dir)
 
     save_model(model, output_dir, safe_serialization=safe_serialization)

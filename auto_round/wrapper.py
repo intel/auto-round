@@ -72,7 +72,7 @@ def reshape_and_pad_tensor(v, group_size=-1):
         M, N = group_size
         pad_len_m = ceil(v.shape[0] / M) * M - v.shape[0]
         pad_len_n = ceil(v.shape[1] / N) * N - v.shape[1]
-        v = torch.nn.functional.pad(v, (pad_len_m, pad_len_n))
+        v = torch.nn.functional.pad(v, (0, pad_len_n, 0, pad_len_m))
     else:
         if group_size == 0:
             return v.reshape(1, -1)
