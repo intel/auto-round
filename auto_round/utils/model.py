@@ -257,8 +257,6 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
     Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
     adding zero overhead to non-MXFP4 model loading.
     """
-    if version.parse(transformers.__version__) < version.parse("5.0.0"):
-        return False
     from transformers import AutoConfig
 
     try:  # in case of config loading failure for new models
@@ -318,17 +316,19 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
-    is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
     load_kwargs = {
         "torch_dtype": torch_dtype,
         "trust_remote_code": trust_remote_code,
         "device_map": "auto" if use_auto_mapping else None,
     }
-    if is_mxfp4:
-        from transformers import Mxfp4Config
 
-        load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
-        logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
+    if version.parse(transformers.__version__) >= version.parse("5.0.0"):
+        is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_mxfp4:
+            from transformers import Mxfp4Config
+
+            load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
+            logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
