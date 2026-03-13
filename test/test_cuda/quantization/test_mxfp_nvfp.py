@@ -85,28 +85,6 @@ class TestAutoRound:
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-        # from vllm import LLM, SamplingParams
-        # prompts = [
-        #     "The capital of France is",
-        #     "The future of AI is",
-        # ]
-        ## Create a sampling params object.
-        # sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=20)
-        # QUANTIZATION = "compressed-tensors"
-        # llm = LLM(model=quantized_model_path,
-        #         #   quantization=QUANTIZATION,
-        #           trust_remote_code=True,
-        #           tensor_parallel_size=1,
-        #           enforce_eager=True,
-        #           gpu_memory_utilization=0.7,
-        # )
-        # outputs = llm.generate(prompts, sampling_params)
-        # # Print the outputs.
-        # for output in outputs:
-        #     prompt = output.prompt
-        #     generated_text = output.outputs[0].text
-        #     if "France" in prompt:
-        #         assert "Paris" in generated_text
 
     def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
         # model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"

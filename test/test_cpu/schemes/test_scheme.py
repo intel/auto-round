@@ -91,7 +91,7 @@ class TestAutoRound:
         assert ar.act_data_type == "mx_fp"
         ar.quantize()
 
-    def test_vllm(self, tiny_qwen_vl_model_path):
+    def test_vlm(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
 
         ar = AutoRoundMLLM(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
