@@ -13,7 +13,6 @@ from ...envs import (
     require_awq,
     require_greater_than_050,
     require_ipex,
-    require_package_version_ut,
 )
 from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, model_infer
 
@@ -35,7 +34,6 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_greater_than_050
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_asym(self, tiny_opt_model_path, dataloader):
         for bits in [2, 3, 4, 8]:
             # model_name = get_model_path("facebook/opt-125m")
@@ -90,7 +88,6 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_awq_backend(self):
         model_name = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, True
@@ -188,7 +185,6 @@ class TestAutoRound:
 
     @require_awq
     @require_ipex
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_awq_sym_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
