@@ -660,6 +660,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         transform_config = quantization_config.transform_config
         # apply forward hook
         act_transform_config = TransformConfig(
+            quant_scheme=transform_config["quant_scheme"],
             transform_block_size=transform_config["transform_block_size"],
             transform_type=transform_config["transform_type"],
             location="input",

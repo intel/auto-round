@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import torch
-import triton
-import triton.language as tl
+import triton # pylint: disable=E0401
+import triton.language as tl # pylint: disable=E0401
 
 
 @triton.autotune(
@@ -139,7 +139,8 @@ def mxfp4_forward_kernel_wrapper(
     gaussian_scale=3 / 4,
 ):
     """
-    Refer code here: https://github.com/IST-DASLab/FP-Quant/blob/master/inference_lib/src/fp_quant/module/triton/mxfp4.py
+    Refer code here:
+    https://github.com/IST-DASLab/FP-Quant/blob/master/inference_lib/src/fp_quant/module/triton/mxfp4.py
     Apply Hadamard transform + group-wise FP4 quantize/dequantize on x.
 
     Note:
