@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import json
 import os
+import re
 import sys
 
 from auto_round.auto_scheme import AutoScheme
@@ -24,6 +26,7 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
+    parse_layer_config_arg,
 )
 
 RECIPES = {
@@ -311,6 +314,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         scheme.add_argument(
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--layer_config",
+            default=None,
+            type=str,
+            help="Per-layer quantization config for missing tensors (e.g., MTP layers) as a JSON string. "
+            "Keys are name prefixes, values are config dicts with optional bits/group_size/sym. "
+            'Example: "{mtp:{bits:8,data_type:int},mtp.fc:{bits:16}}". '
+            "These settings are saved to extra_config and override the global quantization config.",
         )
         scheme.add_argument(
             "--shared_layers",
@@ -655,6 +667,9 @@ def tune(args):
     extra_config.diffusion_config = diffusion_config
 
     layer_config = {}
+    if args.layer_config:
+        layer_config = parse_layer_config_arg(args.layer_config)
+        args.layer_config = layer_config
 
     if args.avg_bits is not None:
         if args.options is None:
