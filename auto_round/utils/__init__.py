@@ -16,9 +16,11 @@ from auto_round.utils.device import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *
 from auto_round.utils.weight_handler import (
+    convert_module_to_hp_if_necessary,
     detect_weight_type,
     is_quantized_input_module,
 )
+from auto_round.utils.missing_tensors import copy_missing_tensors_from_source
 
 import transformers
 from packaging.version import Version
