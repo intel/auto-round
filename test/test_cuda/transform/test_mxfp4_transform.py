@@ -49,7 +49,7 @@ class TestAutoRound:
 
         from auto_round.experimental.transform.transform_config import TransformConfig
 
-        transform_config = TransformConfig()
+        transform_config = TransformConfig(quant_scheme="MXFP4")
         model = apply_transform(
             model,
             transform_config,
