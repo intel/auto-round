@@ -393,7 +393,7 @@ class OffloadManager:
                 total_bytes += tensor.numel() * tensor.element_size()
         # torch.save adds serialization overhead; use 1.2x safety margin
         required_bytes = int(total_bytes * 1.2)
-        tmpdir = self._ensure_dir()
+        tmpdir = tempfile.gettempdir()
         free_bytes = shutil.disk_usage(tmpdir).free
         if free_bytes < required_bytes:
             total_gb = total_bytes / (1024**3)
