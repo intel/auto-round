@@ -13,14 +13,19 @@
 # limitations under the License.
 import copy
 from copy import deepcopy
-from dataclasses import dataclass, fields
-from typing import Optional, Union
+from dataclasses import asdict, dataclass, fields
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
+from auto_round.compressors.utils import infer_bits_by_data_type
 from auto_round.logger import logger
+from auto_round.utils import SUPPORTED_DTYPES
 
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
+
+if TYPE_CHECKING:
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
 
 @dataclass
@@ -104,6 +109,147 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
 def is_preset_scheme(name: str) -> bool:
     """Check if the given name is a preset scheme name."""
     return name.upper() in PRESET_SCHEMES
+
+
+def _reconcile_bits_and_dtype(config: dict, prefix: str = ""):
+    """
+    Harmonizes 'bits' and 'data_type' for weights or activations.
+    Ensures internal consistency by prioritizing data_type inference.
+    """
+
+    dt_key = f"{prefix}data_type"
+    bits_key = f"{prefix}bits"
+
+    if config.get(dt_key) is None:
+        return
+
+    # Infer the correct bit-width based on the data_type string
+    inferred_bits = infer_bits_by_data_type(config[dt_key])
+
+    if inferred_bits is not None and inferred_bits < 16:
+        # Check for conflict between user-specified bits and inferred bits
+        if inferred_bits != config.get(bits_key):
+            logger.warning(f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}.")
+            config[bits_key] = inferred_bits
+
+        # Normalize data_type (e.g., 'mx_fp4' -> 'mx')
+        for supported in SUPPORTED_DTYPES:
+            if config[dt_key] == f"{supported}{inferred_bits}":
+                config[dt_key] = supported
+                break
+
+
+def _override_scheme_with_user_specify(
+    scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
+) -> Union[str, QuantizationScheme]:
+    """
+    Updates a base quantization scheme with user-provided overrides.
+    Handles GGUF formatting and synchronizes weight/activation parameters.
+    """
+    # 1. GGUF special handling: map data_type suffix to GGUF scheme names
+    dt_override = user_scheme_overrides.get("data_type", "")
+    if (
+        isinstance(scheme, QuantizationScheme) or (isinstance(scheme, str) and not scheme.startswith("gguf"))
+    ) and dt_override.endswith("_dq"):
+        if "bits" not in user_scheme_overrides:
+            raise KeyError(f"Must specify 'bits' when using data_type={dt_override}")
+
+        bits = user_scheme_overrides["bits"]
+        suffix = "k" if bits == 6 else "k_s"
+        scheme = f"gguf:q{bits}_{suffix}"
+
+    # 2. Convert input scheme to a dictionary for processing
+    if isinstance(scheme, QuantizationScheme):
+        scheme_dict = asdict(scheme)
+    elif isinstance(scheme, str):
+        normalized_name = scheme.strip("'\" ").upper()
+        if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
+            logger.warning_once(
+                "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
+            )
+            user_scheme_overrides = {}
+        # If no overrides exist, return the normalized string immediately
+        if not user_scheme_overrides and return_str:
+            return normalized_name
+        scheme_dict = asdict(preset_name_to_scheme(normalized_name))
+    else:
+        scheme_dict = scheme.copy()
+
+    # 3. Apply overrides and define default behaviors
+    scheme_dict.update(user_scheme_overrides)
+
+    if scheme_dict.get("act_dynamic") is None:
+        scheme_dict["act_dynamic"] = True
+
+    # 4. Reconcile weight settings (bits vs data_type)
+    _reconcile_bits_and_dtype(scheme_dict)
+
+    # 5. Fallback logic: Inherit activation settings from weight settings
+    scheme_dict["act_group_size"] = (
+        scheme_dict.get("act_group_size")
+        if scheme_dict.get("act_group_size") is not None
+        else scheme_dict.get("group_size")
+    )
+    scheme_dict["act_bits"] = scheme_dict.get("act_bits") or 16
+    scheme_dict["act_sym"] = (
+        scheme_dict.get("act_sym") if scheme_dict.get("act_sym") is not None else scheme_dict.get("sym")
+    )
+
+    # 6. Activation data_type logic
+    if scheme_dict.get("act_data_type") is None:
+        is_supported = scheme_dict["data_type"] in SUPPORTED_DTYPES
+        if is_supported and scheme_dict["act_bits"] < 16:
+            scheme_dict["act_data_type"] = scheme_dict["data_type"]
+            logger.info(f"Activation adopting weight data_type: {scheme_dict['data_type']}")
+        else:
+            scheme_dict["act_data_type"] = "float"
+
+    # 7. Reconcile activation settings
+    _reconcile_bits_and_dtype(scheme_dict, prefix="act_")
+
+    return QuantizationScheme.from_dict(scheme_dict)
+
+
+def _parse_scheme(
+    scheme: Union[str, dict, QuantizationScheme, "AutoScheme"], user_scheme_overrides: dict[str, Any]
+) -> tuple[Union[str, QuantizationScheme], bool]:
+    """
+    Parses the final scheme.
+    """
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+    is_auto_scheme = isinstance(scheme, AutoScheme)
+    if is_auto_scheme:
+        if not scheme.options:
+            raise ValueError("AutoScheme options cannot be empty")
+        else:
+            for option in scheme.options:
+                if isinstance(option, str):
+                    if "mixed" in option:
+                        raise ValueError(f"Mixed option {option} is not supported")
+
+        # Map user overrides across all auto-scheme options
+        scheme.options = [_override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options]
+
+        # Select the primary scheme for attribute binding (skipping BF16)
+        default_scheme = scheme.options[0]
+        for opt in scheme.options:
+            if opt == "BF16":
+                continue
+            if isinstance(opt, QuantizationScheme):
+                if opt.bits < 16 or (opt.act_bits and opt.act_bits < 16):
+                    default_scheme = opt
+                    break
+    else:
+        default_scheme = _override_scheme_with_user_specify(scheme, user_scheme_overrides)
+
+    # Extract attributes from the chosen default_scheme
+    if isinstance(default_scheme, str):
+        final_attrs = _override_scheme_with_user_specify(default_scheme, user_scheme_overrides, return_str=False)
+        final_attrs = asdict(final_attrs)
+    else:
+        final_attrs = asdict(default_scheme)
+    return default_scheme, is_auto_scheme, final_attrs
 
 
 W4A16 = QuantizationScheme.from_dict(

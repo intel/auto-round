@@ -17,7 +17,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import psutil
 import torch
@@ -27,13 +27,15 @@ from packaging import version
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
     is_quantized_input_module,
 )
+
+if TYPE_CHECKING:
+    from auto_round.schemes import QuantizationScheme
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
