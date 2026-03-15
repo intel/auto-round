@@ -163,7 +163,9 @@ class ShardWriter:
         """Saves remaining weights, renames files, and writes the index JSON."""
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
-        tie_word_embeddings = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
+        tie_word_embeddings = False
+        if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
+            tie_word_embeddings = self.model.config.tie_word_embeddings
         all_saved_names = {p for meta in self.shard_meta for p in meta["params"]}
 
         finalize_skipped_meta_tensors = []
