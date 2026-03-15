@@ -27,12 +27,12 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
     def test_transform_mxfp4_quant_infer(self):
         model_name = get_model_path("qwen/Qwen3-0.6B")
         scheme = "MXFP4"
 
         from auto_round.utils import llm_load_model
+
         model, tokenizer = llm_load_model(
             model_name,
             platform="hf",
