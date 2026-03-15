@@ -74,7 +74,7 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
 )
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 1, reason="test requires at least 1 Cuda GPU")
+@pytest.mark.skipif(torch.xpu.device_count() < 1, reason="test requires at least 1 XPU")
 @pytest.mark.parametrize(
     "recipe",
     [
@@ -94,15 +94,13 @@ def test_oneshot_application(recipe, tmp_path):
         nsamples=32,
     )
 
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-
     oneshot(
         model=model,
         dataset=dataset,
         output_dir=output,
         recipe=recipe,
     )
-    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map="xpu")
 
     # Check that the model is quantized
     # decompress() will attach a quantization_config to the model
@@ -129,7 +127,7 @@ def test_oneshot_application(recipe, tmp_path):
     assert not hasattr(not_targeted, "quantization_scheme")
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="test requires at least 2 Cuda GPUs")
+@pytest.mark.skipif(torch.xpu.device_count() < 2, reason="test requires at least 2 XPUs")
 def test_oneshot_with_device_ids(tmp_path):
     output = tmp_path / "oneshot_output"
     model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -139,8 +137,6 @@ def test_oneshot_with_device_ids(tmp_path):
         seqlen=512,
         nsamples=4,
     )
-
-    device = "cuda:0"
 
     recipe = AutoRoundModifier(
         ignore=["lm_head"],
@@ -160,7 +156,7 @@ def test_oneshot_with_device_ids(tmp_path):
         output_dir=output,
         recipe=recipe,
     )
-    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map="xpu")
 
     # Check that the model is quantized
     # decompress() will attach a quantization_config to the model
@@ -187,7 +183,7 @@ def test_oneshot_with_device_ids(tmp_path):
     assert not hasattr(not_targeted, "quantization_scheme")
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 1, reason="test requires at least 1 Cuda GPU")
+@pytest.mark.skipif(torch.xpu.device_count() < 1, reason="test requires at least 1 XPU")
 @pytest.mark.parametrize(
     "recipe",
     [w8a8_dynamic_recipe_modifier, w8a8_static_recipe_modifier],
@@ -202,15 +198,13 @@ def test_rtn_oneshot(recipe, tmp_path):
         nsamples=32,
     )
 
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-
     oneshot(
         model=model,
         dataset=dataset,
         output_dir=output,
         recipe=recipe,
     )
-    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map="xpu")
 
     quantization_config = model_loaded.config.quantization_config.quantization_config
     assert quantization_config is not None
