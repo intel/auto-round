@@ -653,7 +653,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
-    if getattr(quantization_config, "transform_config", None) is not None:
+    transform_config = getattr(quantization_config, "transform_config", None)
+    if transform_config is not None and transform_config:
         from auto_round.experimental.transform.apply import apply_transform
         from auto_round.experimental.transform.transform_config import TransformConfig
 
