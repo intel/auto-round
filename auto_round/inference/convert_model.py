@@ -211,6 +211,8 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
+    transform_config = getattr(quantization_config, "transform_config", None)
+
     default_quant_scheme = QuantizationScheme(
         bits=bits,
         group_size=group_size,
@@ -221,6 +223,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
+        transform_config=transform_config,
     )
 
     # Determine the quantization block list
@@ -649,6 +652,20 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+
+    transform_config = getattr(quantization_config, "transform_config", None)
+    if transform_config is not None and transform_config:
+        from auto_round.experimental.transform.apply import apply_transform
+        from auto_round.experimental.transform.transform_config import TransformConfig
+
+        # apply forward hook
+        act_transform_config = TransformConfig(
+            quant_scheme=transform_config["quant_scheme"],
+            transform_block_size=transform_config["transform_block_size"],
+            transform_type=transform_config["transform_type"],
+            location="input",
+        )  # apply to activation
+        model = apply_transform(model, act_transform_config, desc="Register pre forward hook for transform")
 
     # Suggest a better backend if available
     if backend == "auto":

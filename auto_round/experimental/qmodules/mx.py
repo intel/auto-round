@@ -145,10 +145,14 @@ class MXQuantLinearBase(QModuleBase):
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        qdq_input = self.qdq_input(input)
+        if not self.pre_dequantized_input:
+            input = self.qdq_input(input)
+        else:
+            # pre dequant weight
+            self.pre_dequantize()
         qdq_weight = self.dequant_weight_online()
-        qdq_weight = qdq_weight.to(qdq_input.dtype)
-        out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
+        qdq_weight = qdq_weight.to(input.dtype)
+        out = torch.nn.functional.linear(input, qdq_weight, self.bias)
         return out
 
     @classmethod
@@ -191,6 +195,25 @@ class MXFP4QuantLinear(MXQuantLinearBase):
         m, half_n = packed_data.shape
         unpacked_data = unpack_fp4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
         return unpacked_data
+
+
+class TransformMXFP4QuantLinear(MXFP4QuantLinear):
+    """
+    Quantized linear layer using the MXFP4 quantization scheme.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.weight_name = "weight_packed"
+        super().__init__(*args, **kwargs)
+        self.enable_transform = True
+        self.register_buffer(
+            "forward_hadamard_transform",
+            torch.empty(
+                self.group_size,
+                self.group_size,
+                dtype=self.dtype,
+            ),
+        )
 
 
 class MXFP8QuantLinear(MXQuantLinearBase):
