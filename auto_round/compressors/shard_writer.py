@@ -55,6 +55,10 @@ class ShardWriter:
         self.global_weight_map = {}
         self.shard_counter = 0
 
+        # Persistent set of all parameter names already flushed to a shard file.
+        # Maintained incrementally in _flush_shard to avoid O(N^2) rebuilds in _add_tensor.
+        self._all_saved = set()
+
         # Stats
         self.total_param_elems = 0
         self.total_param_size_bytes = 0
@@ -99,6 +103,11 @@ class ShardWriter:
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)
             return
+
+        # Guard against duplicate saving of the same parameter
+        if name in self._all_saved or name in self.current_shard_tensors:
+            return
+
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
@@ -135,6 +144,7 @@ class ShardWriter:
 
         saved_params = list(self.current_shard_tensors.keys())
         self.shard_meta.append({"tmp_file": tmp_name, "params": saved_params})
+        self._all_saved.update(saved_params)
 
         # Offload logic: move modules to meta device once all params are saved
         self._offload_to_meta(saved_params)
@@ -144,18 +154,15 @@ class ShardWriter:
 
     def _offload_to_meta(self, saved_params):
         """Attempts to move fully saved modules to the 'meta' device to free RAM."""
-        # Using a set for faster lookup of all saved parameters
-        all_saved = {p for meta in self.shard_meta for p in meta["params"]}
-
         for param_full_name in saved_params:
             module_path = param_full_name.rsplit(".", 1)[0]
 
             module = get_module(self.model, module_path)
-            # Check if all parameters of this module are now in 'all_saved'
+            # Check if all parameters of this module are now in '_all_saved'
             if (
                 module is not None
                 and isinstance(module, torch.nn.Module)
-                and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys())
+                and all(f"{module_path}.{k}" in self._all_saved for k in module.state_dict().keys())
             ):
                 module.to("meta")
 
@@ -166,11 +173,10 @@ class ShardWriter:
         tie_word_embeddings = False
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
-        all_saved_names = {p for meta in self.shard_meta for p in meta["params"]}
 
         finalize_skipped_meta_tensors = []
         for pname, tensor in full_sd.items():
-            if pname in all_saved_names:
+            if pname in self._all_saved:
                 continue
             if tensor.device.type == "meta":
                 continue
