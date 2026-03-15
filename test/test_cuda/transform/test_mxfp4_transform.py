@@ -14,7 +14,6 @@ from ...helpers import get_model_path, save_tiny_model
 class TestAutoRound:
     save_dir = "./saved"
 
-    """
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
         # ===== SETUP (setup_class) =====
@@ -27,18 +26,13 @@ class TestAutoRound:
         print("[Teardown] Running after all tests in class")
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    """
+
 
     def test_transform_mxfp4_quant_infer(self):
         model_name = get_model_path("qwen/Qwen3-0.6B")
-        scheme = "mxfp4"
+        scheme = "MXFP4"
 
-        from auto_round.experimental.transform.apply import apply_transform
-        from auto_round.experimental.transform.transform_config import TransformConfig
-
-        transform_config = TransformConfig()
         from auto_round.utils import llm_load_model
-
         model, tokenizer = llm_load_model(
             model_name,
             platform="hf",
@@ -47,6 +41,7 @@ class TestAutoRound:
             trust_remote_code=True,
         )
 
+        from auto_round.experimental.transform.apply import apply_transform
         from auto_round.experimental.transform.transform_config import TransformConfig
 
         transform_config = TransformConfig(quant_scheme="MXFP4")
