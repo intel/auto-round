@@ -2,6 +2,7 @@
 # auto-gptq
 einops
 # pip install -v git+https://github.com/ModelCloud/GPTQModel.git --no-build-isolation
+# pip install git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py
 lm_eval >= 0.4.10  # for transformers >= 5.0.0
 optimum
 pandas
