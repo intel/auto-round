@@ -190,6 +190,11 @@ def copy_missing_tensors_from_source(
         parent = name.rsplit(".", 1)[0]
         if parent in saved_parent_layers:
             return False
+        # To match model.language_model.layers.0 -> language_model.layers.0
+        # E.g. google/gemma-3-4b-it
+        sub_parent = parent.lsplit(".", 1)[0]
+        if sub_parent in saved_parent_layers:
+            return False
         src_block = _first_numeric_prefix(name)
         if src_block is not None:
             # Source tensor belongs to a numbered block; if that exact block
