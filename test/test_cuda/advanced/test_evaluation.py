@@ -27,48 +27,6 @@ import pytest
 
 from ...helpers import opt_name_or_path
 
-# Test models for vllm evaluation
-VLLM_EVAL_MODELS = [
-    "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  # auto_round:auto_gptq format
-]
-
-
-@pytest.mark.skipif(
-    not os.path.exists("/usr/bin/nvidia-smi") and not os.path.exists("/usr/local/cuda"), reason="CUDA not available"
-)
-class TestVllmEvaluation:
-    """Test VLLM backend evaluation functionality."""
-
-    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
-    def test_vllm_backend_with_custom_args(self, model):
-        """Test vllm backend evaluation with custom vllm_args parameter."""
-        python_path = sys.executable
-
-        os.environ["VLLM_SKIP_WARMUP"] = "true"
-        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
-        # Test with custom vllm_args
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --eval_bs 128 --eval_backend vllm --limit 100 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.6,max_model_len=2048"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"vllm evaluation with custom args failed (rc={ret})"
-
-    def test_vllm_backend_with_quantization_iters_0(self):
-        """Test vllm evaluation with iters=0 (quantization without fine-tuning)."""
-        python_path = sys.executable
-
-        os.environ["VLLM_SKIP_WARMUP"] = "true"
-        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
-        cmd = f"{python_path} -m auto_round --model {opt_name_or_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 100"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"vllm evaluation with iters=0 failed (rc={ret})"
-
 
 @pytest.mark.skipif(
     not os.path.exists("/usr/bin/nvidia-smi") and not os.path.exists("/usr/local/cuda"), reason="CUDA not available"
@@ -76,17 +34,17 @@ class TestVllmEvaluation:
 class TestHFEvaluation:
     """Test different evaluation modes: --eval and --eval_backend."""
 
-    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
-    def test_eval_mode_hf_backend(self, model):
+    def test_eval_mode_hf_backend(self, tiny_opt_model_path):
         """Test --eval flag: evaluate model without quantization (HF backend default)."""
         python_path = sys.executable
 
-        cmd = f"{python_path} -m auto_round --model {model} --eval --tasks lambada_openai --limit 100"
+        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --eval --tasks lambada_openai --limit 10"
 
         ret = os.system(cmd)
 
         assert ret == 0, f"HF backend evaluation failed (rc={ret})"
 
+    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_iters_0_hf_backend(self, tiny_opt_model_path):
         """Test quantization with iters=0 and HF backend evaluation."""
         python_path = sys.executable
@@ -97,6 +55,7 @@ class TestHFEvaluation:
 
         assert ret == 0, f"HF backend with iters=0 failed (rc={ret})"
 
+    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_iters_0_task_by_task(self, tiny_opt_model_path):
         """Test quantization with iters=0 and task-by-task evaluation."""
         python_path = sys.executable

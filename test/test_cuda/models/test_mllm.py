@@ -36,6 +36,7 @@ class VisionDataLoader:
             }
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRoundMLLM:
     @classmethod
     def setup_class(self):
@@ -115,7 +116,7 @@ class TestAutoRoundMLLM:
         from auto_round import AutoRoundMLLM
 
         ## load the model
-        model_name = "/models/Qwen2-VL-2B-Instruct"
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
@@ -139,7 +140,7 @@ class TestAutoRoundMLLM:
     def test_mm_block_name(self):
         from auto_round.utils import get_block_names
 
-        model_name = "/models/Llama-3.2-11B-Vision-Instruct/"
+        model_name = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
         from transformers import MllamaForConditionalGeneration
 
         model = MllamaForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
@@ -155,15 +156,15 @@ class TestAutoRoundMLLM:
         from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
 
         for model_name in [
-            "/models/Llama-3.2-11B-Vision-Instruct/",
-            "/models/deepseek-vl2-tiny/",
-            "/models/gemma-3-12b-it/",
-            "/models/Phi-3.5-vision-instruct",
-            "/models/Qwen2-VL-2B-Instruct",
-            "/models/SmolVLM-256M-Instruct",
-            "/models/Mistral-Small-3.2-24B-Instruct-2506",
-            "/models/InternVL3-1B",
-            "/models/pixtral-12b",
+            get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct"),
+            get_model_path("deepseek-ai/deepseek-vl2-tiny"),
+            get_model_path("google/gemma-3-12b-it"),
+            get_model_path("microsoft/Phi-3.5-vision-instruct"),
+            get_model_path("Qwen/Qwen2-VL-2B-Instruct"),
+            get_model_path("HuggingFaceTB/SmolVLM-256M-Instruct"),
+            get_model_path("mistralai/Mistral-Small-3.2-24B-Instruct-2506"),
+            get_model_path("OpenGVLab/InternVL3-1B"),
+            get_model_path("mistralai/Pixtral-12B-2409"),
         ]:
             assert is_mllm_model(model_name)
             try:
@@ -172,7 +173,7 @@ class TestAutoRoundMLLM:
                 continue
             assert is_mllm_model(model)
 
-        for model_name in ["/models/Qwen2.5-1.5B-Instruct/"]:
+        for model_name in [get_model_path("Qwen/Qwen2.5-1.5B-Instruct")]:
             assert not is_mllm_model(model_name)
             model, _ = llm_load_model(model_name)
             assert not is_mllm_model(model)

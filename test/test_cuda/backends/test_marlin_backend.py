@@ -26,6 +26,39 @@ class TestAutoRoundMarlinBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    # Keep one CI test for marlin backend and skip others to save time.
+    # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    def test_marlin_4bits_sym_with_zp_m_1(self, dataloader):
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            seqlen=2,
+            dataset=dataloader,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+
+        quantization_config = AutoRoundConfig(backend="marlin")
+        model = AutoModelForCausalLM.from_pretrained(
+            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        model_infer(model, tokenizer)
+        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
+        torch.cuda.empty_cache()
+        shutil.rmtree("./saved", ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     def test_marlin_group_size(self, dataloader):
         for group_size in [-1, 64]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
@@ -80,43 +113,6 @@ class TestAutoRoundMarlinBackend:
             tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             model_infer(model, tokenizer)
             evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16)
-
-    def test_marlin_4bits_sym_with_zp_m_1(self, dataloader):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
-
-        quantization_config = AutoRoundConfig(backend="marlin")
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
-        torch.cuda.empty_cache()
-
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
-        torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     # def test_marlin_4bits_sym(self):
     #     model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)

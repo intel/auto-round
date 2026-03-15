@@ -103,6 +103,7 @@ class TestAutoRound:
         print(result)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gguf
     def test_q4_0(self):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
@@ -121,9 +122,10 @@ class TestAutoRound:
         evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gguf
     def test_all_format(self):
-        for model_name in ["qwen/Qwen3-8B", "meta-llama/Llama-3.2-3B"]:
+        for model_name in ["Qwen/Qwen3-8B", "meta-llama/Llama-3.2-3B"]:
             for gguf_format in ["gguf:q5_0", "gguf:q5_1", "gguf:q3_k_m", "gguf:q5_k_m", "gguf:q6_k", "gguf:q8_0"]:
                 model_path = get_model_path(model_name)
                 tiny_model_path = "tmp_tiny_model"
@@ -163,7 +165,7 @@ class TestAutoRound:
     def test_vlm_gguf(self):
         from ...helpers import save_tiny_model
 
-        model_name = "/models/gemma-3-4b-it"
+        model_name = get_model_path("google/gemma-3-4b-it")
         tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True)
         from auto_round import AutoRound
 

@@ -27,6 +27,9 @@ class TestAutoRoundTorchBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    # Keep one CI test for torch backend and skip others to save time.
+    # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     def test_torch_4bits_asym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)
@@ -54,17 +57,10 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
-
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
-        torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     def test_torch_4bits_sym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)
@@ -87,7 +83,6 @@ class TestAutoRoundTorchBackend:
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
-
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)

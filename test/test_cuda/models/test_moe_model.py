@@ -8,13 +8,13 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeFor
 
 from auto_round import AutoRound
 
-from ...helpers import check_version
+from ...helpers import check_version, get_model_path
 
 
 @pytest.fixture
 def setup_gpt_oss():
     """Fixture to set up the GPT-OSS model and tokenizer."""
-    model_name = "openai/gpt-oss-20b"
+    model_name = get_model_path("openai/gpt-oss-20b")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -26,7 +26,7 @@ def setup_gpt_oss():
 @pytest.fixture
 def setup_llama4():
     """Fixture to set up the llama4 model and tokenizer."""
-    model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct"
+    model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
 
@@ -43,7 +43,7 @@ def setup_llama4():
 @pytest.fixture
 def setup_qwen3_vl_moe():
     """Fixture to set up the qwen3_vl_moe model and tokenizer."""
-    model_name = "/models/Qwen3-VL-30B-A3B-Instruct"
+    model_name = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
 
@@ -137,7 +137,7 @@ def setup_qwen35_moe():
     """Fixture to set up the Qwen3.5 MoE model, tokenizer, and processor."""
     from transformers import Qwen3_5MoeForConditionalGeneration
 
-    model_name = "/models/Qwen3.5-35B-A3B"
+    model_name = get_model_path("Qwen/Qwen3.5-35B-A3B")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = AutoConfig.from_pretrained(model_name)
     config.text_config.pad_token_id = None

@@ -28,6 +28,9 @@ class TestAutoRoundexllamaBackend:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    # keep one CI test for exllamav2 backend, since it's the only backend supporting 4bits asym quantization.
+    # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_gptqmodel
     def test_gptqmodel_exllmav2_4bits_asym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
@@ -58,6 +61,8 @@ class TestAutoRoundexllamaBackend:
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_autogptq
     @require_package_version_ut("torch", "<2.6.0")
     def test_gptq_exllamav2_4bits_sym(self, dataloader):
@@ -86,6 +91,8 @@ class TestAutoRoundexllamaBackend:
         torch.cuda.empty_cache()
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_autogptq
     @require_package_version_ut("torch", "<2.6.0")
     def test_gptq_exllamav2_4bits_sym_group_size(self):

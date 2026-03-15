@@ -8,10 +8,13 @@ Run `pytest test/test_cuda/test_vllm.py`.
 """
 
 import os
+import shutil
 
 import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
+
+from auto_round import AutoRound
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
@@ -53,3 +56,100 @@ def test_auto_round(model):
         generated_text = output.outputs[0].text
         if "France" in prompt:
             assert "Paris" in generated_text
+
+
+def test_mixed_autoround_format_vllm(tiny_opt_model_path, dataloader):
+    layer_config = {
+        "self_attn": {"bits": 8},
+        "lm_head": {"bits": 16},
+    }
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        scheme="W4A16",
+        iters=0,
+        disable_opt_rtn=True,
+        layer_config=layer_config,
+    )
+    autoround.quantize()
+    quantized_model_path = "./saved"
+    autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
+
+    # verify loading.
+    llm = LLM(
+        model=quantized_model_path,
+        trust_remote_code=True,
+        tensor_parallel_size=1,
+        allow_deprecated_quantization=True,
+    )
+    shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+
+def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader):
+    layer_config = {
+        "self_attn": {"bits": 16, "act_bits": 16},
+        "lm_head": {"bits": 16, "act_bits": 16},
+        "fc1": {"bits": 16, "act_bits": 16},
+    }
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        scheme="NVFP4",
+        iters=0,
+        disable_opt_rtn=True,
+        layer_config=layer_config,
+    )
+    quantized_model_path = "./saved"
+    autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+
+    # verify loading.
+    llm = LLM(
+        model=quantized_model_path,
+        trust_remote_code=True,
+        tensor_parallel_size=1,
+        allow_deprecated_quantization=True,
+    )
+    shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+
+# ================ Test Evaluation function ===============
+import sys
+
+VLLM_EVAL_MODELS = [
+    "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  # auto_round:auto_gptq format
+]
+
+
+@pytest.mark.skipif(
+    not os.path.exists("/usr/bin/nvidia-smi") and not os.path.exists("/usr/local/cuda"), reason="CUDA not available"
+)
+class TestVllmEvaluation:
+    """Test VLLM backend evaluation functionality."""
+
+    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
+    def test_vllm_backend_with_custom_args(self, tiny_opt_model_path):
+        """Test vllm backend evaluation with custom vllm_args parameter."""
+        python_path = sys.executable
+
+        os.environ["VLLM_SKIP_WARMUP"] = "true"
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+        # Test with custom vllm_args
+        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --eval --tasks lambada_openai --eval_bs 128 --eval_backend vllm --limit 100 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.6,max_model_len=2048"
+
+        ret = os.system(cmd)
+
+        assert ret == 0, f"vllm evaluation with custom args failed (rc={ret})"
+
+    def test_vllm_backend_with_quantization_iters_0(self, tiny_opt_model_path):
+        """Test vllm evaluation with iters=0 (quantization without fine-tuning)."""
+        python_path = sys.executable
+
+        os.environ["VLLM_SKIP_WARMUP"] = "true"
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --eval_bs 8 --eval_backend vllm --limit 10"
+
+        ret = os.system(cmd)
+
+        assert ret == 0, f"vllm evaluation with iters=0 failed (rc={ret})"

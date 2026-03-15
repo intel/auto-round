@@ -76,6 +76,7 @@ def get_model_path(model_name: str) -> str:
     model_name = model_name.rstrip("/")
     ut_path = f"/tf_dataset/auto_round/models/{model_name}"
     local_path = f"/models/{model_name.split('/')[-1]}"
+    local_path_1 = f"/dataset/{model_name.split('/')[-1]}"
 
     if "DeepSeek-V2-Lite" in model_name and os.path.exists("/data0/deepseek-ai/DeepSeek-V2-Lite"):
         return "/data0/deepseek-ai/DeepSeek-V2-Lite"
@@ -84,8 +85,45 @@ def get_model_path(model_name: str) -> str:
         return ut_path
     elif os.path.exists(local_path):
         return local_path
+    elif os.path.exists(local_path_1):
+        return local_path_1
     else:
         return model_name
+
+
+def get_captions_dataset_path() -> str:
+    """Find captions_source.tsv locally or download it to tmp.
+
+    Checks /dataset/, /tf_dataset/, and test/tmp/ for the file.
+    If not found, downloads from the mlcommons URL to test/tmp/.
+
+    Returns:
+        str: The path to captions_source.tsv.
+    """
+    import urllib.request
+
+    filename = "captions_source.tsv"
+    url = (
+        "https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/"
+        "text_to_image/coco2014/captions/captions_source.tsv"
+    )
+
+    local_candidates = [
+        f"/dataset/{filename}",
+        f"/tf_dataset/{filename}",
+        os.path.join(os.path.dirname(__file__), "tmp", filename),
+    ]
+    for path in local_candidates:
+        if os.path.exists(path):
+            return path
+
+    # Download to tmp
+    tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, filename)
+    print(f"[Helper] Downloading {filename} from {url} to {tmp_path}")
+    urllib.request.urlretrieve(url, tmp_path)
+    return tmp_path
 
 
 opt_name_or_path = get_model_path("facebook/opt-125m")

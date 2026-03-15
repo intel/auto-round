@@ -25,7 +25,6 @@ class LLMDataLoader:
 class TestAutoRoundAsym(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        # self.model_name = "/models/opt-125m"
         self.model_name = get_model_path("facebook/opt-125m")
         self.save_folder = "./saved"
 
