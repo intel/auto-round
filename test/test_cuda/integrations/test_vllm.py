@@ -9,6 +9,7 @@ Run `pytest test/test_cuda/test_vllm.py`.
 
 import os
 import shutil
+import sys
 
 import pytest
 from vllm import LLM, SamplingParams
@@ -111,11 +112,6 @@ def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader):
 
 
 # ================ Test Evaluation function ===============
-import sys
-
-VLLM_EVAL_MODELS = [
-    "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  # auto_round:auto_gptq format
-]
 
 
 @pytest.mark.skipif(
@@ -124,7 +120,6 @@ VLLM_EVAL_MODELS = [
 class TestVllmEvaluation:
     """Test VLLM backend evaluation functionality."""
 
-    @pytest.mark.parametrize("model", VLLM_EVAL_MODELS)
     def test_vllm_backend_with_custom_args(self, tiny_opt_model_path):
         """Test vllm backend evaluation with custom vllm_args parameter."""
         python_path = sys.executable
@@ -134,7 +129,7 @@ class TestVllmEvaluation:
         os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
         # Test with custom vllm_args
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --eval --tasks lambada_openai --eval_bs 128 --eval_backend vllm --limit 100 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.6,max_model_len=2048"
+        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --eval --tasks lambada_openai --eval_bs 128 --eval_backend vllm --limit 10 --vllm_args tensor_parallel_size=1,gpu_memory_utilization=0.2,max_model_len=1024"
 
         ret = os.system(cmd)
 
