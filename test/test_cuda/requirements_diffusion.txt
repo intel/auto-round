@@ -1,3 +1,4 @@
 diffusers @ git+https://github.com/huggingface/diffusers.git@main
 image-reward
 clip
+optimum

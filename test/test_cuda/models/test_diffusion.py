@@ -30,13 +30,12 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_optimum
     def test_diffusion_tune(self):
         from diffusers import AutoPipelineForText2Image
 
         ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name).to("cuda")
+        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
         model = pipe.transformer
         # build tiny model for testing since the full model is too large to quantize and evaluate in CI
         pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
@@ -66,7 +65,7 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Not necessary to run both tune and rtn in CI")
     def test_diffusion_rtn(self):
         from diffusers import AutoPipelineForText2Image
 
