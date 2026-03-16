@@ -969,8 +969,6 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         if fp_layer in all_layer_names:
             not_to_quantized_layers.append(fp_layer)
             continue
-        if fp_layer[-1].isdigit():
-            fp_layer = fp_layer + "."  ##tricky setting
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
