@@ -35,8 +35,9 @@ class CompressContext(BaseContext):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
     ):
+        super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        self.low_gpu_mem_usage - low_gpu_mem_usage
+        self.low_gpu_mem_usage = low_gpu_mem_usage
 
         if device_map is None:
             device_map = 0

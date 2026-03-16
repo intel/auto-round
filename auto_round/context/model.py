@@ -58,7 +58,7 @@ class ModelContext(BaseContext):
 
     def __init__(
         self,
-        model,
+        model=None,
         tokenizer=None,
         platform="hf",
         model_dtype=None,
@@ -67,35 +67,37 @@ class ModelContext(BaseContext):
         need_calib=True,
         device="cpu",
     ):
+        super().__init__()
+        assert model is not None, "model must be provided for ModelContext"
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
 
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
-        self._platform = platform
-        self._model_dtype = model_dtype
-        self._trust_remote_code = trust_remote_code
-        self._amp = amp
+        self.platform = platform
+        self.model_dtype = model_dtype
+        self.trust_remote_code = trust_remote_code
+        self.amp = amp
 
         self.need_calib = need_calib
 
     def _load_model(self):
-        if is_mllm_model(self.model, platform=self._platform):
+        if is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
                 self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
-                    self.model, platform=self._platform, device="cpu", model_dtype=self.model_dtype
+                    self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
                 )
         elif is_diffusion_model(self.model):
             self.is_diffusion = True
             self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self._platform, device="cpu", model_dtype=self._model_dtype
+                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
             )
         elif isinstance(self.model, str):
             config: Optional[AutoConfig] = None
             try:
-                config = AutoConfig.from_pretrained(self.model, trust_remote_code=self._trust_remote_code)
+                config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
             except (OSError, EnvironmentError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
@@ -105,7 +107,7 @@ class ModelContext(BaseContext):
                 )
 
             self.is_model_patched = apply_model_monkey_patches(
-                model_name=self.model, trust_remote_code=self._trust_remote_code
+                model_name=self.model, trust_remote_code=self.trust_remote_code
             )
             import transformers
 
@@ -126,36 +128,36 @@ class ModelContext(BaseContext):
 
             self.model, self.tokenizer = llm_load_model(
                 self.model,
-                platform=self._platform,
+                platform=self.platform,
                 device="cpu",  # always load cpu first
-                model_dtype=self._model_dtype,
-                trust_remote_code=self._trust_remote_code,
+                model_dtype=self.model_dtype,
+                trust_remote_code=self.trust_remote_code,
             )
-        elif self.tokenizer is None and not self.diffusion and self.need_calib:
+        elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
             raise ValueError("A tokenizer must be set for non-str model input")
 
         self._model_loaded = True
 
     def _set_amp_dtype(self) -> None:
         """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration."""
-        self._amp_dtype = torch.bfloat16
+        self.amp_dtype = torch.bfloat16
         if self.model.dtype != torch.float32:
-            self._amp_dtype = self.model.dtype
+            self.amp_dtype = self.model.dtype
         if self.device == "cpu" or "hpu" in self.device:
-            self._amp_dtype = torch.bfloat16
-        if self._amp:
+            self.amp_dtype = torch.bfloat16
+        if self.amp:
             if self.device == "cpu" and not CpuInfo().bf16:
-                self._amp = False
-                self._amp_dtype = torch.float32
+                self.amp = False
+                self.amp_dtype = torch.float32
                 self.model = self.model.to(torch.float32)
                 logger.warning(
                     f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
                 )
             else:
-                if self.model.dtype != self._amp_dtype:
-                    self.model = self.model.to(self._amp_dtype)
+                if self.model.dtype != self.amp_dtype:
+                    self.model = self.model.to(self.amp_dtype)
         else:
-            self._amp_dtype = torch.float32
+            self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
 
     def initialize(self, formats):
@@ -176,9 +178,9 @@ class ModelContext(BaseContext):
         self.is_moe_model = is_moe_model(self.model)
 
         self._set_amp_dtype()
-        if self.act_quantize and self._amp_dtype == torch.float16:
+        if self.act_quantize and self.amp_dtype == torch.float16:
             logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
-            self._amp_dtype = torch.bfloat16
+            self.amp_dtype = torch.bfloat16
             if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
                 self.model = self.model.to(torch.bfloat16)
         else:
@@ -187,7 +189,7 @@ class ModelContext(BaseContext):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self.model = update_module(
-            self.model, formats=formats, trust_remote_code=self._trust_remote_code, cleanup_original=False
+            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
         )
 
         # Temporary names must be assigned after handle_moe_model;
@@ -195,8 +197,8 @@ class ModelContext(BaseContext):
         for n, m in self.model.named_modules():
             m.global_name = n
 
-        if self._amp and self.model.dtype != self._amp_dtype:
-            self.model = self.model.to(self._amp_dtype)
+        if self.amp and self.model.dtype != self.amp_dtype:
+            self.model = self.model.to(self.amp_dtype)
 
         self._init_model = True
 

@@ -976,6 +976,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)

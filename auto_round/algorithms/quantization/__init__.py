@@ -11,3 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
+from auto_round.algorithms.quantization.auto_round.quantizer import ARQuantizer
+from auto_round.algorithms.quantization.auto_round.adam import ARAdamQuantizer

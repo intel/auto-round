@@ -44,7 +44,9 @@ class QuantizationScheme:
 
     @classmethod
     def from_dict(cls, config: dict):
-        return cls(**config)
+        field_names = {f.name for f in fields(cls)}
+        filtered_config = {k: v for k, v in config.items() if k in field_names}
+        return cls(**filtered_config)
 
     @classmethod
     def get_attributes(cls: "QuantizationScheme") -> list[str]:
