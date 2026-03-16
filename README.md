@@ -36,7 +36,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`: [*Accuracy*](./docs/fp8_block_acc.md).
+* [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
 
 * [2026/03] MTP layer quantization has been supported in [PR](https://github.com/intel/auto-round/pull/1526)
 
