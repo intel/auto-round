@@ -425,9 +425,9 @@ def set_layer_config(
         # skip it for mtp layers not loaded in transformers
         if not matched and not safetensor_only_matched:
             # type(mlp.gate) is Qwen3VLMoeTextTopKRouter instead of Linear
-            logger.warning(
+            logger.warning_once(
                 f"Layer name or regex '{name}' in layer_config does not match any supported layers. "
-                + "Please check for typos or update the regex pattern."
+                + "Please check for typos or update the regex pattern, ignore it for now"
             )
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
