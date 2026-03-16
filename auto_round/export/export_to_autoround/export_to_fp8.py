@@ -128,7 +128,7 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         return
 
     orig_device = layer.weight.device
-    scale = layer.scale if isinstance(layer.group_size, list) else layer.scale.view(-1)
+    scale = layer.scale if isinstance(layer.group_size, tuple) else layer.scale.view(-1)
     zp = layer.zp
     weight = layer.weight
     weight, orig_shape, pad_len = reshape_pad_tensor_by_group_size(weight, layer.group_size)
@@ -140,21 +140,13 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
     if zp is not None:
         if isinstance(zp, torch.Tensor):
             zp = zp.to(packing_device)
-        if isinstance(layer.group_size, list):
-            q_weight = (
-                weight.to(packing_device)
-                / scale.repeat_interleave(layer.group_size[0], dim=0)
-                .repeat_interleave(layer.group_size[1], dim=1)
-                .to(packing_device)
-                + zp
-            )
+        if isinstance(layer.group_size, tuple):
+            q_weight = weight.to(packing_device) / scale.unsqueeze(-1).unsqueeze(-1).to(packing_device) + zp
         else:
             q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1) + zp
     else:
-        if isinstance(layer.group_size, list):
-            q_weight = weight.to(packing_device) / scale.repeat_interleave(
-                layer.group_size[0], dim=0
-            ).repeat_interleave(layer.group_size[1], dim=1).to(packing_device)
+        if isinstance(layer.group_size, tuple):
+            q_weight = weight.to(packing_device) / scale.unsqueeze(-1).unsqueeze(-1).to(packing_device)
         else:
             q_weight = weight.to(packing_device) / scale.to(packing_device).unsqueeze(-1)
     q_weight = revert_tensor_by_pad(q_weight, orig_shape=orig_shape, pad_len=pad_len)
@@ -170,7 +162,7 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias
-    linear_cls = FP8BlockQLinear if isinstance(layer.group_size, list) else FP8QLinear
+    linear_cls = FP8BlockQLinear if isinstance(layer.group_size, tuple) else FP8QLinear
     my_linear = linear_cls(
         in_features,
         out_features,

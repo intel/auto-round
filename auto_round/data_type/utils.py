@@ -36,7 +36,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
 
     Args:
         data (torch.Tensor): The input tensor to be reshaped and padded.
-        group_size (int or list): The size of the groups that the tensor should be reshaped into.
+        group_size (int or tuple): The size of the groups that the tensor should be reshaped into.
 
     Returns:
         torch.Tensor: The reshaped and padded tensor, if necessary.
@@ -45,13 +45,14 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
     """
     orig_shape = data.shape
     pad_len = 0
-    if isinstance(group_size, list):
+    if isinstance(group_size, tuple):
         assert len(group_size) == 2, f"Only support 2D group_size, but get {len(group_size)}"
         M, N = group_size
         pad_len_m = ceil(orig_shape[0] / M) * M - orig_shape[0]
         pad_len_n = ceil(orig_shape[1] / N) * N - orig_shape[1]
         data_new = torch.nn.functional.pad(data, (0, pad_len_n, 0, pad_len_m))
-        return data_new, orig_shape, [pad_len_m, pad_len_n]
+        data_new = data_new.view(data_new.shape[0] // M, M, data_new.shape[1] // N, N).permute(0, 2, 1, 3)
+        return data_new, orig_shape, (pad_len_m, pad_len_n)
     if group_size == 0:
         data = data.reshape(1, -1)
         return data, orig_shape, pad_len
@@ -78,14 +79,15 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
     Args:
         data (torch.Tensor): The reshaped and possibly padded tensor.
         orig_shape (tuple): The original shape of the tensor before reshaping.
-        pad_len (int or list): The length of the padding to be removed.
+        pad_len (int or tuple): The length of the padding to be removed.
 
     Returns:
         torch.Tensor: The tensor restored to its original shape.
     """
-    if isinstance(pad_len, list):
+    if isinstance(pad_len, tuple):
         assert len(pad_len) == 2, f"Only support 2D group_size, but get {len(pad_len)}"
-        return data[: data.shape[0] - pad_len[0], : data.shape[1] - pad_len[1]].reshape(orig_shape)
+        data = data.permute(0, 2, 1, 3).reshape(orig_shape[0] + pad_len[0], orig_shape[1] + pad_len[1])
+        return data[: data.shape[0] - pad_len[0], : data.shape[1] - pad_len[1]]
     if pad_len == 0:
         return data.reshape(orig_shape)
     else:
@@ -111,7 +113,7 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, grou
         bits (int): The bit width for the quantization (e.g., 2,4,8).
         sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
         disable_opt_rtn(bool): whether to disable optimized rtn.
-        group_size (list): The block size for weight quantization (e.g., [128, 128]).
+        group_size (tuple): The block size for weight quantization (e.g., (128, 128)).
 
     Returns:
         function: The quantization function corresponding to the specified parameters.
@@ -137,7 +139,7 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, grou
             if data_type in QUANT_FUNC_WITH_DTYPE:
                 return QUANT_FUNC_WITH_DTYPE[data_type], data_type
 
-    if group_size is not None and isinstance(group_size, list):
+    if group_size is not None and isinstance(group_size, tuple):
         block_data_type = "block_" + dtype
         data_types = [
             block_data_type,

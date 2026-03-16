@@ -26,7 +26,7 @@ from auto_round.utils import is_gaudi2, logger
 
 
 @register_dtype(("block_fp8_sym", "block_fp8", "block_fp8_e4m3"))
-def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 128], v=0, **kwargs):
+def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=(128, 128), v=0, **kwargs):
     """Symmetric quantization using block float8 format.
 
     Args:
@@ -49,15 +49,7 @@ def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 
     if isinstance(v, torch.Tensor):
         v = v.to(tensor.device)
     if tensor_max is None:
-        new_M, new_N = tensor.shape
-        block_M, block_N = group_size
-        max_tensor = (
-            tensor.view(new_M // block_M, block_M, new_N // block_N, block_N)
-            .permute(0, 2, 1, 3)
-            .abs()
-            .amax(dim=(-2, -1))
-            * max_scale
-        )
+        max_tensor = tensor.abs().amax(dim=(-2, -1)) * max_scale
     elif isinstance(tensor_max, torch.Tensor):
         max_tensor = tensor_max.to(tensor.device) * max_scale
     else:
@@ -69,10 +61,10 @@ def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=[128, 
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
 
-    fp8_res = tensor / scale.repeat_interleave(group_size[0], dim=0).repeat_interleave(group_size[1], dim=1) + v
+    fp8_res = tensor / scale.unsqueeze(-1).unsqueeze(-1) + v
     fp8_res = torch.clip(fp8_res, info.min, info.max)
     fp8_res = float8_e4m3fn_ste(fp8_res)
-    qdq_res = fp8_res * scale.repeat_interleave(group_size[0], dim=0).repeat_interleave(group_size[1], dim=1)
+    qdq_res = fp8_res * scale.unsqueeze(-1).unsqueeze(-1)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     qdq_res = qdq_res.to(orig_dtype)
     return qdq_res, scale, None

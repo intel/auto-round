@@ -32,13 +32,23 @@ from auto_round.utils import (
 from auto_round.wrapper import WrapperWALayer
 
 
-def _get_scheme_strategy(group_size):
+def _get_weight_scheme_strategy(group_size):
     if group_size == 0:
         return "tensor"
     if group_size == -1:
         return "channel"
-    if isinstance(group_size, list):
+    if isinstance(group_size, tuple):
         return "block"
+    if isinstance(group_size, int):
+        return "group"
+    return None
+
+
+def _get_act_scheme_strategy(group_size):
+    if group_size == 0:
+        return "tensor"
+    if group_size == -1:
+        return "token"
     if isinstance(group_size, int):
         return "group"
     return None
@@ -47,7 +57,7 @@ def _get_scheme_strategy(group_size):
 def _get_scheme_type(data_type):
     if "int" in data_type:
         return "int"
-    if "fp" in data_type:
+    if "fp" in data_type or "float" in data_type:
         return "float"
     raise NotImplementedError("only support `int` and `fp` data type")
 
@@ -60,17 +70,17 @@ def construct_ct_scheme(layer):
         type=_get_scheme_type(layer.data_type),
         symmetric=layer.sym,
         dynamic=False,
-        group_size=layer.group_size if _get_scheme_strategy(layer.group_size) == "group" else None,
-        strategy=_get_scheme_strategy(layer.group_size),
-        block_structure=layer.group_size if _get_scheme_strategy(layer.group_size) == "block" else None,
+        group_size=layer.group_size if _get_weight_scheme_strategy(layer.group_size) == "group" else None,
+        strategy=_get_weight_scheme_strategy(layer.group_size),
+        block_structure=layer.group_size if _get_weight_scheme_strategy(layer.group_size) == "block" else None,
     )
     activations_args = QuantizationArgs(
         num_bits=layer.act_bits,
         type=_get_scheme_type(layer.act_data_type),
         symmetric=layer.act_sym,
         dynamic=layer.act_dynamic,
-        group_size=layer.act_group_size if _get_scheme_strategy(layer.act_group_size) == "group" else None,
-        strategy=_get_scheme_strategy(layer.act_group_size),
+        group_size=layer.act_group_size if _get_act_scheme_strategy(layer.act_group_size) == "group" else None,
+        strategy=_get_act_scheme_strategy(layer.act_group_size),
     )
     scheme = QuantizationScheme(
         targets=[layer.__class__.__name__],

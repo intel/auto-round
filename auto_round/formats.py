@@ -93,6 +93,9 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
                 f"since scheme {gguf_format_name} can only be exported to format {gguf_format_name.lower()} or fake"
             )
             formats = tmp_format_name.split(",")
+    if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
+        logger.warning("`auto_round` format can't be used for deploying block-wise fp8 quantization now, use `fp8` instead.")
+        formats = ["fp8" if "auto_round" in f.lower() else f for f in formats]
     return formats
 
 
@@ -239,7 +242,7 @@ class OutputFormat(ABC):
         w_fp8 = ar.data_type.startswith("fp") and ar.bits == 8
         act_fp8 = ar.act_data_type.startswith("fp") and ar.act_bits == 8
         is_block_dynamic_fp8 = (
-            self.format_name in ["fp8", "auto_round:fp8"] and isinstance(ar.group_size, list) and ar.act_dynamic
+            self.format_name in ["fp8", "auto_round:fp8"] and isinstance(ar.group_size, tuple) and ar.act_dynamic
         )
         if (w_fp8 or act_fp8) and not is_block_dynamic_fp8:
             error_msg = (
@@ -392,6 +395,21 @@ class LLMCompressorFormat(OutputFormat):
             error_logs.append(f"super_bits={scheme.super_bits}")
         if scheme.super_group_size:
             error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if isinstance(scheme.group_size, tuple):
+            if scheme.bits != 8:
+                error_logs.append(f"bits={scheme.bits}")
+            if scheme.data_type != "fp":
+                error_logs.append(f"data_type={scheme.data_type}")
+            if len(scheme.group_size) != 2:
+                error_logs.append(f"group_size={scheme.group_size}")
+            if not scheme.act_dynamic:
+                error_logs.append(f"act_dynamic={scheme.act_dynamic}")
+            if not isinstance(scheme.act_group_size, int):
+                error_logs.append(f"act_group_size={scheme.act_group_size}")
+            if scheme.act_bits != 8:
+                error_logs.append(f"act_bits={scheme.act_bits}")
+            if scheme.act_data_type != "fp":
+                error_logs.append(f"act_data_type={scheme.act_data_type}")
         if error_logs:
             raise ValueError(
                 f"LLMCompressor format support quantization scheme with {','.join(cls.support_schemes)} "
@@ -967,10 +985,18 @@ class FP8Format(OutputFormat):
         error_logs = []
         if scheme.bits != 8:
             error_logs.append(f"bits={scheme.bits}")
-        if not scheme.data_type.startswith("fp8"):
+        if scheme.data_type != "fp":
             error_logs.append(f"data_type={scheme.data_type}")
-        if not isinstance(scheme.group_size, list):
+        if not isinstance(scheme.group_size, tuple):
             error_logs.append(f"group_size={scheme.group_size}")
+        if not scheme.act_dynamic:
+            error_logs.append(f"act_dynamic={scheme.act_dynamic}")
+        if not isinstance(scheme.act_group_size, int):
+            error_logs.append(f"act_group_size={scheme.act_group_size}")
+        if scheme.act_bits != 8:
+            error_logs.append(f"act_bits={scheme.act_bits}")
+        if scheme.act_data_type != "fp":
+            error_logs.append(f"act_data_type={scheme.act_data_type}")
         if error_logs:
             raise ValueError(
                 f"{cls.format_name} format support quantization scheme with {','.join(cls.support_schemes)} "
@@ -999,7 +1025,7 @@ class FP8Format(OutputFormat):
         backend = self.get_backend_name()
 
         # weight_block_size & ignored_layers are required by fp8 format, skip them in auto_round:fp8 format
-        if isinstance(serialization_dict["group_size"], list) and "auto_round" not in backend:
+        if isinstance(serialization_dict["group_size"], tuple) and "auto_round" not in backend:
             serialization_dict["weight_block_size"] = serialization_dict["group_size"]
 
             ignored_layers = []
@@ -1068,7 +1094,7 @@ class AutoRoundFormat(OutputFormat):
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
             elif ar.data_type.startswith("fp") and ar.bits == 8 and ar.act_bits >= 16:  # woq fp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, ar)
-            elif ar.data_type.startswith("fp") and ar.bits == 8 and isinstance(ar.group_size, list):
+            elif ar.data_type.startswith("fp") and ar.bits == 8 and isinstance(ar.group_size, tuple):
                 self.backend = AutoRoundFormat("auto_round:fp8", ar)
             elif ar.act_bits < 16:
                 raise ValueError(

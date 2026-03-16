@@ -291,7 +291,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         scheme.add_argument(
             "--group_size",
             default=None,
-            type=lambda s: int(s) if s.isdigit() else [int(x.strip()) for x in s.split(",")],
+            type=lambda s: int(s) if s.isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
@@ -729,7 +729,7 @@ def tune(args):
     elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
     else:
-        if isinstance(autoround.group_size, list):
+        if isinstance(autoround.group_size, tuple):
             assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
             suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
         else:

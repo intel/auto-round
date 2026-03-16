@@ -100,12 +100,15 @@ def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
 
 
 def is_dynamic_afp8(ar_or_format: Callable) -> bool:
-    return ar_or_format.act_dynamic and ar_or_format.act_data_type.startswith("fp") and ar_or_format.act_bits == 8
-
+    return (
+        ar_or_format.act_dynamic
+        and ar_or_format.act_data_type.startswith("fp")
+        and ar_or_format.act_bits == 8
+    )
 
 def is_block_wfp8(ar_or_format: Callable) -> bool:
     return (
-        isinstance(ar_or_format.group_size, list)
+        isinstance(ar_or_format.group_size, tuple)
         and len(ar_or_format.group_size) == 2
         and ar_or_format.data_type.startswith("fp")
         and ar_or_format.bits == 8

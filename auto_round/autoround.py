@@ -45,7 +45,7 @@ class AutoRound:
         tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         bits (int): Weight quantization bits.
-        group_size (int or list): Per-group size for weight quantization.
+        group_size (int or tuple): Per-group size for weight quantization.
         sym (bool): Whether to use symmetric weight quantization.
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
@@ -55,7 +55,7 @@ class AutoRound:
     SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config", "enable_adam")
 
     bits: int | None
-    group_size: int | list[int] | None
+    group_size: int | tuple | None
     sym: bool | None
     data_type: str | None
     act_bits: int | None
@@ -118,7 +118,7 @@ class AutoRound:
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
 
             bits (int, optional): Weight quantization bits. Defaults to 4.
-            group_size (int or list, optional): Weight quantization group size. Defaults to 128.
+            group_size (int or tuple, optional): Weight quantization group size. Defaults to 128.
             sym (bool, optional): Symmetric weight quantization. Defaults to True.
             data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
             act_bits (int, optional): Activation quantization bits. Defaults to 16.
@@ -253,7 +253,7 @@ class AutoRoundLLM(LLMCompressor):
         tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int, optional): Weight quantization bits. Defaults to 4.
-        group_size (int or list, optional): Weight quantization group size. Defaults to 128.
+        group_size (int or tuple, optional): Weight quantization group size. Defaults to 128.
         sym (bool, optional): Symmetric weight quantization. Defaults to True.
         layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
         batch_size (int, optional): Calibration batch size. Defaults to 8.
@@ -307,7 +307,7 @@ class AutoRoundLLM(LLMCompressor):
     """
 
     bits: int | None
-    group_size: int | list[int] | None
+    group_size: int | tuple | None
     sym: bool | None
     data_type: str | None
     act_bits: int | None
@@ -354,7 +354,7 @@ class AutoRoundAdam(AdamCompressor):
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
         scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
         bits (int): Number of bits for quantization (default is 4).
-        group_size (int or list): Size of the quantization group (default is 128).
+        group_size (int or tuple): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
         batch_size (int): Batch size for training (default is 8).
@@ -396,7 +396,7 @@ class AutoRoundAdam(AdamCompressor):
     """
 
     bits: int | None
-    group_size: int | list[int] | None
+    group_size: int | tuple | None
     sym: bool | None
     data_type: str | None
     act_bits: int | None
@@ -446,7 +446,7 @@ class AutoRoundMLLM(MLLMCompressor):
                    decode the data that groups several modalities (among text, vision and audio).
         image_processor: Image processor for special model like llava.
         bits (int): Number of bits for quantization (default is 4).
-        group_size (int or list): Size of the quantization group (default is 128).
+        group_size (int or tuple): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
         batch_size (int): Batch size for training (default is 8).
@@ -485,7 +485,7 @@ class AutoRoundMLLM(MLLMCompressor):
     """
 
     bits: int | None
-    group_size: int | list[int] | None
+    group_size: int | tuple | None
     sym: bool | None
     data_type: str | None
     act_bits: int | None
@@ -552,7 +552,7 @@ class AutoRoundDiffusion(DiffusionCompressor):
     """
 
     bits: int | None
-    group_size: int | list[int] | None
+    group_size: int | tuple | None
     sym: bool | None
     data_type: str | None
     act_bits: int | None

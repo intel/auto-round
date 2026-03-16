@@ -247,7 +247,7 @@ FPW8A16 = QuantizationScheme.from_dict(
 FP8_BLOCK = QuantizationScheme.from_dict(
     {
         "bits": 8,
-        "group_size": [128, 128],
+        "group_size": (128, 128),
         "data_type": "fp",
         "act_bits": 8,
         "act_group_size": 128,
