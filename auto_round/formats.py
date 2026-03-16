@@ -94,7 +94,9 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
             )
             formats = tmp_format_name.split(",")
     if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
-        logger.warning("`auto_round` format can't be used for deploying block-wise fp8 quantization now, use `fp8` instead.")
+        logger.warning(
+            "`auto_round` format can't be used for deploying block-wise fp8 quantization now, use `fp8` instead."
+        )
         formats = ["fp8" if "auto_round" in f.lower() else f for f in formats]
     return formats
 

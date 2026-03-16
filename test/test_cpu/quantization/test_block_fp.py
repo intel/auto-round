@@ -1,10 +1,10 @@
 import shutil
+from math import ceil
 
 import pytest
 import torch
 
 from auto_round import AutoRound
-from math import ceil
 from auto_round.data_type.fp8 import quant_block_fp_sym
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
@@ -75,7 +75,7 @@ class TestAutoRoundBlockFP:
 
     def test_block_fp8_quant(self):
         data = torch.randn(256, 240)
-        group_size = (128,128)
+        group_size = (128, 128)
         reshaped_data, orig_shape, pad_len = reshape_pad_tensor_by_group_size(data, group_size)
         assert list(reshaped_data.shape) == [2, 2, 128, 128]
         assert list(orig_shape) == [256, 240]
@@ -89,7 +89,7 @@ class TestAutoRoundBlockFP:
         max_val = torch.finfo(torch.float8_e4m3fn).max
         for i in range(M):
             for j in range(N):
-                scale_ref[i, j] = data[i * 128: (i + 1) * 128, j * 128: (j + 1) * 128].abs().max() / max_val
+                scale_ref[i, j] = data[i * 128 : (i + 1) * 128, j * 128 : (j + 1) * 128].abs().max() / max_val
         assert (scale == scale_ref).all()
 
     def test_fp8_block_autoround_format(self):
