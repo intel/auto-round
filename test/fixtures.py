@@ -166,6 +166,98 @@ def tiny_fp8_qwen_moe_model_path():
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
+@pytest.fixture(scope="session")
+def tiny_gpt_oss_model_path():
+    tiny_model_path = "./tmp/tiny_gpt_oss"
+    from transformers import GptOssForCausalLM
+
+    model_name = get_model_path("unsloth/gpt-oss-20b")
+    config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    config.num_hidden_layers = 1  # Reduce layers for testing
+    config.layer_types = config.layer_types[:1]  # Keep only the first layer type for testing
+    delattr(config, "quantization_config")
+    model = GptOssForCausalLM(config)
+    model.save_pretrained(tiny_model_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer.save_pretrained(tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_llama4_model_path():
+    tiny_model_path = "./tmp/tiny_llama4"
+    from transformers import Llama4ForConditionalGeneration
+
+    model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
+    config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
+    config.pad_token_id = None
+    config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
+    config.text_config.num_hidden_layers = 1
+    config.text_config.num_hidden_layers = 1
+    model = Llama4ForConditionalGeneration(config)
+    # Remove these parameters to avoid mismatch during quantized model loading
+    model.config.text_config.no_rope_layers = []
+    if hasattr(model.config.text_config, "moe_layers"):
+        delattr(model.config.text_config, "moe_layers")
+    if hasattr(model.config.text_config, "layer_types"):
+        delattr(model.config.text_config, "layer_types")
+    model.save_pretrained(tiny_model_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer.save_pretrained(tiny_model_path)
+    processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    processor.save_pretrained(tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen3_vl_moe_model_path():
+    tiny_model_path = "./tmp/tiny_qwen3_vl_moe"
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+    model_name = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
+    config = transformers.AutoConfig.from_pretrained(model_name)
+    # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
+    config.text_config.pad_token_id = None
+    config.vision_config.depth = 1  # Reduce layers for testing
+    config.text_config.num_hidden_layers = 1
+    config.text_config.num_experts = 16
+    config.num_hidden_layers = 1
+    model = Qwen3VLMoeForConditionalGeneration(config)
+    model.save_pretrained(tiny_model_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
+    tokenizer.save_pretrained(tiny_model_path)
+    processor = transformers.AutoProcessor.from_pretrained(model_name)
+    processor.save_pretrained(tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen35_moe_model_path():
+    tiny_model_path = "./tmp/tiny_qwen35_moe"
+    from transformers import Qwen3_5MoeForConditionalGeneration
+
+    model_name = get_model_path("Qwen/Qwen3.5-35B-A3B")
+    config = transformers.AutoConfig.from_pretrained(model_name)
+    config.text_config.pad_token_id = None
+    config.vision_config.depth = 1  # Reduce layers for testing
+    config.text_config.num_hidden_layers = 4
+    config.num_hidden_layers = 1
+    config.text_config.layer_types = config.text_config.layer_types[: config.text_config.num_hidden_layers]
+    config.text_config.use_cache = False
+    model = Qwen3_5MoeForConditionalGeneration(config)
+    model.save_pretrained(tiny_model_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
+    tokenizer.save_pretrained(tiny_model_path)
+    processor = transformers.AutoProcessor.from_pretrained(model_name)
+    processor.save_pretrained(tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
 # Mock torch.cuda.get_device_capability to always return (9, 0) like H100
 @pytest.fixture()
 def mock_fp8_capable_device():
