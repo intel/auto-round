@@ -1,5 +1,6 @@
 import copy
 import shutil
+import tempfile
 
 import pytest
 import torch
@@ -7,9 +8,74 @@ import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round import schemes as ar_schemes
+from auto_round.experimental import qmodules as ar_qmodules
+from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
+from auto_round.formats import AutoRoundExportFormat
 
-from ...envs import require_awq, require_optimum
+from ...envs import has_module, require_awq, require_optimum
 from ...helpers import get_model_path, save_tiny_model
+
+testing_schemes = [
+    AutoRoundExportFormat.MXFP8.value,
+    AutoRoundExportFormat.MXFP4.value,
+    AutoRoundExportFormat.NVFP4.value,
+]
+QMODULE_MAPPING = {
+    AutoRoundExportFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
+    AutoRoundExportFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    AutoRoundExportFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
+}
+
+
+@pytest.mark.parametrize("scheme", testing_schemes)
+@torch.inference_mode()
+def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):
+    # Use a temporary directory for saving the quantized model
+    with tempfile.TemporaryDirectory() as temp_dir:
+
+        # Load the tokenizer and model
+        tokenizer = AutoTokenizer.from_pretrained(tiny_qwen_model_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            tiny_qwen_model_path,
+            device_map="cpu",
+            torch_dtype="auto",
+            trust_remote_code=True,
+        )
+
+        # Initialize AutoRound for quantization
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            scheme=scheme,
+            iters=0,
+            nsamples=2,
+            disable_opt_rtn=True,
+        )
+
+        # Quantize and save the model to the temporary directory
+        quantized_model_path = f"{temp_dir}/tmp_autoround_{scheme}"
+        autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
+
+        # Perform inference with the quantized model
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            torch_dtype="auto",
+        )
+        model.eval()
+        assert has_module(model, QMODULE_MAPPING[scheme]), f"Expected {QMODULE_MAPPING[scheme].__name__} in the model."
+
+        # Skip accuracy check for tiny model.
+
+        # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        # prompt = "The capital of France is"
+        # encode = tokenizer.encode(prompt, return_tensors="pt")
+        # output_tokens = model.generate(
+        #     encode,
+        #     max_length=10,
+        # )
+        # output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+        # assert "paris" in output.lower(), f"Expected 'Paris' in the output, but got: {output}"
 
 
 class TestAutoRound:
@@ -28,14 +94,32 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, mock_fp8_capable_device):
-        model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
-        tiny_model_path = "./tmp/tiny_qwen3_fp8"
-        save_tiny_model(model_name, tiny_model_path)
+    def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
+        # model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+        scheme = "nvfp4"
+        autoround = AutoRound(
+            tiny_deepseek_v2_model_path,
+            scheme=scheme,
+            iters=0,
+            seqlen=2,
+            nsamples=2,
+            dataset=dataloader,
+            trust_remote_code=False,
+        )
+        autoround.quantize()
+        quantized_model_path = self.save_dir
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
+        print(model)
+        assert model is not None, "Failed to load the quantized model."
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
         scheme = "mxfp4"
         ar = AutoRound(
-            model=tiny_model_path,
-            iters=0,
+            model=tiny_fp8_qwen_model_path,
+            iters=1,
             seqlen=2,
             scheme=scheme,
             dataset=dataloader,
@@ -57,6 +141,7 @@ class TestAutoRound:
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
     def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -86,23 +171,7 @@ class TestAutoRound:
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
-        # model_name = "/data0/deepseek-ai/DeepSeek-V2-Lite"
-        scheme = "nvfp4"
-        autoround = AutoRound(
-            tiny_deepseek_v2_model_path,
-            scheme=scheme,
-            iters=0,
-            seqlen=2,
-            nsamples=2,
-            dataset=dataloader,
-            trust_remote_code=False,
-        )
-        autoround.quantize()
-        quantized_model_path = self.save_dir
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
-
+    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -119,7 +188,8 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="OOM")
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     def test_qwen_moe_quant_infer(self, dataloader):
         model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
