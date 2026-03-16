@@ -43,7 +43,7 @@ autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 
 - `generator_seed`: A seed that controls the initial noise from which an image is generated.
 
-for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
+for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration)
 
 ### CLI Usage
 

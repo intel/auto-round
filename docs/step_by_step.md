@@ -31,7 +31,6 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
-    - [Enable multiple gpus tuning for extremely large model](#enable-multiple-gpus-tuning-for-extremely-large-model)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)

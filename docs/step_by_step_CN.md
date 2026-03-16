@@ -208,7 +208,7 @@ ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
 #### 混合精度量化
-自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme)章节。
+自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme-自动混合精度量化方案)章节。
 
 Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果您不熟悉具体细节，**建议导出 AutoRound 格式**。
 
