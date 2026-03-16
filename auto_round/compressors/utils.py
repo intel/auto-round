@@ -328,6 +328,9 @@ def set_layer_config(
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
+    if ignore_layers:
+        ignore_layers = ignore_layers.replace(" ", "").split(",")
+        ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
 
     # 1. ignore_layers -> force 16
     for name in get_fp_layer_names(model, ignore_layers):
@@ -421,7 +424,11 @@ def set_layer_config(
         safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
         # skip it for mtp layers not loaded in transformers
         if not matched and not safetensor_only_matched:
-            raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
+            # type(mlp.gate) is Qwen3VLMoeTextTopKRouter instead of Linear
+            logger.warning(
+                f"Layer name or regex '{name}' in layer_config does not match any supported layers. "
+                + "Please check for typos or update the regex pattern."
+            )
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
         for match in matched:
@@ -949,7 +956,7 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
 
     if not ignore_layers:
         return []
-    ignore_layers = ignore_layers.replace(" ", "").split(",")
+
     all_layer_names = []
     for n, m in model.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
