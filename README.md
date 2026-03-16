@@ -37,6 +37,8 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 ## 🆕 What's New
 
+* [2026/03] MTP layer quantization has been supported in [PR](https://github.com/intel/auto-round/pull/1526)
+
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
 * [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md), [*vLLM blog*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html), [*RedHat blog*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor), [*X post*](https://x.com/vllm_project/status/1998710451312771532), [*Intel blog*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336), [*Linkedin*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg), [*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg), [*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412).

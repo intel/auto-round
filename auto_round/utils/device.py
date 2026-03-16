@@ -1636,7 +1636,10 @@ class MemoryMonitor:
         """Log memory usage summary."""
         summary = self.get_summary()
         logger_method = getattr(logger, level.lower(), logger.info)
-        logger_method(f"{msg} {summary}")
+        if len(msg):
+            logger_method(f"{msg} {summary}")
+        else:
+            logger_method(f"{summary}")
 
         return summary
 
