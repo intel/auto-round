@@ -734,7 +734,7 @@ def tune(args):
         prefix = autoround.data_type.lower().replace("_", "") if "int" not in autoround.data_type else ""
         export_dir = os.path.join(
             args.output_dir,
-            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}"
+            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
         )
 
     # ======================= Quantize and save model =======================
