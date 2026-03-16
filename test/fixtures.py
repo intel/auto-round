@@ -10,6 +10,7 @@ from .helpers import (
     DataLoader,
     deepseek_v2_name_or_path,
     gemma_name_or_path,
+    get_model_path,
     get_tiny_model,
     gptj_name_or_path,
     lamini_name_or_path,
@@ -83,6 +84,18 @@ def tiny_qwen_model_path():
     model_name_or_path = qwen_name_or_path
     tiny_model_path = "./tmp/tiny_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_fp8_qwen_model_path():
+    from unittest.mock import patch
+
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+        model_name_or_path = get_model_path("Qwen/Qwen3-0.6B-FP8")
+        tiny_model_path = "./tmp/tiny_fp8_qwen_model_path"
+        tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 

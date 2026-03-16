@@ -187,7 +187,7 @@ class TestAutoRound:
 
     @pytest.mark.skipif(
         transformers_version >= version.parse("5.0.0"),
-        reason="AttributeError: 'MolmoForCausalLM' object has no attribute 'all_tied_weights_keys', https://github.com/huggingface/transformers/issues/43883",
+        reason="https://huggingface.co/allenai/Molmo-7B-D-0924/discussions/51",
     )
     def test_Molmo(self):
         model_name = get_model_path("allenai/Molmo-7B-D-0924")

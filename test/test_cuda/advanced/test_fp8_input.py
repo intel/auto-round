@@ -123,20 +123,15 @@ class TestAutoRound:
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="We need this patch for fp8 model loading without dequantization."
-        "https://github.com/intel/auto-round/blob/72e1cecb4a984db101e26700618266115029b9ac/test/test_cuda/quantization/test_mxfp_nvfp.py#L19C5-L19C25",
-    )
-    def test_diff_datatype(self, mock_fp8_capable_device):
+    def test_diff_datatype(self, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
         for scheme in ["NVFP4", "MXFP4"]:
-            model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
-            for iters in [0, 1]:
-                print(f"Testing scheme: {scheme}, iters: {iters}")
-                ar = AutoRound(model_name, iters=iters, scheme=scheme)
-                ar.quantize_and_save(output_dir=self.save_dir)
-                shutil.rmtree(self.save_dir, ignore_errors=True)
+            model_name = tiny_fp8_qwen_model_path
+            print(f"Testing scheme: {scheme}")
+            ar = AutoRound(model_name, iters=0, scheme=scheme, disable_opt_rtn=True, nsamples=2)
+            ar.quantize_and_save(output_dir=self.save_dir)
+            model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+            assert model is not None, f"Failed to load model for scheme {scheme}"
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
 
 # requires GPU to load FP8Linear
