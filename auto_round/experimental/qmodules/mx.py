@@ -68,6 +68,7 @@ class MXQuantLinearBase(QModuleBase):
         self.config = config
         self.dtype = dtype
         self.pre_dequantized = False
+        self.pre_dequantized_input = False
 
         # Validate dtype
         assert (
@@ -147,9 +148,7 @@ class MXQuantLinearBase(QModuleBase):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if not self.pre_dequantized_input:
             input = self.qdq_input(input)
-        else:
-            # pre dequant weight
-            self.pre_dequantize()
+
         qdq_weight = self.dequant_weight_online()
         qdq_weight = qdq_weight.to(input.dtype)
         out = torch.nn.functional.linear(input, qdq_weight, self.bias)
