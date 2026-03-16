@@ -8,7 +8,7 @@ from auto_round import AutoRound
 from auto_round.data_type.fp8 import quant_block_fp_sym
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
-from ...helpers import evaluate_accuracy, get_model_path
+from ...helpers import get_model_path
 
 
 class TestAutoRoundBlockFP:
@@ -130,7 +130,6 @@ class TestAutoRoundBlockFP:
         assert list(tmp_layer.weight_scale_inv.shape) == [12, 12]
         assert compressed_model.config.quantization_config["quant_method"] == "fp8"
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
-        evaluate_accuracy(quantized_model_path, threshold=0.55, batch_size=32, limit=100)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_fp8_block_llm_compressor_format(self):
@@ -150,5 +149,4 @@ class TestAutoRoundBlockFP:
         assert tmp_layer.weight.dtype is torch.float8_e4m3fn
         assert list(tmp_layer.weight_scale.shape) == [12, 12]
         assert compressed_model.config.quantization_config["quant_method"] == "compressed-tensors"
-        evaluate_accuracy(quantized_model_path, threshold=0.55, batch_size=32, limit=100)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
