@@ -17,7 +17,7 @@ def is_triton_available() -> bool:
         return False
 
     try:
-        from .mxfp4 import mxfp4_forward_kernel_wrapper  # pylint: disable=E0401
+        from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper  # pylint: disable=E0401
     except Exception:
         return False
 

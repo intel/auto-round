@@ -4,9 +4,9 @@
 import torch
 import tqdm
 
-from ..qmodules.mx import MXQuantLinearBase
-from .transform_config import TransformConfig
-from .transforms import build_transform
+from auto_round.experimental.qmodules.mx import MXQuantLinearBase
+from auto_round.experimental.transform.transform_config import TransformConfig
+from auto_round.experimental.transform.transforms import build_transform
 
 __all__ = ["apply_transform"]
 
@@ -70,7 +70,7 @@ def _apply_to_module(
             transform_weight = None
 
         if is_triton_available():
-            from .triton.mxfp4 import mxfp4_forward_kernel_wrapper
+            from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
             def input_hook(self, args):
                 input = args[0]
@@ -90,7 +90,7 @@ def _apply_to_module(
             module.register_forward_pre_hook(input_hook, prepend=True)
         else:
 
-            from .utils.matrix import _multihead_matmul
+            from auto_round.experimental.transform.utils.matrix import _multihead_matmul
 
             def input_hook(self, args):
                 input = args[0]
@@ -123,14 +123,14 @@ def _apply_to_module(
         if config.transform_type == "random_hadamard":
             module.register_module(transform_name, w_transform)
             # for saving transform weight
-            from .patch_modules import patch_quantlinear
+            from auto_round.experimental.transform.patch_modules import patch_quantlinear
 
             patch_quantlinear()
 
         if config.need_calibration:
             # for training, the weight changes with every forward pass
             # for autoround tuning: patch wrapper linear qdq_weight func
-            from .patch_modules import (
+            from auto_round.experimental.transform.patch_modules import (
                 patch_wrapperlinear_to_apply_transform,
                 patch_wrapperwalayer_forward_to_apply_transform,
             )
