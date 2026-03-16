@@ -294,7 +294,7 @@ ar.quantize_and_save()
 
 By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
-is limited. For more information, please refer to the AutoRound [readme](./auto_round/mllm/README.md).
+is limited. For more information, please refer to the AutoRound [readme](auto_round/compressors/mllm/README.md).
 
 ```python
 from auto_round import AutoRound
