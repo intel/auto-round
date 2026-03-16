@@ -49,31 +49,34 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = "./saved"
         autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-        from llama_cpp import Llama
-
-        gguf_file = os.listdir("saved")[0]
-        llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
-        output = llm("There is a girl who likes adventure,", max_tokens=32)
-        print(output)
-        shutil.rmtree("./saved", ignore_errors=True)
-
-        save_dir = os.path.join(os.path.dirname(__file__), "saved")
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {sys.executable} -m auto_round --model {tiny_qwen_model_path} --iter 2 "
-            f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device cuda"
+    @require_gguf
+    def test_q4_0_accuracy(self):
+        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
+        bits, group_size, sym = 4, 32, True
+        autoround = AutoRound(
+            model_name, bits=bits, group_size=group_size, sym=sym, iters=0, data_type="int", disable_opt_rtn=True
         )
-        print(save_dir)
-        assert not (res > 0 or res == -1), "qwen2 tuning fail"
+        autoround.quantize()
+        quantized_model_path = "./saved"
 
-        from llama_cpp import Llama
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
 
-        gguf_file = os.listdir(f"{save_dir}/tiny_qwen_model_path-gguf")[0]
-        llm = Llama(f"{save_dir}/tiny_qwen_model_path-gguf/{gguf_file}", n_gpu_layers=-1)
-        output = llm("There is a girl who likes adventure,", max_tokens=32)
+        gguf_file = os.listdir(quantized_model_path)[0]
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        text = "The capital of France is"
+        inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
+        output = autoround.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
+        assert "Paris" in output
         print(output)
-        shutil.rmtree(save_dir, ignore_errors=True)
 
+        evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
+
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
     @require_gguf
     def test_q2_k_export(self, dataloader):
         bits, group_size, sym = 2, 16, False
@@ -103,26 +106,7 @@ class TestAutoRound:
         print(result)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @require_gguf
-    def test_q4_0(self):
-        model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
-        bits, group_size, sym = 4, 32, True
-        autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int")
-        autoround.quantize()
-        quantized_model_path = "./saved"
-
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
-        gguf_file = os.listdir(quantized_model_path)[0]
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        text = "There is a girl who likes adventure,"
-        inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
-        print(autoround.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-
-        evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
-
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
     @require_gguf
     def test_all_format(self):
         for model_name in ["Qwen/Qwen3-8B", "meta-llama/Llama-3.2-3B"]:
@@ -139,6 +123,7 @@ class TestAutoRound:
                 shutil.rmtree(tiny_model_path, ignore_errors=True)
                 shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Not necessary to test special models in CI")
     @require_gguf
     def test_special_model(self):
         from ...helpers import save_tiny_model

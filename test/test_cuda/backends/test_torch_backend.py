@@ -88,3 +88,59 @@ class TestAutoRoundTorchBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_autoround_3bit_asym_torch_format(self, tiny_opt_model_path, dataloader):
+        bits, group_size, sym = 3, 128, False
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:gptqmodel")
+
+        device = "auto"  ##cpu, hpu, cuda
+        from transformers import AutoRoundConfig
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        shutil.rmtree("./saved", ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Not necessary to test both symmetric and asymmetric for 3-bit quantization in CI")
+    def test_autoround_3bit_sym_torch_format(self, tiny_opt_model_path, dataloader):
+        bits, group_size, sym = 3, 128, True
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+
+        device = "auto"  ##cpu, hpu, cuda
+        from transformers import AutoRoundConfig
+
+        quantization_config = AutoRoundConfig(backend=device)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map=device, quantization_config=quantization_config
+        )
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        shutil.rmtree("./saved", ignore_errors=True)
