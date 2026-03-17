@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import json
 import os
+import re
 import sys
 
 from auto_round.auto_scheme import AutoScheme
@@ -24,6 +26,7 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
+    parse_layer_config_arg,
 )
 
 RECIPES = {
@@ -285,7 +288,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         scheme = self.add_argument_group("Scheme Arguments")
         scheme.add_argument("--bits", default=None, type=int, help="Number of bits for weight quantization. ")
-        scheme.add_argument("--group_size", default=None, type=int, help="Group size for weight quantization.")
+        scheme.add_argument(
+            "--group_size",
+            default=None,
+            type=lambda s: int(s) if s.isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
+            help="Group size for weight quantization.",
+        )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
         scheme.add_argument(
             "--data_type",
@@ -311,6 +319,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         scheme.add_argument(
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--layer_config",
+            default=None,
+            type=str,
+            help="Per-layer quantization config for missing tensors (e.g., MTP layers) as a JSON string. "
+            "Keys are name prefixes, values are config dicts with optional bits/group_size/sym. "
+            'Example: "{mtp:{bits:8,data_type:int},mtp.fc:{bits:16}}". '
+            "These settings are saved to extra_config and override the global quantization config.",
         )
         scheme.add_argument(
             "--shared_layers",
@@ -655,6 +672,9 @@ def tune(args):
     extra_config.diffusion_config = diffusion_config
 
     layer_config = {}
+    if args.layer_config:
+        layer_config = parse_layer_config_arg(args.layer_config)
+        args.layer_config = layer_config
 
     if args.avg_bits is not None:
         if args.options is None:
@@ -709,13 +729,17 @@ def tune(args):
     elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
     else:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
+        if isinstance(autoround.group_size, tuple):
+            assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
+            suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
         else:
-            suffix = f"g{autoround.group_size}"
+            if autoround.group_size <= 0:
+                if "fp" in autoround.act_data_type:
+                    suffix = f"afp{autoround.act_bits}"
+                else:
+                    suffix = f"a{autoround.act_bits}"
+            else:
+                suffix = f"g{autoround.group_size}"
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
 
     # ======================= Quantize and save model =======================

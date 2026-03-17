@@ -323,13 +323,9 @@ class TestAutoRound:
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0"),
-        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
-    )
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
-        model_name = get_model_path("microsoft/phi-2")
+        model_name = get_model_path("microsoft/phi-4")
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
             "layer": {"bits": 16},
@@ -353,14 +349,10 @@ class TestAutoRound:
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0"),
-        reason="PhiConfig missing pad_token_id, https://github.com/huggingface/transformers/pull/43453",
-    )
     def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
-        model_name = get_model_path("microsoft/phi-2")
+        model_name = get_model_path("microsoft/phi-4")
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
             "layer": {"bits": 16},
@@ -502,7 +494,18 @@ class TestAutoRound:
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
-        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
-        assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    def test_llmc_dynamic_wint8aint8_export_with_tuning(self, dataloader):
+        from safetensors import safe_open
+
+        autoround = AutoRound(self.model_name, iters=1, nsamples=2, seqlen=2, dataset=dataloader, scheme="INT8_W8A8")
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
         shutil.rmtree(quantized_model_path, ignore_errors=True)

@@ -118,6 +118,7 @@ class TestAutoRound:
             seqlen=2,
             nsamples=2,
             dataset=dataloader,
+            trust_remote_code=False,
         )
         autoround.quantize()
         quantized_model_path = self.save_dir
@@ -133,6 +134,7 @@ class TestAutoRound:
             seqlen=2,
             nsamples=2,
             dataset=dataloader,
+            trust_remote_code=False,
         )
         autoround.quantize()
         quantized_model_path = self.save_dir

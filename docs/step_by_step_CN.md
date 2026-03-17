@@ -16,33 +16,33 @@
   + [硬件兼容性](#硬件兼容性)
   + [环境参数配置](#环境参数配置)
   + [命令行使用方法](#命令行用法)
-  + [API 使用方法](#API-使用方法)
-    - [AutoRound API 基础用法](#AutoRound-API-基础用法)
+  + [API 使用方法](#api-使用方法)
+    - [AutoRound API 基础用法](#autoround-api-基础用法)
     - [混合精度量化方案](#混合精度量化)
-    - [AutoRoundBest 配置方案](#AutoRoundBest-高精度配置用法)
-    - [AutoRoundLight 配置方案](#AutoRoundLight-高速度配置用法)
+    - [AutoRoundBest 配置方案](#autoroundbest-高精度配置用法)
+    - [AutoRoundLight 配置方案](#autoroundlight-高速度配置用法)
     - [超参方案推荐](#超参方案推荐)
-  + [AutoScheme 自动混合精度量化方案](#AutoScheme-自动混合精度量化方案)
+  + [AutoScheme 自动混合精度量化方案](#autoscheme-自动混合精度量化方案)
     - [命令行用法](#命令行用法-1)
-    - [API 用法](#API-用法)
-    - [AutoScheme 中的超参数](#AutoScheme-超参数说明)
-  + [OPT RTN 模式](#OPT-RTN-模式)
-  + [GGUF 格式](#GGUF-格式量化)
+    - [API 用法](#api-用法)
+    - [AutoScheme 中的超参数](#autoscheme-超参数说明)
+  + [OPT RTN 模式](#opt-rtn-模式)
+  + [GGUF 格式](#gguf-格式量化)
   + [量化成本](#量化成本)
   + [设备及多卡量化设置](#设备及多卡量化设置)
-    - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-GPU-标定)
+    - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-gpu-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
 * [4 推理部署](#4-推理部署)
-  + [CPU](#CPU)
-  + [英特尔 GPU](#英特尔-GPU)
-  + [CUDA](#CUDA)
-  + [HPU](#HPU)
+  + [CPU](#cpu)
+  + [英特尔 GPU](#英特尔-gpu)
+  + [CUDA](#cuda)
+  + [HPU](#hpu)
   + [指定推理后端](#指定推理后端)
-  + [将 GPTQ/AWQ 模型转换为 AutoRound 格式](#将-GPTQ-或-AWQ-模型转换为-AutoRound-格式)
+  + [将 GPTQ/AWQ 模型转换为 AutoRound 格式](#将-gptq-或-awq-模型转换为-autoround-格式)
 * [5 效果评估](#5-效果评估)
-  + [单卡评估](#单-GPU-评估)
-  + [多卡评估](#多-GPU-评估)
+  + [单卡评估](#单-gpu-评估)
+  + [多卡评估](#多-gpu-评估)
   + [注意事项](#注意事项)
 * [6 已知问题](#6-已知问题)
 
@@ -146,11 +146,12 @@ AutoRound 支持多种量化配置：
 
 | 格式            | 支持的量化方案                                                                                                                                                                                                 |
 |:-------------- |:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **auto_round**  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`BF16`                                                                      |
+| **auto_round**  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`                                                                      |
 | **auto_awq**    | W4A16、BF16                                                                                                                                                                                                   |
 | **auto_gptq**   | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                                           |
-| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                                                                                                                              |
+| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_STATIC                                                                                                                                                              |
 | **gguf**        | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0                                           |
+| **fp8**         | FP8_BLOCK  |
 | **fake**        | `所有方案（仅用于研究场景）`                                                                                                                                                                                   |
 
 ### 硬件兼容性
@@ -208,7 +209,7 @@ ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
 #### 混合精度量化
-自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme)章节。
+自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme-自动混合精度量化方案)章节。
 
 Auto-GPTQ 和 Auto-AWQ 仅支持有限的混合精度。如果您不熟悉具体细节，**建议导出 AutoRound 格式**。
 

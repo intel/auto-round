@@ -36,6 +36,9 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+* [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
+
+* [2026/03] MTP layer quantization has been supported in [PR](https://github.com/intel/auto-round/pull/1526)
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
@@ -53,7 +56,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
 
-* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/), [*Medium blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e), [*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=).
+* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/inc/), [*Medium blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e), [*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=).
 
 * [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
 
@@ -292,7 +295,7 @@ ar.quantize_and_save()
 
 By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
-is limited. For more information, please refer to the AutoRound [readme](./auto_round/mllm/README.md).
+is limited. For more information, please refer to the AutoRound [readme](auto_round/compressors/mllm/README.md).
 
 ```python
 from auto_round import AutoRound
