@@ -44,6 +44,7 @@ from typing import Optional, Tuple
 import torch
 
 from auto_round.logger import logger
+from auto_round.utils.common import compress_layer_names
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
@@ -220,55 +221,8 @@ def copy_missing_tensors_from_source(
     except ImportError:
         _tqdm = None
 
-    def _compress_layer_names(names: list) -> str:
-        """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
-        import re as _re
-
-        # group by (prefix, suffix) where the number varies
-        from collections import defaultdict
-
-        groups: dict = defaultdict(list)
-        singles: list = []
-        for name in names:
-            m = _re.match(r"^(.*?\.)?(\d+)(\..+)?$", name)
-            if m:
-                prefix = m.group(1) or ""
-                num = int(m.group(2))
-                suffix = m.group(3) or ""
-                groups[(prefix, suffix)].append(num)
-            else:
-                singles.append(name)
-        parts: list = []
-        for (prefix, suffix), nums in groups.items():
-            nums_sorted = sorted(set(nums))
-            if len(nums_sorted) == 1:
-                parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
-            else:
-                # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
-                ranges = []
-                start = prev = nums_sorted[0]
-                for n in nums_sorted[1:]:
-                    if n == prev + 1:
-                        prev = n
-                        continue
-                    # Close the current range
-                    if start == prev:
-                        ranges.append(str(start))
-                    else:
-                        ranges.append(f"{start}-{prev}")
-                    start = prev = n
-                # Close the final range
-                if start == prev:
-                    ranges.append(str(start))
-                else:
-                    ranges.append(f"{start}-{prev}")
-                range_str = ",".join(ranges)
-                parts.append(f"{prefix}[{range_str}]{suffix}")
-        parts.extend(singles)
-        return ", ".join(parts)
-
     # Compressed parent-layer summary for display
-    parent_summary = _compress_layer_names(list({name.rsplit(".", 1)[0] for name in missing_tensor_names}))
+    parent_summary = compress_layer_names(list({name.rsplit(".", 1)[0] for name in missing_tensor_names}))
     logger.info(
         f"Found {len(missing_tensor_names)} tensor(s) in the source checkpoint that are "
         f"absent from the saved output (e.g., MTP parameters). Copying them now...\n"
@@ -362,7 +316,7 @@ def copy_missing_tensors_from_source(
         missing_tensors_dict.pop(k, None)
 
     if dequantized_keys:
-        dq_summary = _compress_layer_names([k.rsplit(".", 1)[0] for k in dequantized_keys])
+        dq_summary = compress_layer_names([k.rsplit(".", 1)[0] for k in dequantized_keys])
         logger.info(f"Dequantized {len(dequantized_keys)} FP8 weight(s) to BF16 before saving: " f"{dq_summary}")
 
     if not missing_tensors_dict:
@@ -699,7 +653,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         _tqdm_woq = None
 
     logger.info(
-        f"Applying WOQ to "
+        f"Applying WOQ[RTN] to "
         f"{len(weight_keys)} missing Linear weight(s) (per-layer overrides from extra_config applied)..."
     )
 
@@ -707,7 +661,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     packed_weight_keys: set = set()
 
     _woq_iter = (
-        _tqdm_woq(weight_keys, desc="WOQ quantizing missing weights", unit="weight") if _tqdm_woq else weight_keys
+        _tqdm_woq(weight_keys, desc="WOQ[RTN] quantizing missing weights", unit="weight") if _tqdm_woq else weight_keys
     )
     for weight_key in _woq_iter:
         weight = missing_tensors_dict[weight_key]
@@ -724,7 +678,8 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             continue
 
         logger.debug(
-            f"WOQ [{layer_name}]: bits={bits}, group_size={effective_gs}, sym={sym}, " f"shape={list(weight.shape)}"
+            f"WOQ[RTN] [{layer_name}]: bits={bits}, group_size={effective_gs}, sym={sym}, "
+            f"shape={list(weight.shape)}"
         )
 
         base_name = layer_name
