@@ -791,6 +791,7 @@ def dynamic_import_inference_linear(backend, config):
         # Fallback to autoawq for backward compatibility
         try:
             from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+
             return WQLinear_GEMM
         except ImportError:
             raise ImportError(
@@ -822,8 +823,7 @@ def dynamic_import_inference_linear(backend, config):
 
 
 def get_gptqmodel_awq_infer_linear(backend):
-    """Returns the appropriate gptqmodel AWQ QuantLinear class for inference.
-    """
+    """Returns the appropriate gptqmodel AWQ QuantLinear class for inference."""
     import torch
 
     dtype = torch.get_default_dtype()
@@ -839,29 +839,33 @@ def get_gptqmodel_awq_infer_linear(backend):
         import gptqmodel_exllamav2_awq_kernels  # pylint: disable=E0401
     except ImportError:
         logger.warning(
-            "gptqmodel AWQ kernels are not available, " \
-            "to use gptqmodel AWQ, reinstall gptqmodel with CUDA support."
+            "gptqmodel AWQ kernels are not available, " "to use gptqmodel AWQ, reinstall gptqmodel with CUDA support."
         )
         raise
 
     # Select AWQ kernel
     if "marlin" in backend:
         from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear
+
         return AwqMarlinQuantLinear
     elif "exllamav2" in backend or backend in ("awq", "auto_awq", "auto_awq:gemm", "gptqmodel:awq"):
         # "auto_awq:gemm" is listed here because it is a legacy autoawq backend name referring to
         # the AWQ GEMM packing format, not a request for gptqmodel's literal GEMM kernel.
         from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+
         return AwqExllamaV2QuantLinear
     elif "gemm" in backend:
         from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGemmQuantLinear
+
         return AwqGemmQuantLinear
     elif "torch" in backend:
         from gptqmodel.nn_modules.qlinear.torch_awq import AwqTorchQuantLinear
+
         return AwqTorchQuantLinear
     else:
         # Default to exllamav2
         from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+
         return AwqExllamaV2QuantLinear
 
 
@@ -871,7 +875,7 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
     dtype = torch.get_default_dtype()
     if dtype != torch.float32:
         torch.set_default_dtype(torch.float32)
-    
+
     try:
         import gptqmodel  # pylint: disable=E0401
     finally:
