@@ -9,7 +9,7 @@ from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors_new.calib import CalibCompessor
+from auto_round.compressors_new.calib import CalibCompressor
 from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -76,8 +76,8 @@ class Compressor(object):
             if model_type == "mllm":
                 from auto_round.compressors_new.mllm_mixin import MLLMMixin
 
-                # Create dynamic class: MLLMMixin + CalibCompessor
-                class MLLMCalibCompressor(MLLMMixin, CalibCompessor):
+                # Create dynamic class: MLLMMixin + CalibCompressor
+                class MLLMCalibCompressor(MLLMMixin, CalibCompressor):
                     """MLLM model with AutoRound calibration compression"""
 
                     pass
@@ -86,15 +86,15 @@ class Compressor(object):
             elif model_type == "diffusion":
                 from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
-                # Create dynamic class: DiffusionMixin + CalibCompessor
-                class DiffusionCalibCompressor(DiffusionMixin, CalibCompessor):
+                # Create dynamic class: DiffusionMixin + CalibCompressor
+                class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor):
                     """Diffusion model with AutoRound calibration compression"""
 
                     pass
 
                 return DiffusionCalibCompressor(config, **local_args, **kwargs)
             else:
-                return CalibCompessor(config, **local_args, **kwargs)
+                return CalibCompressor(config, **local_args, **kwargs)
 
         elif isinstance(config, RTNConfig):
             enable_imatrix = False

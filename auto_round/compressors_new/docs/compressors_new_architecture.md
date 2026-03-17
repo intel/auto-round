@@ -16,7 +16,7 @@
 compressors_new/
 ├── entry.py                # 统一入口，自动检测模型类型
 ├── base.py                 # BaseCompressor 基类
-├── calib.py                # CalibCompessor (需要校准的算法)
+├── calib.py                # CalibCompressor (需要校准的算法)
 ├── zero_shot.py            # ZeroShotCompressor (不需要校准的算法)
 ├── mllm_mixin.py           # MLLMCalibCompressor (MLLM + 校准)
 └── diffusion_mixin.py      # DiffusionCalibCompressor (Diffusion + 校准)
@@ -26,7 +26,7 @@ compressors_new/
 
 ```
 BaseCompressor
-    ├── CalibCompessor (基于校准的压缩)
+    ├── CalibCompressor (基于校准的压缩)
     │   ├── MLLMCalibCompressor (MLLM 专用)
     │   └── DiffusionCalibCompressor (Diffusion 专用)
     │
@@ -138,7 +138,7 @@ Compressor.__new__()
 ├── AutoRoundConfig (需要校准)
 │   ├── MLLM → MLLMCalibCompressor
 │   ├── Diffusion → DiffusionCalibCompressor
-│   └── LLM → CalibCompessor
+│   └── LLM → CalibCompressor
 │
 └── RTNConfig
     ├── enable_imatrix=True → ImatrixCompressor
@@ -153,10 +153,10 @@ Compressor.__new__()
 
 ```python
 # compressors_new/new_model_calib.py
-from auto_round.compressors_new.calib import CalibCompessor
+from auto_round.compressors_new.calib import CalibCompressor
 
 
-class NewModelCalibCompressor(CalibCompessor):
+class NewModelCalibCompressor(CalibCompressor):
     def __init__(self, config, model, **kwargs):
         # 存储模型特定参数
         self.special_param = kwargs.pop("special_param", None)
