@@ -124,7 +124,9 @@ class BaseCompressor(object):
             logger.warning("The static kv is experimental and currently has limited support.")
 
         if kwargs:
-            logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+            logger.warning(
+                f"unrecognized keys {list(kwargs.keys())} were passed. Please check them. If you use old api, just ignore this warning. "
+            )
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         # Deprecated, default not to use torch.use_deterministic_algorithms

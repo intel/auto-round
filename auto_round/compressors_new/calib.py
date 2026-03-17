@@ -143,7 +143,8 @@ class CalibCompessor(BaseCompressor):
                     if str(self.model_context.model.device) == "cpu" and (
                         not self.compress_context.device.startswith("hpu")
                     ):
-                        # type(self.model_context.model._no_split_modules) changes from list to set when transformers > 5.0
+                        # type(self.model_context.model._no_split_modules) changes from list to set
+                        # when transformers > 5.0
                         no_split_modules = list(getattr(self.model_context.model, "_no_split_modules", []))
                         devices = parse_available_devices(self.compress_context.device_map)
 
@@ -438,8 +439,8 @@ class CalibCompessor(BaseCompressor):
                 break
         if total_cnt == 0:
             logger.error(
-                f"no data has been cached, please provide more data with sequence length >={self.quantize_config.seqlen} in the "
-                f"dataset or decease the sequence length"
+                f"no data has been cached, please provide more data with sequence length "
+                f">={self.quantize_config.seqlen} in the dataset or decease the sequence length"
             )
             exit(-1)
         elif total_cnt < nsamples:
@@ -1224,7 +1225,8 @@ class ImatrixCompressor(CalibCompessor):
         self.post_init()
         self.model_context.initialize(formats=self.formats, is_act_quantize=self.config.is_act_quantize)
 
-        if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
+        formats = getattr(self, "formats", None) or []
+        if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory

@@ -211,10 +211,10 @@ class ZeroShotCompressor(BaseCompressor):
                     import accelerate
 
                     accelerate.hooks.remove_hook_from_submodules(self.model)
-                orig_device = self.device
-                self.device = "cpu"
+                orig_device = self.compress_context.device
+                self.compress_context.device = "cpu"
                 self._quantize_via_rtn_blockwise()
-                self.device = orig_device
+                self.compress_context.device = orig_device
             for handle in hook_handles:
                 handle.remove()
         else:
