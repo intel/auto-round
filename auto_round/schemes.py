@@ -392,6 +392,18 @@ FPW8A16 = QuantizationScheme.from_dict(
     }
 )
 
+FP8_BLOCK = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "group_size": (128, 128),
+        "data_type": "fp",
+        "act_bits": 8,
+        "act_group_size": 128,
+        "act_data_type": "fp",
+        "act_dynamic": True,
+        "act_sym": True,
+    }
+)
 
 # FP8 = asdict(QuantArgs.from_dict({
 #     "bits": 8,
@@ -457,6 +469,7 @@ PRESET_SCHEMES = {
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
     "INT8_W8A8": INT8_W8A8,
+    "FP8_BLOCK": FP8_BLOCK,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 

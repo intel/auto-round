@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from math import ceil
+
 import torch
 import transformers
 from torch.functional import F
 
 from auto_round.compressors.utils import is_nv_fp
-from auto_round.data_type import get_quant_func
+from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -37,42 +39,22 @@ def get_scale_shape(weight, group_size):
 
     Args:
       weight (torch.Tensor): The weight tensor of the layer.
-      group_size (int): The size of the groups for quantization.
+      group_size (int or tuple): The size of the groups for quantization.
 
     Returns:
       The shape of the scale tensor to be used for quantization.
     """
+    if isinstance(group_size, tuple):
+        assert len(weight.shape) == len(group_size), f"Expected group_size is {len(weight.shape)}D but get {group_size}"
+        return (weight.shape[0] // group_size[0], weight.shape[1] // group_size[1])
     if group_size == 0:
         return 1
     elif group_size == -1 or weight.shape[1] < group_size:
         shape = weight.shape[0]
     else:
-        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
+        shape = weight.shape[0] * ceil(weight.shape[1] / group_size)
 
     return shape
-
-
-def reshape_and_pad_tensor(v, group_size=-1):
-    """Reshapes the tensor based on the group size.
-
-    Args:
-        v (torch.Tensor): The input tensor to be reshaped.
-        group_size (int, optional): The number of elements to group together.
-
-    Returns:
-        torch.Tensor: The reshaped tensor. If padding is applied, the padded tensor is returned.
-    """
-    if group_size == 0:
-        return v.reshape(1, -1)
-    if group_size == -1 or v.shape[1] < group_size:
-        return v
-    if v.shape[1] % group_size == 0:
-        v = v.reshape(-1, group_size)
-    else:
-        pad_len = (v.shape[1] + group_size - 1) // group_size * group_size - v.shape[1]
-        v = torch.nn.functional.pad(v, (0, pad_len))
-        v = v.reshape(-1, group_size)
-    return v
 
 
 class WrapperLinear(torch.nn.Module):
@@ -162,10 +144,19 @@ class WrapperLinear(torch.nn.Module):
         orig_weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             orig_weight = orig_weight.t()
-        weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
+        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(orig_weight.data, orig_layer.group_size)
+
         if self.enable_round_tuning:
-            self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
-            self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
+            self.weight_min = (
+                torch.clamp(weight_reshape.amin(dim=(-2, -1)), max=0)
+                if isinstance(orig_layer.group_size, tuple)
+                else torch.clamp(weight_reshape.min(1)[0], max=0)
+            )
+            self.weight_max = (
+                torch.clamp(weight_reshape.amax(dim=(-2, -1)), min=0)
+                if isinstance(orig_layer.group_size, tuple)
+                else torch.clamp(weight_reshape.max(1)[0], min=0)
+            )
         else:
             self.weight_min = None
             self.weight_max = None
@@ -178,7 +169,7 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(
-            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn
+            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn, orig_layer.group_size
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
@@ -346,14 +337,17 @@ class WrapperLinear(torch.nn.Module):
                     name = "w_" + key
                     setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
 
-        if isinstance(scale, dict):
-            _set_dict_attr(scale, "scale")
-        elif scale is None:
-            self.orig_layer.scale = None
-        elif scale.numel() > 1:
-            self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+        if not isinstance(self.orig_layer.group_size, tuple):
+            if isinstance(scale, dict):
+                _set_dict_attr(scale, "scale")
+            elif scale is None:
+                self.orig_layer.scale = None
+            elif scale.numel() > 1:
+                self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+            else:
+                self.orig_layer.scale = scale.view(-1).to("cpu")
         else:
-            self.orig_layer.scale = scale.view(-1).to("cpu")
+            self.orig_layer.scale = scale.to("cpu")
 
         if zp is not None:
             if isinstance(zp, dict):
@@ -555,9 +549,9 @@ class WrapperLayerNorm(torch.nn.Module):
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
-            reshape_and_pad_tensor(
+            reshape_pad_tensor_by_group_size(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype), self.group_size
-            ),
+            )[0],
             requires_grad=True,
         )
         self.params = {"v": self.v}
@@ -606,9 +600,9 @@ class WrapperLlamaNorm(torch.nn.Module):
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
-            reshape_and_pad_tensor(
+            reshape_pad_tensor_by_group_size(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype), self.group_size
-            ),
+            )[0],
             requires_grad=True,
         )
         self.params = {"v": self.v}
