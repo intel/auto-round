@@ -103,6 +103,7 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
 
     setattr(cls, method_name, classmethod(patched))
 
+
 def normalize_no_split_modules(no_split_modules):
     if not no_split_modules:
         return []
@@ -120,6 +121,7 @@ def normalize_no_split_modules(no_split_modules):
             continue
         flattened.append(item)
     return flattened
+
 
 def _patch_transpose_for_buffers():
     """Patch Transpose.convert() to skip transposition for buffer tensors.
