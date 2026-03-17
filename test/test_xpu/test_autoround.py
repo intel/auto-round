@@ -8,7 +8,7 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ..helpers import get_model_path, save_tiny_model
+from ..helpers import get_model_path
 
 
 class TestAutoRoundXPU:
