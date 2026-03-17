@@ -5,6 +5,8 @@ function setup_environment() {
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
+    export UV_NO_PROGRESS=1
+    export UV_SYSTEM_PYTHON=1
 }
 
 function install_requirements() {
