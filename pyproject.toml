@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [tool.codespell]
 skip = 'pyproject.toml,.azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt'
 ignore-words = ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt"

@@ -44,6 +44,8 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
+    is_block_wfp8,
+    is_dynamic_afp8,
     is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
@@ -113,6 +115,7 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.utils.distributed import setup_ddp_if_needed_
+from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 SERIALIZATION_KEYS = (
@@ -286,7 +289,9 @@ class BaseCompressor(object):
                     e,
                 )
 
-            self.is_model_patched = apply_model_monkey_patches(model_name=model)
+            self.is_model_patched = apply_model_monkey_patches(
+                model_name=model, trust_remote_code=self.trust_remote_code
+            )
             import transformers
 
             if (
@@ -371,6 +376,7 @@ class BaseCompressor(object):
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.low_cpu_mem_usage = low_cpu_mem_usage
+        self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", offload_dir_prefix="compressor")
 
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
@@ -454,7 +460,7 @@ class BaseCompressor(object):
             self.bits >= 8
             and self.act_bits >= 8
             and self.iters == 0
-            and self.data_type == "int"
+            and self.data_type in ["int", "fp"]
             and disable_opt_rtn is None
         ):
             logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
@@ -464,6 +470,9 @@ class BaseCompressor(object):
                 "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
             )
             disable_opt_rtn = False
+
+        if self.iters > 0 and is_block_wfp8(self):
+            logger.warning("RTN is recommended since it shows even better accuracy for block-wise fp8 quantization.")
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -508,7 +517,20 @@ class BaseCompressor(object):
         self.enable_torch_compile = enable_torch_compile
         self._adjust_torch_compile(enable_torch_compile)
 
-        self.block_forward = compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+        if (
+            (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
+            or self.enable_alg_ext  # Use imatrix
+            or not self.disable_opt_rtn  # Use imatrix
+        ):
+            self.block_forward = block_forward
+        else:
+            # TODO FIXME
+            # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
+            # To avoid issues, remove it in all scenarios except WOQ.
+            self.block_forward = (
+                compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
+            )
+
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
@@ -824,10 +846,14 @@ class BaseCompressor(object):
             raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
             raise ValueError("`act_bits` must be positive")
-        if not (self.group_size == -1 or self.group_size >= 0):
-            raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if not (self.act_group_size == -1 or self.act_group_size >= 0):
+        if not isinstance(self.group_size, tuple) and not (self.group_size == -1 or self.group_size >= 0):
+            raise ValueError(
+                "`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer or a tuple of length 2"
+            )
+        if isinstance(self.act_group_size, tuple) or not (self.act_group_size == -1 or self.act_group_size >= 0):
             raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
+        if isinstance(self.group_size, tuple) and len(self.group_size) != 2:
+            raise ValueError("`group_size` must be a tuple of length 2")
         if self.batch_size <= 0:
             raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
@@ -845,6 +871,7 @@ class BaseCompressor(object):
             and not is_mx_fp(self.act_data_type)
             and not is_dynamic_wint8aint8(self)
             and not is_static_wfp8afp8(self.act_data_type)
+            and not is_dynamic_afp8(self)
         ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
@@ -856,6 +883,12 @@ class BaseCompressor(object):
 
         if is_nv_fp(self.data_type) and (self.group_size != 16):
             logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
+
+        if isinstance(self.group_size, tuple):
+            if not is_block_wfp8(self):
+                raise NotImplementedError("only support block-wise quantization for fp8 weight quantization.")
+            if not is_dynamic_afp8(self):
+                raise NotImplementedError("only support dynamic fp8 activation for fp8 weight quantization.")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
@@ -1259,6 +1292,10 @@ class BaseCompressor(object):
             m = get_module(self.model, name)
             m.to("cpu")
             shard_writer(self, m, name, False)
+            # Free RAM immediately: the data is now in the shard-writer buffer
+            # (and will be flushed to disk).  Keeping it also in the model tree
+            # causes linear RAM growth for large models.
+            m.to("meta")
 
     def _immediate_pack(self, name: str):
         if not self.is_immediate_packing:
@@ -1331,8 +1368,16 @@ class BaseCompressor(object):
             for handle in hook_handles:
                 handle.remove()
         else:
-            # By default, we go with layer-wise way if no replacement happened
+            # By default, we go with layer-wise way if no replacement happened.
+            # In RTN mode (iters == 0), force blockwise quantization to avoid
+            # full-model materialization and linear CPU RAM growth.
             use_blockwise_quantization = global_state.replaced_module_count > 0
+            if self.iters == 0 and not use_blockwise_quantization:
+                logger.info(
+                    "RTN mode detected (iters=0): force blockwise quantization to avoid "
+                    "layer-wise full-model materialization."
+                )
+                use_blockwise_quantization = True
             tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
             if tied_weights_keys is None:
                 tied_weights_keys = []
@@ -1367,11 +1412,25 @@ class BaseCompressor(object):
                                 not any(m.children())
                                 and len(m.state_dict()) > 0
                                 and m.global_name not in tied_weights_layers
+                                and self.is_immediate_saving
                             ):
                                 set_module(self.model, m.global_name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
                                     shard_writer(self, name=m.global_name)
+                                    copied_m = get_module(self.model, m.global_name)
+                                    copied_m.to("meta")
                                 m.to("meta")
+                        # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
+                        # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
+                        if not self.is_immediate_saving:
+                            mv_module_from_gpu(block)
+                        else:
+                            # Save once at block scope to capture tensors that are not saved
+                            # in per-layer branch (e.g., custom module-level params/buffers).
+                            shard_writer(self, name=block_name)
+                            block.to("meta")
+                        if self.low_cpu_mem_usage and not self.is_immediate_saving:
+                            self._offloader.offload(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1401,14 +1460,20 @@ class BaseCompressor(object):
                             clear_memory(device_list=self.device_list)
                             memory_monitor.log_summary()
 
-                    elif not any(m.children()) and len(m.state_dict()) > 0 and n not in tied_weights_layers:
+                    elif (
+                        not any(m.children())
+                        and len(m.state_dict()) > 0
+                        and n not in tied_weights_layers
+                        and self.is_immediate_saving
+                    ):
                         set_module(self.model, n, copy.deepcopy(m))
-                        if self.is_immediate_saving:
-                            shard_writer(self, name=n)
+                        shard_writer(self, name=n)
                         m.to("meta")
 
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        if self.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
 
@@ -1527,9 +1592,9 @@ class BaseCompressor(object):
                         self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
                         all_to_quantized_module_names.remove(m.global_name)
 
-                if not self.is_immediate_saving:
-                    # some modules may have been flushed and set to meta, so we could not  move to gpu
-                    mv_module_from_gpu(block)
+                mv_module_from_gpu(block)
+                if self.low_cpu_mem_usage and not self.is_immediate_saving:
+                    self._offloader.offload(self.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1640,25 +1705,23 @@ class BaseCompressor(object):
             self.is_immediate_saving = False
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
-            if self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
+            if formats[0].is_gguf():
                 logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported "
-                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                    "`low_cpu_mem_usage` is not fully supported for gguf format. "
                     "Setting `low_cpu_mem_usage` to False."
                 )
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
+            elif self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
+                logger.info(
+                    "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
+                    "RTN path uses blockwise quantization and supports per-block offloading."
+                )
             elif self.has_qlayer_outside_block and self.iters > 0:
                 logger.warning(
                     "`low_cpu_mem_usage` is not fully supported "
                     "when there are quantized layers outside blocks and optimized RTN is disabled. "
                     "Setting low_cpu_mem_usage to False."
-                )
-                self.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
-            elif formats[0].is_gguf():
-                logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported for gguf format" "Setting `low_cpu_mem_usage `to False."
                 )
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
@@ -1695,6 +1758,9 @@ class BaseCompressor(object):
             enable_gguf_official_mixed = False
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
+
+        if self.low_cpu_mem_usage:
+            self._offloader.reset()
 
         def _should_disable_inplace_due_to_layers_outside_block() -> bool:
             return self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn))
@@ -1743,11 +1809,15 @@ class BaseCompressor(object):
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 all_first_block_names, self.nsamples, layer_names=layer_names
             )
+        # Remove accelerate dispatch hooks before moving parameters.
+        # hf_device_map is kept for reference but hooks are no longer needed.
+        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+            accelerate.hooks.remove_hook_from_submodules(self.model)
         self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.device_list)
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)  # self.model.hf_device_map has not been changed
         logger.info("caching done")
+        if self.low_cpu_mem_usage:
+            self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1792,6 +1862,9 @@ class BaseCompressor(object):
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
+
+        if self.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -2170,7 +2243,6 @@ class BaseCompressor(object):
             and len(layer_names) == 0
             and not self.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
-            and getattr(self, "mllm", False) is False
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
@@ -2314,10 +2386,9 @@ class BaseCompressor(object):
             else:
                 self.model = self.model.to(torch.float32)  ##model on cpu
 
-        self.last_cache_name = last_cache_name
-        if last_cache_name is None and len(block_names) + len(layer_names) == 1:
-            self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
-        # do not set last_cache_name for multimodal models
+        self.last_cache_name = self._infer_last_cache_name(block_names, layer_names, last_cache_name)
+        self._cache_target_set = set(self.to_cached_layers)
+        self._cache_seen_targets = set()
         calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
@@ -2325,11 +2396,53 @@ class BaseCompressor(object):
         self._recover_forward()
         res = self.inputs
         del self.last_cache_name
+        del self._cache_target_set
+        del self._cache_seen_targets
         del self.to_cached_layers
         if tmp_dtype is not None:
             self.model = self.model.to(tmp_dtype)
 
         return res
+
+    def _infer_last_cache_name(self, block_names, layer_names=None, requested_last_cache_name=None):
+        """The latest required cache layer for early-stop forward.
+
+        If there are multiple cache targets, return ``None`` and let runtime
+        hooks stop only after all targets are observed in real forward execution.
+        """
+        if layer_names is None:
+            layer_names = []
+
+        if requested_last_cache_name is not None:
+            return requested_last_cache_name
+
+        cache_targets = list(block_names) + list(layer_names)
+        if len(cache_targets) == 1:
+            return cache_targets[0]
+
+        # return None here to enable the logic in _should_stop_cache_forward
+        return None
+
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Determine whether current forward pass can stop after caching `name`."""
+        if name == self.last_cache_name:
+            return True
+
+        if self.last_cache_name is not None:
+            return False
+
+        if not hasattr(self, "_cache_target_set") or not hasattr(self, "_cache_seen_targets"):
+            return False
+
+        if name in self._cache_target_set:
+            self._cache_seen_targets.add(name)
+
+        if not self._cache_target_set.issubset(self._cache_seen_targets):
+            return False
+
+        # Lock the last cache name after the first full forward pass.
+        self.last_cache_name = name
+        return True
 
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
@@ -2432,7 +2545,8 @@ class BaseCompressor(object):
                             f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
                         )
             reset_params(self.inputs[name])
-            if name == self.last_cache_name:
+
+            if self._should_stop_cache_forward(name):
                 raise NotImplementedError
             else:
                 if hidden_states is not None:
@@ -2458,6 +2572,9 @@ class BaseCompressor(object):
                 self.inputs[name].extend(list(torch.split(input.to("cpu"), 1, dim=0)))
             else:
                 self.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
+
+            if self._should_stop_cache_forward(name):
+                raise NotImplementedError
 
         return cache_input_hook
 
@@ -2875,7 +2992,7 @@ class BaseCompressor(object):
             if hook_handles:
                 self._get_block_outputs(
                     block,
-                    q_input,
+                    q_input if q_input is not None else input_ids,
                     input_others,
                     self.batch_size * self.infer_bs_coeff,
                     device,
@@ -3153,6 +3270,12 @@ class BaseCompressor(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
+            if self.low_cpu_mem_usage:
+                if nblocks == 1:
+                    self._offloader.reload(model, n)
+                else:
+                    self._offloader.reload(model, names)
+
             m.config = model.config if hasattr(model, "config") else None
             q_input, input_ids = self._quantize_block(
                 m,
@@ -3171,6 +3294,13 @@ class BaseCompressor(object):
 
             if self.is_immediate_saving:
                 shard_writer(self, m, is_finalize=False)
+
+            if self.low_cpu_mem_usage and not self.is_immediate_saving:
+                if nblocks == 1:
+                    self._offloader.offload(model, n, overwrite=True)
+                else:
+                    for name in names:
+                        self._offloader.offload(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)
 

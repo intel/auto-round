@@ -103,7 +103,6 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
 
     setattr(cls, method_name, classmethod(patched))
 
-
 def normalize_no_split_modules(no_split_modules):
     if not no_split_modules:
         return []
@@ -121,6 +120,82 @@ def normalize_no_split_modules(no_split_modules):
             continue
         flattened.append(item)
     return flattened
+
+def _patch_transpose_for_buffers():
+    """Patch Transpose.convert() to skip transposition for buffer tensors.
+
+    transformers 5.2.0 calls model.get_parameter() inside Transpose.convert(),
+    but auto_round registers weight_packed/weight_scale as buffers, not Parameters,
+    causing AttributeError. This patch returns buffer tensors unchanged.
+    """
+    try:
+        from transformers.core_model_loading import Transpose
+    except ImportError:
+        return  # Not present in this transformers version
+
+    _original_convert = Transpose.convert
+
+    @wraps(_original_convert)
+    def _patched_convert(self, input_dict, source_patterns, target_patterns, **kwargs):
+        if not self.check_dims:
+            return _original_convert(self, input_dict, source_patterns, target_patterns, **kwargs)
+
+        model = kwargs.get("model")
+        full_layer_name = kwargs.get("full_layer_name")
+
+        if model is not None and full_layer_name is not None:
+            module_path, _, param_name = full_layer_name.rpartition(".")
+            try:
+                module_obj = model.get_submodule(module_path) if module_path else model
+                buffer_tensor = module_obj.get_buffer(param_name) if hasattr(module_obj, "get_buffer") else None
+                if buffer_tensor is not None:
+                    # Buffer tensors must not be transposed – return as-is.
+                    target_pattern = self.get_target_pattern(input_dict, source_patterns, target_patterns)
+                    tensors = next(iter(input_dict.values()))
+                    tensor = tensors[0] if isinstance(tensors, list) else tensors
+                    return {target_pattern: tensor}
+            except Exception as exc:
+                logger.debug(
+                    "Failed to apply buffer transpose patch for model=%r, full_layer_name=%r, module_path=%r; "
+                    "falling back to original Transpose.convert behavior. Error: %s",
+                    model,
+                    full_layer_name,
+                    module_path,
+                    exc,
+                    exc_info=True,
+                )
+
+        return _original_convert(self, input_dict, source_patterns, target_patterns, **kwargs)
+
+    Transpose.convert = _patched_convert
+
+
+def _patch_tensor_get_dtype_for_prequantized_loading():
+    """Add a minimal ``torch.Tensor.get_dtype()`` shim for transformers 5.3.0.
+
+    transformers 5.3.0 added a pre-quantized loading branch in
+    ``core_model_loading.convert_and_load_state_dict_in_model()`` that calls
+    ``tensor.get_dtype()`` on checkpoint values. During actual weight loading,
+    those values are plain ``torch.Tensor`` instances returned by
+    ``modeling_utils.load_state_dict()``, which do not implement that method.
+
+    Older transformers versions only disabled dtype casting when a key was
+    renamed. The new version additionally inspects non-floating tensors, but it
+    does so through a safetensors-slice API that is not available on regular
+    tensors. Providing the method here preserves the new intent while restoring
+    compatibility for plain tensors.
+    """
+    if hasattr(torch.Tensor, "get_dtype"):
+        return
+
+    from safetensors.torch import _TYPES
+
+    torch_to_safetensors_dtype = {v: k for k, v in _TYPES.items()}
+
+    def _tensor_get_dtype(self):
+        return torch_to_safetensors_dtype.get(self.dtype, str(self.dtype).removeprefix("torch.").upper())
+
+    torch.Tensor.get_dtype = _tensor_get_dtype
 
 
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
@@ -143,6 +218,14 @@ def monkey_patch_transformers():
         from transformers.initialization import no_init_weights
 
         setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
+    if parsed_version >= version.parse("5.2.0"):
+        # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
+        # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
+        _patch_transpose_for_buffers()
+    if parsed_version >= version.parse("5.3.0"):
+        # transformers 5.3.0 calls tensor.get_dtype() on plain torch.Tensor objects
+        # while loading pre-quantized checkpoints.
+        _patch_tensor_get_dtype_for_prequantized_loading()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
@@ -356,6 +439,8 @@ class SupportedFormats:
             "auto_round:llm_compressor",
             "fake",
             "llm_compressor",
+            "fp8",
+            "auto_round:fp8",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -613,3 +698,51 @@ def is_transformers_version_greater_or_equal_5():
     from packaging import version
 
     return version.parse(transformers.__version__) >= version.parse("5.0.0")
+
+
+# TODO: (yiliu30) refine version check logic
+@lru_cache(None)
+def is_transformers_version_greater_or_equal_4():
+    import transformers
+    from packaging import version
+
+    return version.parse(transformers.__version__) >= version.parse("4.0.0")
+
+
+def parse_layer_config_arg(s: str) -> dict:
+    """Parse --layer_config with unquoted keys/values.
+
+    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
+    auto-typed: numeric strings become ``int``, everything else stays ``str``.
+
+    Example::
+
+        {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
+    """
+    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
+    pos = [0]
+
+    def _val():
+        tok = tokens[pos[0]]
+        if tok == "{":
+            return _dict()
+        pos[0] += 1
+        try:
+            return int(tok)
+        except ValueError:
+            return tok
+
+    def _dict():
+        pos[0] += 1  # consume '{'
+        result = {}
+        while tokens[pos[0]] != "}":
+            key = tokens[pos[0]]
+            pos[0] += 1  # key
+            pos[0] += 1  # consume ':'
+            result[key] = _val()
+            if tokens[pos[0]] == ",":
+                pos[0] += 1  # consume ','
+        pos[0] += 1  # consume '}'
+        return result
+
+    return _dict()

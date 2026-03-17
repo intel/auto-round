@@ -11,16 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ctypes
 import functools
 import gc
 import os
 import re
+import shutil
 import sys
+import tempfile
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
-from typing import Callable, Union
+from typing import Any, Callable, Optional, Union
 
 import cpuinfo
 import psutil
@@ -513,6 +516,7 @@ def _clear_memory_for_cpu_and_cuda(
             tensor[i] = None
     tensor = None
     gc.collect()
+    _maybe_trim_malloc()
 
     # ------------------------
     # Normalize device_list
@@ -554,6 +558,40 @@ def _clear_memory_for_cpu_and_cuda(
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
+
+
+_malloc_trim_counter = 0
+
+
+def _maybe_trim_malloc() -> None:
+    """Optionally release glibc heap pages back to OS on Linux.
+
+    Controlled by environment variables:
+    - AR_ENABLE_MALLOC_TRIM: default "1" (enabled)
+    - AR_MALLOC_TRIM_EVERY: default "10" (trigger every N clear_memory calls)
+    """
+    global _malloc_trim_counter
+
+    if os.name != "posix":
+        return
+    if os.environ.get("AR_ENABLE_MALLOC_TRIM", "1") != "1":
+        return
+
+    try:
+        every = int(os.environ.get("AR_MALLOC_TRIM_EVERY", "10"))
+    except ValueError:
+        every = 10
+    every = max(1, every)
+
+    _malloc_trim_counter += 1
+    if _malloc_trim_counter % every != 0:
+        return
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
 
 
 class ClearMemory:
@@ -1598,7 +1636,10 @@ class MemoryMonitor:
         """Log memory usage summary."""
         summary = self.get_summary()
         logger_method = getattr(logger, level.lower(), logger.info)
-        logger_method(f"{msg} {summary}")
+        if len(msg):
+            logger_method(f"{msg} {summary}")
+        else:
+            logger_method(f"{summary}")
 
         return summary
 

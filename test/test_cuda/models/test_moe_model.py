@@ -14,7 +14,7 @@ from ...helpers import check_version
 @pytest.fixture
 def setup_gpt_oss():
     """Fixture to set up the GPT-OSS model and tokenizer."""
-    model_name = "/models/gpt-oss-20b-BF16"
+    model_name = "openai/gpt-oss-20b"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     config.num_hidden_layers = 1  # Reduce layers for testing
@@ -59,7 +59,7 @@ def setup_qwen3_vl_moe():
     return model, tokenizer, processor, output_dir, config
 
 
-def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
+def quantize_model(model, tokenizer, output_dir, scheme, iters=0, ignore_layers="self_attn,router,lm_head,mlp.gate"):
     """Helper function to quantize the model with the given scheme."""
     autoround = AutoRound(
         model,
@@ -68,7 +68,7 @@ def quantize_model(model, tokenizer, output_dir, scheme, iters=0):
         nsamples=2,
         iters=iters,
         seqlen=32,
-        ignore_layers="self_attn,router,lm_head,mlp.gate",
+        ignore_layers=ignore_layers,
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     return quantized_model
@@ -81,7 +81,7 @@ def test_gptoss(setup_gpt_oss):
     # Remove it to avoid mismatch during quantized model loading
     delattr(model.config, "layer_types")
 
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
+    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4", ignore_layers="self_attn,lm_head")
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
@@ -111,7 +111,7 @@ def test_llama4(setup_llama4):
     delattr(model.config.text_config, "moe_layers")
     delattr(model.config.text_config, "layer_types")
 
-    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4")
+    quantized_model = quantize_model(model, tokenizer, output_dir, "MXFP4", ignore_layers="self_attn,router,lm_head")
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."

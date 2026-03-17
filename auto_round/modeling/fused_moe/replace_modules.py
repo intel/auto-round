@@ -37,6 +37,8 @@ BUILTIN_MODULES = {
     # supports transformers >= 5.0.0
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
+    "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
     # Qwen3-Omni MoE: thinker (no shared expert) + talker (with shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
 }
@@ -50,7 +52,6 @@ if not is_transformers_version_greater_or_equal_5():
     BUILTIN_MODULES["gpt_oss"] = LazyImport("auto_round.modeling.fused_moe.gpt_oss")
 
 
-@dump_mem_usage("Applying general replacements")
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
 
@@ -102,9 +103,10 @@ def is_custom_model(model: torch.nn.Module) -> bool:
 def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
     """Log the first experts module found in the model for debugging."""
     for name, module in model.named_modules():
-        if name.endswith(".experts"):
+        if name.endswith(".experts") or name.endswith(".moe"):
             logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
-            return
+            return True
+    return False
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -292,21 +294,30 @@ def apply_replacements(
         The model with modules replaced.
     """
     _import_required_replacements(model)
-
-    _log_first_moe_block(model, "before replacement")
+    _raw_expert_is_logged = False
 
     # Custom replacements first
     if is_custom_model(model):
+
+        if not _raw_expert_is_logged:
+            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
+
         _apply_custom_replacements(model)
+
     if auto_detect_moe and is_transformers_version_greater_or_equal_5():
+
+        if not _raw_expert_is_logged:
+            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
+
         _handle_moe_modules(model)
 
-    _log_first_moe_block(model, "after replacement")
+    if _raw_expert_is_logged:
+        _log_first_moe_block(model, "after replacement")
 
     return model
 
 
-@dump_mem_usage("Applying custom replacements")
+@dump_mem_usage("applying custom replacements")
 def _apply_custom_replacements(model: torch.nn.Module) -> list:
     """Scan model and replace registered modules with custom implementations.
 

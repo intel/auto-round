@@ -545,6 +545,21 @@ register_ignore_layers(
 )
 
 
+# step3p5
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"step3p5", mode="full"),
+    ],
+    ignore_layers=[
+        "g_proj",  # shape issue [96, 4096], 96 is not divisible by 64
+        "moe.gate",
+        "eh_proj",  # MTP layer
+        "shared_head",  # MTP layer
+        "layers.45",  # MTP layer, requiring g_idx in vLLM, skip it
+    ],
+)
+
+
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
@@ -561,6 +576,8 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
             break
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
-        layers.append("mlp.gate")
+        for name, _ in model.named_modules():
+            if name.endswith(".gate"):
+                layers.append(name)
 
     return list(dict.fromkeys(layers))
