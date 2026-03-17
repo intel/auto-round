@@ -12,7 +12,6 @@ from auto_round import AutoRound
 from ...helpers import get_model_path, opt_name_or_path
 
 
-@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRound:
     save_dir = "./saved"
     model_name = opt_name_or_path

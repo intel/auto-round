@@ -54,6 +54,7 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path):
     single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
     single_expert_cnt += count_modules_by_type(quantized_model, "_ExpertContainer")  # for Transformers >= 5.0.0
     quant_linear_cnt = count_modules_by_type(quantized_model, QuantLinear)
+
     assert (
         single_expert_cnt == config.num_local_experts
     ), f"Expected {config.num_local_experts} GPTOssSingleExpert modules, found {single_expert_cnt}."
@@ -61,12 +62,15 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path):
         quant_linear_cnt == config.num_hidden_layers * 3 * config.num_local_experts
     ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
 
-    if scheme == "MXFP4":
-        loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
-        for n, m in quantized_model.named_modules():
-            if m.__class__.__name__ == "QuantLinear":
-                loaded_m = loaded_model.get_submodule(n)
+    # verify the quantized model can be loaded and run inference
+    loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
+    for n, m in quantized_model.named_modules():
+        if m.__class__.__name__ == "QuantLinear":
+            loaded_m = loaded_model.get_submodule(n)
+            if scheme == "MXFP4":
                 assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
+            if scheme == "MXFP8":
+                assert (loaded_m.weight.to("cpu") == m.weight.to("cpu")).all()
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
