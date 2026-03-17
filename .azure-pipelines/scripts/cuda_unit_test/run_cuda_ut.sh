@@ -133,7 +133,7 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" ! -name "test_*multiple_card*.py" | sort > all_tests.txt
+    find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
@@ -230,6 +230,38 @@ function run_unit_test_sglang() {
     fi
 }
 
+function run_unit_test_vllm() {
+    echo "##[group]set up UT env..."
+    cd "${BUILD_SOURCESDIRECTORY}" || exit 1
+    rm -rf /root/.venv
+    uv venv --python=3.12 /root/.venv
+    uv pip install -U pytest-cov pytest-html
+    uv pip install -r test/test_cuda/requirements_vllm.txt
+    uv pip install .
+    echo "##[endgroup]"
+
+    uv pip list
+    cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
+        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage_vllm.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+
+    if [ -f "coverage_vllm.xml" ]; then
+        mv coverage_vllm.xml ${LOG_DIR}/
+    fi
+    if ! print_test_results_table "unittest_cuda_vllm_test*.log" "CUDA VLLM Unit Tests"; then
+        echo "##[error]Some CUDA VLLM unit tests failed. Please check the individual log files for details."
+    fi
+}
+
+
 
 function main() {
     setup_environment
@@ -239,17 +271,22 @@ function main() {
         run_unit_test_llmc
     elif [ "${test_case}" == "sglang" ]; then
         run_unit_test_sglang
+    elif [ "${test_case}" == "vllm" ]; then
+        run_unit_test_vllm
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
     else
-        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', or 'all'."
+        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', 'vllm', or 'all'."
         exit 1
     fi
+
+    echo "##[group]check storage usage..."
     df -h
     du -sh "${BUILD_SOURCESDIRECTORY}"
     du -sh /root/.cache/huggingface
     du -sh /root/.cache/huggingface/hub/*
     du -sh /root/.venv
+    echo "##[endgroup]"
     print_summary
 }
 

@@ -61,4 +61,12 @@ fi
 # if ut pass, collect the coverage file into artifacts
 cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
 
+echo "##[group]check storage usage..."
+df -h
+du -sh /auto-round
+du -sh /home/hostuser/.cache/huggingface
+du -sh /home/hostuser/.cache/huggingface/hub/*
+du -sh /home/hostuser/.venv
+echo "##[endgroup]"
+
 echo "UT finished successfully! "

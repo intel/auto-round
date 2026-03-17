@@ -9,4 +9,3 @@ pandas
 pillow
 torchvision
 numba
-vllm
