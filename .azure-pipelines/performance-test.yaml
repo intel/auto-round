@@ -28,7 +28,7 @@ stages:
     jobs:
       - job:
         steps:
-          - template: docker-template.yml
+          - template: template/docker-template.yml
             parameters:
               containerName: $(CONTAINER_NAME)
               imageSource: pull
