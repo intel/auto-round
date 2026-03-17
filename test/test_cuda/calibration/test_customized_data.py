@@ -2,11 +2,8 @@ import copy
 import re
 import shutil
 import sys
-import unittest
 
 import pytest
-
-sys.path.insert(0, "../..")
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
@@ -14,13 +11,12 @@ from auto_round import AutoRound
 from ...helpers import get_model_path
 
 
-class TestCustomizedData(unittest.TestCase):
-    @classmethod
-    def setUpClass(self):
-        self.save_dir = "./saved"
+class TestCustomizedData:
+    save_dir = "./saved"
 
-    @classmethod
-    def tearDownClass(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        yield
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 

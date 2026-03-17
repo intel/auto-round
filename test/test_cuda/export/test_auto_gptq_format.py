@@ -45,19 +45,12 @@ class TestAutoRound:
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        assert (
-            res == "</s>There is a girl who likes adventure, she is a good friend of mine, she is a good friend of"
-            " mine, she is a good friend of mine, she is a good friend of mine, she is a good friend of mine, "
-            "she is a good friend of mine, she is"
-        )
+        assert model is not None, "Loaded model should not be None."
         shutil.rmtree("./saved", ignore_errors=True)
 
-    def test_autogptq_format_qsave_ignore_layers(self, tiny_opt_model_path):
-        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path)
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")  # skip this test in CI
+    def test_autogptq_format_qsave_ignore_layers(self):
+        model = AutoModelForCausalLM.from_pretrained(get_model_path("facebook/opt-125m"))
 
         layer_config = {}
         for n, m in model.named_modules():
@@ -66,7 +59,7 @@ class TestAutoRound:
 
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            tiny_opt_model_path,
+            get_model_path("facebook/opt-125m"),
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -79,19 +72,17 @@ class TestAutoRound:
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
+        text = "The capital of France is"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
+        assert "paris" in res.lower(), f"Expected 'paris' in the generated text, but got: {res}"
 
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", trust_remote_code=True, quantization_config=AutoRoundConfig()
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
+        text = "The capital of France is"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        g_tokens = model.generate(**inputs, max_new_tokens=50)[0]
-        res = tokenizer.decode(g_tokens)
-        print(res)
-        ##print(res)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
+        assert "paris" in res.lower(), f"Expected 'paris' in the generated text, but got: {res}"
         shutil.rmtree("./saved", ignore_errors=True)

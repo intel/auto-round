@@ -46,7 +46,7 @@ class TestAutoRoundAsym:
             model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skip(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
+    @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
     def test_asym_bits_with_tuning(self, tiny_opt_model_path):
         for bits in [2, 3, 8]:
             group_size, sym = 128, False
@@ -65,7 +65,7 @@ class TestAutoRoundAsym:
             model_infer(model, tokenizer)
             shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skip(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
+    @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
     def test_asym_format_with_tuning(self, tiny_opt_model_path):
         for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
             bits, group_size, sym = 4, 128, False
