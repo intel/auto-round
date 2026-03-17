@@ -19,7 +19,7 @@ import re
 import sys
 from dataclasses import asdict, fields
 from enum import Enum
-from typing import Callable, Union
+from typing import TYPE_CHECKING, Callable, Union
 
 import torch
 import transformers
@@ -27,8 +27,10 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
 from auto_round.utils import check_to_quantized
+
+if TYPE_CHECKING:
+    from auto_round.schemes import QuantizationScheme
 
 
 class BackendDataType(str, Enum):
@@ -286,7 +288,7 @@ def set_layer_config(
     Returns (final_layer_config, has_quant_layer_outside_block)
     """
 
-    from auto_round.schemes import get_gguf_scheme
+    from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
     from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name, get_module, is_separate_lm_head
 
     # ---- helpers -------------------------------------------------
@@ -303,6 +305,7 @@ def set_layer_config(
 
     def normalize_item(item: Union[str, dict, "QuantizationScheme"], layer_name: str) -> dict:
         """Convert config entry into dict and validate keys."""
+
         if isinstance(item, str):
             config = asdict(preset_name_to_scheme(item.upper()))
         elif isinstance(item, QuantizationScheme):
@@ -609,6 +612,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
+    from auto_round.schemes import get_gguf_scheme
     from auto_round.utils.common import MM_KEYS, LazyImport
     from auto_round.utils.model import get_lm_head_name, get_module
 

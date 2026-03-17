@@ -34,11 +34,16 @@ class CompressContext(BaseContext):
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
+        is_immediate_packing: bool = False,
+        is_immediate_saving: bool = False,
+        formats: Union[list, str] = None,
+        output_dir: str = "./compressed_models",
     ):
         super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.low_gpu_mem_usage = low_gpu_mem_usage
-
+        self.formats = formats
+        self.output_dir = output_dir
         if device_map is None:
             device_map = 0
         self.device_map = device_map
@@ -50,3 +55,6 @@ class CompressContext(BaseContext):
         self.cache_device = torch.device("cpu") if low_gpu_mem_usage else self.device
 
         self.enable_torch_compile = enable_torch_compile
+        self.immediate_packing = is_immediate_packing
+        self.is_immediate_saving = is_immediate_saving
+        self.formats = formats

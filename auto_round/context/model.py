@@ -44,8 +44,6 @@ class ModelContext(BaseContext):
     _is_initialized = False
     quantized = False
 
-    act_quantize = False
-
     # model_related
     _model_loaded = False
     _init_model = False
@@ -160,7 +158,7 @@ class ModelContext(BaseContext):
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
 
-    def initialize(self, formats):
+    def initialize(self, formats, is_act_quantize=False):
         # load and handle model
         if not self._model_loaded:
             self._load_model()
@@ -178,7 +176,7 @@ class ModelContext(BaseContext):
         self.is_moe_model = is_moe_model(self.model)
 
         self._set_amp_dtype()
-        if self.act_quantize and self.amp_dtype == torch.float16:
+        if is_act_quantize and self.amp_dtype == torch.float16:
             logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
             if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged

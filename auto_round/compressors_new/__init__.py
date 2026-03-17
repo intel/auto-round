@@ -11,3 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Lazy imports to avoid circular dependencies
+# Users should import from specific modules instead of this __init__.py
+
+__all__ = ["Compressor", "CalibCompessor", "ImatrixCompressor", "ZeroShotCompressor", "AutoRound"]
+
+
+def __getattr__(name):
+    """Lazy import to avoid circular dependencies."""
+    if name == "Compressor" or name == "AutoRound":
+        from auto_round.compressors_new.entry import Compressor, AutoRound
+
+        if name == "Compressor":
+            return Compressor
+        return AutoRound
+    elif name == "CalibCompessor" or name == "ImatrixCompressor":
+        from auto_round.compressors_new.calib import CalibCompessor, ImatrixCompressor
+
+        if name == "CalibCompessor":
+            return CalibCompessor
+        return ImatrixCompressor
+    elif name == "ZeroShotCompressor":
+        from auto_round.compressors_new.zero_shot import ZeroShotCompressor
+
+        return ZeroShotCompressor
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

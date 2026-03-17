@@ -14,6 +14,7 @@
 import copy
 import importlib
 import sys
+import traceback
 from dataclasses import fields
 
 import torch
@@ -22,6 +23,7 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.compressors_new.utils import (
     IndexSampler,
     _get_quantized_layer_names_outside_blocks,
+    _get_save_folder_name,
     block_forward,
     check_need_act_calibration,
     check_skippable_keywords,
@@ -29,11 +31,11 @@ from auto_round.compressors_new.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
-    reset_params,
     set_layer_config,
 )
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
+from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.schemes import (
@@ -48,6 +50,7 @@ from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
+    clear_memory,
     convert_dtype_str2torch,
     find_matching_blocks,
     get_block_names,
@@ -56,15 +59,25 @@ from auto_round.utils import (
 
 
 class BaseQuantizers:
-
     def __init__(self, config: QuantizationConfig):
-        self.scheme = config.scheme
-        self.layer_config = config.layer_config
-        self.quant_lm_head = config.quant_lm_head
-        self.scale_dtype = config.scale_dtype
-        self.to_quant_block_names = config.to_quant_block_names
-        self.ignore_layers = config.ignore_layers
         self.config = config
+        self.layer_config = config.layer_config
+        self.scheme = config.scheme
+        self.bits = config.bits
+        self.group_size = config.group_size
+        self.sym = config.sym
+        self.data_type = config.data_type
+        self.act_bits = config.act_bits
+        self.act_group_size = config.act_group_size
+        self.act_sym = config.act_sym
+        self.act_data_type = config.act_data_type
+        self.act_dynamic = config.act_dynamic
+        self.super_bits = config.super_bits
+        self.super_group_size = config.super_group_size
+        self.scale_dtype = config.scale_dtype
+        self.ignore_layers = config.ignore_layers
+        self.quant_lm_head = config.quant_lm_head
+        self.to_quant_block_names = config.to_quant_block_names
 
     @classmethod
     def from_config(cls, config: QuantizationConfig):
@@ -75,6 +88,10 @@ class BaseQuantizers:
             alg_cls = getattr(module, config._alg_cls)
             return alg_cls(config)
 
+    @property
+    def formats(self):
+        return getattr(self.compress_context, "formats", None)
+
     def post_init(self):
         # should be set after loading model and set layer_config, cause some special scheme need these.
         # Preserve the original, unparsed scheme for later use in auto scheme generation
@@ -83,6 +100,11 @@ class BaseQuantizers:
         # # Alternatively, you can use ModelContext.get_context
         self.model_context = ModelContext()
         self.compress_context = CompressContext()
+
+        # used in shard writer, rafactor later
+        self._get_save_folder_name = _get_save_folder_name
+
+        self.model = self.model_context.model
 
         scheme_fields = {f.name for f in fields(QuantizationScheme)}
         user_scheme_overrides = {}
@@ -95,6 +117,8 @@ class BaseQuantizers:
         # Bind attributes to self.config for easy instance-level access
         for key, value in final_attrs.items():
             setattr(self.config, key, value)
+            if hasattr(self, key):
+                setattr(self, key, value)
         self.config.check_config()
 
         self.orig_scheme = copy.deepcopy(self.scheme)
@@ -198,8 +222,8 @@ class BaseQuantizers:
         return layer_config
 
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
-
-        is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
+        # before get_format, therefore, compress_context.formats is str
+        is_gguf_format = (f := getattr(self.compress_context, "formats", None)) is not None and "gguf" in f
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
             if predefined_ignore_layers:
@@ -300,3 +324,86 @@ class BaseQuantizers:
                     hook_handles.append(hook)
                     continue
         return hook_handles
+
+    @torch.inference_mode()
+    def _quantize_embedding_layer(self):
+        """Quantizes embedding layers in the model according to the configuration.
+
+        This method iterates through all modules in the model, identifies embedding
+        layers specified in `self.quantizer.layer_config`, and applies the appropriate quantization
+        function based on bit precision, grouping strategy, and dtype.
+
+        Returns:
+            bool: True if the quantization process completes without critical errors.
+        """
+        is_quantized = False
+        for name, module in self.model_context.model.named_modules():
+            # Skip non-Embedding modules or layers not in config
+            if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
+                continue
+
+            config = self.layer_config[name]
+
+            # Skip layers that are not marked for quantization
+            if not check_to_quantized(config):
+                continue
+            is_quantized = True
+            config["scale_dtype"] = self.scale_dtype
+            dtype = config["data_type"]
+
+            # Determine quantization function key with symmetry/asymmetry
+            if dtype not in QUANT_FUNC_WITH_DTYPE:
+                dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
+
+            quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
+            dtype = module.weight.dtype
+            # As typically float32 are used in RTN to search scale zp,
+            # to avoid cache a bf16 copy we'd better use float32
+            if config.get("super_group_size", None) is not None:
+                dtype = torch.float32
+
+            # Attempt quantization on GPU, fall back to CPU if OOM
+            try:
+                weight, scale, zp = quant_func(
+                    module.weight.to(dtype=dtype, device=self.compress_context.device),
+                    **{
+                        k: config.get(k, None)
+                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                    },
+                )
+            except torch.OutOfMemoryError:
+                cuda_error_msg = traceback.format_exc()
+                try:
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU")
+                    weight, scale, zp = quant_func(
+                        module.weight.to("cpu"),
+                        **{
+                            k: config.get(k, None)
+                            for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                        },
+                    )
+                except Exception as e:
+                    raise
+
+            # Overwrite the module's weights with the quantized version
+            module.weight.data.copy_(weight.cpu())
+
+            # Attach scale and zero point (zp) to the module
+            for param_name, value in zip(["scale", "zp"], [scale, zp]):
+                if isinstance(value, dict):
+                    for k, v in value.items():
+                        setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
+                elif isinstance(value, torch.Tensor):
+                    setattr(module, param_name, value.cpu())
+                else:
+                    setattr(module, param_name, value)
+
+            # Update config
+            self.layer_config.setdefault(name, {}).update(config)
+            del weight
+            del scale
+            del zp
+            clear_memory(device_list=self.compress_context.device_list)
+
+        return is_quantized

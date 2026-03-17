@@ -30,16 +30,16 @@ from auto_round.compressors_new.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
+    immediate_pack,
     infer_bits_by_data_type,
     init_cache,
-    is_nv_fp,
     reset_params,
-    set_layer_config,
 )
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.sign_sgd import SignSGD
 from auto_round.utils import (
+    check_to_quantized,
     clear_memory,
     compile_func,
     convert_module_to_hp_if_necessary,
@@ -97,7 +97,7 @@ class ARQuantizer(BaseQuantizers):
                 logger.warning_once("using algorithm extension for quantization.")
                 from auto_round.alg_ext import wrapper_autoround
 
-                wrapper_autoround(self.quantizer)
+                wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
@@ -334,8 +334,26 @@ class ARQuantizer(BaseQuantizers):
         input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
         q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",
         auto_offload=True,
+        **kwargs,
+    ):
+        self._quantize_block(block, input_ids, input_others, q_input=q_input, auto_offload=auto_offload, **kwargs)
+        if hasattr(block, "config"):
+            del block.block
+        if self.compress_context.is_immediate_saving:
+            for n, tmp_m in block.named_modules():
+                if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
+                    continue
+                immediate_pack(tmp_m.global_name, self.quantizer.layer_config)
+
+    def _quantize_block(
+        self,
+        block: torch.nn.Module,
+        input_ids: Union[list[torch.Tensor], dict],
+        input_others: dict,
+        q_input: Union[torch.Tensor, dict, None] = None,
+        auto_offload=True,
+        **kwargs,
     ):
         """Quantize the weights of a given block of the model.
 
@@ -349,6 +367,7 @@ class ARQuantizer(BaseQuantizers):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        device = self.compress_context.device
 
         materialize_model_(block)
         convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
@@ -388,8 +407,6 @@ class ARQuantizer(BaseQuantizers):
                 input_ids,
                 input_others,
                 self.batch_size * self.infer_bs_coeff,
-                device,
-                self.compress_context.cache_device,
             )
 
             for handle in hook_handles:
@@ -400,8 +417,6 @@ class ARQuantizer(BaseQuantizers):
                 input_ids,
                 input_others,
                 self.batch_size * self.infer_bs_coeff,
-                device,
-                self.compress_context.cache_device,
             )
             hook_handles = self._register_act_max_hook(block)
             if hook_handles:
@@ -410,8 +425,6 @@ class ARQuantizer(BaseQuantizers):
                     q_input if q_input is not None else input_ids,
                     input_others,
                     self.batch_size * self.infer_bs_coeff,
-                    device,
-                    self.compress_context.cache_device,
                     save_output=False,
                 )
 
@@ -590,8 +603,6 @@ class ARQuantizer(BaseQuantizers):
                 input_ids,
                 input_others,
                 self.batch_size * self.infer_bs_coeff,
-                device,
-                cache_device=self.compress_context.cache_device,
             )
 
             if len(self.compress_context.device_list) > 1 and auto_offload:
@@ -615,7 +626,9 @@ class ARQuantizer(BaseQuantizers):
 
             return None, output
 
-    def quantize_layer(self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"):
+    def quantize_layer(
+        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs
+    ):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
@@ -638,12 +651,12 @@ class ARQuantizer(BaseQuantizers):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        if self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic,
-            self.act_data_type,
-            self.act_bits,
-            self.static_kv_dtype,
-            self.static_attention_dtype,
+        if self.config.is_act_quantize and check_need_act_calibration(
+            self.config.act_dynamic,
+            self.config.act_data_type,
+            self.config.act_bits,
+            self.config.static_kv_dtype,
+            self.config.static_attention_dtype,
         ):
             tmp_inputs = q_inputs if q_inputs is not None else inputs
             hook_handles = self._register_act_max_hook(layer)
@@ -656,7 +669,7 @@ class ARQuantizer(BaseQuantizers):
         wrapper_linear = WrapperLinear(
             layer,
             enable_minmax_tuning=self.enable_minmax_tuning,
-            enable_torch_compile=self.enable_torch_compile,
+            enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
         ).to(device)
         round_params = []
@@ -795,8 +808,6 @@ class ARQuantizer(BaseQuantizers):
         input_ids: torch.Tensor | list[torch.Tensor],
         input_others: torch.Tensor | dict,
         bs: int,
-        device: Union[str, torch.device],
-        cache_device: Union[str, torch.device],
         save_output: bool = True,
     ):
         """Compute the output of a given block of the model for a given input.
@@ -814,9 +825,21 @@ class ARQuantizer(BaseQuantizers):
         The output tensor of the block.
         """
 
-        self.block_forward = (
-            compile_func(block_forward, self.device) if self.compress_context.enable_torch_compile else block_forward
-        )
+        if (
+            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))  # have hooks
+            or self.enable_alg_ext  # Use imatrix
+            # or not self.disable_opt_rtn  # Use imatrix
+        ):
+            self.block_forward = block_forward
+        else:
+            # TODO FIXME
+            # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
+            # To avoid issues, remove it in all scenarios except WOQ.
+            self.block_forward = (
+                compile_func(block_forward, self.compress_context.device)
+                if self.compress_context.enable_torch_compile
+                else block_forward
+            )
 
         output = []
         nsamples = len(input_ids)
@@ -832,7 +855,12 @@ class ARQuantizer(BaseQuantizers):
                 share_cache_keys=self.model_context.shared_cache_keys,
             )
             tmp_output = self.block_forward(
-                block, tmp_input_ids, tmp_input_others, self.model_context.amp, self.model_context.amp_dtype, device
+                block,
+                tmp_input_ids,
+                tmp_input_others,
+                self.model_context.amp,
+                self.model_context.amp_dtype,
+                self.compress_context.device,
             ).to(self.compress_context.cache_device)
             if save_output:
                 if self.batch_size == 1:

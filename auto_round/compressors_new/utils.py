@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import os
 import random
 import re
 import sys
@@ -1032,3 +1033,48 @@ def _get_quantized_layer_names_outside_blocks(model, layer_config, supported_typ
             layer_names.append(key)
 
     return layer_names
+
+
+def _get_save_folder_name(format, *args, **kwargs) -> str:
+    """Generates the save folder name based on the provided format string.
+
+    If there are multiple formats to handle, the function creates a subfolder
+    named after the format string with special characters replaced. If there's
+    only one format, it returns the original output directory directly.
+
+    Args:
+        format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+
+    Returns:
+        str: The path to the folder where results should be saved.
+    """
+    from auto_round.context.compress import CompressContext
+
+    compress_context = CompressContext.get_context()
+    # Replace special characters to make the folder name filesystem-safe
+    sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+
+    # Use a subfolder only if there are multiple formats
+    if len(compress_context.formats) > 1:
+        return os.path.join(compress_context.output_dir, sanitized_format)
+
+    return compress_context.output_dir
+
+
+def immediate_pack(name: str, layer_config: dict):
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+
+    compress_context = CompressContext.get_context()
+    model_context = ModelContext.get_context()
+
+    if not compress_context.is_immediate_packing:
+        return
+    compress_context.formats[0].immediate_pack(
+        name=name,
+        model=model_context.model,
+        device=compress_context.device,
+        output_dir=_get_save_folder_name(compress_context.formats[0]),
+        layer_config=layer_config,
+        tokenizer=model_context.tokenizer,
+    )
