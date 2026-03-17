@@ -1,1 +1,2 @@
 vllm
+lm_eval >= 0.4.10
