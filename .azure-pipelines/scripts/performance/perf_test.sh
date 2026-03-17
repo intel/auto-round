@@ -26,7 +26,7 @@ function run_performance_test() {
     cd /auto-round/.azure-pipelines/scripts/performance
     log_file="perf_test_${test_mode}.log"
     rm -rf ./saved ${log_file}
-    auto-round --model_name Qwen/Qwen3-8B --bits 4 --iters 200 --enable_torch_compile --output_dir ./saved | tee ${log_file}
+    auto-round --model_name Qwen/Qwen3-8B --bits 4 --iters 200 --enable_torch_compile --device hpu --output_dir ./saved | tee ${log_file}
 }
 
 function main() {
