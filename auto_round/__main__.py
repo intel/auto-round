@@ -733,7 +733,6 @@ def tune(args):
             assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
             suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
         else:
-            suffix = f"g{autoround.group_size}"
             if autoround.group_size <= 0:
                 if "fp" in autoround.act_data_type:
                     suffix = f"afp{autoround.act_bits}"
