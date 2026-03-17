@@ -187,7 +187,8 @@ class ZeroShotCompressor(BaseCompressor):
         self.post_init()
         self.model_context.initialize(formats=self.formats, is_act_quantize=self.config.is_act_quantize)
 
-        if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
+        formats = self.formats if isinstance(self.formats, list) else []
+        if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
             self._quantize_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory
@@ -200,17 +201,19 @@ class ZeroShotCompressor(BaseCompressor):
             self.static_kv_dtype,
             self.static_attention_dtype,
         ):
-            hook_handles = self.quantizer._register_act_max_hook(self.model)
+            model = self.model_context.model
+            hook_handles = self.quantizer._register_act_max_hook(model)
             try:
                 self._quantize_via_rtn_blockwise()
             except torch.OutOfMemoryError:
                 logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
-                self.model = self.model.to("cpu")
+                model = model.to("cpu")
+                self.model_context.model = model
                 clear_memory(device_list=self.device_list)
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
 
-                    accelerate.hooks.remove_hook_from_submodules(self.model)
+                    accelerate.hooks.remove_hook_from_submodules(model)
                 orig_device = self.compress_context.device
                 self.compress_context.device = "cpu"
                 self._quantize_via_rtn_blockwise()

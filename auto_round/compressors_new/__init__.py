@@ -15,6 +15,13 @@
 # Lazy imports to avoid circular dependencies
 # Users should import from specific modules instead of this __init__.py
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from auto_round.compressors_new.calib import CalibCompressor, ImatrixCompressor
+    from auto_round.compressors_new.entry import AutoRound, Compressor
+    from auto_round.compressors_new.zero_shot import ZeroShotCompressor
+
 __all__ = ["Compressor", "CalibCompressor", "ImatrixCompressor", "ZeroShotCompressor", "AutoRound"]
 
 

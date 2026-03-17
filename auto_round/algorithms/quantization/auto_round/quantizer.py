@@ -62,6 +62,11 @@ from auto_round.utils.device import (
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
+DIFFUSION_OUTPUT_CONFIGS = {
+    "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+}
+
 
 class ARQuantizer(BaseQuantizers):
 
@@ -215,50 +220,41 @@ class ARQuantizer(BaseQuantizers):
 
         return forward
 
-    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]):
-        """
-        Processes and stores decoding layer inputs for block quantization.
-
-        This function iterates through a list of captured decoding layer calls,
-        replaying them through a fake decoding layer to extract and store the
-        inputs required for the decoding block in `self.inputs`. This effectively
-        "normalizes" the inputs by making them accessible in a consistent format
-        for subsequent quantization steps.
-
-        Args:
-            decoding_layer_inputs:
-                A list of entries captured by a forward hook on the decoding layer.
-                Each element is expected to be a tuple whose first item is
-                `(args, kwargs)`, where `args` are the positional arguments and
-                `kwargs` are the keyword arguments seen during the original
-                forward pass.
-
-                The capture hook look like:
-
-                    def input_capture_hook(module, *args, **kwargs):
-                        _all_module_input[module._global_name].append((args, kwargs))
-        """
-        first_block_name = self.quant_block_list[0][0]
-
-        class _FakeDecodingLayer(torch.nn.Module):
-
-            def forward(self, *args, **kwargs):
-                return args, kwargs
-
-        fake_layer = _FakeDecodingLayer()
-        fake_layer.orig_forward = fake_layer.forward
-        fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
-
-        self.inputs = {}
-        self.last_cache_name = None
-        for step_input in decoding_layer_inputs:
-            args, kwargs = step_input[0]
-            fake_layer(*args, **kwargs)
-
     def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
+        if self.model_context.is_diffusion:
+            assert "hidden_states" in output
+            current_output = [output["hidden_states"][x] for x in indices]
+            current_output = torch.cat(current_output, dim=self.batch_dim)
+            return current_output
         current_output = [output[x] for x in indices]
         current_output = torch.cat(current_output, dim=self.batch_dim)
         return current_output
+
+    def _get_diffusion_current_q_output(
+        self,
+        block: torch.nn.Module,
+        input_ids: dict,
+        input_others: dict,
+        indices: list[int],
+        device: str,
+        cache_device: str = "cpu",
+    ):
+        output_config = DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+        idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
+        current_input_ids, current_input_others = self._sampling_inputs(
+            input_ids,
+            input_others,
+            indices,
+            seqlen=self.seqlen,
+            batch_dim=self.batch_dim,
+            share_cache_keys=self.shared_cache_keys,
+        )
+        if isinstance(current_input_ids, dict):
+            hidden_states = current_input_ids.pop("hidden_states")
+            current_input_others.update(current_input_ids)
+            current_input_ids = hidden_states
+        output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx)
+        return output_q.to(cache_device)
 
     def _get_current_q_output(
         self,
@@ -269,6 +265,8 @@ class ARQuantizer(BaseQuantizers):
         device: str,
         cache_device: str = "cpu",
     ) -> torch.Tensor:
+        if self.model_context.is_diffusion:
+            return self._get_diffusion_current_q_output(block, input_ids, input_others, indices, device, cache_device)
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
             input_others,
@@ -287,6 +285,10 @@ class ARQuantizer(BaseQuantizers):
         input_ids: list[torch.Tensor],
         indices: list[int],
     ) -> int:
+        if self.model_context.is_diffusion:
+            current_input_ids = [input_ids["hidden_states"][i] for i in indices]
+            return sum(id.numel() for id in current_input_ids)
+
         current_input_ids = [input_ids[i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
@@ -339,12 +341,12 @@ class ARQuantizer(BaseQuantizers):
     ):
         self._quantize_block(block, input_ids, input_others, q_input=q_input, auto_offload=auto_offload, **kwargs)
         if hasattr(block, "config"):
-            del block.block
+            del block.config
         if self.compress_context.is_immediate_saving:
             for n, tmp_m in block.named_modules():
                 if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                     continue
-                immediate_pack(tmp_m.global_name, self.quantizer.layer_config)
+                immediate_pack(tmp_m.global_name, self.layer_config)
 
     def _quantize_block(
         self,
@@ -704,6 +706,7 @@ class ARQuantizer(BaseQuantizers):
         nsamples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
+        best_params = None
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
@@ -824,6 +827,15 @@ class ARQuantizer(BaseQuantizers):
         Returns:
         The output tensor of the block.
         """
+        if self.model_context.is_diffusion:
+            return self._get_diffusion_block_outputs(
+                block,
+                input_ids,
+                input_others,
+                bs,
+                self.compress_context.device,
+                self.compress_context.cache_device,
+            )
 
         if (
             (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))  # have hooks
@@ -869,6 +881,65 @@ class ARQuantizer(BaseQuantizers):
                     output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
         if self.compress_context.low_gpu_mem_usage:
             clear_memory(device_list=self.compress_context.device_list)
+
+        return output
+
+    @torch.no_grad()
+    def _get_diffusion_block_outputs(
+        self,
+        block: torch.nn.Module,
+        input_ids: Union[torch.Tensor, dict],
+        input_others: torch.Tensor,
+        bs: int,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device],
+        save_output: bool = True,
+    ):
+        """Compute the output of a given block of the model for a given input.
+
+        Args:
+        block: The block of the model.
+        input_ids: The input tensor containing tokenized input ids.
+        input_others: A dictionary containing additional input data.
+        bs: The batch size for computing the output.
+        device: The device for computation.
+        cache_device: The device for storing the output.
+        batch_dim: The batch dimension of the output tensor.
+
+        Returns:
+        The output tensor of the block.
+        """
+
+        output = defaultdict(list)
+        output_config = DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+        if isinstance(input_ids, dict):
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
+
+        for i in range(0, nsamples, bs):
+            end_index = min(nsamples, i + bs)
+            indices = torch.arange(i, end_index).to(torch.long)
+            tmp_input_ids, tmp_input_others = self._sampling_inputs(
+                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
+            )
+            if isinstance(tmp_input_ids, dict):
+                hidden_states = tmp_input_ids.pop("hidden_states")
+                tmp_input_others.update(tmp_input_ids)
+                tmp_input_ids = hidden_states
+
+            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, None)
+            assert len(output_config) == len(tmp_output)
+            tmp_output = dict(zip(output_config, tmp_output))
+
+            if save_output:
+                for name, out in tmp_output.items():
+                    if self.batch_size == 1:
+                        output[name].append(out.to(cache_device))
+                    else:
+                        output[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
+        if self.low_gpu_mem_usage:
+            clear_memory()
 
         return output
 

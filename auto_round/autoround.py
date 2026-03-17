@@ -162,9 +162,9 @@ class AutoRound:
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
 
         if NEW_ARCH:
-            from auto_round.compressors_new import AutoRound as AutoRoundNew
+            from auto_round.compressors_new.entry import AutoRound as AutoRoundNew
 
-            AutoRoundNew(**local_args)
+            return AutoRoundNew(**local_args)
 
         model_cls = []
 

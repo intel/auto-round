@@ -85,7 +85,7 @@ class RTNQuantizer(BaseQuantizers):
         materialize_model_(block)
         for name, m in block.named_modules():
             if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer(m.global_name, to_cpu=self.low_gpu_mem_usage)
+                self.quantize_layer(m.global_name)
             elif (
                 not any(m.children())
                 and len(m.state_dict()) > 0

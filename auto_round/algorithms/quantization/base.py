@@ -59,6 +59,17 @@ from auto_round.utils import (
 
 
 class BaseQuantizers:
+    # Class-level attribute declarations for dynamic properties set in post_init()
+    # These prevent pylint E1101 (no-member) and E0203 (access-member-before-definition) errors
+    model_context = None
+    compress_context = None
+    dataset = None
+    quant_block_list = None
+    orig_scheme = None
+    is_auto_scheme = False
+    supported_types = SUPPORTED_LAYER_TYPES
+    inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+
     def __init__(self, config: QuantizationConfig):
         self.config = config
         self.layer_config = config.layer_config
@@ -144,7 +155,7 @@ class BaseQuantizers:
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
-        if self.mllm:
+        if self.model_context.is_mllm:
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
             sys.exit(-1)
 
@@ -193,7 +204,7 @@ class BaseQuantizers:
             self.ignore_layers,
             self.quant_lm_head,
             enable_gguf_official_mixed=False,
-            is_mllm=self.mllm,
+            is_mllm=self.model_context.is_mllm,
         )
         quant_layer_names = layer_config.keys()
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
@@ -206,7 +217,11 @@ class BaseQuantizers:
         # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if not self.enable_torch_compile and self.super_bits is None and not self.orig_scheme.low_gpu_mem_usage:
+        if (
+            not self.compress_context.enable_torch_compile
+            and self.super_bits is None
+            and not self.orig_scheme.low_gpu_mem_usage
+        ):
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         self.scheme_generator = GenScheme(
             self.orig_scheme,
@@ -215,8 +230,8 @@ class BaseQuantizers:
             fixed_layer_scheme_new,
             self.dataset,
             device_map=self.compress_context.device_map,
-            tokenizer=self.tokenizer,
-            enable_torch_compile=self.enable_torch_compile,
+            tokenizer=self.model_context.tokenizer,
+            enable_torch_compile=self.compress_context.enable_torch_compile,
         )
         layer_config = self.scheme_generator.get_layer_config()
         return layer_config

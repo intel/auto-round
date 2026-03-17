@@ -1035,6 +1035,45 @@ def _get_quantized_layer_names_outside_blocks(model, layer_config, supported_typ
     return layer_names
 
 
+def _get_diffusion_save_folder_name(format) -> str:
+    """Generates the save folder name based on the provided format string.
+
+    If there are multiple formats to handle, the function creates a subfolder
+    named after the format string with special characters replaced. If there's
+    only one format, it returns the original output directory directly.
+
+    Args:
+        format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+
+    Returns:
+        str: The path to the folder where results should be saved.
+    """
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+
+    compress_context = CompressContext.get_context()
+    model_context = ModelContext.get_context()
+
+    # Replace special characters to make the folder name filesystem-safe
+    sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+
+    formats = compress_context.formats
+    # Use a subfolder only if there are multiple formats
+    if len(formats) > 1:
+        return (
+            os.path.join(compress_context.output_dir, sanitized_format, "transformer")
+            if compress_context.is_immediate_saving
+            else os.path.join(compress_context.output_dir, sanitized_format, "transformer")
+        )
+
+    # if use is_immediate_saving, we need to save model in self.output_dir/transformer folder
+    return (
+        os.path.join(compress_context.output_dir, "transformer")
+        if compress_context.is_immediate_saving
+        else compress_context.output_dir
+    )
+
+
 def _get_save_folder_name(format, *args, **kwargs) -> str:
     """Generates the save folder name based on the provided format string.
 
@@ -1049,8 +1088,12 @@ def _get_save_folder_name(format, *args, **kwargs) -> str:
         str: The path to the folder where results should be saved.
     """
     from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
 
     compress_context = CompressContext.get_context()
+    model_context = ModelContext.get_context()
+    if model_context.is_diffusion:
+        return _get_diffusion_save_folder_name(format)
     # Replace special characters to make the folder name filesystem-safe
     sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
 

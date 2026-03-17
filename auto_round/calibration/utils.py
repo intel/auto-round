@@ -41,6 +41,16 @@ def _infer_last_cache_name(block_names, layer_names=None, requested_last_cache_n
 
 
 def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
+    from auto_round.context.model import ModelContext
+
+    model_context = ModelContext()
+    if model_context.is_diffusion:
+        # flux transformer model's blocks will update hidden_states and encoder_hidden_states
+        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        if q_inputs is not None:
+            q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
+        return inputs, q_inputs
+
     keys = inputs.keys()
     input_id_str = [key for key in keys if key.startswith("hidden_state")]
     if len(input_id_str) != 1:

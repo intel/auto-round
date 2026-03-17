@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 from typing import Union
 
 import torch
+from tqdm import tqdm
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.context.model import ModelContext
@@ -104,54 +105,123 @@ class DiffusionMixin:
         if self.pipe is None:
             raise ValueError("Diffusion pipeline must be loaded before calibration")
 
-        logger.info(f"Preparing diffusion dataloader with {nsamples} samples")
-
-        # Get diffusion dataloader
-        self.dataloader = get_diffusion_dataloader(
-            pipe=self.pipe,
-            dataset=self.dataset,
-            nsamples=nsamples,
-            batch_size=bs,
-            seed=self.seed,
-            guidance_scale=self.guidance_scale,
-            num_inference_steps=self.num_inference_steps,
-            generator_seed=self.generator_seed,
+        logger.warning(
+            "Diffusion model will catch nsamples * num_inference_steps inputs, "
+            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
         )
-
-        # Process data through the model for calibration
+        if isinstance(self.dataset, str):
+            dataset = self.dataset.replace(" ", "")
+            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
+                dataset=dataset,
+                bs=self.batch_size,
+                seed=self.seed,
+                nsamples=self.nsamples,
+                gradient_accumulate_steps=self.gradient_accumulate_steps,
+            )
+        else:
+            self.dataloader = self.dataset
         total_cnt = 0
-        for data in self.dataloader:
-            if data is None:
-                continue
 
-            # Diffusion data is usually already properly formatted
-            if isinstance(data, dict):
-                # Move all tensors to device
-                data_new = {}
-                for key, value in data.items():
-                    if isinstance(value, torch.Tensor):
-                        data_new[key] = value.to(self.model_context.model.device)
-                    else:
-                        data_new[key] = value
-            else:
-                data_new = data
+        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+        if self.pipe.dtype != self.model.dtype:
+            self.pipe.to(self.model.dtype)
 
-            try:
-                if isinstance(data_new, dict):
-                    self.model_context.model(**data_new)
-                else:
-                    self.model_context.model(data_new)
-            except NotImplementedError:
-                pass
-            except Exception as e:
-                logger.warning(f"Calibration forward pass failed: {e}")
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 0
+            and self.pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.error(
+                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+                "Please use model path for quantization or "
+                "move the pipeline object to GPU/XPU before passing them into API."
+            )
+            exit(-1)
 
-            total_cnt += bs
-            if total_cnt >= nsamples:
-                break
-
+        if self.pipe.device != self.model.device:
+            self.pipe.to(self.model.device)
+        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
+            for ids, prompts in self.dataloader:
+                if isinstance(prompts, tuple):
+                    prompts = list(prompts)
+                try:
+                    self.pipe(
+                        prompt=prompts,
+                        guidance_scale=self.guidance_scale,
+                        num_inference_steps=self.num_inference_steps,
+                        generator=(
+                            None
+                            if self.generator_seed is None
+                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+                        ),
+                    )
+                except NotImplementedError:
+                    pass
+                except Exception as error:
+                    raise error
+                step = len(prompts)
+                total_cnt += step
+                pbar.update(step)
+                if total_cnt >= nsamples:
+                    break
         if total_cnt == 0:
-            logger.error("no data has been cached, please provide more data")
+            logger.error(
+                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
+                f"dataset or decease the sequence length"
+            )
             exit(-1)
         elif total_cnt < nsamples:
-            logger.warning(f"Insufficient number of samples: required {nsamples}, but only {total_cnt} were processed.")
+            logger.warning(
+                f"Insufficient number of samples collected may affect the quantization. "
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+            )
+            if total_cnt < self.batch_size:
+                raise ValueError(
+                    f"valid samples is less than batch_size({self.batch_size}),"
+                    " please adjust self.batch_size or seqlen."
+                )
+            max_len = (total_cnt // self.batch_size) * self.batch_size
+            for k, v in self.inputs.items():
+                for key in v:
+                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
+                        self.inputs[k][key] = v[key][:max_len]
+
+        # torch.cuda.empty_cache()
+
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+        """Save the quantized model to the specified output directory in the specified format.
+
+        Args:
+            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
+            format (str, optional): The format in which to save the model. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            **kwargs: Additional keyword arguments specific to the export format.
+
+        Returns:
+            object: The compressed model object.
+        """
+        if output_dir is None:
+            return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
+
+        compressed_model = None
+        for name in self.pipe.components.keys():
+            val = getattr(self.pipe, name)
+            sub_module_path = (
+                os.path.join(output_dir, name) if os.path.basename(os.path.normpath(output_dir)) != name else output_dir
+            )
+            if (
+                hasattr(val, "config")
+                and hasattr(val.config, "_name_or_path")
+                and val.config._name_or_path == self.model.config._name_or_path
+            ):
+                compressed_model = super().save_quantized(
+                    output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
+                    format=format,
+                    inplace=inplace,
+                    **kwargs,
+                )
+            elif val is not None and hasattr(val, "save_pretrained"):
+                val.save_pretrained(sub_module_path)
+        self.pipe.config.save_pretrained(output_dir)
+        return compressed_model

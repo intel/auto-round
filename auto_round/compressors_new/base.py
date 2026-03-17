@@ -125,7 +125,8 @@ class BaseCompressor(object):
 
         if kwargs:
             logger.warning(
-                f"unrecognized keys {list(kwargs.keys())} were passed. Please check them. If you use old api, just ignore this warning. "
+                f"unrecognized keys {list(kwargs.keys())} were passed. "
+                "Please check them. If you use old api, just ignore this warning."
             )
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"

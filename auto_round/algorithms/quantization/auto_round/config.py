@@ -47,6 +47,7 @@ class AutoRoundConfig(QuantizationConfig):
         nsamples: int = 128,
         momentum: float = 0.0,
         batch_size: int = 8,
+        nblocks: int = 1,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
         gradient_accumulate_steps: int = 1,
@@ -79,6 +80,7 @@ class AutoRoundConfig(QuantizationConfig):
         self.seqlen = seqlen
         self.nsamples = nsamples
         self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
+        self.nblocks = nblocks
         self.momentum = momentum
         self.enable_alg_ext = enable_alg_ext
 

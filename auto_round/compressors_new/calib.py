@@ -641,6 +641,11 @@ class CalibCompressor(BaseCompressor):
         return input_ids, input_others
 
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
+        if self.model_context.is_diffusion:
+            input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+            input_ids = {k: inputs.pop(k, None) for k in input_id_str}
+            input_others = inputs
+            return input_ids, input_others
         input_ids = inputs[first_input_name]
         inputs.pop(first_input_name, None)
         input_others = inputs
