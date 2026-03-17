@@ -244,7 +244,26 @@ def copy_missing_tensors_from_source(
             if len(nums_sorted) == 1:
                 parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
             else:
-                parts.append(f"{prefix}[{nums_sorted[0]}-{nums_sorted[-1]}]{suffix}")
+                # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
+                ranges = []
+                start = prev = nums_sorted[0]
+                for n in nums_sorted[1:]:
+                    if n == prev + 1:
+                        prev = n
+                        continue
+                    # Close the current range
+                    if start == prev:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{prev}")
+                    start = prev = n
+                # Close the final range
+                if start == prev:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{prev}")
+                range_str = ",".join(ranges)
+                parts.append(f"{prefix}[{range_str}]{suffix}")
         parts.extend(singles)
         return ", ".join(parts)
 
