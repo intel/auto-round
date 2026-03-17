@@ -606,7 +606,11 @@ class OffloadManager:
 
     def _ensure_dir(self) -> str:
         if self._tempdir is None:
-            self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_")
+            from auto_round import envs
+
+            base_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
+            os.makedirs(base_dir, exist_ok=True)
+            self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
             logger.info(f"OffloadManager ({self._prefix}): tempdir = {self._tempdir}")
         return self._tempdir
 
@@ -654,10 +658,17 @@ class OffloadManager:
     def _cleanup_tempdir(self) -> None:
         """Remove the temp directory if it exists."""
         if self._tempdir and os.path.isdir(self._tempdir):
+            parent = os.path.dirname(self._tempdir)
             try:
                 shutil.rmtree(self._tempdir)
             except Exception as e:
                 logger.warning(f"OffloadManager: cleanup failed for {self._tempdir}: {e}")
+            # Remove the parent offload/ directory if it is now empty
+            if parent and os.path.isdir(parent):
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass  # not empty or already removed
         self._tempdir = None
 
     # ------------------------------------------------------------------
