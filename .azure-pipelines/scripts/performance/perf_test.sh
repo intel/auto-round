@@ -10,17 +10,20 @@ function setup_environment() {
 }
 
 function install_requirements() {
+    cd /auto-round
     uv pip uninstall auto-round || true
     BUILD_HPU_ONLY=1 uv pip install .
 }
 
 function install_baseline_requirements() {
+    cd /auto-round
     uv pip uninstall auto-round || true
     BUILD_HPU_ONLY=1 uv pip install git+https://github.com/intel/auto-round.git
 }
 
 function run_performance_test() {
     test_mode=$1
+    cd /auto-round/.azure-pipelines/scripts/performance
     log_file="perf_test_${test_mode}.log"
     rm -rf ./saved ${log_file}
     auto-round --model_name Qwen/Qwen3-8B --bits 4 --iters 200 --enable_torch_compile --output_dir ./saved | tee ${log_file}
@@ -35,6 +38,7 @@ function main() {
     install_baseline_requirements
     run_performance_test "baseline"
 
+    cd /auto-round/.azure-pipelines/scripts/performance
     python check_performance.py
 }
 
