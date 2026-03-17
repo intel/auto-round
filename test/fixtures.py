@@ -219,8 +219,6 @@ def tiny_qwen3_vl_moe_model_path():
 
     model_name = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
     config = transformers.AutoConfig.from_pretrained(model_name)
-    # TODO: Remove after https://github.com/huggingface/transformers/pull/43453 is merged
-    config.text_config.pad_token_id = None
     config.vision_config.depth = 1  # Reduce layers for testing
     config.text_config.num_hidden_layers = 1
     config.text_config.num_experts = 16

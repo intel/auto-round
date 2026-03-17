@@ -99,11 +99,6 @@ def test_llama4(tiny_llama4_model_path):
 
 def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path):
     output_dir = "/tmp/test_quantized_qwen3_vl_moe"
-    from auto_round.utils import llm_load_model
-
-    model = llm_load_model(tiny_qwen3_vl_moe_model_path)
-    print(model)
-
     autoround = AutoRound(
         tiny_qwen3_vl_moe_model_path,
         scheme="MXFP4",

@@ -1,10 +1,8 @@
 import copy
 import shutil
 import sys
-import unittest
 
-sys.path.insert(0, "../..")
-
+import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
@@ -13,14 +11,12 @@ from auto_round import AutoRound
 from ...helpers import get_model_path, model_infer
 
 
-class TestAutoRoundAsym(unittest.TestCase):
-    @classmethod
-    def setUpClass(self):
-        self.model_name = get_model_path("facebook/opt-125m")
-        self.save_folder = "./saved"
+class TestAutoRoundAsym:
+    save_folder = "./saved"
 
-    @classmethod
-    def tearDownClass(self):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self):
+        yield
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
