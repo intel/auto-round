@@ -160,6 +160,10 @@ def copy_missing_tensors_from_source(
 
     saved_parent_layers: set = {name.rsplit(".", 1)[0] for name in saved_tensor_names}
 
+    # To match model.language_model.layers.0.fc1 with language_model.layers.0.fc1
+    shortcut_parent_layers: set = {name.split(".", 1)[1] for name in saved_parent_layers if "." in name}
+    saved_parent_layers.update(shortcut_parent_layers)
+
     def _first_numeric_prefix(tensor_name: str) -> str | None:
         """Return the path up to and including the first numeric segment, or None.
 
@@ -180,9 +184,17 @@ def copy_missing_tensors_from_source(
         bp = _first_numeric_prefix(tensor_name)
         if bp is not None:
             saved_block_prefix.add(bp)
+    # To match model.language_model.layers.0 with language_model.layers.0
+    shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
+    saved_block_prefix.update(shortcut_block_prefix)
 
     def _is_truly_missing(name: str) -> bool:
-        # For Qwen/Qwen3-0.6B-FP8, lm_head is tied but still in source_dir → not missing
+        # Special case: google/gemma-3-4b-it
+        # saved tensors have "model.language_model" prefix
+        if name.startswith("language_model.model."):
+            name = name.replace("language_model.model.", "model.language_model.")
+        # Special case: Qwen/Qwen3-0.6B-FP8
+        # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
         if name in saved_tensor_names:
@@ -190,11 +202,9 @@ def copy_missing_tensors_from_source(
         parent = name.rsplit(".", 1)[0]
         if parent in saved_parent_layers:
             return False
+        # For split experts, name is changed but block name is the same.
         src_block = _first_numeric_prefix(name)
         if src_block is not None:
-            # Source tensor belongs to a numbered block; if that exact block
-            # appears in the saved output it was processed (possibly renamed
-            # or split) rather than omitted.
             return src_block not in saved_block_prefix
         return True
 

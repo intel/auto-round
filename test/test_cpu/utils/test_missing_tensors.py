@@ -599,6 +599,37 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             self.assertEqual(weight_map["mtp.0.norm.weight"], "model_extra_tensors.safetensors")
             self.assertEqual(weight_map["model.embed_tokens.weight"], "model.safetensors")
 
+    def test_tensor_with_known_block_prefix_not_copied_gemma(self):
+        """Source tensor whose numeric block-prefix exists in the saved output is not missing.
+
+        Scenario: source has an extra gate weight inside 'model.layers.0'; the target
+        already contains other tensors from 'model.layers.0' — the block was processed.
+        """
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            _save_safetensors(
+                {
+                    "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                    "language_model.model.norm.weight": torch.randn(64),
+                    "language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                    "language_model.norm.weight": torch.randn(64),
+                },
+                os.path.join(source_dir, "model.safetensors"),
+            )
+            # Target has a different sub-layer inside the same block
+            _save_safetensors(
+                {
+                    "model.language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                    "model.language_model.norm.weight": torch.randn(64),
+                },
+                os.path.join(target_dir, "model.safetensors"),
+            )
+            _write_config(target_dir)
+
+            copy_missing_tensors_from_source(source_dir, target_dir)
+
+            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
+            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: block prefix is known")
+
 
 if __name__ == "__main__":
     unittest.main()
