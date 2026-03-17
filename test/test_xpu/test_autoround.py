@@ -109,10 +109,11 @@ class TestAutoRoundXPU:
         ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
 
         # test loading
-        if scheme not in ["FPW8A16"]: # FPW8A16 group_size is 0
+        if scheme not in ["FPW8A16"]:  # FPW8A16 group_size is 0
             # device_map="auto" doesn't work, must use "xpu"
             model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path, device_map=self.device,
+                quantized_model_path,
+                device_map=self.device,
             )
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
@@ -122,11 +123,8 @@ class TestAutoRoundXPU:
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
-        fp32_model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name
-        )
+        fp32_model = Qwen2VLForConditionalGeneration.from_pretrained(model_name)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-
 
         ar = AutoRound(
             model=model_name,
@@ -184,16 +182,14 @@ class TestAutoRoundXPU:
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         print(output_text[0])
+
     def test_vlm_model(self, dataloader):
         scheme = "W4A16"
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
-        fp32_model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name
-        )
+        fp32_model = Qwen2VLForConditionalGeneration.from_pretrained(model_name)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-
 
         ar = AutoRound(
             model=model_name,
@@ -251,7 +247,7 @@ class TestAutoRoundXPU:
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         print(output_text[0])
- 
+
     def test_quant_lm_head(self, dataloader):
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
@@ -289,4 +285,4 @@ class TestAutoRoundXPU:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)       
+        print(res)
