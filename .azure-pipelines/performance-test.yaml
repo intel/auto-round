@@ -36,6 +36,7 @@ stages:
           - script: |
               docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \
                 && export UV_NO_PROGRESS=1 \
+                && export UV_SYSTEM_PYTHON=1 \
                 && pip install uv \
                 && uv pip install -r test/test_hpu/requirements.txt \
                 && uv pip list"
