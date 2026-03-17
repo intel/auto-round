@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
 import time
 from typing import Any, Union
 
@@ -412,10 +413,10 @@ class HybridCompressor(DiffusionCompressor):
         )
         if hasattr(self, "formats"):
             ar.formats = self.formats
-        ar.inplace = False
         # Required by base.quantize() → _adjust_immediate_packing_and_saving();
         # None disables immediate packing (correct since we call quantize() directly).
         ar.orig_output_dir = None
+        ar.inplace = True
         return ar
 
     def _quantize_dit(self):
@@ -520,6 +521,68 @@ class HybridCompressor(DiffusionCompressor):
     # Saving
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _flatten_nested_component_dir(component_output_dir: str, component_name: str) -> None:
+        """Fix accidental nested save layouts (e.g. transformer/transformer/config.json).
+
+        Some model config savers may create a same-name nested directory under the
+        component output path. Flatten it so pipeline loaders find config files in
+        the expected component root.
+        """
+        model_markers = (
+            "config.json",
+            "generation_config.json",
+            "model.safetensors",
+            "model.safetensors.index.json",
+        )
+
+        nested_dir = os.path.join(component_output_dir, component_name)
+
+        # Some exporters write into a single nested model folder (for example,
+        # vision_language_encoder/transformer). If same-name nesting does not
+        # exist, try to detect this pattern and flatten it as well.
+        if not os.path.isdir(nested_dir):
+            child_dirs = [
+                os.path.join(component_output_dir, name)
+                for name in os.listdir(component_output_dir)
+                if os.path.isdir(os.path.join(component_output_dir, name))
+            ]
+            has_model_files_at_root = any(
+                os.path.exists(os.path.join(component_output_dir, marker))
+                for marker in model_markers
+            )
+            if len(child_dirs) == 1 and not has_model_files_at_root:
+                candidate = child_dirs[0]
+                has_model_files_in_child = any(
+                    os.path.exists(os.path.join(candidate, marker))
+                    for marker in model_markers
+                )
+                if has_model_files_in_child:
+                    nested_dir = candidate
+                else:
+                    return
+            else:
+                return
+
+        moved = 0
+        for entry in os.listdir(nested_dir):
+            src = os.path.join(nested_dir, entry)
+            dst = os.path.join(component_output_dir, entry)
+            if os.path.exists(dst):
+                continue
+            shutil.move(src, dst)
+            moved += 1
+
+        if moved > 0:
+            logger.warning(
+                "Flattened nested component directory %s -> %s",
+                nested_dir,
+                component_output_dir,
+            )
+
+        # Remove the nested directory when empty.
+        if os.path.isdir(nested_dir) and len(os.listdir(nested_dir)) == 0:
+            os.rmdir(nested_dir)
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save both quantized AR and DiT models into a pipeline directory structure.
 
@@ -558,6 +621,7 @@ class HybridCompressor(DiffusionCompressor):
             BaseCompressor.save_quantized(
                 self, output_dir=dit_output_dir, format=format, inplace=inplace, **kwargs
             )
+            self._flatten_nested_component_dir(dit_output_dir, dit_subdir)
 
         # Save AR
         if self.quant_ar and self.ar_model is not None:
@@ -582,6 +646,7 @@ class HybridCompressor(DiffusionCompressor):
             BaseCompressor.save_quantized(
                 self, output_dir=ar_output_dir, format=format, inplace=inplace, **kwargs
             )
+            self._flatten_nested_component_dir(ar_output_dir, ar_subdir)
 
             # Restore DiT serialization attributes
             for k, v in saved_attrs.items():
@@ -647,8 +712,11 @@ class HybridCompressor(DiffusionCompressor):
 
         format_list = get_formats(format, self)
         self.formats = format_list
-        self.orig_output_dir = output_dir  # required by base.quantize() → _adjust_immediate_packing_and_saving()
         self.inplace = inplace
+        # Keep orig_output_dir as None so _adjust_immediate_packing_and_saving()
+        # disables immediate saving — diffusers models must go through
+        # model.save_pretrained() to get correct weight file names.
+        self.orig_output_dir = None
 
         self.quantize()
         self.save_quantized(
