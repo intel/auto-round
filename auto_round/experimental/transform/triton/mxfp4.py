@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Refer code here:
+#   https://github.com/IST-DASLab/FP-Quant/blob/master/inference_lib/src/fp_quant/module/triton/mxfp4.py
+
 import torch
 import triton  # pylint: disable=E0401
 import triton.language as tl  # pylint: disable=E0401

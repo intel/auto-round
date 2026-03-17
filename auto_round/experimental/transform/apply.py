@@ -51,10 +51,10 @@ def _apply_to_module(
     """
 
     # create transform as submodule
-    transform_name = "forward_hadamard_transform"
+    transform_name = "transform_matrix"
 
     if config.location == "input":
-        from .triton.utils import is_triton_available
+        from auto_round.experimental.transform.triton.utils import is_triton_kernel_available
 
         # activation needs transpose
         inp_transform = build_transform(
@@ -69,7 +69,7 @@ def _apply_to_module(
         else:
             transform_weight = None
 
-        if is_triton_available():
+        if is_triton_kernel_available():
             from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
             def input_hook(self, args):
@@ -80,7 +80,7 @@ def _apply_to_module(
                 qdq_input, _ = mxfp4_forward_kernel_wrapper(
                     x_flat,
                     (
-                        transform_weight if transform_weight is not None else self.forward_hadamard_transform.T
+                        transform_weight if transform_weight is not None else self.transform_matrix.T
                     ),  # this matrix from w_transform, needs transpose
                 )
                 return qdq_input.reshape(orig_shape)
@@ -101,8 +101,8 @@ def _apply_to_module(
                     input = input.view(-1, transform_weight.shape[0])
                     return _multihead_matmul(input, transform_weight.to(input.device)).view(ori_shape)
                 else:
-                    input = input.view(-1, self.forward_hadamard_transform.shape[0])
-                    return _multihead_matmul(input, self.forward_hadamard_transform.T).view(ori_shape)
+                    input = input.view(-1, self.transform_matrix.shape[0])
+                    return _multihead_matmul(input, self.transform_matrix.T).view(ori_shape)
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = False

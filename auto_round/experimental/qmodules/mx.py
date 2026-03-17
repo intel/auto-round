@@ -206,7 +206,7 @@ class TransformMXFP4QuantLinear(MXFP4QuantLinear):
         super().__init__(*args, **kwargs)
         self.enable_transform = True
         self.register_buffer(
-            "forward_hadamard_transform",
+            "transform_matrix",
             torch.empty(
                 self.group_size,
                 self.group_size,

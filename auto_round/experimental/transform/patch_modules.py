@@ -202,8 +202,8 @@ def patch_quantlinear():
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
         # add transform weight
-        transform = getattr(linear, "forward_hadamard_transform")
-        self.register_buffer("forward_hadamard_transform", transform.weight.to(device))
+        transform = getattr(linear, "transform_matrix")
+        self.register_buffer("transform_matrix", transform.weight.to(device))
         return
 
     QuantLinear.pack = _pack_patched
