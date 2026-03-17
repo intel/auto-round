@@ -22,33 +22,34 @@ variables:
 pool: GAUDI
 
 stages:
-  - stage: Unit_test
-    displayName: Unit Test
+  - stage: PerformanceTest
+    displayName: Performance Test
     dependsOn: []
     jobs:
-      steps:
-        - template: docker-template.yml
-          parameters:
-            containerName: $(CONTAINER_NAME)
-            imageSource: pull
+      - job:
+        steps:
+          - template: docker-template.yml
+            parameters:
+              containerName: $(CONTAINER_NAME)
+              imageSource: pull
 
-        - script: |
-            docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \
-              && pip install -r test/test_hpu/requirements.txt \
-              && pip list"
-          displayName: "HPU Env Setup"
+          - script: |
+              docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \
+                && pip install -r test/test_hpu/requirements.txt \
+                && pip list"
+            displayName: "HPU Env Setup"
 
-        - script: |
-            docker exec $(CONTAINER_NAME) \
-            bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
-              && bash perf_test.sh"
-          displayName: "Run UT"
+          - script: |
+              docker exec $(CONTAINER_NAME) \
+              bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
+                && bash perf_test.sh"
+            displayName: "Run UT"
 
-        - task: Bash@3
-          condition: always()
-          inputs:
-            targetType: "inline"
-            script: |
-              docker stop $(CONTAINER_NAME)
-              docker rm -vf $(CONTAINER_NAME) || true
-          displayName: "Docker clean up"
+          - task: Bash@3
+            condition: always()
+            inputs:
+              targetType: "inline"
+              script: |
+                docker stop $(CONTAINER_NAME)
+                docker rm -vf $(CONTAINER_NAME) || true
+            displayName: "Docker clean up"
