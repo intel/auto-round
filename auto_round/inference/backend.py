@@ -834,37 +834,28 @@ def get_gptqmodel_awq_infer_linear(backend):
     finally:
         torch.set_default_dtype(dtype)
 
-    # Verify AWQ kernels are available
-    try:
-        import gptqmodel_exllamav2_awq_kernels  # pylint: disable=E0401
-    except ImportError:
-        logger.warning(
-            "gptqmodel AWQ kernels are not available, " "to use gptqmodel AWQ, reinstall gptqmodel with CUDA support."
-        )
-        raise
-
     # Select AWQ kernel
     if "marlin" in backend:
-        from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear
+        from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear  # pylint: disable=E0401
 
         return AwqMarlinQuantLinear
     elif "exllamav2" in backend or backend in ("awq", "auto_awq", "auto_awq:gemm", "gptqmodel:awq"):
         # "auto_awq:gemm" is listed here because it is a legacy autoawq backend name referring to
         # the AWQ GEMM packing format, not a request for gptqmodel's literal GEMM kernel.
-        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
 
         return AwqExllamaV2QuantLinear
     elif "gemm" in backend:
-        from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGemmQuantLinear
+        from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGemmQuantLinear  # pylint: disable=E0401
 
         return AwqGemmQuantLinear
     elif "torch" in backend:
-        from gptqmodel.nn_modules.qlinear.torch_awq import AwqTorchQuantLinear
+        from gptqmodel.nn_modules.qlinear.torch_awq import AwqTorchQuantLinear  # pylint: disable=E0401
 
         return AwqTorchQuantLinear
     else:
         # Default to exllamav2
-        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
 
         return AwqExllamaV2QuantLinear
 
