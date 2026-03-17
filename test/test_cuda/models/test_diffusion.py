@@ -30,6 +30,29 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_diffusion_rtn(self):
+        from diffusers import AutoPipelineForText2Image
+
+        ## load the model
+        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
+        # build tiny model for testing since the full model is too large to quantize and evaluate in CI
+        pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
+        pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
+
+        ## quantize the model
+        autoround = AutoRoundDiffusion(
+            pipe,
+            tokenizer=None,
+            scheme="MXFP4",
+            iters=0,
+            disable_opt_rtn=True,
+            num_inference_steps=2,
+            dataset=get_captions_dataset_path(),
+        )
+        # skip model saving since it takes much time
+        autoround.quantize()
+
+    @pytest.mark.skip_ci(reason="Tuning will OOM in CI; Only tiny model is suggested")  # skip this test in CI
     @require_optimum
     def test_diffusion_tune(self):
         from diffusers import AutoPipelineForText2Image
@@ -60,28 +83,6 @@ class TestAutoRound:
             nsamples=1,
             num_inference_steps=2,
             layer_config=layer_config,
-            dataset=get_captions_dataset_path(),
-        )
-        # skip model saving since it takes much time
-        autoround.quantize()
-
-    @pytest.mark.skip_ci(reason="Not necessary to run both tune and rtn in CI")
-    def test_diffusion_rtn(self):
-        from diffusers import AutoPipelineForText2Image
-
-        ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
-        # build tiny model for testing since the full model is too large to quantize and evaluate in CI
-        pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
-        pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
-
-        ## quantize the model
-        autoround = AutoRoundDiffusion(
-            pipe,
-            tokenizer=None,
-            scheme="MXFP4",
-            iters=0,
-            num_inference_steps=2,
             dataset=get_captions_dataset_path(),
         )
         # skip model saving since it takes much time
