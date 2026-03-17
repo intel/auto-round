@@ -23,12 +23,12 @@ from auto_round.logger import logger
 class MLLMMixin:
     """MLLM-specific functionality mixin.
 
-    This mixin adds MLLM-specific functionality to any compressor (CalibCompessor,
+    This mixin adds MLLM-specific functionality to any compressor (CalibCompressor,
     ZeroShotCompressor, ImatrixCompressor, etc). It handles multi-modal models
     (vision-language models) that require special data loading and processing logic.
 
     Can be combined with:
-    - CalibCompessor (for AutoRound with calibration)
+    - CalibCompressor (for AutoRound with calibration)
     - ImatrixCompressor (for RTN with importance matrix)
     - ZeroShotCompressor (for basic RTN)
 
@@ -58,7 +58,7 @@ class MLLMMixin:
         self.quant_nontext_module = quant_nontext_module
         self.template_obj = None
 
-        # Call parent class __init__ (will be CalibCompessor, ImatrixCompressor, etc)
+        # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
     @torch.no_grad()

@@ -15,7 +15,7 @@
 # Lazy imports to avoid circular dependencies
 # Users should import from specific modules instead of this __init__.py
 
-__all__ = ["Compressor", "CalibCompessor", "ImatrixCompressor", "ZeroShotCompressor", "AutoRound"]
+__all__ = ["Compressor", "CalibCompressor", "ImatrixCompressor", "ZeroShotCompressor", "AutoRound"]
 
 
 def __getattr__(name):
@@ -26,11 +26,11 @@ def __getattr__(name):
         if name == "Compressor":
             return Compressor
         return AutoRound
-    elif name == "CalibCompessor" or name == "ImatrixCompressor":
-        from auto_round.compressors_new.calib import CalibCompessor, ImatrixCompressor
+    elif name == "CalibCompressor" or name == "ImatrixCompressor":
+        from auto_round.compressors_new.calib import CalibCompressor, ImatrixCompressor
 
-        if name == "CalibCompessor":
-            return CalibCompessor
+        if name == "CalibCompressor":
+            return CalibCompressor
         return ImatrixCompressor
     elif name == "ZeroShotCompressor":
         from auto_round.compressors_new.zero_shot import ZeroShotCompressor

@@ -61,7 +61,7 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock
 
 
-class CalibCompessor(BaseCompressor):
+class CalibCompressor(BaseCompressor):
     need_calib: bool = True
 
     def __init__(
@@ -999,7 +999,7 @@ class CalibCompessor(BaseCompressor):
             )
 
 
-class ImatrixCompressor(CalibCompessor):
+class ImatrixCompressor(CalibCompressor):
     need_calib: bool = True
 
     def __init__(

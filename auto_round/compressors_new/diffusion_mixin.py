@@ -25,12 +25,12 @@ class DiffusionMixin:
     """Diffusion-specific functionality mixin.
 
     This mixin adds diffusion model-specific functionality to any compressor
-    (CalibCompessor, ZeroShotCompressor, ImatrixCompressor, etc). It handles
+    (CalibCompressor, ZeroShotCompressor, ImatrixCompressor, etc). It handles
     diffusion models (like Stable Diffusion, FLUX) that require special pipeline
     handling and data generation logic.
 
     Can be combined with:
-    - CalibCompessor (for AutoRound with calibration)
+    - CalibCompressor (for AutoRound with calibration)
     - ImatrixCompressor (for RTN with importance matrix)
     - ZeroShotCompressor (for basic RTN)
 
@@ -48,7 +48,7 @@ class DiffusionMixin:
         self.pipe = None  # Will be set during model loading
         self.pipe_config = None
 
-        # Call parent class __init__ (will be CalibCompessor, ImatrixCompressor, etc)
+        # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
     def post_init(self):

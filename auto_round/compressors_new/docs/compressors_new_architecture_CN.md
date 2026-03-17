@@ -16,7 +16,7 @@
 compressors_new/
 ├── entry.py                # 统一入口,自动检测模型类型
 ├── base.py                 # BaseCompressor 基类
-├── calib.py                # CalibCompessor (基于校准的压缩)
+├── calib.py                # CalibCompressor (基于校准的压缩)
 ├── zero_shot.py            # ZeroShotCompressor (零样本压缩)
 ├── mllm_mixin.py           # MLLMCalibCompressor (多模态模型校准压缩)
 └── diffusion_mixin.py      # DiffusionCalibCompressor (扩散模型校准压缩)
@@ -27,7 +27,7 @@ compressors_new/
 ```
 BaseCompressor (基础压缩器)
     │
-    ├── CalibCompessor (基于校准的压缩器)
+    ├── CalibCompressor (基于校准的压缩器)
     │   │
     │   ├── MLLMCalibCompressor (多模态模型专用)
     │   │   └── 支持视觉-语言模型(如 Qwen2-VL, LLaVA 等)
@@ -203,7 +203,7 @@ Compressor.__new__()
 │  │      └─ 提取 transformer/unet
 │  │
 │  └─ model_type == "llm"
-│     └─> CalibCompessor
+│     └─> CalibCompressor
 │         └─ 标准文本数据集
 │
 └─ RTNConfig (零样本量化)
@@ -235,7 +235,7 @@ class Compressor(object):
 
                 return DiffusionCalibCompressor(config, model, tokenizer, platform, format, **kwargs)
             else:
-                return CalibCompessor(config, model, tokenizer, platform, format, **kwargs)
+                return CalibCompressor(config, model, tokenizer, platform, format, **kwargs)
 
         elif isinstance(config, RTNConfig):
             # RTN 可能需要 imatrix
@@ -259,11 +259,11 @@ class Compressor(object):
 from typing import Union
 import torch
 from auto_round.algorithms.alg_config import AlgConfig
-from auto_round.compressors_new.calib import CalibCompessor
+from auto_round.compressors_new.calib import CalibCompressor
 from auto_round.logger import logger
 
 
-class AudioCalibCompressor(CalibCompessor):
+class AudioCalibCompressor(CalibCompressor):
     """音频模型专用校准压缩器"""
 
     def __init__(
@@ -411,7 +411,7 @@ def is_audio_model(model_or_path: Union[str, torch.nn.Module]) -> bool:
 ### MLLMCalibCompressor 关键实现
 
 ```python
-class MLLMCalibCompressor(CalibCompessor):
+class MLLMCalibCompressor(CalibCompressor):
     def __init__(
         self, config, model, processor=None, image_processor=None, template=None, extra_data_dir=None, **kwargs
     ):
@@ -455,7 +455,7 @@ class MLLMCalibCompressor(CalibCompessor):
 ### DiffusionCalibCompressor 关键实现
 
 ```python
-class DiffusionCalibCompressor(CalibCompessor):
+class DiffusionCalibCompressor(CalibCompressor):
     def __init__(self, config, model, guidance_scale=7.5, num_inference_steps=50, **kwargs):
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
@@ -518,7 +518,7 @@ class DiffusionCalibCompressor(CalibCompessor):
    │   └─> 根据 config 类型和 model_type 创建实例
    │       ├─> MLLMCalibCompressor (MLLM + AutoRound)
    │       ├─> DiffusionCalibCompressor (Diffusion + AutoRound)
-   │       ├─> CalibCompessor (LLM + AutoRound)
+   │       ├─> CalibCompressor (LLM + AutoRound)
    │       ├─> ImatrixCompressor (RTN + imatrix)
    │       └─> ZeroShotCompressor (RTN)
    │
@@ -636,7 +636,7 @@ python -c "from test_compressor_new_arch import test_mllm_compressor; test_mllm_
 
    # 测试 LLM
    comp = Compressor(config=config, model="/models/opt-125m/")
-   assert isinstance(comp, CalibCompessor)
+   assert isinstance(comp, CalibCompressor)
 
    # 测试 MLLM
    comp = Compressor(config=config, model="/models/Qwen2-VL-2B-Instruct")
@@ -719,7 +719,7 @@ comp = Compressor(config=config, model=...)
 | 需要校准数据 | ❌ 否 | ✅ 是 |
 | 量化质量 | 较低 | 较高 |
 | 量化速度 | 快 | 慢 |
-| Compressor | ZeroShotCompressor | CalibCompessor 系列 |
+| Compressor | ZeroShotCompressor | CalibCompressor 系列 |
 
 ```python
 # RTN - 快速但质量较低
