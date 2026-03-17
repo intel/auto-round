@@ -121,6 +121,10 @@ class TestAutoRoundXPU:
     def test_vlm_model(self, dataloader):
         scheme = "W4A16"
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
+
+        fp32_model = Qwen2VLForConditionalGeneration.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         ar = AutoRound(
             model=model_name,
