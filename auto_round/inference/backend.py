@@ -425,13 +425,29 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     requirements=["gptqmodel>=2.0"],
 )
 
+BackendInfos["gptqmodel:awq"] = BackendInfo(
+    device=["cuda"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    bits=[4],
+    group_size=[-1, 32, 64, 128],
+    priority=5,
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    checkers=[exllamav2_feature_checker],
+    alias=["gptqmodel:autoawq", "gptqmodel_awq"],
+    requirements=["gptqmodel>=2.0"],
+)
+
+# autoawq backend - deprecated, kept for backward compatibility
 BackendInfos["auto_awq:gemm"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],  # Actually it is GEMM
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=None,
-    priority=5,
+    priority=4,
     compute_dtype=["float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
@@ -758,7 +774,9 @@ def dynamic_import_inference_linear(backend, config):
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
 
             return QuantLinear
-    if "gptqmodel" in backend:
+
+    # Handle gptqmodel GPTQ backends
+    if "gptqmodel" in backend and "awq" not in backend:
         return get_gptqmodel_infer_linear(backend, bits, group_size, sym)
 
     if "gptq" in backend and "gptqmodel" not in backend:
@@ -766,12 +784,19 @@ def dynamic_import_inference_linear(backend, config):
 
     if "awq" in backend:
         try:
+            return get_gptqmodel_awq_infer_linear(backend)
+        except ImportError:
+            pass
+
+        # Fallback to autoawq for backward compatibility
+        try:
             from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+            return WQLinear_GEMM
         except ImportError:
             raise ImportError(
-                "autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format."
+                "AWQ inference requires either 'gptqmodel' (recommended) or 'autoawq'. "
+                "Install via: pip install gptqmodel  OR  pip install autoawq"
             )
-        return WQLinear_GEMM
 
     if backend == "auto_round:tritonv2":
         from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
@@ -796,15 +821,61 @@ def dynamic_import_inference_linear(backend, config):
     raise ValueError(f"unsupported backend {backend}, please set it to `auto` and retry")
 
 
+def get_gptqmodel_awq_infer_linear(backend):
+    """Returns the appropriate gptqmodel AWQ QuantLinear class for inference.
+    """
+    import torch
+
+    dtype = torch.get_default_dtype()
+    if dtype != torch.float32:
+        torch.set_default_dtype(torch.float32)
+    try:
+        import gptqmodel  # pylint: disable=E0401
+    finally:
+        torch.set_default_dtype(dtype)
+
+    # Verify AWQ kernels are available
+    try:
+        import gptqmodel_exllamav2_awq_kernels  # pylint: disable=E0401
+    except ImportError:
+        logger.warning(
+            "gptqmodel AWQ kernels are not available, " \
+            "to use gptqmodel AWQ, reinstall gptqmodel with CUDA support."
+        )
+        raise
+
+    # Select AWQ kernel
+    if "marlin" in backend:
+        from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear
+        return AwqMarlinQuantLinear
+    elif "exllamav2" in backend or backend in ("awq", "auto_awq", "auto_awq:gemm", "gptqmodel:awq"):
+        # "auto_awq:gemm" is listed here because it is a legacy autoawq backend name referring to
+        # the AWQ GEMM packing format, not a request for gptqmodel's literal GEMM kernel.
+        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+        return AwqExllamaV2QuantLinear
+    elif "gemm" in backend:
+        from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGemmQuantLinear
+        return AwqGemmQuantLinear
+    elif "torch" in backend:
+        from gptqmodel.nn_modules.qlinear.torch_awq import AwqTorchQuantLinear
+        return AwqTorchQuantLinear
+    else:
+        # Default to exllamav2
+        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear
+        return AwqExllamaV2QuantLinear
+
+
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
     import torch
 
     dtype = torch.get_default_dtype()
     if dtype != torch.float32:
         torch.set_default_dtype(torch.float32)
-    import gptqmodel  # pylint: disable=E0401
-
-    torch.set_default_dtype(dtype)
+    
+    try:
+        import gptqmodel  # pylint: disable=E0401
+    finally:
+        torch.set_default_dtype(dtype)
 
     if "marlin" in backend:
         return auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer()
