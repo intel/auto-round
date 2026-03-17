@@ -147,10 +147,10 @@ class TestAutoRound:
 
     @pytest.mark.skipif(
         transformers_version >= version.parse("5.0.0"),
-        reason="ChatGLMConfig object has no attribute max_length, https://github.com/huggingface/transformers/issues/43881",
+        reason="https://huggingface.co/zai-org/glm-4v-9b/discussions/46",
     )
     def test_glm_4v(self):
-        model_name = get_model_path("THUDM/glm-4v-9b")
+        model_name = get_model_path("zai-org/glm-4v-9b")
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
