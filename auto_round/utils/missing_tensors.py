@@ -551,8 +551,12 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     for pattern in extra_config:
         try:
             _compiled_patterns.append((_re.compile(pattern), pattern, extra_config[pattern]))
-        except _re.error:
-            pass
+        except _re.error as exc:
+            logger.warning(
+                "Invalid regex key in extra_config ignored during pre-compilation: %r (%s)",
+                pattern,
+                exc,
+            )
 
     # Cache resolved layer configs to avoid repeated regex scans for the same name.
     _layer_cfg_cache: dict = {}
