@@ -364,7 +364,7 @@ def _qwen3_omni_moe_forward(
     )
 
     # Run talker forward if available (for calibration purposes)
-    if hasattr(model, "talker") and model.has_talker:
+    if getattr(model, "has_talker", False) and getattr(model, "talker", None) is not None:
         try:
             # Get thinker hidden states for talker input
             # Use the last hidden state from thinker as input to talker
