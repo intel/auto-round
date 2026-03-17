@@ -44,6 +44,8 @@ from auto_round.compressors.utils import (
     get_shared_keys,
     infer_bits_by_data_type,
     init_cache,
+    is_block_wfp8,
+    is_dynamic_afp8,
     is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
@@ -457,7 +459,7 @@ class BaseCompressor(object):
             self.bits >= 8
             and self.act_bits >= 8
             and self.iters == 0
-            and self.data_type == "int"
+            and self.data_type in ["int", "fp"]
             and disable_opt_rtn is None
         ):
             logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
@@ -467,6 +469,9 @@ class BaseCompressor(object):
                 "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
             )
             disable_opt_rtn = False
+
+        if self.iters > 0 and is_block_wfp8(self):
+            logger.warning("RTN is recommended since it shows even better accuracy for block-wise fp8 quantization.")
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -840,10 +845,14 @@ class BaseCompressor(object):
             raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
             raise ValueError("`act_bits` must be positive")
-        if not (self.group_size == -1 or self.group_size >= 0):
-            raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if not (self.act_group_size == -1 or self.act_group_size >= 0):
+        if not isinstance(self.group_size, tuple) and not (self.group_size == -1 or self.group_size >= 0):
+            raise ValueError(
+                "`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer or a tuple of length 2"
+            )
+        if isinstance(self.act_group_size, tuple) or not (self.act_group_size == -1 or self.act_group_size >= 0):
             raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
+        if isinstance(self.group_size, tuple) and len(self.group_size) != 2:
+            raise ValueError("`group_size` must be a tuple of length 2")
         if self.batch_size <= 0:
             raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
@@ -861,6 +870,7 @@ class BaseCompressor(object):
             and not is_mx_fp(self.act_data_type)
             and not is_dynamic_wint8aint8(self)
             and not is_static_wfp8afp8(self.act_data_type)
+            and not is_dynamic_afp8(self)
         ):
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
@@ -872,6 +882,12 @@ class BaseCompressor(object):
 
         if is_nv_fp(self.data_type) and (self.group_size != 16):
             logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
+
+        if isinstance(self.group_size, tuple):
+            if not is_block_wfp8(self):
+                raise NotImplementedError("only support block-wise quantization for fp8 weight quantization.")
+            if not is_dynamic_afp8(self):
+                raise NotImplementedError("only support dynamic fp8 activation for fp8 weight quantization.")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:

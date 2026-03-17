@@ -146,11 +146,12 @@ AutoRound 支持多种量化配置：
 
 | 格式            | 支持的量化方案                                                                                                                                                                                                 |
 |:-------------- |:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **auto_round**  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`BF16`                                                                      |
+| **auto_round**  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`                                                                      |
 | **auto_awq**    | W4A16、BF16                                                                                                                                                                                                   |
 | **auto_gptq**   | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                                           |
-| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                                                                                                                              |
+| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_STATIC                                                                                                                                                              |
 | **gguf**        | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0                                           |
+| **fp8**         | FP8_BLOCK  |
 | **fake**        | `所有方案（仅用于研究场景）`                                                                                                                                                                                   |
 
 ### 硬件兼容性
