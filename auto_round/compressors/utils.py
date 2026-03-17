@@ -28,7 +28,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized
+from auto_round.utils import check_to_quantized, to_standard_regex
 
 
 class BackendDataType(str, Enum):
@@ -97,6 +97,19 @@ def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if is_wint8aint8(ar_or_format):
         return True
     return False
+
+
+def is_dynamic_afp8(ar_or_format: Callable) -> bool:
+    return ar_or_format.act_dynamic and ar_or_format.act_data_type.startswith("fp") and ar_or_format.act_bits == 8
+
+
+def is_block_wfp8(ar_or_format: Callable) -> bool:
+    return (
+        isinstance(ar_or_format.group_size, tuple)
+        and len(ar_or_format.group_size) == 2
+        and ar_or_format.data_type.startswith("fp")
+        and ar_or_format.bits == 8
+    )
 
 
 def block_forward(
@@ -328,6 +341,9 @@ def set_layer_config(
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
+    if ignore_layers:
+        ignore_layers = ignore_layers.replace(" ", "").split(",")
+        ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
 
     # 1. ignore_layers -> force 16
     for name in get_fp_layer_names(model, ignore_layers):
@@ -416,17 +432,20 @@ def set_layer_config(
                 logger.debug(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
                 continue
 
-        regex = re.compile(name)
+        regex = re.compile(to_standard_regex(name))
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
         safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
         # skip it for mtp layers not loaded in transformers
         if not matched and not safetensor_only_matched:
-            raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
+            # type(mlp.gate) is Qwen3VLMoeTextTopKRouter instead of Linear
+            logger.warning_once(
+                f"Layer name or regex '{name}' in layer_config does not match any supported layers. "
+                + "Please check for typos or update the regex pattern, ignore it for now"
+            )
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
         for match in matched:
             layer_config[match] = val
-    # regex_config = None if len(regex_config)==0 else regex_config
 
     # 7. lm_head
     lm_head_name = get_lm_head_name(model)
@@ -949,7 +968,7 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
 
     if not ignore_layers:
         return []
-    ignore_layers = ignore_layers.replace(" ", "").split(",")
+
     all_layer_names = []
     for n, m in model.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
@@ -962,8 +981,6 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         if fp_layer in all_layer_names:
             not_to_quantized_layers.append(fp_layer)
             continue
-        if fp_layer[-1].isdigit():
-            fp_layer = fp_layer + "."  ##tricky setting
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)

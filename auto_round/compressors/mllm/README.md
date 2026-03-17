@@ -28,7 +28,7 @@ autoround.quantize_and_save(output_dir, format="auto_round")
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component.
 
 for more hyperparameters introduction, please
-refer [Homepage Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
+refer [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration)
 
 ### Basic Usage
 
