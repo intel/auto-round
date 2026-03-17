@@ -18,9 +18,8 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
-from auto_round.compressors.utils import infer_bits_by_data_type
 from auto_round.logger import logger
-from auto_round.utils import SUPPORTED_DTYPES
+from auto_round.utils import SUPPORTED_DTYPES, infer_bits_by_data_type
 
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
@@ -284,7 +283,6 @@ W2A16G64 = QuantizationScheme.from_dict(
     }
 )
 
-
 W2A16G32 = QuantizationScheme.from_dict(
     {
         "bits": 2,
@@ -341,7 +339,6 @@ MXFP4_RCEIL = QuantizationScheme.from_dict(
     }
 )
 
-
 MXFP8 = QuantizationScheme.from_dict(
     {
         "bits": 8,
@@ -367,7 +364,6 @@ MXFP8_RCEIL = QuantizationScheme.from_dict(
         "act_dynamic": True,
     }
 )
-
 
 NVFP4 = QuantizationScheme.from_dict(
     {
@@ -439,7 +435,6 @@ INT8_W8A8 = QuantizationScheme.from_dict(
         "act_sym": True,
     }
 )
-
 
 # For AutoScheme 16 bits options
 BF16 = QuantizationScheme.from_dict(

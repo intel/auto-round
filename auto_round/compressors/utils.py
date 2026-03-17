@@ -28,7 +28,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, to_standard_regex
+from auto_round.utils import check_to_quantized, infer_bits_by_data_type, to_standard_regex
 
 
 class BackendDataType(str, Enum):
@@ -197,30 +197,6 @@ def collect_best_params(block, cache_device="cpu"):
                 for key in m.params.keys():
                     params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
-
-
-def infer_bits_by_data_type(data_type: str):
-    """Infer bits by data_type
-
-    Args:
-        data_type (str): data_type
-
-    Returns:
-        int: bits inferred by data_type, None means cannot infer correct bits by data_type
-    """
-    from auto_round.utils import SUPPORTED_DTYPES
-
-    if data_type is None:
-        return 16
-    for supported_dtype in SUPPORTED_DTYPES:
-        if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
-            ##first check the following two bits
-            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
-            if str.isdigit(suc_2str):
-                return int(suc_2str)
-            if str.isdigit(data_type[len(supported_dtype)]):
-                return int(data_type[len(supported_dtype)])
-    return None
 
 
 def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:

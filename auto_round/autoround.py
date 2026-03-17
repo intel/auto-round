@@ -32,6 +32,8 @@ from auto_round.utils import is_diffusion_model, is_mllm_model
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
+NEW_ARCH = True
+
 
 class AutoRound:
     """Automatic weight rounding (Signed Gradient Descent) for LLM quantization
@@ -158,6 +160,11 @@ class AutoRound:
         """
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+
+        if NEW_ARCH:
+            from auto_round.compressors_new import AutoRound as AutoRoundNew
+
+            AutoRoundNew(**local_args)
 
         model_cls = []
 

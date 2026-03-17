@@ -590,3 +590,27 @@ def compress_layer_names(names: list) -> str:
             parts.append(f"{prefix}[{range_str}]{suffix}")
     parts.extend(singles)
     return ", ".join(parts)
+
+
+def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
+    from auto_round.utils import SUPPORTED_DTYPES
+
+    if data_type is None:
+        return 16
+    for supported_dtype in SUPPORTED_DTYPES:
+        if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
+            ##first check the following two bits
+            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
+            if str.isdigit(suc_2str):
+                return int(suc_2str)
+            if str.isdigit(data_type[len(supported_dtype)]):
+                return int(data_type[len(supported_dtype)])
+    return None
