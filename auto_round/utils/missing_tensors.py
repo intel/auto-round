@@ -215,9 +215,45 @@ def copy_missing_tensors_from_source(
 
     logger.debug(f"Missing tensors detected: {missing_tensor_names}")
 
+    try:
+        from tqdm import tqdm as _tqdm
+    except ImportError:
+        _tqdm = None
+
+    def _compress_layer_names(names: list) -> str:
+        """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
+        import re as _re
+
+        # group by (prefix, suffix) where the number varies
+        from collections import defaultdict
+
+        groups: dict = defaultdict(list)
+        singles: list = []
+        for name in names:
+            m = _re.match(r"^(.*?\.)?(\d+)(\..+)?$", name)
+            if m:
+                prefix = m.group(1) or ""
+                num = int(m.group(2))
+                suffix = m.group(3) or ""
+                groups[(prefix, suffix)].append(num)
+            else:
+                singles.append(name)
+        parts: list = []
+        for (prefix, suffix), nums in groups.items():
+            nums_sorted = sorted(set(nums))
+            if len(nums_sorted) == 1:
+                parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
+            else:
+                parts.append(f"{prefix}[{nums_sorted[0]}-{nums_sorted[-1]}]{suffix}")
+        parts.extend(singles)
+        return ", ".join(parts)
+
+    # Compressed parent-layer summary for display
+    parent_summary = _compress_layer_names(list({name.rsplit(".", 1)[0] for name in missing_tensor_names}))
     logger.info(
         f"Found {len(missing_tensor_names)} tensor(s) in the source checkpoint that are "
-        f"absent from the saved output (e.g., MTP parameters). Copying them now..."
+        f"absent from the saved output (e.g., MTP parameters). Copying them now...\n"
+        f"  Layers: {parent_summary}"
     )
 
     # ------------------------------------------------------------------ #
@@ -229,24 +265,51 @@ def copy_missing_tensors_from_source(
         shard_to_missing.setdefault(shard_file, []).append(tensor_name)
 
     missing_tensors_dict: dict = {}
-    for shard_file, tensor_names in shard_to_missing.items():
+    _iter_shards = (
+        _tqdm(
+            shard_to_missing.items(),
+            desc="Loading missing tensors",
+            unit="shard",
+            total=len(shard_to_missing),
+        )
+        if _tqdm
+        else shard_to_missing.items()
+    )
+    for shard_file, tensor_names in _iter_shards:
         with safe_open(shard_file, framework="pt", device="cpu") as f:
-            for tensor_name in tensor_names:
+            _iter_tensors = (
+                _tqdm(
+                    tensor_names,
+                    desc=f"  {os.path.basename(shard_file)}",
+                    unit="tensor",
+                    leave=False,
+                )
+                if _tqdm
+                else tensor_names
+            )
+            for tensor_name in _iter_tensors:
                 missing_tensors_dict[tensor_name] = f.get_tensor(tensor_name)
-
     # ------------------------------------------------------------------ #
     # FP8 dequantization: if a weight is FP8 and its scale_inv is present  #
     # ------------------------------------------------------------------ #
 
     fp8_dtypes = {"torch.float8_e4m3fn", "torch.float8_e5m2", "torch.float8_e4m3fnuz", "torch.float8_e5m2fnuz"}
 
+    # Find FP8 weight candidates upfront to show accurate progress bar
+    fp8_candidates = [
+        (name, t)
+        for name, t in list(missing_tensors_dict.items())
+        if str(t.dtype) in fp8_dtypes and name.endswith(".weight")
+    ]
+
     dequantized_keys: list = []
     keys_to_remove: list = []
-    for tensor_name, tensor in list(missing_tensors_dict.items()):
-        if str(tensor.dtype) not in fp8_dtypes:
-            continue
-        if not tensor_name.endswith(".weight"):
-            continue
+    _fp8_iter = (
+        _tqdm(fp8_candidates, desc="Dequantizing FP8 weights", unit="weight")
+        if _tqdm and fp8_candidates
+        else fp8_candidates
+    )
+    for tensor_name, tensor in _fp8_iter:
 
         # Look for the corresponding scale_inv tensor
         base = tensor_name[: -len(".weight")]
@@ -280,10 +343,8 @@ def copy_missing_tensors_from_source(
         missing_tensors_dict.pop(k, None)
 
     if dequantized_keys:
-        logger.info(
-            f"Dequantized {len(dequantized_keys)} FP8 weight(s) to BF16 before saving: "
-            f"{dequantized_keys[:5]}{'...' if len(dequantized_keys) > 5 else ''}"
-        )
+        dq_summary = _compress_layer_names([k.rsplit(".", 1)[0] for k in dequantized_keys])
+        logger.info(f"Dequantized {len(dequantized_keys)} FP8 weight(s) to BF16 before saving: " f"{dq_summary}")
 
     if not missing_tensors_dict:
         return
@@ -465,43 +526,65 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
     extra_config: dict = qconfig.get("extra_config", {}) or {}
 
+    # Pre-compile all valid regex patterns once to avoid repeated re.compile() calls
+    # for every tensor lookup (O(N×M) → O(M) compile + O(N×M) match).
+    _compiled_patterns: list = []
+    for pattern in extra_config:
+        try:
+            _compiled_patterns.append((_re.compile(pattern), pattern, extra_config[pattern]))
+        except _re.error:
+            pass
+
+    # Cache resolved layer configs to avoid repeated regex scans for the same name.
+    _layer_cfg_cache: dict = {}
+
     def _resolve_layer_cfg(layer_name: str) -> dict:
         """Return effective {bits, group_size, sym, data_type} for *layer_name*.
 
         Lookup order:
           1. Exact key match in extra_config.
-          2. Among all regex keys that match layer_name, pick the longest pattern
-             (longer pattern == more specific, e.g. ``.*mtp\\.fc.*`` beats ``.*mtp.*``).
+          2. Among all pre-compiled regex keys that match layer_name, pick the longest
+             pattern (longer pattern == more specific).
           3. Global defaults.
         """
+        if layer_name in _layer_cfg_cache:
+            return _layer_cfg_cache[layer_name]
         override: dict = {}
         # 1. exact match
         if layer_name in extra_config:
             override = extra_config[layer_name]
         else:
-            # 2. collect all matching regex patterns, keep the most specific (longest)
+            # 2. use pre-compiled patterns, keep the most specific (longest)
             best_pattern: str | None = None
-            for pattern, cfg in extra_config.items():
+            for compiled, pattern, cfg in _compiled_patterns:
                 if pattern == layer_name:
                     continue  # already handled above
-                try:
-                    if _re.search(pattern, layer_name):
-                        if best_pattern is None or len(pattern) > len(best_pattern):
-                            best_pattern = pattern
-                            override = cfg
-                except _re.error:
-                    pass  # not a valid regex → skip
-        return {
+                if compiled.search(layer_name):
+                    if best_pattern is None or len(pattern) > len(best_pattern):
+                        best_pattern = pattern
+                        override = cfg
+        result = {
             "bits": override.get("bits", global_bits),
             "group_size": override.get("group_size", global_group_size),
             "sym": override.get("sym", global_sym),
             "data_type": override.get("data_type", "int"),
         }
+        _layer_cfg_cache[layer_name] = result
+        return result
 
     def _is_fp_layer(layer_cfg: dict) -> bool:
         """Return True when the resolved config indicates full-precision (no quantization)."""
         dt = layer_cfg.get("data_type", "int")
         return layer_cfg["bits"] >= 16 or dt in ("fp", "float", "float16", "bfloat16", "float32")
+
+    def _is_covered_by_extra_config(layer_name: str) -> bool:
+        """Return True if layer_name is matched by any entry in extra_config (exact or regex)."""
+        if layer_name in extra_config:
+            return True
+        for compiled, pattern, _ in _compiled_patterns:
+            if pattern != layer_name and compiled.search(layer_name):
+                return True
+        return False
 
     # Identify weight tensors eligible for quantization (2D Linear weights)
     def _is_eligible(k: str) -> bool:
@@ -512,9 +595,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
         # If extra_config explicitly covers this layer, trust its decision
-        if layer_name in extra_config or any(
-            _re.search(p, layer_name) for p in extra_config if p != layer_name and _is_valid_regex(p)
-        ):
+        if _is_covered_by_extra_config(layer_name):
             return not _is_fp_layer(layer_cfg)
         # Fall back to BLOCK_NAME_TO_IGNORE heuristic
         if any(block in k for block in BLOCK_NAME_TO_IGNORE):
@@ -533,17 +614,18 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     # Update quantization config: extra_config for ignored layers + block_name_to_quantize for new blocks
     if ignored_weight_keys or weight_keys:
 
-        def _update_qcfg(qcfg):
+        def _update_qcfg(qcfg, show_log=True):
             if ignored_weight_keys:
                 ec = qcfg.get("extra_config", {})
                 for k in ignored_weight_keys:
                     layer_name = k[: -len(".weight")]
                     ec.setdefault(layer_name, {"bits": 16, "data_type": "fp"})
                 qcfg["extra_config"] = ec
-                logger.info(
-                    f"Updated extra_config for {len(ignored_weight_keys)} ignored layer(s): "
-                    f"{[k[: -len('.weight')] for k in ignored_weight_keys]}"
-                )
+                if show_log:
+                    logger.info(
+                        f"Updated extra_config for {len(ignored_weight_keys)} ignored layer(s): "
+                        f"{[k[: -len('.weight')] for k in ignored_weight_keys]}"
+                    )
             if weight_keys:
                 existing = qcfg.get("block_name_to_quantize") or []
                 if isinstance(existing, str):
@@ -562,7 +644,8 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                         b for b in merged if not any(b != other and b.startswith(other + ".") for other in merged)
                     ]
                     qcfg["block_name_to_quantize"] = merged
-                    logger.info(f"Updated block_name_to_quantize: {merged}")
+                    if show_log:
+                        logger.info(f"Updated block_name_to_quantize: {merged}")
             return qcfg
 
         for cfg_file in ["config.json", "quantization_config.json"]:
@@ -574,9 +657,11 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 with open(cfg_path) as f:
                     cfg_data = json.load(f)
                 if cfg_file == "config.json":
-                    cfg_data["quantization_config"] = _update_qcfg(cfg_data.get("quantization_config", {}))
+                    cfg_data["quantization_config"] = _update_qcfg(
+                        cfg_data.get("quantization_config", {}), show_log=True
+                    )
                 else:
-                    cfg_data = _update_qcfg(cfg_data)
+                    cfg_data = _update_qcfg(cfg_data, show_log=False)
                 with open(cfg_path, "w") as f:
                     json.dump(cfg_data, f, indent=2)
             except Exception as e:
@@ -584,6 +669,11 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
 
     if not weight_keys:
         return missing_tensors_dict
+
+    try:
+        from tqdm import tqdm as _tqdm_woq
+    except ImportError:
+        _tqdm_woq = None
 
     logger.info(
         f"Applying WOQ to "
@@ -593,7 +683,10 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     new_tensors: dict = {}
     packed_weight_keys: set = set()
 
-    for weight_key in weight_keys:
+    _woq_iter = (
+        _tqdm_woq(weight_keys, desc="WOQ quantizing missing weights", unit="weight") if _tqdm_woq else weight_keys
+    )
+    for weight_key in _woq_iter:
         weight = missing_tensors_dict[weight_key]
         out_features, in_features = weight.shape
 
