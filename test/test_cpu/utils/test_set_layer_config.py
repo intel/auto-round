@@ -28,7 +28,7 @@ from auto_round.compressors.utils import set_layer_config
 class _Block(nn.Module):
     """A tiny two-linear block, used to build multi-layer test models."""
 
-    def __init__(self, size: int = 8):
+    def __init__(self, size: int = 32):
         super().__init__()
         self.fc1 = nn.Linear(size, size)
         self.fc2 = nn.Linear(size, size)
@@ -45,7 +45,7 @@ class _SimpleModel(nn.Module):
       lm_head
     """
 
-    def __init__(self, num_layers: int = 12, size: int = 8):
+    def __init__(self, num_layers: int = 12, size: int = 32):
         super().__init__()
         self.layers = nn.ModuleList([_Block(size) for _ in range(num_layers)])
         self.lm_head = nn.Linear(size, size * 2, bias=False)

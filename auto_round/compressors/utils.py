@@ -28,7 +28,7 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized
+from auto_round.utils import check_to_quantized, to_standard_regex
 
 
 class BackendDataType(str, Enum):
@@ -419,7 +419,7 @@ def set_layer_config(
                 logger.debug(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
                 continue
 
-        regex = re.compile(name)
+        regex = re.compile(to_standard_regex(name))
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
         safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
         # skip it for mtp layers not loaded in transformers
@@ -433,7 +433,6 @@ def set_layer_config(
         regex_config[name] = val  # keep regex config
         for match in matched:
             layer_config[match] = val
-    # regex_config = None if len(regex_config)==0 else regex_config
 
     # 7. lm_head
     lm_head_name = get_lm_head_name(model)
