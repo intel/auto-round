@@ -12,6 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Calibration dataset loading utilities for AutoRound quantization.
+
+This module provides functions and a registry for loading, tokenizing, and
+preparing calibration datasets used during the AutoRound quantization-tuning
+process.  A ``CALIB_DATASETS`` registry maps dataset names to loader functions,
+and :func:`get_dataloader` is the main entry point for obtaining a
+:class:`torch.utils.data.DataLoader` ready for calibration.
+
+Supported built-in datasets include ``NeelNanda/pile-10k``,
+``swift/pile-val-backup``, ``BAAI/CCI3-HQ``,
+``codeparrot/github-code-clean``, ``HuggingFaceH4/ultrachat_200k``,
+``openbmb/Ultra-FineWeb``, ``madao33/new-title-chinese``,
+``google-research-datasets/mbpp``, and local JSON/JSONL files.
+"""
+
 import json
 import logging
 import random
@@ -53,6 +68,24 @@ def register_dataset(name):
 
 
 def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None):
+    """Applies the tokenizer's chat template to a list of text samples.
+
+    Each sample is wrapped in a user message (and optionally a system message),
+    formatted with the tokenizer's chat template, and then tokenized with
+    truncation.
+
+    Args:
+        samples (list[str | list[dict]]): List of raw text strings or pre-built
+            message lists to apply the template to.
+        tokenizer: HuggingFace tokenizer with ``apply_chat_template`` support.
+        seqlen (int): Maximum token sequence length for truncation.
+        system_prompt (str | None, optional): Optional system prompt to prepend
+            to each conversation. Defaults to ``None``.
+
+    Returns:
+        dict: Tokenized output dict with ``"input_ids"`` and ``"attention_mask"``
+            keys (as returned by the tokenizer).
+    """
     rendered_messages = []
     # if system_prompt is None: ## remove system prompt as models like deepseek don't recommend using it
     #     system_prompt = "You are a helpful assistant."
@@ -315,6 +348,28 @@ def get_ultrachat_dataset(
     apply_chat_template=True,
     system_prompt=None,
 ):
+    """Returns a tokenized dataset from HuggingFaceH4/ultrachat_200k.
+
+    Args:
+        tokenizer: HuggingFace tokenizer used for tokenization.
+        seqlen (int): Maximum sequence length for truncation.
+        dataset_name (str, optional): HuggingFace dataset identifier. Defaults
+            to ``"HuggingFaceH4/ultrachat_200k"``.
+        split (str, optional): Dataset split name (one of ``"train_sft"``,
+            ``"test_sft"``, ``"train_gen"``, ``"test_gen"``). Defaults to
+            ``"train_sft"``.
+        seed (int, optional): Random seed for shuffling. Defaults to 42.
+        apply_chat_template (bool, optional): Whether to apply the tokenizer
+            chat template. Defaults to ``True``.
+        system_prompt (str | None, optional): System prompt for chat template.
+            Defaults to ``None``.
+
+    Returns:
+        datasets.Dataset: Shuffled, tokenized dataset ready for calibration.
+
+    Raises:
+        ValueError: If ``split`` is not one of the valid splits for this dataset.
+    """
     if split is None:
         split = "train_sft"
     all_splits = ["train_sft", "test_sft", "train_gen", "test_gen"]
@@ -364,6 +419,27 @@ def get_ultrafinweb_dataset(
     apply_chat_template=True,
     system_prompt=None,
 ):
+    """Returns a tokenized dataset from openbmb/Ultra-FineWeb.
+
+    Args:
+        tokenizer: HuggingFace tokenizer used for tokenization.
+        seqlen (int): Maximum sequence length for truncation.
+        dataset_name (str, optional): Dataset identifier. Defaults to
+            ``"openbmb/Ultra-FineWeb"``.
+        split (str | None, optional): Language split; one of ``"en"`` or
+            ``"zh"``. Defaults to ``"en"`` when ``None``.
+        seed (int, optional): Random seed for shuffling. Defaults to 42.
+        apply_chat_template (bool, optional): Whether to apply chat template.
+            Defaults to ``True``.
+        system_prompt (str | None, optional): System prompt for chat template.
+            Defaults to ``None``.
+
+    Returns:
+        datasets.Dataset: Tokenized dataset ready for calibration.
+
+    Raises:
+        ValueError: If ``split`` is not ``"en"`` or ``"zh"``.
+    """
     if split is not None:
         if split not in ["en", "zh"]:
             raise ValueError("split must be one of ['en', 'zh'] for Ultra-FineWeb dataset")
