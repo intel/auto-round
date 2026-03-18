@@ -315,5 +315,5 @@ class ZeroShotCompressor(BaseCompressor):
         if self.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
 
-        self.quantized = True
+        self.model_context.quantized = True
         return self.model, self.layer_config

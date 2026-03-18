@@ -1240,5 +1240,14 @@ class ImatrixCompressor(CalibCompressor):
         clear_memory(device_list=self.compress_context.device_list)
 
         self._quant_rtn_with_imatrix()
+
+        convert_module_to_hp_if_necessary(
+            self.model_context.model, self.model_context.amp_dtype, self.compress_context.device
+        )
+        if self.compress_context.low_cpu_mem_usage:
+            self._offloader.reload(self.model_context.model)
+        if self.is_immediate_saving:
+            self.shard_writer.write(is_finalize=True)
+
         self.model_context.quantized = True
         return self.model_context.model, self.quantizer.layer_config
