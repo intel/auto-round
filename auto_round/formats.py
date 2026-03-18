@@ -100,7 +100,7 @@ if TYPE_CHECKING:
 
 
 def _check_compatibility(formats: list[str], ar: BaseCompressor):
-    """Validates and normalises a list of requested export formats.
+    """Validates and normalizes a list of requested export formats.
 
     Ensures that GGUF formats are not mixed with other non-fake formats and
     that the GGUF scheme derived from the compressor matches the requested
@@ -292,7 +292,7 @@ class OutputFormat(ABC):
         """Builds a formatted string listing all registered formats and their supported schemes.
 
         Returns:
-            str: ANSI-coloured multi-line string with one entry per registered format.
+            str: ANSI-colored multi-line string with one entry per registered format.
         """
         output_str = ""
         for k, v in sorted(cls._format_list.items()):
@@ -348,7 +348,8 @@ class OutputFormat(ABC):
         """Validates detailed scheme arguments for compatibility with this format.
 
         Override in subclasses to enforce format-specific restrictions on
-        ``bits``, ``data_type``, ``group_size``, etc.
+        ``bits``, ``data_type``, ``group_size``, etc. The base implementation
+        performs no validation and always returns ``True``.
 
         Args:
             scheme (QuantizationScheme): The quantization scheme to validate.
