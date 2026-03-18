@@ -104,7 +104,7 @@ def progressive_quant_rtn_fp8_int4(
     tensor_max = torch.max(torch.abs(tensor)).to(torch.float32)
     scale = tensor_max.to(torch.float32) / info.max
     min_scaling_factor = 1.0 / (info.max * 512.0)  ##copy from vllm
-    bf16_to_fp8_scale = tensor_max.to(torch.float32).div_(info.max).clamp_(min=min_scaling_factor)
+    bf16_to_fp8_scale = tensor_max.div_(info.max).clamp_(min=min_scaling_factor)
     fp8_res = tensor.div_(bf16_to_fp8_scale).clamp_(info.min, info.max).to(torch.float8_e4m3fn)
 
     ##convert to bf16
