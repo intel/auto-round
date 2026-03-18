@@ -452,8 +452,7 @@ def quant_tensor_rtn_sym_gptq(
         wmin_new[tmp] = -wmax_new[tmp]
 
     scale = ((wmax_new - wmin_new) / maxq).to(scale_dtype)
-    scale = torch.clamp(scale, min=q_scale_thresh)
-    scale = scale.unsqueeze(dim=-1)
+    scale.clamp_(min=q_scale_thresh).unsqueeze_(dim=-1)
     zp = torch.full_like(scale, (maxq + 1) / 2)
 
     tensor.div_(scale).add_(v).round_().add_(zp).clamp_(0, maxq).sub_(zp).mul_(scale)
