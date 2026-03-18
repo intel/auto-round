@@ -30,7 +30,9 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     def _run_sglang_inference(self, model_path: Path):
-        llm = sgl.Engine(model_path=str(model_path), mem_fraction_static=0.7)
+        llm = sgl.Engine(
+            model_path=str(model_path), mem_fraction_static=0.7, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
+        )
         prompts = ["Hello, my name is"]
         sampling_params = {"temperature": 0.6, "top_p": 0.95}
         outputs = llm.generate(prompts, sampling_params)
