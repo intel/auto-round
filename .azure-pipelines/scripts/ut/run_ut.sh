@@ -85,7 +85,7 @@ function run_unit_test() {
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
 
     for test_file in ${selected_files}; do
-        $LIGHT_PURPLE && echo "##[group]Running ${test_file}..." && $RESET
+        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 

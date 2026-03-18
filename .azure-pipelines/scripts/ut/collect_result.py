@@ -31,7 +31,14 @@ class LogAnalyzer:
     """Analyzes test log files and generates summary reports."""
 
     TIME_PATTERN = re.compile(r"in\s+([\d.]+)s")
-    PREFIX_PATTERNS = ("unittest_cuda_vlm_", "unittest_cuda_")
+    PREFIX_PATTERNS = (
+        "unittest_cuda_vlm_",
+        "unittest_cuda_vllm_",
+        "unittest_cuda_sglang_",
+        "unittest_cuda_llmc_",
+        "unittest_cuda_",
+        "unittest_",
+    )
 
     FAILURE_MARKERS = (
         "FAILED",
@@ -118,7 +125,7 @@ class LogAnalyzer:
 class ReportGenerator:
     """Generates formatted test summary reports."""
 
-    WIDTHS = {"name": 30, "status": 10, "file": 50, "time": 10}
+    WIDTHS = {"name": 35, "status": 10, "file": 50, "time": 10}
     SEPARATOR = "=" * 120
 
     def __init__(self, output_path: Path):
