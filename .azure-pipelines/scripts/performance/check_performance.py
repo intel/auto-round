@@ -24,7 +24,7 @@ def str_to_float(value):
 
 def get_tuning_time():
     summary = {}
-    model_list = ["Qwen/Qwen3-8B"]
+    model_list = ["Qwen/Qwen3-0.6B"]
     for model in model_list:
         summary[model] = {}
         for test_mode in ["current", "baseline"]:
@@ -46,7 +46,7 @@ def check_performance():
         current_time = times.get("current", "N/A")
         baseline_time = times.get("baseline", "N/A")
         if current_time != "N/A" and baseline_time != "N/A":
-            print(f"{model}: \n Current = {current_time} seconds \n Baseline = {baseline_time} seconds")
+            print(f"{model}:\n  Current = {current_time} seconds\n  Baseline = {baseline_time} seconds")
             ratio = current_time / baseline_time
             if ratio < 0.9 or ratio > 1.1:
                 status = False
