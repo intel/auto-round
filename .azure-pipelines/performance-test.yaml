@@ -26,7 +26,8 @@ stages:
     displayName: Performance Test
     dependsOn: []
     jobs:
-      - job:
+      - job: PerformanceTestJob
+        displayName: Performance Test Job
         steps:
           - template: template/docker-template.yml
             parameters:
@@ -39,6 +40,7 @@ stages:
                 && export UV_SYSTEM_PYTHON=1 \
                 && pip install uv \
                 && uv pip install -r test/test_hpu/requirements.txt \
+                && uv pip install huggingface_hub \
                 && uv pip list"
             displayName: "HPU Env Setup"
 
@@ -46,7 +48,7 @@ stages:
               docker exec $(CONTAINER_NAME) \
               bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
                 && bash perf_test.sh"
-            displayName: "Run UT"
+            displayName: "Run performance test"
 
           - task: PublishPipelineArtifact@1
             condition: succeededOrFailed()
