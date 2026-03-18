@@ -326,9 +326,9 @@ def quant_tensor_rtn_asym(
         wmin = wmin_tmp
         wmax = wmax_tmp
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    scale.clamp_(min=q_scale_thresh).unsqueeze_(dim=-1)
-    scale = torch.clamp(scale, min=q_scale_thresh)
+    scale.clamp_(min=q_scale_thresh)
     zp = (-wmin).div_(scale).round_().unsqueeze_(dim=-1)
+    scale.unsqueeze_(dim=-1)
     tensor.div_(scale).add_(v).round_().add_(zp).clamp_(0, maxq).sub_(zp).mul_(scale)
     qdq_result = revert_tensor_by_pad(tensor.to(orig_dtype), orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, zp

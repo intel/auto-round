@@ -188,7 +188,7 @@ def quant_rtn_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
-    scale = max_tensor.float_().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
+    scale = max_tensor.float().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     tensor.div_(scale).add_(v).clamp_(info.min, info.max)
@@ -268,7 +268,7 @@ def quant_rtn_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
-    scale = max_tensor.float_().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
+    scale = max_tensor.float().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     tensor.div_(scale).add_(v).clamp_(info.min, info.max).to(torch.float8_e5m2)
@@ -480,7 +480,7 @@ def quant_rtn_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
     min_scaling_factor = float(1.0 / (fp8_max * 512.0))  ##copy from vllm
-    scale = max_tensor.float_().div_(fp8_max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
+    scale = max_tensor.float().div_(fp8_max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     tensor.div_(scale).clamp_(-fp8_max, fp8_max)
@@ -581,7 +581,7 @@ if is_gaudi2():
         else:
             max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
         min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
-        scale = max_tensor.float_().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
+        scale = max_tensor.float().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
         if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
             tensor = tensor.to(torch.bfloat16)
         fp8_res = torch.ops.hpu.cast_to_fp8_v2(

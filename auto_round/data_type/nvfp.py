@@ -71,9 +71,9 @@ def ref_nvfp4_quant_rtn(x, global_scale, block_size=16, v=0, scale_coeff=1.0):
         scale_coeff = scale_coeff.view(-1, 1).to(x.device)
     vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32) * scale_coeff
     scale = vec_max.mul_(get_reciprocal(FLOAT4_E2M1_MAX)).mul_(global_scale).clamp_(FLOAT8_E4M3_MIN, FLOAT8_E4M3_MAX)
-    scale = scale.to(torch.float8_e4m3fn).float_()
+    scale = scale.to(torch.float8_e4m3fn).float()
     output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
-    clipped_x = x.float_().mul_(output_scale).add_(v).clamp_(-6.0, 6.0)
+    clipped_x = x.float().mul_(output_scale).add_(v).clamp_(-6.0, 6.0)
     return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
 
 
@@ -264,9 +264,9 @@ def ref_fp4_quant_rtn(x, global_scale, block_size=16, v=0, max_scale=1.0):
         max_scale = max_scale.unsqueeze(dim=-1).to(x.device)
     vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32) * max_scale
     scale = vec_max.mul_(get_reciprocal(FLOAT4_E2M1_MAX)).mul_(global_scale).clamp_(0, FLOAT8_UE5M3_MAX)
-    scale = cast_to_ue5m3(scale).float_()
+    scale = cast_to_ue5m3(scale).float()
     output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
-    clipped_x = x.float_().mul_(output_scale).add_(v).clamp_(-6.0, 6.0)
+    clipped_x = x.float().mul_(output_scale).add_(v).clamp_(-6.0, 6.0)
     return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
 
 
