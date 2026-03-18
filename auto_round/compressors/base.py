@@ -1430,7 +1430,7 @@ class BaseCompressor(object):
                             shard_writer(self, name=block_name)
                             block.to("meta")
                         if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                            self._offloader.offload(self.model, block_name)
+                            self._offloader(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1594,7 +1594,7 @@ class BaseCompressor(object):
 
                 mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                    self._offloader.offload(self.model, block_name)
+                    self._offloader(self.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1811,7 +1811,7 @@ class BaseCompressor(object):
         logger.info("caching done")
         if self.low_cpu_mem_usage:
             if self.is_model_patched and not self.is_immediate_saving:
-                self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                self._offloader(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
                 if not self._offloader.enabled:
                     self.low_cpu_mem_usage = False
             else:
@@ -3296,10 +3296,10 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
-                    self._offloader.offload(model, n, overwrite=True)
+                    self._offloader(model, n, overwrite=True)
                 else:
                     for name in names:
-                        self._offloader.offload(model, name, overwrite=True)
+                        self._offloader(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)
 

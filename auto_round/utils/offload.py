@@ -30,8 +30,8 @@ Usage patterns
 **Compressor (offload mode)**::
 
     offloader = OffloadManager(mode="offload")
-    offloader.offload(model, "model.layers.0")              # save + clear one module
-    offloader.offload(model, block_names, clear_memory=True) # save + clear many + gc
+    offloader(model, "model.layers.0")                      # save + clear one module
+    offloader(model, block_names, clear_memory=True)         # save + clear many + gc
     offloader.reload(model, "model.layers.0")               # load back + auto-clean temp file
 
 **AutoScheme (clean mode with hooks)**::
@@ -297,6 +297,26 @@ class OffloadManager:
             self.cleanup(_skip_reload=True)
         except Exception:
             pass
+
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        names: Union[str, list[str], list[list[str]]],
+        *,
+        skip_if_saved: bool = False,
+        overwrite: bool = False,
+        clear_memory: bool = False,
+        device_list=None,
+    ) -> float:
+        """Alias for offload() so the manager can be invoked directly."""
+        return self.offload(
+            model,
+            names,
+            skip_if_saved=skip_if_saved,
+            overwrite=overwrite,
+            clear_memory=clear_memory,
+            device_list=device_list,
+        )
 
     # ------------------------------------------------------------------
     # Core API
