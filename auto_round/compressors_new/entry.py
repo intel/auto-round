@@ -268,6 +268,10 @@ class AutoRound:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
+                # for optRTN
+                seqlen=seqlen,
+                nsamples=nsamples,
+                batch_size=batch_size,
             )
         else:
             # AutoRound mode

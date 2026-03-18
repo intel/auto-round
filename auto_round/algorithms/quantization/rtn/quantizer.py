@@ -22,7 +22,7 @@ import torch
 from auto_round.algorithms.quantization.auto_round.quantizer import ARQuantizer
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.compressors.shard_writer import shard_writer
+from auto_round.compressors_new.shard_writer import ShardWriter
 from auto_round.compressors_new.utils import (
     IndexSampler,
     block_forward,
@@ -68,6 +68,8 @@ class RTNQuantizer(BaseQuantizers):
         BaseQuantizers.__init__(self, config)
 
     def quantize_block(self, block: torch.nn.Module, block_name: str, **kwargs):
+        shard_writer = ShardWriter.get_shard_writer()
+
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
         if tied_weights_keys is None:
             tied_weights_keys = []
@@ -94,7 +96,7 @@ class RTNQuantizer(BaseQuantizers):
             ):
                 set_module(self.model, m.global_name, copy.deepcopy(m))
                 if self.compress_context.is_immediate_saving:
-                    shard_writer(self, name=m.global_name)
+                    shard_writer.write(name=m.global_name)
                     copied_m = get_module(self.model, m.global_name)
                     copied_m.to("meta")
                 m.to("meta")
@@ -105,7 +107,7 @@ class RTNQuantizer(BaseQuantizers):
             else:
                 # Save once at block scope to capture tensors that are not saved
                 # in per-layer branch (e.g., custom module-level params/buffers).
-                shard_writer(self, name=block_name)
+                shard_writer.write(name=block_name)
                 block.to("meta")
 
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
@@ -183,6 +185,7 @@ class RTNQuantizer(BaseQuantizers):
         self._immediate_pack_and_save_module(name)
 
     def _immediate_pack_and_save_module(self, module_name):
+        shard_writer = ShardWriter.get_shard_writer()
         to_cpu = self.compress_context.low_gpu_mem_usage
         module = get_module(self.model, module_name)
         if self.compress_context.is_immediate_packing:  # For gguf, packing conducts on block level
@@ -198,7 +201,7 @@ class RTNQuantizer(BaseQuantizers):
         if self.compress_context.is_immediate_saving:
             module = get_module(self.model, module_name)
             module.to("cpu")
-            shard_writer(self, module, module_name, False)
+            shard_writer.write(module, module_name, False)
             # Free RAM immediately: the data is now in the shard-writer buffer
             # (and will be flushed to disk).  Keeping it also in the model tree
             # causes linear RAM growth for large models.

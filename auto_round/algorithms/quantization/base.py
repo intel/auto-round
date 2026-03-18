@@ -422,3 +422,41 @@ class BaseQuantizers:
             clear_memory(device_list=self.compress_context.device_list)
 
         return is_quantized
+
+    def quantize_block(self, bock, input_ids, input_others, q_input=False, **kwargs):
+        """Quantizes a given block of the model based on the specified configuration.
+
+        This method applies quantization to the specified block using the appropriate quantization
+        function determined by the block's configuration. It handles memory management and supports
+        optional automatic offloading to manage GPU memory usage.
+
+        Args:
+            block (torch.nn.Module): The block of the model to be quantized.
+            input_ids (torch.Tensor): The input IDs for the block.
+            input_others (dict): Additional inputs required for the block's forward pass.
+            q_input (bool, optional): Whether to quantize the input. Defaults to False.
+            auto_offload (bool, optional): Whether to automatically offload to manage GPU memory. Defaults to True.
+
+        Returns:
+            tuple: A tuple containing the quantized outputs and any additional output information.
+        """
+        raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizers")
+
+    def quantize_layer(self, layer, input_ids, input_others, q_input=False, **kwargs):
+        """Quantizes a single layer of the model based on the specified configuration.
+
+        This method applies quantization to the specified layer using the appropriate quantization
+        function determined by the layer's configuration. It handles memory management and supports
+        optional automatic offloading to manage GPU memory usage.
+
+        Args:
+            layer (torch.nn.Module): The layer of the model to be quantized.
+            input_ids (torch.Tensor): The input IDs for the layer.
+            input_others (dict): Additional inputs required for the layer's forward pass.
+            q_input (bool, optional): Whether to quantize the input. Defaults to False.
+            auto_offload (bool, optional): Whether to automatically offload to manage GPU memory. Defaults to True.
+
+        Returns:
+            tuple: A tuple containing the quantized outputs and any additional output information.
+        """
+        raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizers")

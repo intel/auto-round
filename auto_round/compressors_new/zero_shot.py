@@ -20,7 +20,6 @@ from tqdm import tqdm
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.compressors_new.base import BaseCompressor
-from auto_round.compressors_new.shard_writer import shard_writer
 from auto_round.compressors_new.utils import (
     _get_quantized_layer_names_outside_blocks,
     check_need_act_calibration,
@@ -306,7 +305,7 @@ class ZeroShotCompressor(BaseCompressor):
                         and self.is_immediate_saving
                     ):
                         set_module(self.model, n, copy.deepcopy(m))
-                        shard_writer(self, name=n)
+                        self.shard_writer.write(name=n)
                         m.to("meta")
 
         # Convert remaining fp8
@@ -314,7 +313,7 @@ class ZeroShotCompressor(BaseCompressor):
         if self.low_cpu_mem_usage:
             self._offloader.reload(self.model)
         if self.is_immediate_saving:
-            shard_writer(self, is_finalize=True)
+            self.shard_writer.write(is_finalize=True)
 
         self.quantized = True
         return self.model, self.layer_config

@@ -43,9 +43,32 @@ class AutoSkipInitMeta(type):
 
 class BaseContext(metaclass=AutoSkipInitMeta):
     _instances = {}
+    _internal_attrs = {"_context_state", "_singleton_skip_init"}
 
     def __init__(self):
+        if "_context_state" not in self.__dict__:
+            object.__setattr__(self, "_context_state", {})
         logger.info(f"{self.__class__.__name__} context initialized.")
+
+    def __getattr__(self, name):
+        context_state = object.__getattribute__(self, "_context_state")
+        if name in context_state:
+            return context_state[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def __setattr__(self, name, value):
+        if name.startswith("_") or name in self._internal_attrs:
+            object.__setattr__(self, name, value)
+            return
+        self._set_context_attr(name, value)
+
+    def _set_context_attr(self, name, value):
+        context_state = object.__getattribute__(self, "_context_state")
+        context_state[name] = value
+
+    def _update_context_attrs(self, **kwargs):
+        for name, value in kwargs.items():
+            self._set_context_attr(name, value)
 
     @classmethod
     def get_context(cls):
@@ -55,3 +78,7 @@ class BaseContext(metaclass=AutoSkipInitMeta):
     @classmethod
     def create_context(cls, *args, **kwargs):
         return cls(*args, **kwargs)
+
+    @classmethod
+    def reset_context(cls):
+        cls._instances.pop(cls, None)

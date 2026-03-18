@@ -27,16 +27,11 @@ from auto_round.compressors_new.utils import (
     IndexSampler,
     block_forward,
     check_need_act_calibration,
-    check_skippable_keywords,
     collect_best_params,
-    get_shared_keys,
     immediate_pack,
-    infer_bits_by_data_type,
-    init_cache,
-    reset_params,
 )
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.sign_sgd import SignSGD
 from auto_round.utils import (
     check_to_quantized,
@@ -54,13 +49,10 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
-    get_major_device,
-    parse_available_devices,
     set_auto_device_map_for_block_with_tuning,
-    set_non_auto_device_map,
 )
 from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 DIFFUSION_OUTPUT_CONFIGS = {
     "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
@@ -106,120 +98,6 @@ class ARQuantizer(BaseQuantizers):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-    @torch.no_grad()
-    def _get_block_forward_func(self, name: str) -> Callable:
-        """Gets the forward function.
-
-        Args:
-            name (str): The name of the function.
-        Returns:
-            function: The forward function.
-        """
-
-        def post_process_cache_data(batch_size, data, data_name):
-            """
-            Processes store data for batch handling, reshaping if necessary.
-
-            Args:
-                batch_size (int): The size of the batch.
-                data: The data value to store, potentially for caching.
-                data_name (str): Name of the data.
-
-            Returns:
-                Processed data or None
-            """
-            new_data = data
-            if batch_size <= 1:
-                return new_data
-            if data_name in self.model_context.shared_cache_keys:
-                return None
-            if "alibi" in data_name:
-                if isinstance(data, torch.Tensor):
-                    alibi = data
-                    alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
-                    new_data = alibi
-            return new_data
-
-        def forward(m, hidden_states=None, *positional_inputs, **kwargs):
-            """Rewrite forward function, process and collect input data.
-
-            Args:
-                hidden_states (torch.Tensor): The hidden states tensor.
-                *positional_inputs: Variable number of positional arguments.
-                **kwargs: Variable number of keyword arguments.
-
-            Returns:
-                NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
-            """
-            if name not in self.inputs:
-                self.inputs[name] = {}
-                init_cache(positional_inputs, self.inputs[name])
-
-            if self.batch_dim is None:
-                self.batch_dim = 0
-                if hidden_states is not None and self.batch_size > 1:
-                    if hidden_states.shape[0] > self.batch_size:
-                        self.batch_dim = 1
-                        if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
-                            logger.error(
-                                "this model has not been supported, "
-                                "please raise an issue in https://github.com/intel/auto-round/issues"
-                                " or try to set the `batch_size` to 1 and "
-                                "`gradient_accumulate_steps` to your current batch size."
-                            )
-                            exit(-1)
-
-            if hidden_states is not None:
-                kwargs["hidden_states"] = hidden_states
-
-            for key in kwargs.keys():
-                if (
-                    isinstance(kwargs[key], torch.Tensor)
-                    or isinstance(kwargs[key], list)
-                    or isinstance(kwargs[key], tuple)
-                ):
-                    if key not in self.inputs[name].keys():  # initialization
-                        data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (self.batch_size > 1 and key in self.model_context.shared_cache_keys):
-                            self.inputs[name][key] = data
-                            continue
-                        if self.batch_size <= 1:
-                            self.inputs[name][key] = [data]
-                        else:
-                            data = post_process_cache_data(self.batch_size, data, key)
-                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
-                    else:  # append cache inputs
-                        new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
-                        if new_data is None:  # shareable args or NoneType
-                            continue
-                        new_data = to_device(new_data, device=torch.device("cpu"))
-                        if self.batch_size <= 1:
-                            self.inputs[name][key].append(new_data)
-                        else:
-                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.batch_dim)))
-                elif isinstance(kwargs[key], (str, bool, type(None))):
-                    if key not in self.inputs[name].keys():
-                        self.inputs[name][key] = kwargs[key]
-                else:
-                    # Parameters not to be cached
-                    if check_skippable_keywords(key):
-                        logger.warning_once(
-                            f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
-                        )
-            reset_params(self.inputs[name])
-
-            if self._should_stop_cache_forward(name):
-                raise NotImplementedError
-            else:
-                if hidden_states is not None:
-                    kwargs.pop("hidden_states")
-                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
-                else:
-                    # Currently only for Llama-3.2-Vision-Instruct Series
-                    return m.orig_forward(*positional_inputs, **kwargs)
-
-        return forward
-
     def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
         if self.model_context.is_diffusion:
             assert "hidden_states" in output
@@ -247,13 +125,21 @@ class ARQuantizer(BaseQuantizers):
             indices,
             seqlen=self.seqlen,
             batch_dim=self.batch_dim,
-            share_cache_keys=self.shared_cache_keys,
+            share_cache_keys=self.model_context.shared_cache_keys,
         )
         if isinstance(current_input_ids, dict):
             hidden_states = current_input_ids.pop("hidden_states")
             current_input_others.update(current_input_ids)
             current_input_ids = hidden_states
-        output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx)
+        output_q = block_forward(
+            block,
+            current_input_ids,
+            current_input_others,
+            self.model_context.amp,
+            self.model_context.amp_dtype,
+            device,
+            idx,
+        )
         return output_q.to(cache_device)
 
     def _get_current_q_output(
@@ -339,7 +225,9 @@ class ARQuantizer(BaseQuantizers):
         auto_offload=True,
         **kwargs,
     ):
-        self._quantize_block(block, input_ids, input_others, q_input=q_input, auto_offload=auto_offload, **kwargs)
+        q_outputs, output = self._quantize_block(
+            block, input_ids, input_others, q_input=q_input, auto_offload=auto_offload, **kwargs
+        )
         if hasattr(block, "config"):
             del block.config
         if self.compress_context.is_immediate_saving:
@@ -347,6 +235,7 @@ class ARQuantizer(BaseQuantizers):
                 if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
                     continue
                 immediate_pack(tmp_m.global_name, self.layer_config)
+        return q_outputs, output
 
     def _quantize_block(
         self,
@@ -750,8 +639,8 @@ class ARQuantizer(BaseQuantizers):
                     current_output = layer(org_input)
                 autocast_ctx = (
                     nullcontext()
-                    if not self.amp
-                    else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+                    if not self.model_context.amp
+                    else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
                 )
                 if self.attention_mask:
                     tmp_attention_mask = [self.attention_mask[i] for i in indices]
@@ -783,10 +672,10 @@ class ARQuantizer(BaseQuantizers):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(wrapper_linear, self.cache_device)
+                    best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(wrapper_linear, self.cache_device)
+                best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -928,7 +817,15 @@ class ARQuantizer(BaseQuantizers):
                 tmp_input_others.update(tmp_input_ids)
                 tmp_input_ids = hidden_states
 
-            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, None)
+            tmp_output = block_forward(
+                block,
+                tmp_input_ids,
+                tmp_input_others,
+                self.model_context.amp,
+                self.model_context.amp_dtype,
+                device,
+                None,
+            )
             assert len(output_config) == len(tmp_output)
             tmp_output = dict(zip(output_config, tmp_output))
 
@@ -938,7 +835,7 @@ class ARQuantizer(BaseQuantizers):
                         output[name].append(out.to(cache_device))
                     else:
                         output[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
-        if self.low_gpu_mem_usage:
+        if self.compress_context.low_gpu_mem_usage:
             clear_memory()
 
         return output

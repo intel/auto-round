@@ -29,7 +29,6 @@ from auto_round.calibration.utils import (
     _infer_last_cache_name,
     _update_inputs,
 )
-from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors_new.base import BaseCompressor
 from auto_round.compressors_new.utils import (
     _get_quantized_layer_names_outside_blocks,
@@ -321,7 +320,7 @@ class CalibCompressor(BaseCompressor):
 
             # slow here
             self.dataloader = get_dataloader(
-                self.tokenizer,
+                self.model_context.tokenizer,
                 self.quantize_config.seqlen,
                 dataset,
                 self.seed,
@@ -343,10 +342,10 @@ class CalibCompressor(BaseCompressor):
                 input_ids = data.to(self.model.device)
                 data_new = input_ids
             elif isinstance(data, str):
-                if self.tokenizer is None:
+                if self.model_context.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
                     exit(-1)
-                data = self.tokenizer(
+                data = self.model_context.tokenizer(
                     data, truncation=True, max_length=self.quantize_config.seqlen, return_tensors="pt"
                 ).data
                 data_new = {}
@@ -373,11 +372,11 @@ class CalibCompressor(BaseCompressor):
                 ):
                     new_attention_mask = data_new["attention_mask"]
                 elif (
-                    self.tokenizer is not None
-                    and hasattr(self.tokenizer, "pad_token")
-                    and self.tokenizer.pad_token is not None
+                    self.model_context.tokenizer is not None
+                    and hasattr(self.model_context.tokenizer, "pad_token")
+                    and self.model_context.tokenizer.pad_token is not None
                 ):
-                    new_attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
+                    new_attention_mask = (input_ids != self.model_context.tokenizer.pad_token_id).to(torch.long)
                 else:
                     # Default all ones
                     new_attention_mask = torch.ones_like(input_ids, dtype=torch.long)
@@ -406,6 +405,8 @@ class CalibCompressor(BaseCompressor):
                 # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
                 new_attention_mask[:, -1] = 0
 
+                if not hasattr(self.quantizer, "attention_mask"):
+                    self.quantizer.attention_mask = []
                 self.quantizer.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
             else:
                 new_attention_mask = None
@@ -425,7 +426,7 @@ class CalibCompressor(BaseCompressor):
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.quantize_config.seqlen, self.tokenizer, self.model)
+                    check_seqlen_compatible(self.quantize_config.seqlen, self.model_context.tokenizer, self.model)
                 logger.warning(
                     "When quantization encounters tensor shape mismatch error, "
                     "you can try to avoid it with batch_size=1"
@@ -709,7 +710,7 @@ class CalibCompressor(BaseCompressor):
             )
 
             if self.is_immediate_saving:
-                shard_writer(self, m, is_finalize=False)
+                self.shard_writer.write(m, is_finalize=False)
 
             if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
@@ -738,7 +739,6 @@ class CalibCompressor(BaseCompressor):
         Returns:
         The quantized model and layer configurations.
         """
-
         self.post_init()
         self.model_context.initialize(formats=self.formats, is_act_quantize=self.config.is_act_quantize)
 
@@ -838,7 +838,7 @@ class CalibCompressor(BaseCompressor):
             self.model_context.model, self.model_context.amp_dtype, self.compress_context.device, to_cpu=True
         )
         if self.is_immediate_saving:
-            shard_writer(self, is_finalize=True)
+            self.shard_writer.write(is_finalize=True)
 
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)
@@ -961,7 +961,7 @@ class CalibCompressor(BaseCompressor):
 
             if self.is_immediate_saving:
                 m = get_module(self.model, layer_name)
-                shard_writer(self, m, name=layer_name, is_finalize=False)
+                self.shard_writer.write(m, name=layer_name, is_finalize=False)
             del layer_input
             clear_memory(q_layer_input, device_list=self.compress_context.device_list)
             memory_monitor.log_summary()
@@ -982,14 +982,16 @@ class CalibCompressor(BaseCompressor):
                     self.quantize_config.seqlen, self.model_context.model.config.max_position_embeddings
                 )
 
-        if self.quantize_config.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
-            if self.tokenizer.model_max_length < self.quantize_config.seqlen:
+        if self.quantize_config.seqlen is not None and hasattr(self.model_context.tokenizer, "model_max_length"):
+            if self.model_context.tokenizer.model_max_length < self.quantize_config.seqlen:
                 logger.warning(
-                    f"Change sequence length to {self.tokenizer.model_max_length} "
+                    f"Change sequence length to {self.model_context.tokenizer.model_max_length} "
                     "due to the limitation of model_max_length. "
                     "You can also try to increase the model_max_length to avoid this issue."
                 )
-                self.quantize_config.seqlen = min(self.quantize_config.seqlen, self.tokenizer.model_max_length)
+                self.quantize_config.seqlen = min(
+                    self.quantize_config.seqlen, self.model_context.tokenizer.model_max_length
+                )
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
@@ -1091,7 +1093,7 @@ class ImatrixCompressor(CalibCompressor):
                     input_others,
                 )
 
-                if self.low_cpu_mem_usage and not self.is_immediate_saving:
+                if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
                     self._offloader.offload(self.model_context.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.compress_context.device_list)

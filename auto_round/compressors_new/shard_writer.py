@@ -18,6 +18,9 @@ from collections import OrderedDict
 
 import torch
 
+from auto_round.compressors_new.utils import _get_save_folder_name
+from auto_round.context.compress import CompressContext
+from auto_round.context.model import ModelContext
 from auto_round.logger import logger
 from auto_round.utils import get_lm_head_name, get_module
 
@@ -27,8 +30,28 @@ class ShardWriter:
     Handles shard-saving of model parameters to disk with memory management.
     """
 
-    def __init__(self, rounder):
-        self.model = rounder.model
+    _instance = None
+    _initialized = False
+
+    model = None
+    lm_head_name = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._data = {}
+        return cls._instance
+
+    def __init__(
+        self,
+        model,
+        bits,
+        max_shard_size=None,
+        safe_serialization=True,
+    ):
+        if ShardWriter._initialized:
+            return
+        self.model = model
         self.lm_head_name = get_lm_head_name(self.model)
         total_params = sum(p.numel() for p in self.model.parameters())
         # Heuristic estimate of model size in GB used to choose a default max_shard_size:
@@ -39,12 +62,13 @@ class ShardWriter:
         #                                         smaller than the full model; this intentionally
         #                                         underestimates size before clamping below.
         max_split_num = 10
-        model_size = int(total_params * rounder.bits // 1e9 // 8 + max_split_num - 1) / max_split_num
+        model_size = int(total_params * bits // 1e9 // 8 + max_split_num - 1) / max_split_num
         model_size = max(1, min(int(model_size), 5))
 
         # Configuration
-        self.max_shard_size = self._parse_size(getattr(rounder, "max_shard_size", f"{model_size}GB"))
-        self.safe_serialization = getattr(rounder, "safe_serialization", True)
+        max_shard_size = max_shard_size or f"{model_size}GB"
+        self.max_shard_size = self._parse_size(max_shard_size)
+        self.safe_serialization = safe_serialization
 
         # Internal State
         self.use_safetensors = self._check_safetensors()
@@ -65,8 +89,20 @@ class ShardWriter:
         self.skipped_meta_tensors = []
 
         # Directory Setup
-        self.output_dir = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
+        compress_context = CompressContext.get_context()
+        formats = compress_context.formats
+        self.output_dir = os.path.join(_get_save_folder_name(formats[0]), "")
         os.makedirs(self.output_dir, exist_ok=True)
+
+        ShardWriter._initialized = True
+
+    @classmethod
+    def get_shard_writer(cls, *args, **kwargs):
+        if cls._instance is None:
+            raise ValueError(
+                "ShardWriter has not been initialized yet. Please create an instance before calling get_shard_writer."
+            )
+        return cls._instance
 
     def _parse_size(self, size_str: str) -> int:
         if isinstance(size_str, int):
@@ -228,21 +264,17 @@ class ShardWriter:
 
         logger.info(f"model has been saved to {self.output_dir}")
 
+    @torch.no_grad()
+    def write(self, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
+        if m is None and name is None and not is_finalize and not is_finalize:
+            raise ValueError("Must specify either name or m")
+        if m is None and name is not None:
+            m = get_module(self.model, name)
+            # Perform the save
+        if m is not None:
+            self.save_module(m, name)
 
-@torch.no_grad()
-def shard_writer(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
-    if m is None and name is None and not is_finalize and not is_finalize:
-        raise ValueError("Must specify either name or m")
-    if not hasattr(rounder, "_shard_writer"):
-        rounder._shard_writer = ShardWriter(rounder)
-
-    if m is None and name is not None:
-        m = get_module(rounder.model, name)
-        # Perform the save
-    if m is not None:
-        rounder._shard_writer.save_module(m, name)
-
-    if is_finalize:
-        rounder._shard_writer.finalize()
-        # Optional: cleanup the saver object from rounder
-        del rounder._shard_writer
+        if is_finalize:
+            self.finalize()
+            # Optional: cleanup the saver object from rounder
+            self._initialized = False

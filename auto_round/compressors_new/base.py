@@ -20,7 +20,8 @@ from transformers import set_seed
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfig
-from auto_round.compressors_new.utils import block_forward
+from auto_round.compressors_new.shard_writer import ShardWriter
+from auto_round.compressors_new.utils import _get_save_folder_name, block_forward
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
 from auto_round.formats import OutputFormat, get_formats
@@ -31,6 +32,7 @@ from auto_round.utils import (
     compile_func,
     is_debug_mode,
     is_hpex_available,
+    memory_monitor,
 )
 from auto_round.utils.device import set_non_auto_device_map
 from auto_round.utils.offload import OffloadManager
@@ -73,6 +75,9 @@ class SerializedCompressorConfig:
 
 class BaseCompressor(object):
     need_calib: bool = True
+    compress_context: CompressContext = None
+    model_context: ModelContext = None
+    shard_writer: ShardWriter = None
 
     def __init__(
         self,
@@ -174,6 +179,7 @@ class BaseCompressor(object):
             is_immediate_saving=self.is_immediate_saving,
             formats=self.formats,
         )
+        ModelContext.reset_context()
         self.model_context = ModelContext(
             model,
             tokenizer=tokenizer,
@@ -184,6 +190,7 @@ class BaseCompressor(object):
             need_calib=self.need_calib,
             device=self.compress_context.device,
         )
+        self.shard_writer = None
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
@@ -212,6 +219,7 @@ class BaseCompressor(object):
             logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def post_init(self):
+
         self.model_context._load_model()
         assert self.model_context._model_loaded, "should load model first"
 
@@ -227,6 +235,7 @@ class BaseCompressor(object):
         if isinstance(self.formats, str):
             self.formats = get_formats(self.formats, self)
         self.compress_context.formats = self.formats
+        self.shard_writer = ShardWriter(self.model_context.model, bits=8)
 
         # Set device, must place after model loading
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
@@ -265,7 +274,7 @@ class BaseCompressor(object):
                 continue
             obj = object.__getattribute__(self, obj)
             try:
-                return object.__getattribute__(obj, name)
+                return getattr(obj, name)
             except AttributeError:
                 continue
 
@@ -351,28 +360,6 @@ class BaseCompressor(object):
         """
         raise NotImplementedError("quantize method must be implemented in subclass")
 
-    def _get_save_folder_name(self, format: OutputFormat) -> str:
-        """Generates the save folder name based on the provided format string.
-
-        If there are multiple formats to handle, the function creates a subfolder
-        named after the format string with special characters replaced. If there's
-        only one format, it returns the original output directory directly.
-
-        Args:
-            format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
-
-        Returns:
-            str: The path to the folder where results should be saved.
-        """
-        # Replace special characters to make the folder name filesystem-safe
-        sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
-
-        # Use a subfolder only if there are multiple formats
-        if len(self.formats) > 1:
-            return os.path.join(self.output_dir, sanitized_format)
-
-        return self.output_dir
-
     def save_quantized(
         self,
         output_dir: str = None,
@@ -394,11 +381,11 @@ class BaseCompressor(object):
         """
         self.output_dir = output_dir
         if format is not None:
-            logger.warning(
-                f"save_quantized with format is deprecated and will be deleted in auto_round version 1.0."
-                f" Please use Compressor(format='{format}' instead)."
-            )
             if isinstance(format, str) and getattr(self, "formats", None) is None:
+                logger.warning(
+                    f"save_quantized with format is deprecated and will be deleted in auto_round version 1.0."
+                    f" Please use Compressor(format='{format}' instead)."
+                )
                 formats = get_formats(format, self)
                 if not hasattr(self, "formats"):
                     self.formats = formats
@@ -408,7 +395,7 @@ class BaseCompressor(object):
             return
         folders = []
         for format in self.formats:
-            save_folder = self._get_save_folder_name(format)
+            save_folder = _get_save_folder_name(format)
             if self.act_bits <= 8 and format.is_fake():
                 logger.warning(
                     "Support for exporting activation quantization is limited. "
@@ -429,7 +416,7 @@ class BaseCompressor(object):
                 model=self.model_context.model,
                 layer_config=self.quantizer.layer_config,
                 inplace=inplace,
-                tokenizer=self.tokenizer,
+                tokenizer=self.model_context.tokenizer,
                 device=self.compress_context.device,
                 serialization_dict=serialization_dict,
                 **kwargs,
@@ -494,16 +481,19 @@ class BaseCompressor(object):
 
             with attention_quant_ctx(self.model_context.model, static_attention_dtype=self.static_attention_dtype):
                 self.quantize()
+                self.model_context.quantized = True
         elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
 
             with kvcache_quant_context(self.model_context.model, static_kv_dtype=self.static_kv_dtype):
                 self.quantize()
+                self.model_context.quantized = True
         else:
             self.quantize()
+            self.model_context.quantized = True
 
-        # When immediate_saving is enabled, the model has already been saved during quantization
-        # Skip the save_quantized call to avoid attempting to save layers that are on meta device
-        if self.is_immediate_saving:
-            logger.info("immediate_saving is enabled, model already saved during quantization")
-            return self.model, [output_dir]
+        # Save the quantized model in the specified format_list
+        model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
+        memory_monitor.log_summary()
+
+        return model, folders
