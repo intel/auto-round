@@ -14,9 +14,9 @@
 
 import torch
 
+from auto_round.data_type.int import quant_tensor_rtn_sym, quant_tensor_sym
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import float8_e4m3fn_ste, get_gaudi_fp8_ste_func
-from auto_round.data_type.int import quant_tensor_sym, quant_tensor_rtn_sym
 
 
 @register_dtype("fp8_to_int_sym")

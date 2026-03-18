@@ -546,9 +546,10 @@ if is_gaudi2():
         qdq_res = qdq_res.to(orig_dtype)
         return qdq_res, scale, None
 
-
     @register_dtype(("rtn_fp8_sym", "rtn_fp8", "rtn_fp8_e4m3"))
-    def quant_rtn_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):  # pylint: disable=E0102
+    def quant_rtn_fp8_sym(
+        tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs
+    ):  # pylint: disable=E0102
         """Symmetric quantization using float8 format.
 
         Allows both dynamic per-token scaling and tensor-wide quantization depending on input.

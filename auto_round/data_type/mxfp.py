@@ -186,7 +186,9 @@ def quant_mx_rceil(
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
-def quant_rtn_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs):
+def quant_rtn_mx(
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
