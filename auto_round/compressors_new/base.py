@@ -274,7 +274,7 @@ class BaseCompressor(object):
                 continue
             obj = object.__getattribute__(self, obj)
             try:
-                return getattr(obj, name)
+                return object.__getattribute__(obj, name)
             except AttributeError:
                 continue
 

@@ -42,16 +42,10 @@ __all__ = ["ModelContext"]
 
 class ModelContext(BaseContext):
     _is_initialized = False
-    quantized = False
 
     # model_related
     _model_loaded = False
     _init_model = False
-    is_mllm = False
-    is_diffusion = False
-    is_model_patched = False
-    is_moe_model = False
-
     hook_handles = []
 
     def __init__(
@@ -66,6 +60,12 @@ class ModelContext(BaseContext):
         device="cpu",
     ):
         super().__init__()
+        self.quantized = False
+        self.is_mllm = False
+        self.is_diffusion = False
+        self.is_model_patched = False
+        self.is_moe_model = False
+
         assert model is not None, "model must be provided for ModelContext"
         self.model = model
         self.tokenizer = tokenizer
