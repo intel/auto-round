@@ -1,8 +1,8 @@
 import re
 import sys
 
+LOG_DIR = "/auto-round/log_dir"
 
-LOG_DIR="/auto-round/log_dir"
 
 def parse_tuning_time(log_file):
     with open(log_file, "r") as f:
