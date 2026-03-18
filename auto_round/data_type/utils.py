@@ -101,7 +101,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
         return data_new
 
 
-def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None) -> tuple[callable, str]:
+def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None, enable_rtn=False) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
     This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
@@ -114,6 +114,7 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, grou
         sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
         disable_opt_rtn(bool): whether to disable optimized rtn.
         group_size (tuple): The block size for weight quantization (e.g., (128, 128)).
+        enable_rtn (bool): whether to use rtn.
 
     Returns:
         function: The quantization function corresponding to the specified parameters.
@@ -130,9 +131,12 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, grou
     def pad_bits(data_type):
         return data_type + str(bits)
 
+    if enable_rtn:
+        dtype = "rtn_" + dtype
+
     if not disable_opt_rtn:
-        rtn_data_type = "rtn_" + dtype
-        data_types = [rtn_data_type, pad_bits(rtn_data_type), pad_sym(rtn_data_type), pad_sym(pad_bits(rtn_data_type))]
+        opt_rtn_data_type = "opt_" + dtype
+        data_types = [opt_rtn_data_type, pad_bits(opt_rtn_data_type), pad_sym(opt_rtn_data_type), pad_sym(pad_bits(opt_rtn_data_type))]
         for data_type in data_types:
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
