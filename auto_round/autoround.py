@@ -89,6 +89,7 @@ class AutoRound:
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
+        enable_activation_checkpointing: bool = False,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.
@@ -116,6 +117,8 @@ class AutoRound:
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
                                               with lower accuracy. Defaults to None.
             low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
+            enable_activation_checkpointing (bool, optional): Use torch activation checkpointing to trade
+                compute for lower peak GPU memory during tuning. Defaults to False.
 
             bits (int, optional): Weight quantization bits. Defaults to 4.
             group_size (int or tuple, optional): Weight quantization group size. Defaults to 128.

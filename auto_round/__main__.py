@@ -22,12 +22,7 @@ from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
 from auto_round.schemes import PRESET_SCHEMES
-from auto_round.utils import (
-    clear_memory,
-    get_device_and_parallelism,
-    get_model_dtype,
-    parse_layer_config_arg,
-)
+from auto_round.utils import clear_memory, get_device_and_parallelism, get_model_dtype, parse_layer_config_arg
 
 RECIPES = {
     "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None},
@@ -262,6 +257,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--disable_deterministic_algorithms",
             action="store_true",
             help="deprecated, disable torch deterministic algorithms.",
+        )
+        tuning.add_argument(
+            "--enable_activation_checkpointing",
+            action="store_true",
+            help="Use activation checkpointing to trade extra compute for lower peak GPU memory during tuning. "
+            "Recomputes forward activations during backward instead of storing them. "
+            "Recommended for large MoE models to reduce memory by ~40-55%%.",
         )
         tuning.add_argument(
             "--enable_deterministic_algorithms",
@@ -631,6 +633,7 @@ def tune(args):
     tuning_config = TuningExtraConfig(
         amp=not args.disable_amp,
         disable_opt_rtn=args.disable_opt_rtn,
+        enable_activation_checkpointing=args.enable_activation_checkpointing,
         enable_alg_ext=args.enable_alg_ext,
         enable_minmax_tuning=not args.disable_minmax_tuning,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,

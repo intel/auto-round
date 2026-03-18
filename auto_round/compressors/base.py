@@ -61,12 +61,7 @@ from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
-from auto_round.schemes import (
-    QuantizationScheme,
-    _handle_special_schemes,
-    get_gguf_scheme,
-    preset_name_to_scheme,
-)
+from auto_round.schemes import QuantizationScheme, _handle_special_schemes, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
@@ -123,6 +118,7 @@ SERIALIZATION_KEYS = (
     "act_bits",
     "data_type",
     "act_data_type",
+    "enable_activation_checkpointing",
     "group_size",
     "act_group_size",
     "sym",
@@ -363,6 +359,7 @@ class BaseCompressor(object):
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
         self.momentum = kwargs.pop("momentum", 0.0)
+        self.enable_activation_checkpointing = kwargs.pop("enable_activation_checkpointing", False)
         static_kv_dtype = kwargs.pop("static_kv_dtype", None)
         static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
@@ -3018,6 +3015,7 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            enable_activation_checkpointing=self.enable_activation_checkpointing,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.

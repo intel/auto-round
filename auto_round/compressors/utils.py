@@ -154,6 +154,72 @@ def block_forward(
     return output
 
 
+def block_forward_with_activation_checkpointing(
+    block: torch.nn.Module,
+    input_ids: torch.Tensor,
+    input_others: dict,
+    amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    device: torch.device = torch.device("cpu"),
+    output_return_id: int = 0,
+) -> Union[torch.Tensor, dict]:
+    """Performs a forward pass through a block using activation checkpointing.
+
+    This mirrors block_forward() but wraps the actual block call inside
+    torch.utils.checkpoint.checkpoint(use_reentrant=False) so that intermediate
+    activations are not stored during the forward pass and are instead recomputed
+    during the backward pass.  This trades extra compute for significantly lower
+    peak GPU memory, which is especially beneficial for large MoE models.
+
+    Args:
+        block: The block to perform the forward pass on.
+        input_ids: The input IDs.
+        input_others: A dictionary containing other input data.
+        amp: A boolean indicating whether to use automatic mixed precision.
+        amp_dtype: The data type for automatic mixed precision.
+        device: The target device.
+        output_return_id: if the output has more than one tensor, return the specified idx tensor.
+
+    Returns:
+        output: The output of the forward pass.
+    """
+    from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+    from auto_round.utils.model import to_device
+
+    if input_ids.device != device:
+        input_ids = to_device(input_ids, device)
+        input_others = to_device(input_others, device)
+    input_tuple = input_others.pop("positional_inputs", None)
+    if "alibi" in input_others.keys() and input_others["alibi"] is not None:
+        alibi = input_others["alibi"]
+        input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+
+    def _run_block(block_module, ids, *pos_args, **kw_args):
+        """Inner function executed under activation checkpointing.
+
+        The autocast context must be *inside* the checkpointed region so that
+        the re-computation during backward uses the same dtype.
+        """
+        if amp:
+            with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):
+                return block_module(ids, *pos_args, **kw_args)
+        else:
+            return block_module(ids, *pos_args, **kw_args)
+
+    output = torch_checkpoint(
+        _run_block,
+        block,
+        input_ids,
+        *input_tuple,
+        use_reentrant=False,
+        **input_others,
+    )
+    if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
+        output = output[output_return_id]
+    return output
+
+
 def check_skippable_keywords(key):
     """
     Prints a reminder if a key is not stored during quantization fine-tuning.

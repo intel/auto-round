@@ -33,6 +33,7 @@ class ExtraConfig:
         # tuning
         amp: bool = True,
         disable_opt_rtn: bool | None = None,
+        enable_activation_checkpointing: bool = False,
         enable_alg_ext: bool = False,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
@@ -75,6 +76,8 @@ class ExtraConfig:
         Args:
             amp (bool): Whether to use automatic mixed precision (default is True).
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to True.
+            enable_activation_checkpointing (bool): Use torch activation checkpointing to trade compute
+                for lower peak GPU memory during tuning (default is False).
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
             enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
             enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning.
@@ -113,6 +116,7 @@ class ExtraConfig:
         self.tuning_config = TuningExtraConfig(
             amp=amp,
             disable_opt_rtn=disable_opt_rtn,
+            enable_activation_checkpointing=enable_activation_checkpointing,
             enable_alg_ext=enable_alg_ext,
             enable_minmax_tuning=enable_minmax_tuning,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
@@ -214,7 +218,6 @@ class ExtraConfig:
 
 @dataclass
 class BaseExtraConfig:
-
     @classmethod
     def get_attributes(cls: "BaseExtraConfig") -> list[str]:
         return [field.name for field in fields(cls)]
@@ -248,6 +251,7 @@ class BaseExtraConfig:
 class TuningExtraConfig(BaseExtraConfig):
     amp: bool = True
     disable_opt_rtn: bool | None = None
+    enable_activation_checkpointing: bool = False
     enable_alg_ext: bool = False
     enable_minmax_tuning: bool = True
     enable_norm_bias_tuning: bool = False

@@ -21,13 +21,7 @@ from torch.functional import F
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
-from auto_round.utils import (
-    SUPPORTED_LAYER_TYPES,
-    check_to_quantized,
-    compile_func,
-    deepspeed_exists,
-    set_module,
-)
+from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, deepspeed_exists, set_module
 
 if deepspeed_exists:
     from deepspeed import comm as dist
@@ -80,6 +74,7 @@ class WrapperLinear(torch.nn.Module):
         enable_round_tuning=True,
         enable_torch_compile=False,
         disable_opt_rtn=True,
+        enable_activation_checkpointing=False,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -89,10 +84,15 @@ class WrapperLinear(torch.nn.Module):
             enable_minmax_tuning (bool): Whether to enable min-max scale tuning.
             enable_norm_bias_tuning (bool): Whether to enable normalization and tuning for the bias term.
             device (str): The computation device, such as 'cpu' or 'cuda'.
+            enable_activation_checkpointing (bool): Whether to use torch activation checkpointing to trade
+                compute for lower peak GPU memory. When enabled, each WrapperLinear's forward is
+                individually checkpointed so that QDQ intermediates are recomputed one layer at a time
+                during backward instead of all being held simultaneously.
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
         self.disable_opt_rtn = disable_opt_rtn
+        self.enable_activation_checkpointing = enable_activation_checkpointing
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -472,6 +472,22 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        if self.enable_activation_checkpointing and torch.is_grad_enabled():
+            return self._checkpointed_forward(x)
+        return self._forward_impl(x)
+
+    def _checkpointed_forward(self, x):
+        """Run forward inside torch.utils.checkpoint so QDQ intermediates are not saved by autograd.
+
+        During backward, the forward is re-run to recompute intermediates just for this one layer,
+        keeping peak memory proportional to one layer's QDQ tensors instead of all layers combined.
+        """
+        from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+        return torch_checkpoint(self._forward_impl, x, use_reentrant=False)
+
+    def _forward_impl(self, x):
+        """Core forward logic: QDQ weight, optional act quant, matmul."""
         # logger.info(self.orig_layer.global_name)
         x = x.to(self.device)
         weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
