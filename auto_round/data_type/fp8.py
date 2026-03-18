@@ -400,7 +400,7 @@ def quant_rtn_fp8_e5m2_unit_scale(tensor, max_scale=1.0, tensor_max=None, group_
         tensor = tensor.to(torch.bfloat16)
     scale = torch.ones((1), device=tensor.device)
     tensor.div_(scale).add_(v).clamp_(info.min, info.max)
-    qdq_res = fp8_res.to(torch.float8_e5m2).to(orig_dtype).mul_(scale)
+    qdq_res = tensor.to(torch.float8_e5m2).to(orig_dtype).mul_(scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     qdq_res = qdq_res.to(orig_dtype)
     return qdq_res, scale, None
