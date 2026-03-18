@@ -194,10 +194,10 @@ def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
 
     Args:
-        x: torch.Tensor
+        x (torch.Tensor): Input tensor.
 
     Returns:
-        torch.Tensor
+        torch.Tensor: Rounded tensor with gradients passed straight through.
     """
     return (x.round() - x).detach() + x
 
@@ -206,10 +206,10 @@ def floor_ste(x: torch.Tensor):
     """Straight-Through Estimator for floor.
 
     Args:
-        x: torch.Tensor
+        x (torch.Tensor): Input tensor.
 
     Returns:
-        torch.Tensor
+        torch.Tensor: Floored tensor with gradients passed straight through.
     """
     return (x.floor() - x).detach() + x
 
@@ -218,10 +218,10 @@ def ceil_ste(x: torch.Tensor):
     """Straight-Through Estimator for ceil.
 
     Args:
-        x: torch.Tensor
+        x (torch.Tensor): Input tensor.
 
     Returns:
-        torch.Tensor
+        torch.Tensor: Ceiling tensor with gradients passed straight through.
     """
     return (x.ceil() - x).detach() + x
 
