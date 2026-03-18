@@ -507,6 +507,10 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         used_backends (List[str]): List of backend names used for quantization.
 
     """
+    from auto_round.utils.common import monkey_patch_model
+
+    monkey_patch_model(model)
+
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ipex_init = False
