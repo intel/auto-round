@@ -31,57 +31,6 @@ function setup_environment() {
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 }
 
-function print_test_results_table() {
-    echo "##[group]Collect results..."
-    local log_pattern=$1
-    local test_type=$2
-
-    echo ""
-    { printf '=%.0s' {1..120}; echo; } >> "${SUMMARY_LOG}"
-    echo "Test Results Summary - ${test_type}" >> "${SUMMARY_LOG}"
-    { printf '=%.0s' {1..120}; echo; } >> "${SUMMARY_LOG}"
-    printf "%-30s %-10s %-50s\n" "Test Case" "Result" "Log File" >> "${SUMMARY_LOG}"
-    printf "%-30s %-10s %-50s\n" "----------" "------" "--------" >> "${SUMMARY_LOG}"
-    local total_tests=0
-    local passed_tests=0
-    local failed_tests=0
-
-    for log_file in ${LOG_DIR}/${log_pattern}; do
-        if [ -f "${log_file}" ]; then
-            local test_name=$(basename "${log_file}" .log)
-            # Remove prefix to get clean test case name
-            test_name=${test_name#unittest_cuda_}
-            test_name=${test_name#unittest_cuda_vlm_}
-
-            local result="UNKNOWN"
-            local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || echo 0)
-            local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || echo 0)
-            local killed_count=$(grep -c 'Killed' "${log_file}" 2>/dev/null || echo 0)
-            local passed_count=$(grep -c ' passed' "${log_file}" 2>/dev/null || echo 0)
-
-            if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ] || [ ${killed_count} -gt 0 ]; then
-                result="FAILED"
-                failed_tests=$((failed_tests + 1))
-            elif [ ${passed_count} -gt 0 ]; then
-                result="PASSED"
-                passed_tests=$((passed_tests + 1))
-            else
-                result="NO_TESTS"
-            fi
-
-            total_tests=$((total_tests + 1))
-            local log_filename=$(basename "${log_file}")
-            printf "%-30s %-10s %-50s\n" "${test_name}" "${result}" "${log_filename}" >> "${SUMMARY_LOG}"
-        fi
-    done
-
-    { printf '=%.0s' {1..120}; echo; } >> "${SUMMARY_LOG}"
-    printf "Total: %d, Passed: %d, Failed: %d\n" ${total_tests} ${passed_tests} ${failed_tests} >> "${SUMMARY_LOG}"
-    { printf '=%.0s' {1..120}; echo; } >> "${SUMMARY_LOG}"
-    echo "" >> "${SUMMARY_LOG}"
-    echo "##[endgroup]"
-}
-
 function print_summary() {
     local status=0
     while IFS= read -r line; do
@@ -129,7 +78,6 @@ function run_unit_test() {
 
     uv pip list
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
@@ -153,18 +101,11 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "coverage.xml" ]; then
-        mv coverage.xml ${LOG_DIR}/
-    fi
-
-    # Print test results table and check for failures
-    if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
-        echo "##[error]Some CUDA unit tests failed. Please check the individual log files for details."
-    fi
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA Unit Tests" --log-pattern "unittest_cuda_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_llmc() {
@@ -180,23 +121,16 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "coverage_llmc.xml" ]; then
-        mv coverage_llmc.xml ${LOG_DIR}/
-    fi
-    # Print test results table and check for failures
-    if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
-        echo "##[error]Some CUDA LLMC tests failed. Please check the individual log files for details."
-    fi
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA LLMC Tests" --log-pattern "unittest_cuda_llmc_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_sglang() {
@@ -212,22 +146,16 @@ function run_unit_test_sglang() {
     uv pip list
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "coverage_sglang.xml" ]; then
-        mv coverage_sglang.xml ${LOG_DIR}/
-    fi
-    if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
-        echo "##[error]Some CUDA SGLang unit tests failed. Please check the individual log files for details."
-    fi
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA SGLang Tests" --log-pattern "unittest_cuda_sglang_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_vllm() {
@@ -243,25 +171,17 @@ function run_unit_test_vllm() {
     uv pip list
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report term --cov-report xml:coverage_vllm.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
-    if [ -f "coverage_vllm.xml" ]; then
-        mv coverage_vllm.xml ${LOG_DIR}/
-    fi
-    if ! print_test_results_table "unittest_cuda_vllm_test*.log" "CUDA VLLM Unit Tests"; then
-        echo "##[error]Some CUDA VLLM unit tests failed. Please check the individual log files for details."
-    fi
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA VLLM Tests" --log-pattern "unittest_cuda_vllm_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
-
-
 
 function main() {
     setup_environment
