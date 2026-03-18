@@ -267,7 +267,6 @@ def quant_rtn_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=
         max_tensor = tensor_max.to(tensor.device) * max_scale
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
-    scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = max_tensor.float_().dic_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
