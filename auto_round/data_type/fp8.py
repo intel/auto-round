@@ -584,9 +584,8 @@ if is_gaudi2():
         scale = max_tensor.float().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
         if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
             tensor = tensor.to(torch.bfloat16)
-        fp8_res = torch.ops.hpu.cast_to_fp8_v2(
-            tensor.div_(scale).add_(v).clamp_(info.min, info.max), 1.0, False, False, torch.float8_e4m3fn
-        )[0]
+        tensor.div_(scale).add_(v).clamp_(info.min, info.max)
+        fp8_res = torch.ops.hpu.cast_to_fp8_v2(tensor, 1.0, False, False, torch.float8_e4m3fn)[0]
         qdq_res = fp8_res.to(orig_dtype).mul_(scale)
         qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
         qdq_res = qdq_res.to(orig_dtype)
