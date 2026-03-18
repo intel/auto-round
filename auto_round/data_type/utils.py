@@ -12,6 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Shared tensor utilities and straight-through estimators for quantization.
+
+This module provides helpers used across all data-type quantization modules:
+
+- :func:`reshape_pad_tensor_by_group_size` / :func:`revert_tensor_by_pad` for
+  group-wise tensor reshaping.
+- Straight-through estimators (STE) for rounding, floor, ceil, and float8.
+- :func:`get_quant_func` to look up a registered quantization function.
+- :func:`update_fused_layer_global_scales` / :func:`update_block_global_scale_if_needed`
+  for NVFP4 fused-layer global-scale synchronization.
+"""
+
 import math
 from functools import lru_cache
 from math import ceil
@@ -121,6 +133,14 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, grou
     """
 
     def pad_sym(data_type):
+        """Append the symmetry suffix (``_sym`` or ``_asym``) to *data_type*.
+
+        Args:
+            data_type (str): Base data-type string.
+
+        Returns:
+            str: Data-type string with the appropriate symmetry suffix.
+        """
         if sym:
             data_sym = data_type + "_sym"
         else:
@@ -128,6 +148,14 @@ def get_quant_func(dtype: str, bits: int, sym: bool, disable_opt_rtn=False, grou
         return data_sym
 
     def pad_bits(data_type):
+        """Append the bit-width as a suffix to *data_type*.
+
+        Args:
+            data_type (str): Base data-type string.
+
+        Returns:
+            str: Data-type string with the bit-width suffix appended.
+        """
         return data_type + str(bits)
 
     if not disable_opt_rtn:
@@ -268,6 +296,17 @@ def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
 
 @lru_cache(None)
 def get_gaudi_fp8_ste_func():
+    """Return the appropriate FP8 straight-through estimator for the current device.
+
+    Checks whether the HPEx library is available (indicating an Intel Gaudi
+    accelerator) and returns the HPU-specific STE; otherwise returns the
+    standard CUDA/CPU STE.  The result is cached so the check happens only
+    once per process.
+
+    Returns:
+        Callable: Either :func:`float8_e4m3fn_hpu_ste` (HPU) or
+            :func:`float8_e4m3fn_ste` (CUDA/CPU).
+    """
     from auto_round.utils import is_hpex_available
 
     if is_hpex_available():
@@ -285,17 +324,19 @@ def update_fused_layer_global_scales(
     submodule: Module,
     base_name: str = "weight",
 ):
-    """
-    Update global scales for fused layers under NVFP4 quantization.
+    """Update global scales for fused layers under NVFP4 quantization.
 
-    For attention layers:
-      - q/k/v projections share a single global scale.
+    For attention layers q/k/v projections share a single global scale equal
+    to the element-wise minimum of their individual scales.  For MLP layers
+    ``gate_proj`` and ``up_proj`` are treated similarly.  This behaviour is
+    currently required by vLLM and may become optional in the future.
 
-    For MLP layers:
-      - gate_proj and up_proj share a single global scale.
-
-    This behavior is currently required by vLLM and may become optional
-    in the future.
+    Args:
+        submodule (torch.nn.Module): The layer module to inspect and update.
+            May be an attention block or an MLP block.
+        base_name (str, optional): Prefix used to find the per-module global
+            scale attribute (``f"{base_name}_global_scale"``).  Defaults to
+            ``"weight"``.
     """
     global_scale_name = f"{base_name}_global_scale"
 
@@ -311,11 +352,29 @@ def update_fused_layer_global_scales(
         return scales
 
     def _is_attention_module(module: Module):
+        """Return True if *module* looks like an attention block with k/v projections.
+
+        Args:
+            module (torch.nn.Module): Module to inspect.
+
+        Returns:
+            bool: True when the class name contains ``"attention"`` and the
+                module has ``k_proj``, ``v_proj``, or ``qkv_proj`` attributes.
+        """
         return "attention" in module.__class__.__name__.lower() and (
             hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
         )
 
     def _is_mlp_module(module: Module):
+        """Return True if *module* looks like an MLP block with gate and up projections.
+
+        Args:
+            module (torch.nn.Module): Module to inspect.
+
+        Returns:
+            bool: True when the class name contains ``"mlp"`` and the module
+                has both ``gate_proj`` and ``up_proj`` attributes.
+        """
         return "mlp" in module.__class__.__name__.lower() and (
             hasattr(module, "gate_proj") and hasattr(module, "up_proj")
         )
@@ -351,6 +410,25 @@ def update_fused_layer_global_scales(
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
+    """Compute and synchronize NVFP4 global scales for all quantizable layers in a block.
+
+    If *data_type* is not an NVFP format this function returns immediately.
+    Otherwise it:
+
+    1. Calculates a per-layer ``weight_global_scale`` for every quantizable
+       submodule that does not already have one.
+    2. Calls :func:`update_fused_layer_global_scales` on every module so that
+       fused attention (q/k/v) and MLP (gate/up) projections share the same
+       global scale, as required by vLLM.
+
+    Args:
+        block (torch.nn.Module): The transformer block whose submodules are
+            updated.
+        data_type (str): Quantization data-type string (e.g. ``"nv_fp4"``).
+            Non-NVFP types are silently skipped.
+        group_size (int): Group size passed to :func:`calculate_gparam` for
+            computing the global scale.
+    """
     if not is_nv_fp(data_type):
         return
 

@@ -11,6 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Integer quantization implementations for auto-round.
+
+This module registers the symmetric and asymmetric integer quantization
+functions used by the auto-round framework (``int_sym``, ``int_asym``,
+``int_sym_gptq``, ``rtn_int_sym``).  It also exposes a helper
+:func:`quant_tensor_asym_wo_round` for bias/norm tuning that skips the
+rounding step.
+"""
 from typing import Union
 
 import torch
@@ -22,6 +30,26 @@ from auto_round.utils import get_reciprocal
 
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
+    """Search for optimal per-group symmetric quantization scales.
+
+    Iterates over a fine grid of scale candidates around an initial estimate
+    derived from the per-group absolute maximum and selects the candidate that
+    minimises the (optionally weighted) squared reconstruction error.
+
+    Args:
+        data (torch.Tensor): Input tensor shaped ``(n_groups, group_size)``
+            whose last dimension is the group to quantize together.
+        bits (int): Number of bits for quantization.  The representable range
+            is ``[-2^(bits-1), 2^(bits-1)-1]``.
+        qw (torch.Tensor or float or None, optional): Per-element importance
+            weights used to scale the squared error.  When ``None`` all
+            elements are weighted equally (equivalent to ``qw=1.0``).
+            Defaults to ``None``.
+
+    Returns:
+        torch.Tensor: Optimal per-group scale tensor with shape
+            ``(n_groups, 1)``.
+    """
     # Maximum absolute value for symmetric quantization
     nmax = 1 << (bits - 1)  # equivalent to pow(2, bits-1)
 

@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Mixed-precision W4A8 (int4 weight + fp8 activation) quantization for auto-round.
+
+This module registers the ``fp8_to_int_sym`` two-stage quantization scheme:
+weights are first projected into the float8 E4M3 domain (per-tensor scaling)
+and then further compressed to symmetric int4 groups.  Both scale tensors are
+preserved for downstream kernels.
+"""
+
 import torch
 
 from auto_round.data_type.register import register_dtype
