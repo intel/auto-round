@@ -11,6 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Quantization scheme definitions and preset configurations for AutoRound.
+
+This module provides the :class:`QuantizationScheme` dataclass, which encapsulates
+all parameters required for weight and activation quantization, as well as a registry
+of named preset schemes (e.g. ``"W4A16"``, ``"MXFP4"``, ``"FP8_STATIC"``) and
+helper functions for resolving them.
+
+Example::
+
+    from auto_round.schemes import preset_name_to_scheme
+    scheme = preset_name_to_scheme("W4A16")
+    print(scheme.bits, scheme.group_size)  # 4  128
+"""
 import copy
 from copy import deepcopy
 from dataclasses import dataclass, fields
@@ -25,6 +38,33 @@ __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
 @dataclass
 class QuantizationScheme:
+    """A dataclass representing the full quantization configuration for a layer.
+
+    This dataclass is used to parameterize weight quantization (``bits``,
+    ``group_size``, ``sym``, ``data_type``) and optional activation quantization
+    (``act_*`` fields), as well as double-quantization of scales (``super_*``
+    fields).
+
+    Attributes:
+        bits (int): Number of bits for weight quantization. Defaults to 4.
+        group_size (int): Group size for per-group weight quantization.
+            Defaults to 128.
+        sym (bool): Whether to use symmetric weight quantization. Defaults to
+            ``True``.
+        data_type (str): Weight data type identifier (e.g. ``"int"``, ``"fp"``,
+            ``"mx_fp"``). Defaults to ``"int"``.
+        act_bits (int | None): Activation quantization bits; ``None`` or ``>= 16``
+            means no activation quantization.
+        act_group_size (int | None): Group size for activation quantization.
+        act_sym (bool | None): Symmetric activation quantization flag.
+        act_data_type (str | None): Activation data type identifier.
+        act_dynamic (bool | None): Whether to use dynamic activation
+            quantization (calibrate at runtime).
+        super_bits (int | None): Bits used for the secondary (super) scale
+            quantization in double-quantization schemes.
+        super_group_size (int | None): Group size for the secondary scale
+            quantization.
+    """
     bits: int = 4
     group_size: int = 128
     sym: bool = True
@@ -39,32 +79,94 @@ class QuantizationScheme:
 
     @classmethod
     def from_dict(cls, config: dict):
+        """Creates a QuantizationScheme instance from a configuration dictionary.
+
+        Args:
+            config (dict): Dictionary whose keys correspond to field names of
+                :class:`QuantizationScheme`.
+
+        Returns:
+            QuantizationScheme: New instance populated from the dictionary.
+        """
         return cls(**config)
 
     @classmethod
     def get_attributes(cls: "QuantizationScheme") -> list[str]:
+        """Returns the list of all field names of QuantizationScheme.
+
+        Returns:
+            list[str]: Ordered list of dataclass field names.
+        """
         return [field.name for field in fields(cls)]
 
     def __getitem__(self, key: str):
+        """Gets the value of the named attribute via bracket notation.
+
+        Args:
+            key (str): Name of the attribute to retrieve.
+
+        Returns:
+            Any: Value of the attribute.
+
+        Raises:
+            KeyError: If ``key`` is not a valid attribute name.
+        """
         if key not in self.get_attributes():
             raise KeyError(f"{key} is not a valid attribute")
         return getattr(self, key)
 
     def __setitem__(self, key: str, value: None | int | str):
+        """Sets the value of the named attribute via bracket notation.
+
+        Args:
+            key (str): Name of the attribute to set.
+            value (None | int | str): New value for the attribute.
+
+        Raises:
+            KeyError: If ``key`` is not a valid attribute name.
+        """
         if key not in self.get_attributes():
             raise KeyError(f"{key} is not a valid attribute")
         setattr(self, key, value)
 
     def items(self):
+        """Returns an iterator of (field_name, value) pairs.
+
+        Returns:
+            generator: Yields ``(str, Any)`` tuples for each field.
+        """
         return ((field, getattr(self, field)) for field in self.get_attributes())
 
     def keys(self):
+        """Returns the list of all field names.
+
+        Returns:
+            list[str]: All field names of this dataclass.
+        """
         return self.get_attributes()
 
     def values(self):
+        """Returns an iterator over all field values.
+
+        Returns:
+            generator: Yields the value of each field in declaration order.
+        """
         return (getattr(self, field) for field in self.get_attributes())
 
     def get(self, key: str, default=None):
+        """Returns the value of an attribute by name, or a default.
+
+        Unlike ``__getitem__``, this method returns ``default`` both when the
+        key is absent and when the field value is ``None``.
+
+        Args:
+            key (str): Attribute name to look up.
+            default: Value to return when the key is absent or the field is
+                ``None``. Defaults to ``None``.
+
+        Returns:
+            Any: Field value, or ``default`` if not found / ``None``.
+        """
         if key not in self.get_attributes():
             return default
         res = getattr(self, key)
@@ -74,6 +176,17 @@ class QuantizationScheme:
         return getattr(self, key)
 
     def __eq__(self, other: "QuantizationScheme") -> bool:
+        """Checks equality with another QuantizationScheme.
+
+        Activation fields are skipped when both schemes have ``act_bits >= 16``
+        (i.e., no activation quantization in either).
+
+        Args:
+            other (QuantizationScheme): The other scheme to compare against.
+
+        Returns:
+            bool: ``True`` if all compared fields are equal.
+        """
         if not isinstance(other, QuantizationScheme):
             return False
         skip_act_check = False
@@ -102,7 +215,14 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
 
 
 def is_preset_scheme(name: str) -> bool:
-    """Check if the given name is a preset scheme name."""
+    """Checks whether the given name corresponds to a known preset scheme.
+
+    Args:
+        name (str): Scheme name to look up (case-insensitive).
+
+    Returns:
+        bool: ``True`` if ``name.upper()`` is a key in ``PRESET_SCHEMES``.
+    """
     return name.upper() in PRESET_SCHEMES
 
 
@@ -342,9 +462,29 @@ def _handle_special_schemes(
     quant_lm_head=False,
     mllm=False,
 ) -> dict:
-    """handle special schemes, like GGUF:Q2_K_MIXED.
-    Provide some special auto_round recipes.
+    """Handles special mixed-precision scheme recipes and populates ``layer_config``.
 
+    For schemes such as ``"GGUF:Q2_K_MIXED"`` and ``"W4A16_MIXED"`` this
+    function inspects the model structure and assigns per-layer scheme overrides
+    to ``layer_config`` (e.g. routing expert layers to lower precision while
+    keeping shared or lm-head layers at higher precision).
+
+    Args:
+        scheme_name (str): Scheme identifier string (case-insensitive).
+        layer_config (dict): Existing per-layer configuration dictionary; may be
+            ``None`` (will be initialised to an empty dict).
+        model (torch.nn.Module): The model whose named modules are inspected.
+        supported_types (tuple | None, optional): Supported linear layer types.
+            Defaults to ``SUPPORTED_DTYPES``.
+        inner_supported_types (tuple | None, optional): Supported inner layer
+            types. Defaults to ``INNER_SUPPORTED_LAYER_TYPES``.
+        quant_lm_head (bool, optional): Whether to quantize the LM head layer.
+            Defaults to ``False``.
+        mllm (bool, optional): Whether the model is a multimodal LLM. Defaults
+            to ``False``.
+
+    Returns:
+        dict: Updated ``layer_config`` with any new per-layer overrides applied.
     """
     if not isinstance(scheme_name, str):
         return layer_config
@@ -387,6 +527,20 @@ def _handle_special_schemes(
 
 
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+    """Resolves a QuantizationScheme object to its GGUF preset name, if any.
+
+    Iterates over all ``GGUF:*`` entries in ``PRESET_SCHEMES`` and returns the
+    first name whose parameters match the given scheme.
+
+    Args:
+        scheme (str | QuantizationScheme): Scheme to look up.  If already a
+            string starting with ``"GGUF"`` it is returned as-is; other strings
+            return an empty string.
+
+    Returns:
+        str: Matching GGUF preset name (e.g. ``"GGUF:Q4_K_M"``) or an empty
+        string if no match is found.
+    """
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return scheme
     if isinstance(scheme, str):

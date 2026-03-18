@@ -14,6 +14,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""SignSGD optimizer for AutoRound quantization-aware rounding.
+
+This module provides a custom :class:`SignSGD` optimizer that applies the *sign*
+of the gradient instead of the raw gradient magnitude when updating parameters.
+This is the core optimizer used by AutoRound's signed gradient descent tuning.
+
+The implementation closely mirrors ``torch.optim.SGD`` and supports momentum,
+weight decay, dampening, Nesterov momentum, and maximization, with the key
+difference that each parameter update uses ``torch.sign(gradient)`` scaled by
+the learning rate.
+
+Reference:
+    Cheng et al., "Optimize weight rounding via signed gradient descent for
+    the quantization of LLMs." arXiv:2309.05516 (2023).
+"""
 
 
 from typing import List, Optional
@@ -106,6 +121,11 @@ class _RequiredParameter(object):
     """Singleton class representing a required parameter for an Optimizer."""
 
     def __repr__(self):
+        """Returns a human-readable description of the required parameter sentinel.
+
+        Returns:
+            str: ``"<required parameter>"``.
+        """
         return "<required parameter>"
 
 
@@ -113,6 +133,15 @@ required = _RequiredParameter()
 
 
 def _use_grad_for_differentiable(func):
+    """Decorator that temporarily enables/disables grad based on the optimizer's
+    ``differentiable`` default setting.
+
+    Args:
+        func (Callable): Optimizer method to wrap.
+
+    Returns:
+        Callable: Wrapped function that manages the gradient context.
+    """
     def _use_grad(self, *args, **kwargs):
         prev_grad = torch.is_grad_enabled()
         try:
@@ -245,6 +274,11 @@ class SignSGD(Optimizer):
         super(SignSGD, self).__init__(params, defaults)
 
     def __setstate__(self, state):
+        """Restores optimizer state, setting default values for missing keys.
+
+        Args:
+            state (dict): State dictionary to restore from.
+        """
         super().__setstate__(state)
         for group in self.param_groups:
             group.setdefault("nesterov", False)
@@ -322,9 +356,30 @@ def sgd(
     nesterov: bool,
     maximize: bool
 ):
-    r"""Functional API that performs SGD algorithm computation.
+    r"""Functional implementation of the SignSGD update step.
 
-    See :class:`~torch.optim.SGD` for details.
+    Applies the signed-gradient SGD algorithm to all parameter tensors using
+    :func:`_single_tensor_sgd`.
+
+    Args:
+        params (list[Tensor]): List of parameter tensors to update.
+        d_p_list (list[Tensor]): Corresponding gradient tensors.
+        momentum_buffer_list (list[Tensor | None]): Per-parameter momentum
+            buffers; ``None`` entries are initialised on first call.
+        has_sparse_grad (bool, optional): Whether any gradient is sparse.
+            Defaults to ``None``.
+        foreach (bool, optional): Placeholder for future foreach support.
+            Defaults to ``None``.
+        weight_decay (float): L2 weight-decay coefficient.
+        momentum (float): Momentum factor.
+        lr (float): Learning rate.
+        dampening (float): Dampening factor for momentum.
+        nesterov (bool): Whether to use Nesterov momentum.
+        maximize (bool): If ``True``, maximise instead of minimise.
+
+    Raises:
+        RuntimeError: If ``foreach=True`` and the optimizer is scripted with
+            ``torch.jit.script``.
     """
 
     if foreach is None:
@@ -366,6 +421,26 @@ def _single_tensor_sgd(
     maximize: bool,
     has_sparse_grad: bool
 ):
+    """Applies the signed-gradient SGD update to each parameter tensor individually.
+
+    For each parameter, optionally applies weight decay and momentum, then
+    updates the parameter by subtracting (or adding, if ``maximize``) the sign
+    of the (possibly momentum-adjusted) gradient scaled by ``lr``.
+
+    Args:
+        params (list[Tensor]): Parameter tensors to update in-place.
+        d_p_list (list[Tensor]): Gradient tensors corresponding to each parameter.
+        momentum_buffer_list (list[Tensor | None]): Momentum buffers; ``None``
+            entries are initialised from the current gradient.
+        weight_decay (float): L2 weight-decay coefficient; 0 disables it.
+        momentum (float): Momentum factor; 0 disables momentum.
+        lr (float): Learning rate (step size).
+        dampening (float): Dampening coefficient applied when accumulating
+            momentum.
+        nesterov (bool): If ``True``, applies Nesterov look-ahead correction.
+        maximize (bool): If ``True``, gradient is negated before the update.
+        has_sparse_grad (bool): Whether any gradient tensor is sparse.
+    """
     for i, param in enumerate(params):
         d_p = d_p_list[i] if not maximize else -d_p_list[i]
 
