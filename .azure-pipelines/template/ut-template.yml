@@ -57,6 +57,7 @@ steps:
             && uv pip install torch==2.10.0 auto-round-lib \
             && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
+            && BUILD_TYPE="nightly" uv pip install git+https://github.com/vllm-project/compressed-tensors.git@main \
             && uv pip install -r test/test_cpu/requirements.txt \
             && uv pip list"
         fi
