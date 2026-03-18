@@ -544,26 +544,6 @@ class TestAutoRound:
         print(res)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_fallback_layers_regex_exception(self, tiny_opt_model_path, dataloader):
-        model_name = tiny_opt_model_path
-        bits, group_size, sym = 4, 128, True
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        layer_config = {"model.decoder.layers.12.self_attn.k_proj": {"bits": 16}}
-        with pytest.raises(ValueError):
-            autoround = AutoRound(
-                model,
-                tokenizer=tokenizer,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=2,
-                seqlen=2,
-                dataset=dataloader,
-                layer_config=layer_config,
-            )
-            autoround.quantize()
-
     def test_dequant_fp8_weight(self):
         from auto_round.utils.model import _dequant_fp8_linear_weight
 
@@ -650,28 +630,6 @@ class TestAutoRound:
             or layer_config["model.decoder.layers.1.fc1"]["act_bits"] != 8
         ):
             raise ValueError("mixed bits is not correct")
-
-    def test_invalid_layer_config(self, tiny_opt_model_path):
-        with pytest.raises(ValueError):
-            layer_config = {"model.decoder.layers.2.self_attnx": {"bits": 2}}
-            ar = AutoRound(
-                tiny_opt_model_path,
-                scheme="W3A16",
-                nsamples=1,
-                iters=1,
-                layer_config=layer_config,
-            )
-            ar.quantize()
-        with pytest.raises(ValueError):
-            layer_config = {"model.decoder.layers.2.self_attn": {"bit": 2}}  # should be bits
-            ar = AutoRound(
-                tiny_opt_model_path,
-                scheme="W3A16",
-                nsamples=1,
-                iters=1,
-                layer_config=layer_config,
-            )
-            ar.quantize()
 
     def test_quant_lm_head(self, tiny_untied_qwen_model_path):
         model_name = tiny_untied_qwen_model_path

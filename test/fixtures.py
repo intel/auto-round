@@ -17,6 +17,8 @@ from .helpers import (
     lamini_name_or_path,
     opt_name_or_path,
     phi2_name_or_path,
+    qwen2_5_omni_name_or_path,
+    qwen3_omni_name_or_path,
     qwen_2_5_vl_name_or_path,
     qwen_moe_name_or_path,
     qwen_name_or_path,
@@ -277,6 +279,75 @@ def tiny_tiny_llama_model_path():
     tokenizer.save_pretrained(tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen2_5_omni():
+    """Tiny Qwen2.5-Omni-3B model built from real config with reduced layers.
+
+    Uses random weights (no checkpoint loading) so it is fast for CPU unit
+    tests while still exercising the real config structure.
+    Skipped automatically when the model path does not exist locally.
+    """
+
+    from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Qwen2_5OmniForConditionalGeneration
+
+    model_name = qwen2_5_omni_name_or_path
+    if not os.path.isdir(model_name):
+        pytest.skip(f"Qwen2.5-Omni-3B not found at {model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+
+    # Reduce layers — keeps real config structure but uses random weights
+    config.thinker_config.text_config.num_hidden_layers = 1
+    config.thinker_config.vision_config.depth = 1
+    config.thinker_config.audio_config.num_hidden_layers = 1
+    config.talker_config.num_hidden_layers = 1
+    if hasattr(config.thinker_config.text_config, "layer_types"):
+        config.thinker_config.text_config.layer_types = config.thinker_config.text_config.layer_types[:1]
+    if hasattr(config.talker_config, "layer_types"):
+        config.talker_config.layer_types = config.talker_config.layer_types[:1]
+
+    model = Qwen2_5OmniForConditionalGeneration(config)
+    yield model, tokenizer, processor
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen3_omni_moe():
+    """Tiny Qwen3-Omni-MoE model built from real config with reduced layers.
+
+    Uses random weights (no checkpoint loading) so it is fast for CI while
+    still exercising the real config structure.
+    Skipped automatically when the model path does not exist locally.
+    """
+
+    from transformers import AutoConfig, AutoProcessor, AutoTokenizer, Qwen3OmniMoeForConditionalGeneration
+
+    model_name = qwen3_omni_name_or_path
+    if not os.path.isdir(model_name):
+        pytest.skip(f"Qwen3-Omni-30B-A3B-Instruct not found at {model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+
+    # Reduce layers — keeps real config structure but uses random weights
+    config.thinker_config.text_config.num_hidden_layers = 1
+    config.thinker_config.vision_config.depth = 1
+    config.thinker_config.audio_config.num_hidden_layers = 1
+    if hasattr(config.thinker_config.text_config, "layer_types"):
+        config.thinker_config.text_config.layer_types = config.thinker_config.text_config.layer_types[:1]
+    # Talker
+    if hasattr(config, "talker_config"):
+        if hasattr(config.talker_config, "text_config"):
+            config.talker_config.text_config.num_hidden_layers = 1
+        elif hasattr(config.talker_config, "num_hidden_layers"):
+            config.talker_config.num_hidden_layers = 1
+
+    model = Qwen3OmniMoeForConditionalGeneration(config)
+    yield model, tokenizer, processor
 
 
 # Mock torch.cuda.get_device_capability to always return (9, 0) like H100

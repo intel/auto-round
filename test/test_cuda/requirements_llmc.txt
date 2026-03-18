@@ -1,2 +1,3 @@
 llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
+compressed-tensors==0.14.1a20260313 # temporary pin for llmcompressor
 parameterized
