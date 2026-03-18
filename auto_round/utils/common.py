@@ -104,6 +104,25 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
     setattr(cls, method_name, classmethod(patched))
 
 
+def normalize_no_split_modules(no_split_modules):
+    if not no_split_modules:
+        return []
+
+    def flatten_items(value):
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from flatten_items(item)
+        else:
+            yield value
+
+    flattened = []
+    for item in flatten_items(no_split_modules):
+        if item is None:
+            continue
+        flattened.append(item)
+    return flattened
+
+
 def _patch_transpose_for_buffers():
     """Patch Transpose.convert() to skip transposition for buffer tensors.
 
@@ -153,6 +172,34 @@ def _patch_transpose_for_buffers():
     Transpose.convert = _patched_convert
 
 
+def _patch_tensor_get_dtype_for_prequantized_loading():
+    """Add a minimal ``torch.Tensor.get_dtype()`` shim for transformers 5.3.0.
+
+    transformers 5.3.0 added a pre-quantized loading branch in
+    ``core_model_loading.convert_and_load_state_dict_in_model()`` that calls
+    ``tensor.get_dtype()`` on checkpoint values. During actual weight loading,
+    those values are plain ``torch.Tensor`` instances returned by
+    ``modeling_utils.load_state_dict()``, which do not implement that method.
+
+    Older transformers versions only disabled dtype casting when a key was
+    renamed. The new version additionally inspects non-floating tensors, but it
+    does so through a safetensors-slice API that is not available on regular
+    tensors. Providing the method here preserves the new intent while restoring
+    compatibility for plain tensors.
+    """
+    if hasattr(torch.Tensor, "get_dtype"):
+        return
+
+    from safetensors.torch import _TYPES
+
+    torch_to_safetensors_dtype = {v: k for k, v in _TYPES.items()}
+
+    def _tensor_get_dtype(self):
+        return torch_to_safetensors_dtype.get(self.dtype, str(self.dtype).removeprefix("torch.").upper())
+
+    torch.Tensor.get_dtype = _tensor_get_dtype
+
+
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
@@ -177,6 +224,10 @@ def monkey_patch_transformers():
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
         # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
         _patch_transpose_for_buffers()
+    if parsed_version >= version.parse("5.3.0"):
+        # transformers 5.3.0 calls tensor.get_dtype() on plain torch.Tensor objects
+        # while loading pre-quantized checkpoints.
+        _patch_tensor_get_dtype_for_prequantized_loading()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
@@ -186,6 +237,191 @@ def monkey_patch_transformers():
 @lru_cache(None)
 def monkey_patch():
     monkey_patch_transformers()
+
+
+def monkey_patch_model(model) -> None:
+    """Apply model-instance-level monkey patches after a model is loaded.
+
+    This is the central place for all instance-level patches (as opposed to the
+    class-level patches in ``monkey_patch_transformers``).
+    """
+    _patch_prepare_inputs_for_generation(model)
+
+
+def _patch_prepare_inputs_for_generation(model) -> None:
+    """Fix positional-arg mismatch in models whose prepare_inputs_for_generation
+    passes arguments positionally to GenerationMixin.prepare_inputs_for_generation.
+
+    transformers >= 5.1 inserted ``next_sequence_length`` as the 2nd positional
+    parameter in the base ``GenerationMixin.prepare_inputs_for_generation``.
+    Some model implementations (e.g. Qwen2.5-Omni / Qwen3-Omni MoE talker)
+    still pass ``past_key_values`` etc. positionally, causing a
+    "got multiple values for argument 'next_sequence_length'" TypeError.
+
+    This function monkey-patches the affected sub-model to use keyword arguments
+    instead, which works with both old and new transformers.
+    """
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+
+    if model_type == "qwen2_5_omni":
+        _patch_qwen25_omni_talker(model)
+    elif model_type == "qwen3_omni_moe":
+        _patch_qwen3_omni_moe_talker(model)
+
+
+def _patch_qwen25_omni_talker(model) -> None:
+    """Patch Qwen2.5-Omni talker prepare_inputs_for_generation."""
+    talker = getattr(model, "talker", None)
+    if talker is None:
+        return
+
+    import types
+
+    def _fixed_prepare_inputs_for_generation(
+        self,
+        input_ids,
+        input_text_ids=None,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        thinker_reply_part=None,
+        cache_position=None,
+        position_ids=None,
+        use_cache=True,
+        pixel_values=None,
+        pixel_values_videos=None,
+        image_grid_thw=None,
+        video_grid_thw=None,
+        input_audio_features=None,
+        audio_feature_attention_mask=None,
+        audio_feature_lengths=None,
+        use_audio_in_video=None,
+        video_second_per_grid=None,
+        **kwargs,
+    ):
+        from transformers.generation.utils import GenerationMixin
+
+        model_inputs = GenerationMixin.prepare_inputs_for_generation(
+            self,
+            input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            cache_position=cache_position,
+            use_cache=use_cache,
+            thinker_reply_part=thinker_reply_part,
+            input_text_ids=input_text_ids,
+            pixel_values=pixel_values,
+            pixel_values_videos=pixel_values_videos,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
+            input_audio_features=input_audio_features,
+            audio_feature_attention_mask=audio_feature_attention_mask,
+            audio_feature_lengths=audio_feature_lengths,
+            use_audio_in_video=use_audio_in_video,
+            video_second_per_grid=video_second_per_grid,
+            **kwargs,
+        )
+        model_inputs["position_ids"] = None
+        return model_inputs
+
+    talker.prepare_inputs_for_generation = types.MethodType(_fixed_prepare_inputs_for_generation, talker)
+    from auto_round.logger import logger
+
+    logger.info("Patched Qwen2.5-Omni talker prepare_inputs_for_generation for transformers compat.")
+
+
+def _patch_qwen3_omni_moe_talker(model) -> None:
+    """Patch Qwen3-Omni MoE talker prepare_inputs_for_generation.
+
+    The talker passes past_key_values, attention_mask, inputs_embeds positionally
+    to super().prepare_inputs_for_generation(), colliding with the new
+    next_sequence_length parameter in transformers >= 5.1.
+    """
+    talker = getattr(model, "talker", None)
+    if talker is None:
+        return
+
+    import types
+
+    _orig_prepare = (
+        talker.prepare_inputs_for_generation.__func__
+        if hasattr(talker.prepare_inputs_for_generation, "__func__")
+        else talker.prepare_inputs_for_generation
+    )
+
+    def _fixed_prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        is_first_iteration=False,
+        **kwargs,
+    ):
+        from transformers.generation.utils import GenerationMixin
+
+        hidden_states = kwargs.pop("hidden_states", None)
+        inputs = GenerationMixin.prepare_inputs_for_generation(
+            self,
+            input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            is_first_iteration=is_first_iteration,
+            **kwargs,
+        )
+
+        # Qwen3-Omni will prepare position ids in forward with deltas
+        inputs["position_ids"] = None
+
+        # Reproduce the talker's codec logic for non-first iterations
+        if not is_first_iteration and kwargs.get("use_cache", True):
+            import torch
+
+            input_ids_last = input_ids[:, -1:]
+            generation_step = kwargs.get("generation_step")
+            trailing_text_hidden = kwargs.get("trailing_text_hidden")
+            tts_pad_embed = kwargs.get("tts_pad_embed")
+            last_id_hidden = self.get_input_embeddings()(input_ids_last)
+
+            past_hidden = hidden_states[0][-1][:, -1:].to(last_id_hidden.device)
+            predictor_result = self.code_predictor.generate(
+                inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
+                max_new_tokens=self.config.num_code_groups - 1,
+                do_sample=True,
+                top_k=50,
+                top_p=0.8,
+                output_hidden_states=True,
+                return_dict_in_generate=True,
+            )
+            residual_codes = torch.cat((input_ids_last, predictor_result.sequences.to(input_ids_last.device)), dim=-1)
+
+            mid_residual_hiddens = [hid[0].to(last_id_hidden.device) for hid in predictor_result.hidden_states[1:]]
+            last_residual_hidden = self.code_predictor.get_input_embeddings()[-1](
+                predictor_result.sequences[..., -1:]
+            ).to(last_id_hidden.device)
+            codec_hiddens = torch.cat(
+                [last_id_hidden] + mid_residual_hiddens + [last_residual_hidden],
+                dim=1,
+            )
+            inputs_embeds_new = codec_hiddens.sum(1, keepdim=True)
+
+            if generation_step < trailing_text_hidden.shape[1]:
+                inputs_embeds_new = inputs_embeds_new + trailing_text_hidden[:, generation_step].unsqueeze(1).to(
+                    inputs_embeds_new.device
+                )
+            else:
+                inputs_embeds_new = inputs_embeds_new + tts_pad_embed.to(inputs_embeds_new.device)
+            inputs["inputs_embeds"] = inputs_embeds_new
+            inputs["residual_codes"] = residual_codes
+
+        return inputs
+
+    talker.prepare_inputs_for_generation = types.MethodType(_fixed_prepare_inputs_for_generation, talker)
+    from auto_round.logger import logger
+
+    logger.info("Patched Qwen3-Omni MoE talker prepare_inputs_for_generation for transformers compat.")
 
 
 auto_gptq = LazyImport("auto_gptq")
@@ -205,6 +441,8 @@ class SupportedFormats:
             "auto_round:llm_compressor",
             "fake",
             "llm_compressor",
+            "fp8",
+            "auto_round:fp8",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -246,6 +484,8 @@ MM_KEYS = [
     "audio",
     "talker",
     "token2wav",
+    "code2wav",
+    "code_predictor",
     "vision_model",
     "audio_tower",
     "vision_encoder",
@@ -508,3 +748,51 @@ def parse_layer_config_arg(s: str) -> dict:
         return result
 
     return _dict()
+
+
+def compress_layer_names(names: list) -> str:
+    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
+    import re as _re
+
+    # group by (prefix, suffix) where the number varies
+    from collections import defaultdict
+
+    groups: dict = defaultdict(list)
+    singles: list = []
+    for name in names:
+        m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
+        if m:
+            prefix = m.group(1) or ""
+            num = int(m.group(2))
+            suffix = m.group(3) or ""
+            groups[(prefix, suffix)].append(num)
+        else:
+            singles.append(name)
+    parts: list = []
+    for (prefix, suffix), nums in groups.items():
+        nums_sorted = sorted(set(nums))
+        if len(nums_sorted) == 1:
+            parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
+        else:
+            # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
+            ranges = []
+            start = prev = nums_sorted[0]
+            for n in nums_sorted[1:]:
+                if n == prev + 1:
+                    prev = n
+                    continue
+                # Close the current range
+                if start == prev:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{prev}")
+                start = prev = n
+            # Close the final range
+            if start == prev:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}-{prev}")
+            range_str = ",".join(ranges)
+            parts.append(f"{prefix}[{range_str}]{suffix}")
+    parts.extend(singles)
+    return ", ".join(parts)

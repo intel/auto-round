@@ -31,7 +31,7 @@ from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, ref_nvfp
 from auto_round.data_type.utils import floor_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, get_reciprocal, set_module
-from auto_round.wrapper import NORM_MAPPING, WrapperLinear, reshape_and_pad_tensor
+from auto_round.wrapper import NORM_MAPPING, WrapperLinear
 
 __all__ = ["wrapper_autoround"]
 
@@ -335,7 +335,7 @@ class WrapperLinearV2(WrapperLinear):
         super()._init_tuning_params_and_quant_func()
 
         orig_weight = getattr(self.orig_layer, "get_weight", lambda: self.orig_layer.weight)()
-        weight_reshape = reshape_and_pad_tensor(orig_weight.data, self.orig_layer.group_size)
+        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(orig_weight.data, self.orig_layer.group_size)
         if hasattr(self.orig_layer, "imatrix"):  # MOE model may have no imatrix
             imatrix = self.orig_layer.imatrix.reshape(1, -1)
             imatrix = reshape_pad_tensor_by_group_size(imatrix, self.orig_layer.group_size, val=1e-5)[0].view(1, -1)
