@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import functools
 import platform
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+import torch
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
@@ -830,12 +830,9 @@ def dynamic_import_inference_linear(backend, config):
             return get_gptqmodel_awq_infer_linear(backend)
         else:
             # Fallback to autoawq for backward compatibility
-            try:
-                from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
 
-                return WQLinear_GEMM
-            except ImportError:
-                raise ImportError("AWQ inference requires 'autoawq'. " "Please install via: pip install autoawq")
+            return WQLinear_GEMM
 
     if backend == "auto_round:tritonv2":
         from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
@@ -862,7 +859,6 @@ def dynamic_import_inference_linear(backend, config):
 
 def get_gptqmodel_awq_infer_linear(backend):
     """Returns the appropriate gptqmodel AWQ QuantLinear class for inference."""
-    import torch
 
     dtype = torch.get_default_dtype()
     if dtype != torch.float32:
@@ -894,8 +890,6 @@ def get_gptqmodel_awq_infer_linear(backend):
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
-    import torch
-
     dtype = torch.get_default_dtype()
     if dtype != torch.float32:
         torch.set_default_dtype(torch.float32)
