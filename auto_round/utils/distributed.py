@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Distributed training utilities for AutoRound.
+
+Provides helpers for detecting distributed execution environments and
+optionally wrapping model blocks with DistributedDataParallel (DDP).
+"""
+
 from functools import lru_cache
 
 import torch
@@ -21,6 +27,14 @@ from auto_round.logger import logger
 
 @lru_cache(maxsize=None)
 def is_distributed():
+    """Check whether the current process is running in a distributed environment.
+
+    Uses ``torch.distributed`` to determine if the process group is
+    initialized and contains more than one rank.
+
+    Returns:
+        bool: True if distributed training is active, False otherwise.
+    """
     import torch.distributed as dist
 
     return dist.is_initialized() and dist.get_world_size() > 1

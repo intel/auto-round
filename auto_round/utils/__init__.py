@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Utility package for AutoRound.
+
+Provides device management, model utilities, common helpers, weight handling,
+and dataset patching for AutoRound quantization workflows.
+"""
+
 from auto_round.utils.device import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *
@@ -33,6 +39,19 @@ if Version(transformers.__version__) >= Version("5.0.0") and not DATASET_PATCHED
     datasets.original_load_dataset = datasets.load_dataset
 
     def patch_load_dataset(*args, **kwargs):
+        """Patch datasets.load_dataset to remap legacy dataset names to updated paths.
+
+        Replaces known renamed dataset identifiers (e.g., ``openbookqa`` →
+        ``allenai/openbookqa``) in the positional arguments and keyword arguments
+        ``path`` and ``name`` before forwarding to the original loader.
+
+        Args:
+            *args: Positional arguments forwarded to the original load_dataset.
+            **kwargs: Keyword arguments forwarded to the original load_dataset.
+
+        Returns:
+            The dataset returned by the original datasets.load_dataset call.
+        """
         for dataset_name, replace_name in [("openbookqa", "allenai/openbookqa")]:
             if len(args) > 0 and dataset_name in args[0]:
                 args = (replace_name,) + args[1:]
