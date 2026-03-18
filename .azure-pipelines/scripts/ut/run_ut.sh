@@ -1,5 +1,5 @@
 #!/bin/bash
-set -xe
+set -e
 
 test_part=$1
 
@@ -10,28 +10,30 @@ mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
 function setup_environment() {
+    echo "##[group]set up UT env..."
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1
-    echo "##[group]set up UT env..."
+
     uv pip install pytest-cov pytest-html
     uv pip list
     # workaround for ark test, remove auto_round_kernel_xpu
     package_path=$(uv pip show auto-round-lib | grep Location:|cut -d: -f2)
     rm -rf $package_path/auto_round_kernel/auto_round_kernel_xpu*
-    echo "##[endgroup]"
 
     # install latest gguf for ut test
     cd ~ || exit 1
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install . sentencepiece
 
     cd /auto-round && uv pip install .
-    uv pip list
 
     rm -rf /auto-round/auto_round
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
     export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
+    echo "##[endgroup]"
+
+    uv pip list
 }
 
 function print_summary() {
@@ -83,12 +85,12 @@ function run_unit_test() {
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
 
     for test_file in ${selected_files}; do
-        echo "##[group]Running ${test_file}..."
+        LIGHT_PURPLE && echo "##[group]Running ${test_file}..." && $RESET
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html \
+            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
