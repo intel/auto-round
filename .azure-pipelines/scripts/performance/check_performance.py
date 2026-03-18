@@ -2,6 +2,8 @@ import re
 import sys
 
 
+LOG_DIR="/auto-round/log_dir"
+
 def parse_tuning_time(log_file):
     with open(log_file, "r") as f:
         content = f.read()
@@ -28,7 +30,7 @@ def get_tuning_time():
     for model in model_list:
         summary[model] = {}
         for test_mode in ["current", "baseline"]:
-            log_file = f"perf_test_{test_mode}.log"
+            log_file = f"{LOG_DIR}/perf_test_{test_mode}.log"
             print(f"Processing {log_file}...")
             tuning_time = parse_tuning_time(log_file)
             if tuning_time is not None:

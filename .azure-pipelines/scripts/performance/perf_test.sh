@@ -7,6 +7,9 @@ function setup_environment() {
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export UV_NO_PROGRESS=1
     export UV_SYSTEM_PYTHON=1
+
+    LOG_DIR="/auto-round/log_dir"
+    mkdir -p ${LOG_DIR}
 }
 
 function install_requirements() {
@@ -25,8 +28,8 @@ function run_performance_test() {
     test_mode=$1
     cd /auto-round/.azure-pipelines/scripts/performance
     log_file="perf_test_${test_mode}.log"
-    rm -rf ./saved ${log_file}
-    auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 200 --enable_torch_compile --device hpu --output_dir ./saved | tee ${log_file}
+    rm -rf ./saved ${LOG_DIR}/${log_file}
+    auto-round --model_name Qwen/Qwen3-0.6B --bits 4 --iters 200 --enable_torch_compile --device hpu --output_dir ./saved 2>&1 | tee -a ${LOG_DIR}/${log_file}
 }
 
 function main() {

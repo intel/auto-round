@@ -48,6 +48,13 @@ stages:
                 && bash perf_test.sh"
             displayName: "Run UT"
 
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/log_dir
+              artifact: "Performance_Test_Logs"
+              publishLocation: "pipeline"
+
           - task: Bash@3
             condition: always()
             inputs:
