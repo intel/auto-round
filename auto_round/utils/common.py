@@ -554,7 +554,7 @@ def compress_layer_names(names: list) -> str:
     groups: dict = defaultdict(list)
     singles: list = []
     for name in names:
-        m = _re.match(r"^(.*?\.)?(\d+)(\..+)?$", name)
+        m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
         if m:
             prefix = m.group(1) or ""
             num = int(m.group(2))
