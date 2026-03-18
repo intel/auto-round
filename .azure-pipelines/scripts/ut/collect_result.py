@@ -40,6 +40,7 @@ class LogAnalyzer:
         "Killed",
         "AssertionError",
         "Error:",
+        "core dumped",
     )
 
     ERROR_MARKERS = (

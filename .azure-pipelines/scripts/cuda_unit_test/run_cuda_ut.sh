@@ -48,6 +48,16 @@ function print_summary() {
     exit $status
 }
 
+function check_storage_usage() {
+    echo "##[group]check storage usage..."
+    df -h
+    du -sh "${BUILD_SOURCESDIRECTORY}"
+    du -sh /root/.cache/huggingface
+    du -sh /root/.cache/huggingface/hub/*
+    du -sh /root/.venv
+    echo "##[endgroup]"
+}
+
 function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
@@ -199,14 +209,7 @@ function main() {
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', 'vllm', or 'all'."
         exit 1
     fi
-
-    echo "##[group]check storage usage..."
-    df -h
-    du -sh "${BUILD_SOURCESDIRECTORY}"
-    du -sh /root/.cache/huggingface
-    du -sh /root/.cache/huggingface/hub/*
-    du -sh /root/.venv
-    echo "##[endgroup]"
+    check_storage_usage
     print_summary
 }
 
