@@ -11,6 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""AutoRound entry point providing a unified factory for model quantization.
+
+This module defines the ``AutoRound`` class, which serves as a factory that
+automatically selects the appropriate backend compressor (LLM, MLLM, Diffusion,
+or Adam-based) depending on the model type and configuration, as well as
+deprecated backward-compatible subclass aliases.
+"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Union
@@ -208,14 +215,21 @@ class AutoRound:
         """Samples inputs based on the given indices and sequence length.
 
         Args:
-        input_ids: The list of input tensor containing  input_ids.
-        input_others: A dictionary containing other input data.
-        indices: The indices to sample from the input.
-        seqlen: The sequence length.
+            input_ids (list[torch.Tensor]): List of input tensors containing token IDs.
+            input_others (dict): Dictionary containing additional input data (e.g.,
+                attention masks, positional inputs).
+            indices (list[int]): Indices to select from the input list.
+            seqlen (int): Target sequence length for slicing/truncating.
+            batch_dim (int, optional): Dimension along which to concatenate batches.
+                Defaults to 0.
+            share_cache_keys (tuple, optional): Keys in ``input_others`` whose values
+                are shared across all samples and should not be per-sample indexed.
+                Defaults to empty tuple.
 
         Returns:
-        current_input_ids: The sampled input IDs.
-        current_input_others: The sampled other input data.
+            tuple[torch.Tensor, dict]: A tuple of ``(current_input_ids, current_input_others)``
+                where ``current_input_ids`` is the concatenated input-ID tensor and
+                ``current_input_others`` is the sampled auxiliary-input dictionary.
         """
         current_input_ids = [input_ids[i] for i in indices]
 

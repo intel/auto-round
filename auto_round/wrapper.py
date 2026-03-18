@@ -11,6 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Wrapper modules for quantization-aware tuning of neural network layers.
+
+This module provides wrapper classes that augment linear and normalization
+layers with learnable rounding and scale parameters, enabling the AutoRound
+signed-gradient-descent optimization to minimize quantization error.
+
+Key components:
+    - :class:`WrapperLinear`: Wraps ``nn.Linear``/``Conv1D`` with quantization
+      and min-max/rounding parameter tuning.
+    - :class:`WrapperWALayer`: Thin wrapper applied after tuning for static
+      weight+activation quantization inference.
+    - :class:`WrapperLayerNorm` / :class:`WrapperLlamaNorm`: Wrappers for layer
+      normalization modules.
+    - :class:`WrapperMultiblock`: Groups multiple decoder blocks into a single
+      tunable unit.
+"""
 
 from math import ceil
 
@@ -492,7 +508,33 @@ class WrapperLinear(torch.nn.Module):
 
 
 class WrapperWALayer(torch.nn.Module):
+    """A wrapper applied after weight tuning to inject static activation quantization.
+
+    This module is created by :meth:`WrapperLinear.unwrapper` when the original
+    layer requires weight-and-activation (W+A) quantization. It intercepts each
+    forward pass, quantizes the input activations using the calibrated scale, and
+    then delegates to the original layer.
+
+    Attributes:
+        orig_layer (torch.nn.Module): The underlying quantized linear layer.
+        enable_torch_compile (bool): Whether ``torch.compile`` is enabled for
+            the activation quantization function.
+        device (str): Computation device string (e.g. ``"cpu"`` or ``"cuda:0"``).
+        data_type (str): Weight data type identifier (e.g. ``"int"``).
+        act_data_type (str): Activation data type identifier.
+        act_quant_func (Callable): Activation quantization function.
+    """
+
     def __init__(self, orig_layer, enable_torch_compile=False, device="cpu"):
+        """Initializes WrapperWALayer by copying quantization state from the original layer.
+
+        Args:
+            orig_layer (torch.nn.Module): The quantized linear layer to wrap.
+            enable_torch_compile (bool, optional): If ``True``, the activation
+                quantization function is compiled with ``torch.compile``. Defaults
+                to ``False``.
+            device (str, optional): Computation device. Defaults to ``"cpu"``.
+        """
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
         self.enable_torch_compile = enable_torch_compile
@@ -515,6 +557,14 @@ class WrapperWALayer(torch.nn.Module):
         return self.orig_layer.bias
 
     def forward(self, x):
+        """Quantizes input activations then runs the underlying layer's forward pass.
+
+        Args:
+            x (torch.Tensor): Input activation tensor.
+
+        Returns:
+            torch.Tensor: Output after activation quantization and linear transform.
+        """
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x, _, _ = self.orig_layer.act_quant_func(
             x,
@@ -528,6 +578,11 @@ class WrapperWALayer(torch.nn.Module):
         return self.orig_layer.forward(x)
 
     def extra_repr(self):
+        """Returns a string with weight and activation data type information.
+
+        Returns:
+            str: Representation string appended to the module's default ``extra_repr``.
+        """
         return f"{self.extra_repr_org()}, weight_type={self.data_type}, act_data_type={self.act_data_type}"
 
 
@@ -540,6 +595,15 @@ class WrapperLayerNorm(torch.nn.Module):
     """
 
     def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
+        """Initializes WrapperLayerNorm with a rounding perturbation parameter.
+
+        Args:
+            orig_layer (torch.nn.Module): The original ``nn.LayerNorm`` to wrap.
+            bit (int, optional): Number of quantization bits. Defaults to 4.
+            group_size (int, optional): Group size for per-group quantization;
+                ``-1`` means per-tensor. Defaults to ``-1``.
+            device (str, optional): Computation device. Defaults to ``"cpu"``.
+        """
         super(WrapperLayerNorm, self).__init__()
         self.orig_layer = orig_layer
         self.bits = bit
@@ -560,6 +624,15 @@ class WrapperLayerNorm(torch.nn.Module):
         self.quant_func = quant_tensor_asym_wo_round
 
     def unwrapper(self, best_params):
+        """Applies the best rounding perturbation and returns the original layer.
+
+        Args:
+            best_params (dict | None): Dictionary with key ``"v"`` holding the
+                optimal rounding perturbation tensor, or ``None`` to skip tuning.
+
+        Returns:
+            torch.nn.Module: The original layer with quantized weights applied in-place.
+        """
         if best_params is None:
             return self.orig_layer
         v = best_params["v"].to(self.device)
@@ -571,6 +644,14 @@ class WrapperLayerNorm(torch.nn.Module):
         return self.orig_layer
 
     def forward(self, input):
+        """Runs layer normalization with fake-quantized weights.
+
+        Args:
+            input (torch.Tensor): Input tensor to normalize.
+
+        Returns:
+            torch.Tensor: Normalized output tensor on ``self.output_device``.
+        """
         input = input.to(self.device)
         weight_q, _, _ = self.quant_func(
             self.orig_layer.weight, self.bits, self.group_size, self.v, q_scale_thresh=self.q_scale_thresh
@@ -591,6 +672,15 @@ class WrapperLlamaNorm(torch.nn.Module):
     """
 
     def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
+        """Initializes WrapperLlamaNorm with a rounding perturbation parameter.
+
+        Args:
+            orig_layer (torch.nn.Module): The original Llama-style RMS norm to wrap.
+            bit (int, optional): Number of quantization bits. Defaults to 4.
+            group_size (int, optional): Group size for per-group quantization;
+                ``-1`` means per-tensor. Defaults to ``-1``.
+            device (str, optional): Computation device. Defaults to ``"cpu"``.
+        """
         super(WrapperLlamaNorm, self).__init__()
         self.orig_layer = orig_layer
         self.bits = bit
@@ -611,6 +701,15 @@ class WrapperLlamaNorm(torch.nn.Module):
         self.quant_func = quant_tensor_asym_wo_round
 
     def unwrapper(self, best_params):
+        """Applies the best rounding perturbation and returns the original layer.
+
+        Args:
+            best_params (dict | None): Dictionary with key ``"v"`` holding the
+                optimal rounding perturbation tensor, or ``None`` to skip tuning.
+
+        Returns:
+            torch.nn.Module: The original layer with quantized weights applied in-place.
+        """
         if best_params is None:
             return self.orig_layer
         v = best_params["v"].to(self.device)
@@ -622,6 +721,14 @@ class WrapperLlamaNorm(torch.nn.Module):
         return self.orig_layer
 
     def forward(self, hidden_states):
+        """Runs RMS normalization with fake-quantized weights.
+
+        Args:
+            hidden_states (torch.Tensor): Input hidden-state tensor.
+
+        Returns:
+            torch.Tensor: RMS-normalized output on ``self.output_device``.
+        """
         hidden_states = hidden_states.to(self.device)
         weight_q, _, _ = self.quant_func(
             self.orig_layer.weight, self.bits, self.group_size, self.v, q_scale_thresh=self.q_scale_thresh
@@ -650,10 +757,24 @@ class WrapperMultiblock(torch.nn.Module):
     """
 
     def __init__(self, module_list):
+        """Wraps a list of decoder-block modules as a single sequential unit.
+
+        Args:
+            module_list (list[torch.nn.Module]): Ordered list of modules to wrap.
+        """
         super(WrapperMultiblock, self).__init__()
         self.layers = torch.nn.ModuleList(module_list)
 
     def forward(self, x, **kwargs):
+        """Passes input through all contained blocks sequentially.
+
+        Args:
+            x (torch.Tensor): Input hidden-state tensor.
+            **kwargs: Additional keyword arguments forwarded to each block.
+
+        Returns:
+            torch.Tensor: Output hidden state from the last block.
+        """
         hidden_states = x
         for idx, decoder_layer in enumerate(self.layers):
             layer_outputs = decoder_layer(hidden_states, **kwargs)
@@ -716,13 +837,15 @@ def wrapper_block(
 
 @torch.no_grad()
 def unwrapper_layer(model, layer, layer_name, best_params):
-    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
+    """Unwraps a single wrapped layer and restores it in the model.
 
     Args:
-    block: The input block containing wrapped modules to be unwrapped.
-    vs: A dictionary of scaling parameters for the wrapped modules.
-    min_scales: A dictionary of minimum scaling values for the wrapped modules.
-    max_scales: A dictionary of maximum scaling values for the wrapped modules.
+        model (torch.nn.Module): The full model containing the layer.
+        layer (torch.nn.Module): The wrapped layer (e.g. :class:`WrapperLinear`)
+            to unwrap.
+        layer_name (str): Dot-separated path to the layer within ``model``.
+        best_params (dict | None): Best tuning parameters to apply during
+            unwrapping; may be ``None`` to use zero perturbation.
     """
 
     if hasattr(layer, "orig_layer"):
@@ -733,13 +856,13 @@ def unwrapper_layer(model, layer, layer_name, best_params):
 
 @torch.no_grad()
 def unwrapper_block(block, best_params):
-    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
+    """Unwraps all wrapped layers in a block and restores the original modules.
 
     Args:
-    block: The input block containing wrapped modules to be unwrapped.
-    vs: A dictionary of scaling parameters for the wrapped modules.
-    min_scales: A dictionary of minimum scaling values for the wrapped modules.
-    max_scales: A dictionary of maximum scaling values for the wrapped modules.
+        block (torch.nn.Module): The block containing wrapped modules to unwrap.
+        best_params (dict): Mapping from layer name to best tuning parameters.
+            If a layer name is not present, ``None`` is passed to that layer's
+            ``unwrapper`` method.
     """
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
