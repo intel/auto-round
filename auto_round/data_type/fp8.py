@@ -192,7 +192,7 @@ def quant_rtn_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     tensor.div_(scale).add_(v).clamp_(info.min, info.max)
-    qdq_res = tensor.to(torch.float8_e4m3fn).to(tensor.dtype).mul_(scale)
+    qdq_res = tensor.to(torch.float8_e4m3fn).to(orig_dtype).mul_(scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     qdq_res = qdq_res.to(orig_dtype)
     return qdq_res, scale, None
