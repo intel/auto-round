@@ -6,7 +6,8 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import evaluate_accuracy, get_model_path, model_infer
+from ...envs import require_gptqmodel
+from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, model_infer
 
 
 class TestAutoRoundMarlinBackend:
@@ -164,3 +165,69 @@ class TestAutoRoundMarlinBackend:
     #     assert result['results']['lambada_openai']['acc,none'] > 0.27
     #     torch.cuda.empty_cache()
     #     shutil.rmtree("./saved", ignore_errors=True)
+
+    @require_gptqmodel
+    def test_gptqmodel_awq_marlin_4bits_sym(self, dataloader):
+        """Test AWQ quantization with gptqmodel:awq_marlin backend (sym-only, float16)."""
+        model_path = get_model_path("facebook/opt-125m")
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, dataset=dataloader
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+
+        quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
+        model = AutoModelForCausalLM.from_pretrained(
+            self.save_dir, torch_dtype="auto", device_map="auto", quantization_config=quantization_config
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        # Inference generation check
+        output = model_infer(model, tokenizer)
+        assert isinstance(output, str) and len(output.strip()) > 0, "Model failed to generate non-empty output"
+        generated = generate_prompt(model, tokenizer, "There is a girl who likes adventure,")
+        assert len(generated) > len("There is a girl who likes adventure,"), "Generation did not produce new tokens"
+        # Accuracy check
+        evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
+        torch.cuda.empty_cache()
+        shutil.rmtree("./saved", ignore_errors=True)
+
+    @require_gptqmodel
+    def test_gptqmodel_awq_marlin_group_size(self, dataloader):
+        """Test AWQ marlin backend with different group sizes."""
+        for group_size in [32, 64, 128]:
+            print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")
+            model_path = get_model_path("facebook/opt-125m")
+            bits, sym = 4, True
+            autoround = AutoRound(
+                model_path,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=1,
+                seqlen=2,
+                dataset=dataloader,
+            )
+            quantized_model_path = self.save_dir
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+
+            quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
+            model = AutoModelForCausalLM.from_pretrained(
+                self.save_dir, torch_dtype="auto", device_map="auto", quantization_config=quantization_config
+            )
+
+            tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            # Inference generation check
+            output = model_infer(model, tokenizer)
+            assert (
+                isinstance(output, str) and len(output.strip()) > 0
+            ), f"Model failed to generate non-empty output for group_size={group_size}"
+            generated = generate_prompt(model, tokenizer, "There is a girl who likes adventure,")
+            assert len(generated) > len(
+                "There is a girl who likes adventure,"
+            ), f"Generation did not produce new tokens for group_size={group_size}"
+            # Accuracy check
+            evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
+            torch.cuda.empty_cache()
+            shutil.rmtree("./saved", ignore_errors=True)

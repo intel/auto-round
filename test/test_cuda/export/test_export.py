@@ -9,7 +9,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 
 from auto_round import AutoRound
 
-from ...envs import require_awq, require_gptqmodel, require_optimum
+from ...envs import require_gptqmodel, require_optimum
 from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
@@ -167,7 +167,6 @@ class TestAutoRound:
         #                "she is a great artist, she is a great artist, she is a great artist, she is")
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @require_awq
     @require_gptqmodel
     def test_autoawq_format(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
@@ -247,8 +246,6 @@ class TestAutoRound:
         assert "!!!" not in generated_text
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @require_optimum
-    @require_awq
     @require_gptqmodel
     def test_autoawq_format_fp_qsave_layers(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")

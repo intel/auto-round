@@ -11,6 +11,7 @@ from auto_round import AutoRound
 from ...envs import (
     require_autogptq,
     require_awq,
+    require_gptqmodel,
     require_greater_than_050,
     require_ipex,
 )
@@ -87,7 +88,7 @@ class TestAutoRound:
         evaluate_accuracy(model, tokenizer, threshold=0.32, batch_size=16)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @require_awq
+    @require_gptqmodel
     def test_awq_backend(self):
         model_name = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, True

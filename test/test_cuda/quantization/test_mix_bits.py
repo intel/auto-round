@@ -128,7 +128,7 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @require_awq
+    @require_gptqmodel
     def test_fallback_regex_for_awq_format(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "lm_head": {"bits": 16},

@@ -425,7 +425,7 @@ BackendInfos["gptqmodel:exllamav2"] = BackendInfo(
     requirements=["gptqmodel>=2.0"],
 )
 
-BackendInfos["gptqmodel:awq"] = BackendInfo(
+BackendInfos["gptqmodel:awq_exllamav2"] = BackendInfo(
     device=["cuda"],
     sym=[True, False],
     packing_format=AWQ_FORMAT,
@@ -436,8 +436,53 @@ BackendInfos["gptqmodel:awq"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     checkers=[exllamav2_feature_checker],
-    alias=["gptqmodel:autoawq", "gptqmodel_awq"],
-    requirements=["gptqmodel>=2.0"],
+    alias=["gptqmodel:awq", "gptqmodel:autoawq", "gptqmodel_awq"],
+    requirements=["gptqmodel>=5.6.0"],
+)
+
+BackendInfos["gptqmodel:awq_marlin"] = BackendInfo(
+    device=["cuda"],
+    sym=[True],
+    packing_format=AWQ_FORMAT,
+    bits=[4, 8],
+    group_size=[-1, 32, 64, 128],
+    priority=6,
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    checkers=[gptqmodel_marlin_feature_checker],
+    alias=["gptqmodel:autoawq_marlin", "gptqmodel_awq_marlin"],
+    requirements=["gptqmodel>=5.6.0"],
+)
+
+BackendInfos["gptqmodel:awq_gemm"] = BackendInfo(
+    device=["cuda"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    bits=[4],
+    group_size=[-1, 16, 32, 64, 128],
+    priority=3,
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    checkers=[feature_multiply_checker_16],
+    alias=["gptqmodel:autoawq_gemm", "gptqmodel_awq_gemm"],
+    requirements=["gptqmodel>=5.6.0"],
+)
+
+BackendInfos["gptqmodel:awq_torch"] = BackendInfo(
+    device=["cuda", "cpu"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    bits=[4],
+    group_size=[-1, 16, 32, 64, 128],
+    priority=2,
+    compute_dtype=["float16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    checkers=[feature_multiply_checker_16],
+    alias=["gptqmodel:autoawq_torch", "gptqmodel_awq_torch"],
+    requirements=["gptqmodel>=5.6.0"],
 )
 
 # autoawq backend - deprecated, kept for backward compatibility
@@ -452,8 +497,7 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
-    # requirements=["autoawq", "transformers<4.57.0"],
-    requirements=["autoawq", "transformers"],
+    requirements=["autoawq"],
 )
 
 BackendInfos["auto_round_kernel"] = BackendInfo(
@@ -591,7 +635,6 @@ BackendInfos["ipex_awq_cpu"] = BackendInfo(
     requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
 )
 
-
 BackendInfos["ipex_awq"] = BackendInfo(
     device=["xpu"],
     sym=[True, False],
@@ -606,6 +649,7 @@ BackendInfos["ipex_awq"] = BackendInfo(
     alias=["ipex"],
     requirements=["intel-extension-for-pytorch>=2.5"],
 )
+
 BackendInfos["hpu"] = BackendInfo(
     device=["hpu"],
     sym=[True, False],
@@ -783,21 +827,21 @@ def dynamic_import_inference_linear(backend, config):
         return get_autogptq_infer_linear(backend, bits, group_size, sym)
 
     if "awq" in backend:
-        try:
-            return get_gptqmodel_awq_infer_linear(backend)
-        except ImportError:
-            pass
+        if "gptqmodel" in backend:
+            try:
+                return get_gptqmodel_awq_infer_linear(backend)
+            except ImportError:
+                raise ImportError(
+                    "AWQ inference requires 'gptqmodel>=5.6.0'. " "Please install via: pip install gptqmodel>=5.6.0"
+                )
+        else:
+            # Fallback to autoawq for backward compatibility
+            try:
+                from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
 
-        # Fallback to autoawq for backward compatibility
-        try:
-            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-
-            return WQLinear_GEMM
-        except ImportError:
-            raise ImportError(
-                "AWQ inference requires either 'gptqmodel' (recommended) or 'autoawq'. "
-                "Install via: pip install gptqmodel  OR  pip install autoawq"
-            )
+                return WQLinear_GEMM
+            except ImportError:
+                raise ImportError("AWQ inference requires 'autoawq'. " "Please install via: pip install autoawq")
 
     if backend == "auto_round:tritonv2":
         from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
@@ -834,27 +878,21 @@ def get_gptqmodel_awq_infer_linear(backend):
     finally:
         torch.set_default_dtype(dtype)
 
-    # Select AWQ kernel
+    # Select AWQ kernel based on the BackendInfos key
     if "marlin" in backend:
         from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear  # pylint: disable=E0401
 
         return AwqMarlinQuantLinear
-    elif "exllamav2" in backend or backend in ("awq", "auto_awq", "auto_awq:gemm", "gptqmodel:awq"):
-        # "auto_awq:gemm" is listed here because it is a legacy autoawq backend name referring to
-        # the AWQ GEMM packing format, not a request for gptqmodel's literal GEMM kernel.
-        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
-
-        return AwqExllamaV2QuantLinear
     elif "gemm" in backend:
-        from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGemmQuantLinear  # pylint: disable=E0401
+        from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGEMMQuantLinear  # pylint: disable=E0401
 
-        return AwqGemmQuantLinear
+        return AwqGEMMQuantLinear
     elif "torch" in backend:
         from gptqmodel.nn_modules.qlinear.torch_awq import AwqTorchQuantLinear  # pylint: disable=E0401
 
         return AwqTorchQuantLinear
     else:
-        # Default to exllamav2
+        # Default: exllamav2
         from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
 
         return AwqExllamaV2QuantLinear

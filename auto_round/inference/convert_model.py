@@ -413,8 +413,9 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
         )
-    elif "awq" in layer_backend and hasattr(QuantLinear, "SUPPORTS_BITS"):
-        # gptqmodel AWQ QuantLinear (e.g., AwqExllamaV2QuantLinear)
+    elif "awq" in layer_backend and "gptqmodel" in layer_backend:
+        # gptqmodel AWQ QuantLinear — This matches the approach used
+        # by transformers' replace_with_awq_linear().
         return QuantLinear(
             bits=config["bits"],
             group_size=config["group_size"],
@@ -423,6 +424,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             in_features=in_features,
             out_features=out_features,
             bias=bias,
+            register_buffers=True,
         )
     elif "awq" in layer_backend:
         # autoawq WQLinear_GEMM
