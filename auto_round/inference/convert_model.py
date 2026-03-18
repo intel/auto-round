@@ -601,7 +601,7 @@ def disable_moe_conversion_mapping(model):
     if model_type is not None:
         conversions = get_checkpoint_conversion_mapping(model_type)
         if conversions is not None:
-            # 只保留 WeightRenaming，跳过 WeightConverter（MoE merge 操作）
+            # Keep only WeightRenaming, skip WeightConverter (MoE merge operations)
             filtered = [c for c in conversions if isinstance(c, WeightRenaming)]
             register_checkpoint_conversion_mapping(model_type, mapping=filtered, overwrite=True)
 

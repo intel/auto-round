@@ -431,12 +431,12 @@ BackendInfos["gptqmodel:awq_exllamav2"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=[-1, 32, 64, 128],
-    priority=5,
+    priority=6,
     compute_dtype=["float16", "bfloat16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     checkers=[exllamav2_feature_checker],
-    alias=["gptqmodel:awq", "gptqmodel:autoawq", "gptqmodel_awq"],
+    alias=["gptqmodel:awq", "gptqmodel:autoawq", "gptqmodel_awq", "exllamav2"],
     requirements=["gptqmodel>=5.6.0"],
 )
 
@@ -446,12 +446,12 @@ BackendInfos["gptqmodel:awq_marlin"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[4, 8],
     group_size=[-1, 32, 64, 128],
-    priority=6,
+    priority=5,
     compute_dtype=["float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     checkers=[gptqmodel_marlin_feature_checker],
-    alias=["gptqmodel:autoawq_marlin", "gptqmodel_awq_marlin"],
+    alias=["gptqmodel:autoawq_marlin", "gptqmodel_awq_marlin", "marlin"],
     requirements=["gptqmodel>=5.6.0"],
 )
 
@@ -481,7 +481,7 @@ BackendInfos["gptqmodel:awq_torch"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     checkers=[feature_multiply_checker_16],
-    alias=["gptqmodel:autoawq_torch", "gptqmodel_awq_torch"],
+    alias=["gptqmodel:autoawq_torch", "gptqmodel_awq_torch", "torch"],
     requirements=["gptqmodel>=5.6.0"],
 )
 
@@ -770,7 +770,6 @@ def dynamic_import_inference_linear(backend, config):
             If required modules are missing for a backend (e.g., ark, GPTQ, auto_awq).
     """
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
-
     if "torch_fp8_static" in backend:
         return ar_qmodules.WeightFP8ActFP8StaticQuantLinear
     if "torch_mxfp8" in backend:
@@ -828,12 +827,7 @@ def dynamic_import_inference_linear(backend, config):
 
     if "awq" in backend:
         if "gptqmodel" in backend:
-            try:
-                return get_gptqmodel_awq_infer_linear(backend)
-            except ImportError:
-                raise ImportError(
-                    "AWQ inference requires 'gptqmodel>=5.6.0'. " "Please install via: pip install gptqmodel>=5.6.0"
-                )
+            return get_gptqmodel_awq_infer_linear(backend)
         else:
             # Fallback to autoawq for backward compatibility
             try:
@@ -883,6 +877,10 @@ def get_gptqmodel_awq_infer_linear(backend):
         from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear  # pylint: disable=E0401
 
         return AwqMarlinQuantLinear
+    elif "exllamav2" in backend:
+        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
+
+        return AwqExllamaV2QuantLinear
     elif "gemm" in backend:
         from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGEMMQuantLinear  # pylint: disable=E0401
 
@@ -892,10 +890,7 @@ def get_gptqmodel_awq_infer_linear(backend):
 
         return AwqTorchQuantLinear
     else:
-        # Default: exllamav2
-        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
-
-        return AwqExllamaV2QuantLinear
+        raise ValueError(f"Unsupported {backend}")
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):

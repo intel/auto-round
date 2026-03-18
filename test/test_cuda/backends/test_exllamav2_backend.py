@@ -4,9 +4,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
-from auto_round import (
-    AutoRound,
-)
+from auto_round import AutoRound
 
 from ...envs import require_autogptq, require_gptqmodel, require_package_version_ut
 from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, model_infer
@@ -127,7 +125,6 @@ class TestAutoRoundexllamaBackend:
         )
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
-        print(f"Quantized Model dtype: {autoround.model.dtype}")
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_exllamav2")
         # test awq bfloat16 inference
         model = AutoModelForCausalLM.from_pretrained(

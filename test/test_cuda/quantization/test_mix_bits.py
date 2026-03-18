@@ -10,7 +10,6 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import (
-    require_awq,
     require_gptqmodel,
 )
 from ...helpers import get_model_path
