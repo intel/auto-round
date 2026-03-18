@@ -227,7 +227,7 @@ def quant_rtn_mx(
     scale_emax = 2.0 ** float(8 - 1) - 1
     shared_exp = shared_exp.floor_().sub_(emax).clamp_(-scale_emax, scale_emax)
 
-    scale = torch.pow(2.0, shared_exp.float())
+    scale = torch.pow(2.0, shared_exp.float_())
     tensor.div_(scale).add_(v).clamp_(-max_norm, max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
     tensor.mul_(scale)
@@ -276,7 +276,7 @@ def quant_rtn_mx_rceil(
     scale_emax = 2.0 ** float(8 - 1) - 1
     shared_exp.clamp_(-scale_emax, scale_emax)
 
-    scale = torch.pow(2.0, shared_exp.float())
+    scale = torch.pow(2.0, shared_exp.float_())
     tensor.div_(scale).add_(v).clamp_(-max_norm, max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
     tensor.mul_(scale)
