@@ -11,6 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Common utilities for AutoRound.
+
+Provides version checks, lazy imports, string/type helpers, layer name utilities,
+dataset and tokenizer helpers, and monkey-patching functions for transformers
+compatibility.
+"""
 from __future__ import annotations
 
 import importlib
@@ -30,10 +36,27 @@ from auto_round.logger import logger
 
 
 def compare_versions(v1, v2):
+    """Compare two version strings using packaging.version.
+
+    Args:
+        v1 (str): First version string.
+        v2 (str): Second version string.
+
+    Returns:
+        bool: True if v1 >= v2, False otherwise.
+    """
     return version.parse(v1) >= version.parse(v2)
 
 
 def torch_version_at_least(version_string):
+    """Check if the current PyTorch version is at least the specified version.
+
+    Args:
+        version_string (str): Minimum required version string (e.g., "2.4.0").
+
+    Returns:
+        bool: True if torch.__version__ >= version_string, False otherwise.
+    """
     return compare_versions(torch.__version__, version_string)
 
 
@@ -183,6 +206,14 @@ def _patch_tensor_get_dtype_for_prequantized_loading():
 
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
+    """Apply compatibility patches to the installed transformers library.
+
+    Patches are applied based on the detected transformers version:
+    - >=5.0.0: Replaces no_init_weights with the new initialization API.
+    - >=5.2.0: Patches Transpose.convert() to skip buffer tensors.
+    - >=5.3.0: Adds Tensor.get_dtype() shim for pre-quantized loading.
+    - >=4.56.0: Remaps AutoModelForCausalLM.from_pretrained torch_dtype kwarg.
+    """
     transformers_version = getattr(transformers, "__version__", None)
     if transformers_version is None:
         logger.warning("transformers.__version__ is not available; skipping transformers monkey patching.")
@@ -217,6 +248,11 @@ def monkey_patch_transformers():
 
 @lru_cache(None)
 def monkey_patch():
+    """Apply all AutoRound compatibility patches (cached, runs at most once).
+
+    Delegates to monkey_patch_transformers() using lru_cache to ensure
+    patches are applied exactly once per interpreter session.
+    """
     monkey_patch_transformers()
 
 
@@ -225,6 +261,11 @@ htcore = LazyImport("habana_frameworks.torch.core")
 
 
 class SupportedFormats:
+    """Registry of supported export/quantization format strings.
+
+    Provides membership testing (``in`` operator), iteration, and string
+    representation over all supported format identifiers including GGUF variants.
+    """
 
     def __init__(self):
         self._support_format = (
@@ -244,13 +285,34 @@ class SupportedFormats:
         self._support_list = self._support_format + self._gguf_format
 
     def __contains__(self, key):
+        """Check if a format key is supported.
+
+        Args:
+            key (str): The format string to check.
+
+        Returns:
+            bool: True if the key is in the supported format list.
+        """
         return True if key in self._support_list else False
 
     def __str__(self):
+        """Return a comma-separated string of all supported formats.
+
+        Returns:
+            str: Parenthesised, comma-separated list of supported format strings.
+        """
         # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
         return "(%s)" % ", ".join(self._support_list)
 
     def __getitem__(self, key):
+        """Return the format at the given index.
+
+        Args:
+            key (int): Index into the supported format list.
+
+        Returns:
+            str: The format string at position key.
+        """
         return self._support_list[key]
 
 
@@ -319,6 +381,14 @@ def is_local_path(path):
 
 
 def get_library_version(library_name):
+    """Get the installed version of a Python library.
+
+    Args:
+        library_name (str): Name of the library to query (e.g. "torch", "transformers").
+
+    Returns:
+        str: The installed version string, or a message if the library is not installed.
+    """
     from packaging.version import Version
 
     python_version = Version(sys.version.split()[0])
@@ -344,6 +414,19 @@ def get_library_version(library_name):
 
 
 def str2bool(v):
+    """Convert a string or boolean value to a Python bool.
+
+    Args:
+        v (bool or str): Value to convert. Accepts "yes", "true", "t", "y", "1"
+            (True) and "no", "false", "f", "n", "0" (False).
+
+    Returns:
+        bool: The converted boolean value.
+
+    Raises:
+        argparse.ArgumentTypeError: If v is a string that cannot be interpreted
+            as a boolean.
+    """
     import argparse
 
     if isinstance(v, bool):
@@ -357,6 +440,14 @@ def str2bool(v):
 
 
 def flatten_list(nested_list):
+    """Recursively flatten a nested list or tuple into a flat list.
+
+    Args:
+        nested_list (list or tuple): Potentially nested sequence to flatten.
+
+    Returns:
+        list: A flat list with all nested elements in order.
+    """
     flattened = []
     for item in nested_list:
         if isinstance(item, (list, tuple)):
@@ -490,6 +581,11 @@ global_state = GlobalState()
 
 @lru_cache(None)
 def is_transformers_version_greater_or_equal_5():
+    """Check if the installed transformers version is >= 5.0.0.
+
+    Returns:
+        bool: True if transformers.__version__ >= "5.0.0", False otherwise.
+    """
     import transformers
     from packaging import version
 
