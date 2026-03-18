@@ -29,22 +29,22 @@ class TestAlgExt:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_all_support_dtype(self, tiny_qwen_model_path):
+    @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
+    def test_all_support_dtype(self, scheme, tiny_qwen_model_path):
         from auto_round.auto_scheme import AutoScheme
 
-        for scheme in ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"]:
-            avg_bits = 2 if scheme == "W2A16G64" else 4
-            scheme = AutoScheme(options=scheme, avg_bits=avg_bits, ignore_scale_zp_bits=True)
-            ar = AutoRound(
-                tiny_qwen_model_path,
-                scheme=scheme,
-                iters=1,
-                nsamples=1,
-                seqlen=32,
-                enable_alg_ext=True,
-                enable_torch_compile=True,
-            )
-            ar.quantize()
+        avg_bits = 2 if scheme == "W2A16G64" else 4
+        scheme = AutoScheme(options=scheme, avg_bits=avg_bits, ignore_scale_zp_bits=True)
+        ar = AutoRound(
+            tiny_qwen_model_path,
+            scheme=scheme,
+            iters=1,
+            nsamples=1,
+            seqlen=32,
+            enable_alg_ext=True,
+            enable_torch_compile=True,
+        )
+        ar.quantize()
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skipif(reason="Time-consuming for accuracy evaluation")

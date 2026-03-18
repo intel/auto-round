@@ -11,14 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_gguf
-from ...helpers import (
-    eval_generated_prompt,
-    evaluate_accuracy,
-    get_model_path,
-    get_tiny_model,
-    save_tiny_model,
-    transformers_version,
-)
+from ...helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, save_tiny_model
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -83,12 +76,11 @@ class TestAutoRound:
     @require_gguf
     def test_q2_k_export(self, dataloader):
         bits, group_size, sym = 2, 16, False
-        model_path = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
-        model = get_tiny_model(model_path)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model_path = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
+        tiny_model_path = "./tmp/tmp_tiny_qwen_model_path"
+        save_tiny_model(model_path, tiny_model_path, num_layers=2)
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -103,11 +95,10 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q2_k_s")
         gguf_file = os.listdir(quantized_model_path)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        text = "There is a girl who likes adventure,"
-        inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
-        result = autoround.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
+        result = generate_prompt(model, autoround.tokenizer)
         print(result)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+        shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
     @require_gguf

@@ -111,21 +111,13 @@ class TestAutoRoundMLLM:
     @require_gptqmodel
     @require_optimum
     def test_vlm_tune(self):
-        from transformers import AutoProcessor, AutoTokenizer
-
         from auto_round import AutoRoundMLLM
 
         ## load the model
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
-        model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-
         ## quantize the model
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRoundMLLM(
-            model, tokenizer, processor, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1
-        )
+        autoround = AutoRoundMLLM(model_name, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
         autoround.quantize()
 
         quantized_model_path = self.save_dir

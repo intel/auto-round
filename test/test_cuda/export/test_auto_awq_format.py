@@ -30,7 +30,7 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_awq
-    # @require_package_version_ut("transformers", "<4.57.0")
+    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoawq_format(self, tiny_opt_model_path):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(

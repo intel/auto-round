@@ -14,26 +14,8 @@ from auto_round.utils import detect_device, get_attr, llm_load_model, mllm_load_
 transformers_version = version.parse(transformers.__version__)
 
 
-def generate_prompt(model, tokenizer, text="There is a girl who likes adventure,", max_new_tokens=50):
+def generate_prompt(model, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):
     """Generate text using a model and tokenizer.
-
-    Args:
-        model: The model to use for generation.
-        tokenizer: The tokenizer for the model.
-        text: The input prompt text.
-        max_new_tokens: Maximum number of new tokens to generate.
-
-    Returns:
-        str: The generated text.
-    """
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    output = tokenizer.decode(model.generate(**inputs, max_new_tokens=max_new_tokens)[0])
-    print(output)
-    return output
-
-
-def eval_generated_prompt(model, tokenizer=None, text="The capital of France is", max_new_tokens=10, device=None):
-    """Evaluate the generated text using a model and tokenizer.
 
     Args:
         model: The model to use for generation.
@@ -51,13 +33,18 @@ def eval_generated_prompt(model, tokenizer=None, text="The capital of France is"
     else:
         assert tokenizer is not None, "Tokenizer must be provided when model is a model object"
     model = model.to(device)
-    print(model.device)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)[0]
     output = tokenizer.decode(generated_ids)
-    assert "Paris" in output, f"Expected 'Paris' in output, but got: {output}"
     print(output)
     return output
+
+
+def eval_generated_prompt(model, tokenizer=None, text="The capital of France is", max_new_tokens=10, device=None):
+    """Evaluate the generated text using a model and tokenizer."""
+    out = generate_prompt(model, tokenizer, text=text, max_new_tokens=max_new_tokens, device=device)
+    assert "Paris" in out, f"Expected 'Paris' in output, but got: {out}"
+    return out
 
 
 def evaluate_accuracy(

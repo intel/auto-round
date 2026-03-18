@@ -20,12 +20,6 @@ from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, get_t
 class TestAutoRound:
     save_dir = "./saved"
 
-    def tiny_fp8_model(self):
-        model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
-        model, tokenizer = llm_load_model(model_name)
-        model.model.layers = model.model.layers[:3]
-        return model, tokenizer
-
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
         # ===== SETUP (setup_class) =====
@@ -39,18 +33,16 @@ class TestAutoRound:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_small_model_rtn_generation(self, mock_fp8_capable_device):
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0, disable_opt_rtn=True)
+    def test_small_model_rtn_generation(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
+        ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
         ar.quantize_and_save(output_dir=self.save_dir)
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         generate_prompt(model, tokenizer)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_gguf_imatrix(self, mock_fp8_capable_device):
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
+    def test_gguf_imatrix(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
+        ar = AutoRound(tiny_fp8_qwen_model_path, iters=0)
         ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
         # from llama_cpp import Llama
         #
@@ -98,11 +90,10 @@ class TestAutoRound:
         evaluate_accuracy(self.save_dir, threshold=0.33)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_fp8_model_gguf(self, mock_fp8_capable_device):
+    def test_fp8_model_gguf_q4(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         from llama_cpp import Llama
 
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=0)
+        ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
         ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
         for file in os.listdir(self.save_dir):
             if file.endswith(".gguf"):
@@ -112,8 +103,11 @@ class TestAutoRound:
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-        model, tokenizer = self.tiny_fp8_model()
-        ar = AutoRound(model=model, tokenizer=tokenizer, iters=1)
+    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    def test_fp8_model_gguf_q3(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
+        from llama_cpp import Llama
+
+        ar = AutoRound(tiny_fp8_qwen_model_path, iters=1)
         ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
         for file in os.listdir(self.save_dir):
             if file.endswith(".gguf"):
@@ -123,15 +117,16 @@ class TestAutoRound:
         print(output)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_diff_datatype(self, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
-        for scheme in ["NVFP4", "MXFP4"]:
-            model_name = tiny_fp8_qwen_model_path
-            print(f"Testing scheme: {scheme}")
-            ar = AutoRound(model_name, iters=0, scheme=scheme, disable_opt_rtn=True, nsamples=2)
-            ar.quantize_and_save(output_dir=self.save_dir)
-            model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
-            assert model is not None, f"Failed to load model for scheme {scheme}"
-            shutil.rmtree(self.save_dir, ignore_errors=True)
+    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
+    def test_diff_datatype(self, scheme, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
+        model_name = tiny_fp8_qwen_model_path
+        print(f"Testing scheme: {scheme}")
+        ar = AutoRound(model_name, iters=0, scheme=scheme, disable_opt_rtn=True, nsamples=2)
+        ar.quantize_and_save(output_dir=self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+        assert model is not None, f"Failed to load model for scheme {scheme}"
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
 
 def test_qwen3_fp8_moe_mxfp(tiny_fp8_qwen_moe_model_path, mock_fp8_capable_device):
