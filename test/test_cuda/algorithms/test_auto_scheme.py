@@ -71,7 +71,7 @@ class TestAutoScheme:
         target_bits = 3
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model, tokenizer=tokenizer, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -100,7 +100,7 @@ class TestAutoScheme:
         target_bits = 5.0
         scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model)
         for names in res:
             bits = []
@@ -129,7 +129,7 @@ class TestAutoScheme:
                 nsamples=1,
                 device_map=device_map,
             )
-            model, layer_config = ar.quantize_and_save(self.save_folder)
+            model, layer_config = ar.quantize_and_save(self.save_dir)
             avg_bits, _ = compute_avg_bits_for_model(model)
             print(avg_bits)
             assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -142,7 +142,7 @@ class TestAutoScheme:
 
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -153,7 +153,7 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"), low_gpu_mem_usage=False, device_map="auto")
 
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -168,7 +168,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, device_map=device_map
         )
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -178,7 +178,7 @@ class TestAutoScheme:
         target_bits = 4.644
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -189,7 +189,7 @@ class TestAutoScheme:
         model_path = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -201,7 +201,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, group_size=32
         )
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         for n, m in model.named_modules():
             if hasattr(m, "group_size"):
                 assert m.group_size == 32
@@ -218,7 +218,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=model_name, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, layer_config=user_layer_config
         )
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
         assert layer_config["model.decoder.layers.10.fc1"]["sym"] is False
         assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
@@ -236,7 +236,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=model_name, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, layer_config=user_layer_config
         )
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
         assert layer_config["model.decoder.layers.10.fc1"]["sym"] is False
         assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
@@ -254,7 +254,7 @@ class TestAutoScheme:
         ar = AutoRound(
             tiny_untied_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, quant_lm_head=True
         )
-        model, layer_config = ar.quantize_and_save(self.save_folder)
+        model, layer_config = ar.quantize_and_save(self.save_dir)
         assert layer_config["lm_head"]["bits"] <= 8
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)

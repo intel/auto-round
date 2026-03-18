@@ -7,6 +7,8 @@ import transformers
 from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 
+from ...helpers import eval_generated_prompt, get_model_path, is_cuda_support_fp8
+
 
 class TestAutoRound:
     save_dir = "./saved"
@@ -81,4 +83,26 @@ class TestAutoRound:
             quantization_config["format"] == "nvfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    def test_fp8_block_llm_compressor_format(self, tiny_qwen_model_path, dataloader):
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
+
+        scheme = "FP8_BLOCK"
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=0,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
+        assert hasattr(tmp_layer, "weight_scale")
+        assert tmp_layer.weight.dtype is torch.float8_e4m3fn
+        assert list(tmp_layer.weight_scale.shape) == [16, 8]
+        assert compressed_model.config.quantization_config["quant_method"] == "compressed-tensors"
+        if is_cuda_support_fp8():
+            eval_generated_prompt(quantized_model_path, device="cuda")
         shutil.rmtree(quantized_model_path, ignore_errors=True)

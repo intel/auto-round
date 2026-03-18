@@ -85,9 +85,9 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
         recipe_modifier_mxfp4,
     ],
 )
-def test_oneshot_application(recipe, tmp_path):
+def test_oneshot_application(tiny_tiny_llama_model_path, recipe, tmp_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
@@ -131,9 +131,9 @@ def test_oneshot_application(recipe, tmp_path):
 
 
 @multi_card
-def test_oneshot_with_device_ids(tmp_path):
+def test_oneshot_with_device_ids(tiny_tiny_llama_model_path, tmp_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,

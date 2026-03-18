@@ -9,7 +9,7 @@ import transformers
 from packaging import version
 
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
+from auto_round.utils import detect_device, get_attr, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -28,6 +28,34 @@ def generate_prompt(model, tokenizer, text="There is a girl who likes adventure,
     """
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     output = tokenizer.decode(model.generate(**inputs, max_new_tokens=max_new_tokens)[0])
+    print(output)
+    return output
+
+
+def eval_generated_prompt(model, tokenizer=None, text="The capital of France is", max_new_tokens=10, device=None):
+    """Evaluate the generated text using a model and tokenizer.
+
+    Args:
+        model: The model to use for generation.
+        tokenizer: The tokenizer for the model.
+        text: The input prompt text.
+        max_new_tokens: Maximum number of new tokens to generate.
+
+    Returns:
+        str: The generated text.
+    """
+    if device is None:
+        device = detect_device()
+    if isinstance(model, str):
+        model, tokenizer = llm_load_model(model, trust_remote_code=True)
+    else:
+        assert tokenizer is not None, "Tokenizer must be provided when model is a model object"
+    model = model.to(device)
+    print(model.device)
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)[0]
+    output = tokenizer.decode(generated_ids)
+    assert "Paris" in output, f"Expected 'Paris' in output, but got: {output}"
     print(output)
     return output
 
@@ -368,3 +396,19 @@ def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similari
         raise ValueError(f"Unknown metric: {metric}. Choose from: 'mse', 'cosine_similarity', 'topk'")
 
     return passed
+
+
+def is_cuda_support_fp8(major=9, minor=0):
+    """Check if the current CUDA device capability is >= (major, minor).
+
+    Args:
+        major: Required major compute capability (default: 9).
+        minor: Required minor compute capability (default: 0).
+
+    Returns:
+        bool: True if CUDA is available and device capability >= (major, minor).
+    """
+    if not torch.cuda.is_available():
+        return False
+    cap = torch.cuda.get_device_capability()
+    return cap >= (major, minor)

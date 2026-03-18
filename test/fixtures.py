@@ -122,7 +122,7 @@ def tiny_qwen_moe_model_path():
 def tiny_qwen_vl_model_path():
     model_name_or_path = qwen_vl_name_or_path
     tiny_model_path = "./tmp/tiny_qwen_vl_model_path"
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=3, is_mllm=True)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
@@ -252,6 +252,20 @@ def tiny_qwen35_moe_model_path():
     tokenizer.save_pretrained(tiny_model_path)
     processor = transformers.AutoProcessor.from_pretrained(model_name)
     processor.save_pretrained(tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_tiny_llama_model_path():
+    tiny_model_path = "./tmp/tiny_TinyLlama"
+    model_name = get_model_path("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    config = transformers.AutoConfig.from_pretrained(model_name)
+    config.num_hidden_layers = 4
+    model = transformers.AutoModelForCausalLM.from_config(config)
+    model.save_pretrained(tiny_model_path)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
+    tokenizer.save_pretrained(tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 

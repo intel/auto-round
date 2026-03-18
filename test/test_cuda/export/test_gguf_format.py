@@ -11,7 +11,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_gguf
-from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, save_tiny_model, transformers_version
+from ...helpers import (
+    eval_generated_prompt,
+    evaluate_accuracy,
+    get_model_path,
+    get_tiny_model,
+    save_tiny_model,
+    transformers_version,
+)
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -66,11 +73,7 @@ class TestAutoRound:
         gguf_file = os.listdir(quantized_model_path)[0]
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        text = "The capital of France is"
-        inputs = autoround.tokenizer(text, return_tensors="pt").to(model.device)
-        output = autoround.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
-        assert "Paris" in output
-        print(output)
+        eval_generated_prompt(model, autoround.tokenizer)
 
         evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
 
@@ -175,3 +178,56 @@ class TestAutoRound:
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
         shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    def test_q2k_mixed(self):
+        model_path = get_model_path("miromind-ai/MiroThinker-v1.5-30B")
+        saved_tiny_model_path = save_tiny_model(
+            model_path,
+            "./tmp/tiny_qwen_model_path",
+            num_layers=3,
+            is_mllm=False,
+        )
+        autoround = AutoRound(
+            saved_tiny_model_path,
+            iters=0,
+            nsamples=1,
+            seqlen=16,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
+        assert abs(file_size - 1236) < 5.0
+        from gguf.gguf_reader import GGUFReader
+
+        gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
+        assert gguf_model.get_tensor(2).name == "blk.0.attn_v.weight"
+        assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
+        assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
+        assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
+
+        shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested for CI")
+    def test_gguf_baseline(self):
+        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
+        autoround = AutoRound(
+            model_name,
+            bits=3,
+            group_size=16,
+            sym=True,
+            iters=0,
+            nsamples=8,
+            seqlen=2,
+            data_type="rtn_int_sym_dq",
+            super_group_size=16,
+            super_bits=6,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
+        eval_generated_prompt(quantized_model_path)
+        shutil.rmtree("./saved", ignore_errors=True)

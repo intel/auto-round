@@ -10,7 +10,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 from auto_round import AutoRound
 
 from ...envs import require_awq, require_optimum, require_package_version_ut
-from ...helpers import get_model_path, get_tiny_model, transformers_version
+from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, transformers_version
 
 
 class TestAutoRound:
@@ -76,17 +76,11 @@ class TestAutoRound:
             quantized_model_path, device_map="auto", quantization_config=AutoRoundConfig()
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "The capital of France is"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
-        assert "paris" in res.lower(), f"Expected 'paris' in the generated text, but got: {res}"
+        eval_generated_prompt(model, tokenizer)
 
         # test loading without quantization_config
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "The capital of France is"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
-        assert "paris" in res.lower(), f"Expected 'paris' in the generated text, but got: {res}"
+        eval_generated_prompt(model, tokenizer)
 
         shutil.rmtree("./saved", ignore_errors=True)

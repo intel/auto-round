@@ -1,6 +1,7 @@
 import os
 import shutil
 
+import pytest
 import transformers
 
 from auto_round import AutoRound
@@ -75,15 +76,16 @@ class TestAutoRound:
             batch_size=1,
             iters=0,
             seqlen=2,
+            disable_opt_rtn=True,
             dataset=dataloader,
             low_cpu_mem_usage=False,
         )
         ar.quantize_and_save(self.save_folder)
-        model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
+        model = transformers.Qwen2_5_VLForConditionalGeneration.from_pretrained(self.save_folder)
         assert model is not None, "Model loading failed after quantization with W4A16_MIXED scheme on MLLM"
         assert ar.bits == 4
-        assert ar.model.language_model.layers[0].self_attn.q_proj.bits == 16
-        assert ar.model.visual.blocks[0].attn.qkv.bits == 16
+        assert ar.model.model.language_model.layers[0].self_attn.q_proj.bits == 16
+        assert ar.model.model.visual.blocks[0].attn.qkv.bits == 16
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
@@ -122,18 +124,15 @@ class TestAutoRound:
         assert model is not None, "Model loading failed after quantization with NVFP4 scheme"
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def test_all_scheme(self, tiny_opt_model_path, tiny_qwen_model_path, dataloader):
-        import copy
-
-        preset_schemes = ["W8A16", "MXFP8", "FPW8A16", "FP8_STATIC", "GGUF:Q2_K_S", "GGUF:Q4_K_M"]
-        for scheme in preset_schemes:
-            model_name = tiny_opt_model_path
-            if "gguf" in scheme.lower():
-                model_name = tiny_qwen_model_path
-            print(f"scheme={scheme}")
-            ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
-            ar.quantize_and_save(self.save_folder)
-            shutil.rmtree(self.save_folder, ignore_errors=True)
+    @pytest.mark.parametrize(
+        "scheme", ["W8A16", "MXFP8", "FPW8A16", "FP8_BLOCK", "FP8_STATIC", "GGUF:Q2_K_S", "GGUF:Q4_K_M"]
+    )
+    def test_all_scheme(self, scheme, tiny_qwen_model_path, dataloader):
+        model_name = tiny_qwen_model_path
+        print(f"scheme={scheme}")
+        ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.quantize_and_save(self.save_folder)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_scheme_in_layer_config(self, dataloader):
         model = get_tiny_model(opt_name_or_path, num_layers=5)
@@ -227,34 +226,3 @@ class TestAutoRound:
         model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with FP8_STATIC scheme"
         shutil.rmtree(self.save_folder, ignore_errors=True)
-
-    def test_q2k_mixed(self):
-        model_path = "/data0/MiroThinker-v1.5-30B"
-        saved_tiny_model_path = save_tiny_model(
-            model_path,
-            "./tmp/tiny_qwen_model_path",
-            num_layers=3,
-            is_mllm=False,
-        )
-        autoround = AutoRound(
-            saved_tiny_model_path,
-            iters=0,
-            nsamples=1,
-            seqlen=16,
-            disable_opt_rtn=True,
-        )
-        quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
-        gguf_file = os.listdir(quantized_model_path)[0]
-        file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
-        assert abs(file_size - 1236) < 5.0
-        from gguf.gguf_reader import GGUFReader
-
-        gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
-        assert gguf_model.get_tensor(2).name == "blk.0.attn_v.weight"
-        assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
-        assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
-        assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
-
-        shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)

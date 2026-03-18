@@ -15,7 +15,7 @@ from ...envs import (
     require_ipex,
     require_package_version_ut,
 )
-from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, model_infer
+from ...helpers import eval_generated_prompt, evaluate_accuracy, get_model_path, is_cuda_support_fp8
 
 
 class TestAutoRound:
@@ -76,14 +76,8 @@ class TestAutoRound:
         autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        quantization_config = AutoRoundConfig(backend="auto")
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.32, batch_size=16)
+        eval_generated_prompt(quantized_model_path)
+        evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -109,7 +103,7 @@ class TestAutoRound:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
+        eval_generated_prompt(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
 
@@ -118,7 +112,7 @@ class TestAutoRound:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
+        eval_generated_prompt(model, tokenizer)
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -126,13 +120,11 @@ class TestAutoRound:
     def test_tritonv2_bf16(self):
         model_name = get_model_path("OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc")
         quantization_config = AutoRoundConfig(backend="tritonv2")
-        model = get_tiny_model(
+        model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
-
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model_infer(model, tokenizer)
-
+        eval_generated_prompt(model, tokenizer)
         torch.cuda.empty_cache()
 
     @pytest.mark.skip_ci(reason="IPEX is deprecated.")
@@ -224,3 +216,25 @@ class TestAutoRound:
         assert "!!!" not in res
 
         shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_fp8_block_fp8_format(self):
+        model_name = "Qwen/Qwen3-0.6B"
+
+        scheme = "FP8_BLOCK"
+        autoround = AutoRound(
+            model_name,
+            scheme=scheme,
+            iters=2,
+            seqlen=2,
+        )
+        quantized_model_path = self.save_dir
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="fp8")
+        tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
+        assert hasattr(tmp_layer, "weight_scale_inv")
+        assert tmp_layer.weight.dtype is torch.float8_e4m3fn
+        assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
+        assert compressed_model.config.quantization_config["quant_method"] == "fp8"
+        assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
+        if is_cuda_support_fp8():
+            eval_generated_prompt(quantized_model_path, device="cuda")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
