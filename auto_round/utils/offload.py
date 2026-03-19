@@ -415,14 +415,17 @@ class OffloadManager:
                 total_bytes += tensor.numel() * tensor.element_size()
         # torch.save adds serialization overhead; use 1.2x safety margin
         required_bytes = int(total_bytes * 1.2)
-        tmpdir = tempfile.gettempdir()
-        free_bytes = shutil.disk_usage(tmpdir).free
+        from auto_round import envs
+
+        target_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
+        os.makedirs(target_dir, exist_ok=True)
+        free_bytes = shutil.disk_usage(target_dir).free
         if free_bytes < required_bytes:
             required_gb = required_bytes / (1024**3)
             free_gb = free_bytes / (1024**3)
             logger.warning(
                 f"Insufficient disk space for offloading: need ~{required_gb:.2f} GB "
-                f"(including safety margin) but only {free_gb:.2f} GB available at {tmpdir}. Skipping offload."
+                f"(including safety margin) but only {free_gb:.2f} GB available at {target_dir}. Skipping offload."
             )
             return False
         return True
