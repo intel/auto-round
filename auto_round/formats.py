@@ -664,7 +664,7 @@ class AutoAWQFormat(OutputFormat):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
         if ar.bits != 4:
-            raise ValueError("The AWQ format only supports W4 quantization ")
+            raise ValueError(f"auto_awq format support quantization scheme with W4A16 but got bits={ar.bits}")
 
         if self.backend is None:
             _check_divisible_by_32(ar)

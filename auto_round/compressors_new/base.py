@@ -263,6 +263,7 @@ class BaseCompressor(object):
             self.formats = get_formats(self.formats, self)
         if self.formats is not None:
             self.compress_context.formats = self.formats
+            ShardWriter.reset()  # Ensure a fresh ShardWriter for every new quantization run
             self.shard_writer = ShardWriter(self.model_context.model, bits=8)
 
         self.model_context.apply_patches(self.formats)

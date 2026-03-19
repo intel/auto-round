@@ -97,11 +97,18 @@ class ShardWriter:
         ShardWriter._initialized = True
 
     @classmethod
+    def reset(cls):
+        """Reset the singleton state so the next instantiation creates a fresh ShardWriter."""
+        cls._initialized = False
+        cls._instance = None
+
+    @classmethod
     def get_shard_writer(cls, *args, **kwargs):
-        if cls._instance is None:
-            raise ValueError(
-                "ShardWriter has not been initialized yet. Please create an instance before calling get_shard_writer."
-            )
+        """Return the current singleton instance, or None if not yet initialized.
+
+        Callers that require a valid writer should guard the result with
+        ``if self.compress_context.is_immediate_saving`` before use.
+        """
         return cls._instance
 
     def _parse_size(self, size_str: str) -> int:

@@ -12,11 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
-
 import torch
 
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.logger import logger
 
 
@@ -33,11 +30,19 @@ class MLLMMixin:
     - ZeroShotCompressor (for basic RTN)
 
     MLLM-specific parameters:
-        processor: Multi-modal processor for encoding/decoding data
-        image_processor: Image processor for models like LLaVA
-        template: Template for processing different MLLMs
+        processor: Multi-modal processor override (normally loaded by ModelContext)
+        image_processor: Image processor override (e.g. for LLaVA)
+        template: Template name for processing different MLLMs
         extra_data_dir: Path to extra data (images, audio, videos)
         quant_nontext_module: Whether to quantize non-text modules
+
+    Design note:
+        ``ModelContext._load_model()`` is responsible for loading the model and its
+        associated artifacts (processor, tokenizer, image_processor).  This mixin
+        reads those artifacts from ``self.model_context`` during calibration.
+        If the caller passes explicit ``processor`` / ``image_processor`` overrides,
+        they are written into ``model_context`` after ``super().__init__()`` so that
+        ``model_context`` remains the single source of truth.
     """
 
     def __init__(
@@ -50,9 +55,6 @@ class MLLMMixin:
         quant_nontext_module=False,
         **kwargs,
     ):
-        # Store MLLM-specific attributes before calling super().__init__
-        self.processor = processor
-        self.image_processor = image_processor
         self.template = template
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
@@ -62,14 +64,23 @@ class MLLMMixin:
 
         # Pass quant_nontext_module to ModelContext so get_block_names can include vision blocks
         kwargs.setdefault("quant_nontext_module", quant_nontext_module)
-        # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
+
+        # super().__init__() creates model_context, which eagerly loads the model and
+        # populates model_context.processor / image_processor / tokenizer.
         super().__init__(*args, **kwargs)
+
+        # Apply user-provided overrides into model_context (single source of truth).
+        if processor is not None:
+            self.model_context.processor = processor
+        if image_processor is not None:
+            self.model_context.image_processor = image_processor
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
         """Perform MLLM-specific calibration for quantization.
 
         Override parent's calib method to use MLLM dataset loading logic.
+        All multimodal artifacts are read from ``self.model_context``.
         """
         from transformers import PreTrainedModel
 
@@ -77,37 +88,40 @@ class MLLMMixin:
         from auto_round.compressors.mllm.template import get_template
         from auto_round.special_model_handler import MISTRAL_3_2_MODELS
 
+        mc = self.model_context
+        processor = mc.processor
+        image_processor = mc.image_processor
+        tokenizer = mc.tokenizer
+
         # Handle template selection
-        if isinstance(self.model_context.model, PreTrainedModel):
-            model_type = getattr(self.model_context.model.config, "model_type", None)
+        if isinstance(mc.model, PreTrainedModel):
+            model_type = getattr(mc.model.config, "model_type", None)
             if model_type == "llava" and self.template is None:
                 self.template = "default"
 
-        if hasattr(self.model_context.model, "name_or_path"):
-            name = self.model_context.model.name_or_path
+        if hasattr(mc.model, "name_or_path"):
+            name = mc.model.name_or_path
             if any([m in name for m in MISTRAL_3_2_MODELS]):
                 self.template = "mistral3_2"
 
         template_name = self.template
-        if template_name is None and hasattr(self.model_context.model.config, "model_type"):
-            template_name = self.model_context.model.config.model_type
+        if template_name is None and hasattr(mc.model.config, "model_type"):
+            template_name = mc.model.config.model_type
         if template_name is None:
             template_name = "default"
 
-        # Get template
         self.template_obj = get_template(
             template_name,
-            model=self.model_context.model,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
-            image_processor=self.image_processor,
+            model=mc.model,
+            tokenizer=tokenizer,
+            processor=processor,
+            image_processor=image_processor,
             use_rtn=getattr(self.quantize_config, "iters", None) == 0,
             quiet=not self.quant_nontext_module,
         )
 
         logger.info(f"Using MLLM template: {template_name}")
 
-        # Get MLLM dataloader
         dataset = self.dataset.replace(" ", "") if isinstance(self.dataset, str) else self.dataset
         if dataset is None:
             dataset = self.template_obj.default_dataset
@@ -119,10 +133,10 @@ class MLLMMixin:
             self.gradient_accumulate_steps,
         ) = get_mllm_dataloader(
             template=self.template_obj,
-            model=self.model_context.model,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
-            image_processor=self.image_processor,
+            model=mc.model,
+            tokenizer=tokenizer,
+            processor=processor,
+            image_processor=image_processor,
             dataset=dataset,
             extra_data_dir=self.extra_data_dir,
             seqlen=self.quantize_config.seqlen,
@@ -138,23 +152,19 @@ class MLLMMixin:
             if data is None:
                 continue
 
-            # MLLM data is usually already properly formatted
             if isinstance(data, dict):
-                # Move all tensors to device
-                data_new = {}
-                for key, value in data.items():
-                    if isinstance(value, torch.Tensor):
-                        data_new[key] = value.to(self.model_context.model.device)
-                    else:
-                        data_new[key] = value
+                data_new = {
+                    key: value.to(mc.model.device) if isinstance(value, torch.Tensor) else value
+                    for key, value in data.items()
+                }
             else:
                 data_new = data
 
             try:
                 if isinstance(data_new, dict):
-                    self.model_context.model(**data_new)
+                    mc.model(**data_new)
                 else:
-                    self.model_context.model(data_new)
+                    mc.model(data_new)
             except NotImplementedError:
                 pass
             except Exception as e:

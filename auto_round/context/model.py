@@ -79,6 +79,12 @@ class ModelContext(BaseContext):
         self.tokenizer = tokenizer
         self.device = device
 
+        # MLLM / diffusion artifacts – always present so callers need no getattr guards.
+        # _load_model() will populate the ones that are relevant to the model type.
+        self.processor = None
+        self.image_processor = None
+        self.pipe = None
+
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform

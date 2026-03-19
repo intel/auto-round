@@ -97,6 +97,17 @@ class QuantizationConfig(AlgConfig):
             # Silently ignore failures — post_init() will do the authoritative resolution
             pass
 
+    @staticmethod
+    def _is_valid_group_size(gs) -> bool:
+        """Return True if gs is a valid group_size value.
+
+        Accepts -1 (per-channel), 0 (per-tensor), a positive integer,
+        or a tuple/list of such values (e.g. (128, 128) for block-wise FP8).
+        """
+        if isinstance(gs, (tuple, list)):
+            return all(QuantizationConfig._is_valid_group_size(g) for g in gs)
+        return gs == -1 or gs >= 0
+
     def check_config(self) -> None:
         """Checks if the configurations are valid.
 
@@ -107,11 +118,16 @@ class QuantizationConfig(AlgConfig):
             raise ValueError("`bits` must be positive")
         if self.act_bits <= 0:
             raise ValueError("`act_bits` must be positive")
-        if not (self.group_size == -1 or self.group_size >= 0):
-            raise ValueError("`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if not (self.act_group_size == -1 or self.act_group_size >= 0):
-            raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        """Reset the default value of super_bits and super_group_size"""
+        if not self._is_valid_group_size(self.group_size):
+            raise ValueError(
+                "`group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, "
+                "or a tuple thereof (e.g. (128, 128) for block-wise quantization)"
+            )
+        if not self._is_valid_group_size(self.act_group_size):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, " "or a tuple thereof"
+            )
+        # Reset the default value of super_bits and super_group_size
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
             self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
@@ -130,10 +146,11 @@ class QuantizationConfig(AlgConfig):
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
             )
-        if self.is_mx_fp and self.group_size != 32:
+        # For block-wise group_size (tuple), skip the scalar-only warnings
+        scalar_gs = self.group_size if not isinstance(self.group_size, (tuple, list)) else None
+        if self.is_mx_fp and scalar_gs != 32:
             logger.warning("dtype mx_fp should only support group_size of 32 in real deployment")
-
-        if self.is_nv_fp and (self.group_size != 16):
+        if self.is_nv_fp and scalar_gs != 16:
             logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
 
     @property

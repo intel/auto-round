@@ -2,290 +2,313 @@
 
 ## Overview
 
-本文档介绍了 `compressors_new` 的新架构设计，该设计统一了 LLM、MLLM 和 Diffusion 模型的量化入口。
+This document describes the new architecture of `compressors_new`, which provides a unified
+quantization entry point for LLM, MLLM, and Diffusion models.
 
-## 架构设计
+## Architecture Design
 
-### 核心思想
+### Core Idea
 
-通过 `entry.py` 中的 `Compressor` 类作为统一入口，根据模型类型和算法配置动态选择合适的 Compressor 实现。
+`Compressor` in `entry.py` is the single entry point. It detects the model type and config
+type at construction time and dynamically creates the correct concrete class using multiple
+inheritance (Mixin pattern).
 
-### 组件结构
+### Directory Structure
 
 ```
 compressors_new/
-├── entry.py                # 统一入口，自动检测模型类型
-├── base.py                 # BaseCompressor 基类
-├── calib.py                # CalibCompressor (需要校准的算法)
-├── zero_shot.py            # ZeroShotCompressor (不需要校准的算法)
-├── mllm_mixin.py           # MLLMCalibCompressor (MLLM + 校准)
-└── diffusion_mixin.py      # DiffusionCalibCompressor (Diffusion + 校准)
+├── entry.py               # Unified entry point — Compressor + AutoRound wrapper
+├── base.py                # BaseCompressor base class + SerializedCompressorConfig
+├── calib.py               # CalibCompressor (AutoRound gradient-based)
+│                          # CalibratedRTNCompressor (RTN + imatrix / act-calib)
+├── zero_shot.py           # ZeroShotCompressor (zero-shot RTN)
+├── mllm_mixin.py          # MLLMMixin (vision-language model extra logic)
+├── diffusion_mixin.py     # DiffusionMixin (diffusion pipeline extra logic)
+└── docs/                  # This document
 ```
 
-### 类继承关系
+### Class Hierarchy
 
 ```
 BaseCompressor
-    ├── CalibCompressor (基于校准的压缩)
-    │   ├── MLLMCalibCompressor (MLLM 专用)
-    │   └── DiffusionCalibCompressor (Diffusion 专用)
-    │
-    └── ZeroShotCompressor (不需要校准)
+    ├── CalibCompressor            (AutoRound, gradient-based calibration)
+    ├── CalibratedRTNCompressor    (RTN + importance-matrix or act calibration)
+    └── ZeroShotCompressor         (RTN, no calibration data needed)
+
+Mixins (combined dynamically in entry.py):
+    MLLMMixin      + {CalibCompressor | CalibratedRTNCompressor | ZeroShotCompressor}
+    DiffusionMixin + {CalibCompressor | CalibratedRTNCompressor | ZeroShotCompressor}
 ```
 
-## 使用方法
+## Configuration Layer
 
-### 1. 基本用法
+### QuantizationConfig (dataclass)
+
+`QuantizationConfig` is declared as a `@dataclass(kw_only=True)`, which eliminates
+`__init__` boilerplate. Subclasses call `super().__init__(scheme=..., **kwargs)` as normal:
 
 ```python
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
+@dataclass(kw_only=True)
+class QuantizationConfig(AlgConfig):
+    _alg_cls: ClassVar[str] = None  # which quantizer class to use
+
+    scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16"
+    bits: int = None
+    group_size: int = None  # also accepts tuple, e.g. (128,128) for block-FP8
+    # ... other fields
+
+    def __post_init__(self):
+        self._early_resolve_scheme()  # eagerly resolves scheme attrs at construction time
+```
+
+Subclasses:
+- `RTNConfig(QuantizationConfig)` — adds `disable_opt_rtn`, `seqlen`, `nsamples`, `batch_size`
+- `AutoRoundConfig(QuantizationConfig)` — adds `iters`, `lr`, `nblocks`, `enable_minmax_tuning`, …
+
+### AlgConfig
+
+`AlgConfig` is the base class used as type annotation throughout `compressors_new/`.
+Both `QuantizationConfig` and future non-quantization configs inherit from it.
+
+## ModelContext
+
+`ModelContext.__init__` **eagerly loads the model** — by the time `BaseCompressor.__init__`
+returns, the model is already loaded in CPU memory.
+
+```python
+class ModelContext(BaseContext):
+    def __init__(self, model, tokenizer, platform, ..., formats, is_act_quantize, quant_nontext_module):
+        # ... store attrs
+        self._load_model()                  # load LLM / MLLM / Diffusion model
+        check_and_mark_quantized_module(self.model)
+        self.model = self.model.eval()
+        self.shared_cache_keys = get_shared_keys(self.model)
+        self.is_moe_model = is_moe_model(self.model)
+        self._set_amp_dtype()
+
+    def apply_patches(self, formats):
+        """Apply format-specific model structure patches.
+        Called by BaseCompressor.post_init() after formats are resolved.
+        """
+        self._patch_custom_moe_modules()    # e.g. Qwen3VL top_k fix
+        self.model = update_module(self.model, formats=formats, ...)
+        for n, m in self.model.named_modules():
+            m.global_name = n               # assign names used by quantizers
+        self._is_initialized = True
+```
+
+## BaseCompressor.post_init() Flow
+
+`post_init()` is called at the start of `quantize()` (not in `__init__`).
+The order matters — model patches must come before quantizer setup:
+
+```
+post_init()
+│
+├─ 1. Resolve formats  (str → list[OutputFormat])
+│
+├─ 2. Apply model patches
+│     model_context.apply_patches(formats)
+│     ├── _patch_custom_moe_modules()
+│     ├── update_module(model, formats)     # insert gguf_pack_linear, etc.
+│     └── assign m.global_name to all modules
+│
+├─ 3. Setup quantizer on the patched model
+│     quantizer = BaseQuantizers.from_config(config)
+│     quantizer.post_init()
+│     ├── _parse_scheme() → resolve final quant attrs
+│     ├── get_block_names(quant_vision=quant_nontext_module)
+│     ├── find_matching_blocks() → quant_block_list
+│     ├── back-fill to_quant_block_names (if was None)
+│     └── configure_layer_config()
+│
+└─ 4. Setup device map, torch compile, offloader
+```
+
+> **No `refresh_quantizer_for_initialized_model()`** — eliminated by running `apply_patches`
+> *before* `quantizer.post_init()`.
+
+## BaseQuantizers Interface
+
+All quantizers accept **names** (str), not module objects.
+The module is retrieved internally via `get_module(model, name)`:
+
+```python
+class BaseQuantizers:
+    def quantize_block(
+        self,
+        block_name: Union[str, list[str]],  # list[str] for nblocks > 1
+        input_ids=None,
+        input_others=None,
+        **kwargs,
+    ): ...
+
+    def quantize_layer(self, layer_name: str, **kwargs): ...
+```
+
+- `str` → `get_module(model, block_name)`
+- `list[str]` → `WrapperMultiblock([get_module(model, n) for n in block_name])` (multi-block)
+
+## Compressor Selection Decision Tree
+
+```
+Compressor.__new__(config, model, format, **kwargs)
+│
+├─ Detect model type
+│  ├─ is_diffusion_model() → "diffusion"
+│  ├─ is_mllm_model()      → "mllm"
+│  └─ else                 → "llm"
+│
+├─ isinstance(config, AutoRoundConfig)
+│  ├─ mllm      → class MLLMCalibCompressor(MLLMMixin, CalibCompressor)
+│  ├─ diffusion → class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor)
+│  └─ llm       → CalibCompressor
+│
+└─ isinstance(config, RTNConfig)
+   ├─ enable_imatrix OR needs_act_calib  →  CalibratedRTNCompressor path
+   │  ├─ gguf_k format              → enable_imatrix = True
+   │  ├─ symmetric int RTN          → enable_imatrix = True
+   │  ├─ static act quantization    → needs_act_calib = True
+   │  │
+   │  ├─ mllm      → class MLLMCalibratedRTNCompressor(MLLMMixin, CalibratedRTNCompressor)
+   │  ├─ diffusion → class DiffusionCalibratedRTNCompressor(DiffusionMixin, CalibratedRTNCompressor)
+   │  └─ llm       → CalibratedRTNCompressor
+   │
+   └─ else  →  ZeroShotCompressor path
+      ├─ mllm      → class MLLMZeroShotCompressor(MLLMMixin, ZeroShotCompressor)
+      ├─ diffusion → class DiffusionZeroShotCompressor(DiffusionMixin, ZeroShotCompressor)
+      └─ llm       → ZeroShotCompressor
+```
+
+## MLLMMixin
+
+```python
+class MLLMMixin:
+    def __init__(
+        self,
+        *args,
+        processor=None,
+        image_processor=None,
+        template=None,
+        extra_data_dir=None,
+        quant_nontext_module=False,
+        **kwargs
+    ):
+        self.processor = processor
+        self.template = template
+        self.quant_nontext_module = quant_nontext_module
+        # Pass to ModelContext so get_block_names includes vision blocks
+        kwargs.setdefault("quant_nontext_module", quant_nontext_module)
+        super().__init__(*args, **kwargs)
+
+    def calib(self, nsamples, bs):
+        # Uses get_mllm_dataloader with template / processor
+        ...
+```
+
+`quant_nontext_module` flow:
+`MLLMMixin.__init__` → `kwargs.setdefault` → `BaseCompressor.__init__` pops → `ModelContext(quant_nontext_module=...)`
+→ `BaseQuantizers.post_init()` calls `get_block_names(quant_vision=quant_nontext_module)`
+
+## Usage Examples
+
+### Basic LLM quantization
+
+```python
 from auto_round.compressors_new.entry import Compressor
+from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
 
-# 创建配置
-config = AutoRoundConfig(
-    scheme="W4A16",
-    iters=200,
-    nsamples=128,
-)
-
-# 统一入口 - 自动检测模型类型
-compressor = Compressor(
-    config=config,
-    model="/path/to/model",  # 可以是 LLM/MLLM/Diffusion
-    tokenizer=tokenizer,
-    platform="hf",
-    format=None,
-)
-
-# 执行量化
+config = AutoRoundConfig(scheme="W4A16", iters=200, nsamples=128)
+compressor = Compressor(config=config, model="/path/to/llm", tokenizer=tokenizer)
 quantized_model, layer_config = compressor.quantize()
 ```
 
-### 2. MLLM 模型量化
+### MLLM (vision-language model)
 
 ```python
-from auto_round.compressors_new.entry import Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
-
 config = AutoRoundConfig(scheme="W4A16", iters=200)
-
-# 会自动使用 MLLMCalibCompressor
 compressor = Compressor(
     config=config,
     model="/models/Qwen2-VL-2B-Instruct",
-    tokenizer=tokenizer,
-    processor=processor,  # MLLM 特定参数
-    image_processor=image_processor,  # MLLM 特定参数
-    template="qwen2_vl",  # MLLM 特定参数
-    extra_data_dir="/path/to/images",  # MLLM 特定参数
+    processor=processor,
+    template="qwen2_vl",
+    quant_nontext_module=False,  # True to also quantize vision encoder
 )
-
-quantized_model, layer_config = compressor.quantize()
+# Creates: MLLMCalibCompressor(MLLMMixin, CalibCompressor)
 ```
 
-### 3. Diffusion 模型量化
+### Diffusion model
 
 ```python
-from auto_round.compressors_new.entry import Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
-
 config = AutoRoundConfig(scheme="W4A16", iters=200)
-
-# 会自动使用 DiffusionCalibCompressor
 compressor = Compressor(
     config=config,
     model="/models/stable-diffusion-2-1",
-    platform="hf",
-    guidance_scale=7.5,  # Diffusion 特定参数
-    num_inference_steps=50,  # Diffusion 特定参数
+    guidance_scale=7.5,
 )
-
-quantized_model, layer_config = compressor.quantize()
+# Creates: DiffusionCalibCompressor(DiffusionMixin, CalibCompressor)
 ```
 
-## 模型类型检测
+### RTN zero-shot
 
-`entry.py` 中的 `detect_model_type()` 函数自动检测模型类型:
+```python
+from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+config = RTNConfig(scheme="W4A16")
+compressor = Compressor(config=config, model="/path/to/model")
+```
+
+### RTN with imatrix (GGUF k-quants)
+
+```python
+config = RTNConfig(scheme="W4A16")
+compressor = Compressor(config=config, model="/path/to/model", format="gguf_k")
+# Creates: CalibratedRTNCompressor (enable_imatrix=True)
+```
+
+## Extending with New Model Types
+
+**Step 1**: Create a new Mixin in `compressors_new/`:
+
+```python
+class AudioMixin:
+    def __init__(self, *args, audio_processor=None, **kwargs):
+        self.audio_processor = audio_processor
+        super().__init__(*args, **kwargs)
+
+    def calib(self, nsamples, bs): ...
+```
+
+**Step 2**: Add detection in `entry.py`:
 
 ```python
 def detect_model_type(model):
-    """检测模型类型
-
-    Returns:
-        "mllm" | "diffusion" | "llm"
-    """
+    if is_audio_model(model):
+        return "audio"
     if is_diffusion_model(model):
         return "diffusion"
-    if is_mllm_model(model):
-        return "mllm"
-    return "llm"
+    ...
 ```
 
-检测逻辑:
-1. 优先检测是否为 Diffusion 模型(检查 `model_index.json`)
-2. 然后检测是否为 MLLM 模型(检查 `processor_config.json` 等)
-3. 默认为标准 LLM 模型
-
-## 动态 Compressor 选择
-
-`entry.py` 中的 `Compressor.__new__()` 方法根据以下条件动态选择:
-
-### 决策树
-
-```
-Compressor.__new__()
-│
-├── AutoRoundConfig (需要校准)
-│   ├── MLLM → MLLMCalibCompressor
-│   ├── Diffusion → DiffusionCalibCompressor
-│   └── LLM → CalibCompressor
-│
-└── RTNConfig
-    ├── enable_imatrix=True → ImatrixCompressor
-    └── enable_imatrix=False → ZeroShotCompressor
-```
-
-## 扩展新模型类型
-
-如果需要支持新的模型类型,按照以下步骤:
-
-### 1. 创建专用 Compressor
+**Step 3**: Add routing in `Compressor.__new__()`:
 
 ```python
-# compressors_new/new_model_calib.py
-from auto_round.compressors_new.calib import CalibCompressor
+if model_type == "audio":
+    from auto_round.compressors_new.audio_mixin import AudioMixin
 
-
-class NewModelCalibCompressor(CalibCompressor):
-    def __init__(self, config, model, **kwargs):
-        # 存储模型特定参数
-        self.special_param = kwargs.pop("special_param", None)
-        super().__init__(config, model, **kwargs)
-
-    @torch.no_grad()
-    def calib(self, nsamples, bs):
-        # 实现模型特定的校准逻辑
-        # 通常需要:
-        # 1. 加载模型特定的 dataloader
-        # 2. 处理模型特定的数据格式
-        # 3. 执行前向传播进行校准
+    class AudioCalibCompressor(AudioMixin, CalibCompressor):
         pass
+
+    return AudioCalibCompressor(config, **local_args, **kwargs)
 ```
 
-### 2. 更新模型检测逻辑
+## Summary
 
-```python
-# 在 entry.py 的 detect_model_type() 中添加
-def detect_model_type(model):
-    if is_new_model_type(model):  # 添加新的检测函数
-        return "new_model_type"
-    if is_diffusion_model(model):
-        return "diffusion"
-    # ...
-```
-
-### 3. 更新 Compressor 入口
-
-```python
-# 在 entry.py 的 Compressor.__new__() 中添加
-if isinstance(config, AutoRoundConfig):
-    if model_type == "new_model_type":
-        from auto_round.compressors_new.new_model_calib import NewModelCalibCompressor
-        return NewModelCalibCompressor(config, **local_args, **kwargs)
-    elif model_type == "mllm":
-        # ...
-```
-
-## 与旧架构的兼容性
-
-### 旧架构 (compressors/)
-
-```python
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-
-compressor = MLLMCompressor(
-    model=model,
-    # ... 参数
-)
-```
-
-### 新架构 (compressors_new/)
-
-```python
-from auto_round.compressors_new.entry import Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
-
-config = AutoRoundConfig(...)
-compressor = Compressor(
-    config=config,
-    model=model,
-    # ... 参数
-)
-```
-
-**优势:**
-1. 统一入口,无需手动选择 Compressor
-2. 自动模型类型检测
-3. 更好的代码组织和复用
-4. 易于扩展新模型类型
-
-## 实现细节
-
-### MLLMCalibCompressor
-
-重写的关键方法:
-- `calib()`: 使用 MLLM 专用的 dataloader 和 template
-- 处理 processor, image_processor, template 等 MLLM 特定参数
-
-### DiffusionCalibCompressor
-
-重写的关键方法:
-- `post_init()`: 预先加载 diffusion pipeline
-- `_load_diffusion_model()`: 加载 pipeline 并提取 transformer/unet
-- `calib()`: 使用 diffusion 专用的 dataloader
-
-### 数据流
-
-```
-1. Compressor.__new__()
-   └── 检测模型类型
-   └── 创建对应的 Compressor 实例
-
-2. CompressorInstance.__init__()
-   └── 存储模型特定参数
-   └── 调用 super().__init__()
-
-3. CompressorInstance.quantize()
-   └── post_init()
-       └── _load_model() (可能被重写)
-   └── calib() (可能被重写)
-   └── 执行量化算法
-
-4. 返回量化后的模型
-```
-
-## 测试
-
-运行测试脚本:
-
-```bash
-python test_compressor_new_arch.py
-```
-
-这将测试:
-- 模型类型检测
-- LLM Compressor 创建
-- MLLM Compressor 创建
-- Diffusion Compressor 创建
-
-## 总结
-
-新架构的主要优势:
-
-1. **统一入口**: 一个 `Compressor` 类处理所有模型类型
-2. **自动检测**: 无需手动判断模型类型
-3. **易于扩展**: 添加新模型类型只需3步
-4. **代码复用**: 通过继承复用基类功能
-5. **清晰结构**: 每种模型类型有独立的 Compressor 实现
-
-这种设计符合开闭原则(Open-Closed Principle),对扩展开放,对修改关闭。
+| Aspect | Description |
+|---|---|
+| **Entry point** | Single `Compressor` class, auto-detects model type |
+| **Config** | `QuantizationConfig` dataclass; subclasses `RTNConfig`, `AutoRoundConfig` |
+| **Model loading** | `ModelContext.__init__` loads eagerly; `apply_patches()` runs before quantizer setup |
+| **9 combinations** | 3 model types × 3 compressors, dynamic classes via Mixin |
+| **Quantizer interface** | Name-based `quantize_block(name)` / `quantize_layer(name)`, not module objects |
+| **Extension** | Add new model type in 3 steps (Mixin class, detect fn, routing) |

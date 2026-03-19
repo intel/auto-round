@@ -28,6 +28,7 @@ __all__ = ["CompressContext"]
 
 
 class CompressContext(BaseContext):
+
     def __init__(
         self,
         low_cpu_mem_usage: bool = True,
@@ -56,5 +57,6 @@ class CompressContext(BaseContext):
 
         self.enable_torch_compile = enable_torch_compile
         self.immediate_packing = is_immediate_packing
+        self.is_immediate_packing = is_immediate_packing
         self.is_immediate_saving = is_immediate_saving
         self.formats = formats

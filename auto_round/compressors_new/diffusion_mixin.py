@@ -17,8 +17,6 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
-from auto_round.algorithms.alg_config import AlgConfig
-from auto_round.context.model import ModelContext
 from auto_round.logger import logger
 
 
@@ -39,6 +37,12 @@ class DiffusionMixin:
         guidance_scale: Control how much image generation follows text prompt
         num_inference_steps: Reference number of denoising steps
         generator_seed: Seed for initial noise generation
+
+    Design note:
+        ``ModelContext._load_model()`` loads the diffusion pipeline and sets
+        ``model_context.pipe`` and ``model_context.model`` (the unet/transformer).
+        This mixin reads ``self.model_context.pipe`` directly during calibration and
+        saving so that ``model_context`` remains the single source of truth.
     """
 
     def __init__(self, *args, guidance_scale=7.5, num_inference_steps=50, generator_seed=None, **kwargs):
@@ -46,64 +50,24 @@ class DiffusionMixin:
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator_seed = generator_seed
-        self.pipe = None  # Will be set during model loading
-        self.pipe_config = None
 
         # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
-
-    def post_init(self):
-        """Override post_init to handle diffusion-specific model loading."""
-        # Load diffusion model as pipeline before standard initialization
-        if isinstance(self.model_context.model, str):
-            self._load_diffusion_model()
-
-        # Continue with standard post_init
-        super().post_init()
-
-    def _load_diffusion_model(self):
-        """Load diffusion model using pipeline.
-
-        This method loads the full diffusion pipeline and extracts the
-        transformer/unet component for quantization.
-        """
-        from auto_round.utils import diffusion_load_model
-
-        if isinstance(self.model_context.model, str):
-            # Load diffusion pipeline
-            logger.info(f"Loading diffusion model from {self.model_context.model}")
-            pipe, pipe_config = diffusion_load_model(
-                pretrained_model_name_or_path=self.model_context.model,
-                platform=self.platform,
-                device=self.compress_context.device,
-                trust_remote_code=self.model_context.trust_remote_code,
-            )
-            self.pipe = pipe
-            self.pipe_config = pipe_config
-
-            # Extract the transformer/unet component as the model
-            if hasattr(pipe, "transformer"):
-                extracted_model = pipe.transformer
-                logger.info("Extracted transformer from diffusion pipeline")
-            elif hasattr(pipe, "unet"):
-                extracted_model = pipe.unet
-                logger.info("Extracted unet from diffusion pipeline")
-            else:
-                raise ValueError("Cannot find transformer or unet in diffusion pipeline")
-
-            # Replace the model path with the actual model
-            self.model_context.model = extracted_model
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
         """Perform diffusion-specific calibration for quantization.
 
         Override parent's calib method to use diffusion dataset loading logic.
+        The diffusion pipeline is read from ``self.model_context.pipe``.
         """
         from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 
-        if self.pipe is None:
-            raise ValueError("Diffusion pipeline must be loaded before calibration")
+        pipe = self.model_context.pipe
+        if pipe is None:
+            raise ValueError(
+                "Diffusion pipeline not found in model_context. " "Ensure the model was loaded as a diffusion model."
+            )
 
         logger.warning(
             "Diffusion model will catch nsamples * num_inference_steps inputs, "
@@ -123,13 +87,13 @@ class DiffusionMixin:
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        if self.pipe.dtype != self.model.dtype:
-            self.pipe.to(self.model.dtype)
+        if pipe.dtype != self.model.dtype:
+            pipe.to(self.model.dtype)
 
         if (
             hasattr(self.model, "hf_device_map")
             and len(self.model.hf_device_map) > 0
-            and self.pipe.device != self.model.device
+            and pipe.device != self.model.device
             and torch.device(self.model.device).type in ["cuda", "xpu"]
         ):
             logger.error(
@@ -139,21 +103,21 @@ class DiffusionMixin:
             )
             exit(-1)
 
-        if self.pipe.device != self.model.device:
-            self.pipe.to(self.model.device)
+        if pipe.device != self.model.device:
+            pipe.to(self.model.device)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
-                    self.pipe(
+                    pipe(
                         prompt=prompts,
                         guidance_scale=self.guidance_scale,
                         num_inference_steps=self.num_inference_steps,
                         generator=(
                             None
                             if self.generator_seed is None
-                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+                            else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
                         ),
                     )
                 except NotImplementedError:
@@ -204,9 +168,10 @@ class DiffusionMixin:
         if output_dir is None:
             return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
 
+        pipe = self.model_context.pipe
         compressed_model = None
-        for name in self.pipe.components.keys():
-            val = getattr(self.pipe, name)
+        for name in pipe.components.keys():
+            val = getattr(pipe, name)
             sub_module_path = (
                 os.path.join(output_dir, name) if os.path.basename(os.path.normpath(output_dir)) != name else output_dir
             )
@@ -223,5 +188,5 @@ class DiffusionMixin:
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
-        self.pipe.config.save_pretrained(output_dir)
+        pipe.config.save_pretrained(output_dir)
         return compressed_model
