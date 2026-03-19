@@ -143,7 +143,7 @@ class TestAutoRound:
         from ...helpers import save_tiny_model
 
         model_name = get_model_path("google/gemma-3-4b-it")
-        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True)
+        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True, use_fast=False)
         from auto_round import AutoRound
 
         autoround = AutoRound(
