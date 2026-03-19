@@ -740,7 +740,11 @@ def tune(args):
                     suffix = f"a{autoround.act_bits}"
             else:
                 suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
+        prefix = autoround.data_type.lower().replace("_", "") if "int" not in autoround.data_type else ""
+        export_dir = os.path.join(
+            args.output_dir,
+            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
+        )
 
     # ======================= Quantize and save model =======================
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
