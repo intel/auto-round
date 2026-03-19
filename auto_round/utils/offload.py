@@ -262,7 +262,9 @@ class OffloadManager:
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
     ):
-        self.enabled = enabled
+        from auto_round import envs
+
+        self.enabled = enabled and not envs.AR_DISABLE_OFFLOAD
         self.mode = mode
         self.model_dir = model_dir
         self.cache_numel = cache_numel
