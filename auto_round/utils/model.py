@@ -1057,8 +1057,6 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
-<<<<<<< HEAD
-=======
 def get_attr(module, key):
     """Get attribute from module by key name.
 
@@ -1096,8 +1094,6 @@ def set_attr(model, key, new_attr):
             module = getattr(module, name)
     setattr(module, name_list[-1], new_attr)
 
-
->>>>>>> d698bcaa ([pre-commit.ci] auto fixes from pre-commit.com hooks)
 def get_module(module, key):
     """Get module from model by key name using PyTorch native API.
 

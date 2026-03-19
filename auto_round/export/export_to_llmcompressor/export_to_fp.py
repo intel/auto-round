@@ -189,7 +189,9 @@ def save_quantized_as_fp(
         for module in tqdm(modules, desc="Update input global scale for fuse modules"):
             update_fused_layer_global_scales(module, base_name="input")
 
-    names = list(layer_config.keys())
+    from auto_round.utils.common import looks_like_regex
+
+    names = [n for n in layer_config.keys() if not looks_like_regex(n)]
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally

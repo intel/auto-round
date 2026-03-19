@@ -3394,6 +3394,10 @@ class BaseCompressor(object):
         all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
 
         for key in self.layer_config.keys():
+            from auto_round.utils.common import looks_like_regex
+
+            if looks_like_regex(key):
+                continue
             if key in all_layers_in_block:
                 continue
             layer = get_module(self.model, key)
