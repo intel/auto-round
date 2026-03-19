@@ -14,7 +14,7 @@ TARGET_GPUS = [
     "NVIDIA RTX PRO 6000 Blackwell Server Edition",
 ]
 REQUIRED_COUNT = 1
-IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:v0.1"
+IMAGES_NAME = "xuehaosu/azure-agent:v0.1"
 
 
 def check_gpu_count(token):
