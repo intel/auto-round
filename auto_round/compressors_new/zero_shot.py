@@ -140,13 +140,7 @@ class ZeroShotCompressor(BaseCompressor):
 
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
-                block = get_module(self.model_context.model, block_name)
-
-                self.quantizer.quantize_block(
-                    block,
-                    input_ids,
-                    input_others,
-                )
+                self.quantizer.quantize_block(block_name, input_ids, input_others)
 
                 if self.low_cpu_mem_usage and not self.is_immediate_saving:
                     self._offloader.offload(self.model_context.model, block_name)
@@ -184,7 +178,6 @@ class ZeroShotCompressor(BaseCompressor):
         """
 
         self.post_init()
-        self.model_context.initialize(formats=self.formats, is_act_quantize=self.config.is_act_quantize)
 
         formats = self.formats if isinstance(self.formats, list) else []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
@@ -251,8 +244,7 @@ class ZeroShotCompressor(BaseCompressor):
                 for block_names in all_blocks:
                     for block_name in block_names:
                         pbar.set_description(f"Quantizing {block_name}")
-                        block = get_module(self.model, block_name)
-                        self.quantizer.quantize_block(block, block_name=block_name)
+                        self.quantizer.quantize_block(block_name)
 
                         if self.low_cpu_mem_usage and not self.is_immediate_saving:
                             self._offloader.offload(self.model, block_name)

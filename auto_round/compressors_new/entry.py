@@ -9,7 +9,8 @@ from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors_new.calib import CalibCompressor
+from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
+from auto_round.compressors_new.utils import check_need_act_calibration
 from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -111,38 +112,44 @@ class Compressor(object):
                         enable_imatrix = True
                     elif is_weight_scheme(config.scheme):
                         enable_imatrix = True
-            if enable_imatrix:
-                from auto_round.compressors_new.calib import ImatrixCompressor
 
-                # For RTN with imatrix, dynamically combine with model-specific Mixin
+            needs_act_calib = getattr(config, "is_act_quantize", False) and check_need_act_calibration(
+                getattr(config, "act_dynamic", None),
+                getattr(config, "act_data_type", None),
+                getattr(config, "act_bits", 16),
+                static_kv_dtype=kwargs.get("static_kv_dtype"),
+                static_attention_dtype=kwargs.get("static_attention_dtype"),
+            )
+
+            if enable_imatrix or needs_act_calib:
+                config._alg_cls = "OptimizedRTNQuantizer"
+                # For RTN with calibration data, dynamically combine with model-specific Mixin
                 if model_type == "mllm":
                     from auto_round.compressors_new.mllm_mixin import MLLMMixin
 
-                    # Create dynamic class: MLLMMixin + ImatrixCompressor
-                    class MLLMImatrixCompressor(MLLMMixin, ImatrixCompressor):
-                        """MLLM model with RTN importance matrix compression"""
+                    class MLLMCalibratedRTNCompressor(MLLMMixin, CalibratedRTNCompressor):
+                        """MLLM model with calibrated RTN compression"""
 
                         pass
 
-                    return MLLMImatrixCompressor(config, **local_args, **kwargs)
+                    return MLLMCalibratedRTNCompressor(config, **local_args, **kwargs)
                 elif model_type == "diffusion":
                     from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
-                    # Create dynamic class: DiffusionMixin + ImatrixCompressor
-                    class DiffusionImatrixCompressor(DiffusionMixin, ImatrixCompressor):
-                        """Diffusion model with RTN importance matrix compression"""
+                    class DiffusionCalibratedRTNCompressor(DiffusionMixin, CalibratedRTNCompressor):
+                        """Diffusion model with calibrated RTN compression"""
 
                         pass
 
-                    return DiffusionImatrixCompressor(config, **local_args, **kwargs)
+                    return DiffusionCalibratedRTNCompressor(config, **local_args, **kwargs)
                 else:
-                    return ImatrixCompressor(config, **local_args, **kwargs)
+                    return CalibratedRTNCompressor(config, **local_args, **kwargs)
             else:
-                # For basic RTN, dynamically combine with model-specific Mixin
+                config._alg_cls = "RTNQuantizer"
+                # Zero-shot RTN: no calibration data needed
                 if model_type == "mllm":
                     from auto_round.compressors_new.mllm_mixin import MLLMMixin
 
-                    # Create dynamic class: MLLMMixin + ZeroShotCompressor
                     class MLLMZeroShotCompressor(MLLMMixin, ZeroShotCompressor):
                         """MLLM model with zero-shot RTN compression"""
 
@@ -152,7 +159,6 @@ class Compressor(object):
                 elif model_type == "diffusion":
                     from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
-                    # Create dynamic class: DiffusionMixin + ZeroShotCompressor
                     class DiffusionZeroShotCompressor(DiffusionMixin, ZeroShotCompressor):
                         """Diffusion model with zero-shot RTN compression"""
 
@@ -214,6 +220,37 @@ class AutoRound:
     super_bits: int | None
     super_group_size: int | None
 
+    @staticmethod
+    def _pop_config_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Extract old-API config kwargs and split them by config type."""
+        common_keys = (
+            "ignore_layers",
+            "quant_lm_head",
+            "scale_dtype",
+            "super_bits",
+            "super_group_size",
+            "to_quant_block_names",
+        )
+        auto_round_only_keys = (
+            "nblocks",
+            "enable_alg_ext",
+            "lr_scheduler",
+            "not_use_best_mse",
+            "dynamic_max_gap",
+            "optimizer",
+            "enable_adam",
+            "momentum",
+        )
+        common_kwargs = {}
+        auto_round_kwargs = {}
+        for key in common_keys:
+            if key in kwargs:
+                common_kwargs[key] = kwargs.pop(key)
+        for key in auto_round_only_keys:
+            if key in kwargs:
+                auto_round_kwargs[key] = kwargs.pop(key)
+        return common_kwargs, auto_round_kwargs
+
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
@@ -239,6 +276,8 @@ class AutoRound:
         This method translates old AutoRound API to new Compressor API.
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
+
+        common_config_kwargs, auto_round_config_kwargs = cls._pop_config_kwargs(kwargs)
 
         # Extract quantization parameters from kwargs or use defaults
         bits = kwargs.pop("bits", None)
@@ -272,6 +311,7 @@ class AutoRound:
                 seqlen=seqlen,
                 nsamples=nsamples,
                 batch_size=batch_size,
+                **common_config_kwargs,
             )
         else:
             # AutoRound mode
@@ -303,6 +343,8 @@ class AutoRound:
                 enable_minmax_tuning=enable_minmax_tuning,
                 enable_norm_bias_tuning=enable_norm_bias_tuning,
                 enable_quanted_input=enable_quanted_input,
+                **common_config_kwargs,
+                **auto_round_config_kwargs,
             )
 
         # Determine output format if specified

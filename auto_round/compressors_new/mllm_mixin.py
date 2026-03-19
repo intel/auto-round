@@ -57,7 +57,11 @@ class MLLMMixin:
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.template_obj = None
+        # Backward compat: ar.mllm is expected to be True for MLLM instances
+        self.mllm = True
 
+        # Pass quant_nontext_module to ModelContext so get_block_names can include vision blocks
+        kwargs.setdefault("quant_nontext_module", quant_nontext_module)
         # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
@@ -84,29 +88,48 @@ class MLLMMixin:
             if any([m in name for m in MISTRAL_3_2_MODELS]):
                 self.template = "mistral3_2"
 
-        # Get template
-        if self.template is not None:
-            self.template_obj = get_template(self.template)
-        elif hasattr(self.model_context.model.config, "model_type"):
-            self.template_obj = get_template(self.model_context.model.config.model_type)
-        else:
-            self.template_obj = get_template("default")
+        template_name = self.template
+        if template_name is None and hasattr(self.model_context.model.config, "model_type"):
+            template_name = self.model_context.model.config.model_type
+        if template_name is None:
+            template_name = "default"
 
-        logger.info(f"Using MLLM template: {self.template or 'default'}")
+        # Get template
+        self.template_obj = get_template(
+            template_name,
+            model=self.model_context.model,
+            tokenizer=self.tokenizer,
+            processor=self.processor,
+            image_processor=self.image_processor,
+            use_rtn=getattr(self.quantize_config, "iters", None) == 0,
+            quiet=not self.quant_nontext_module,
+        )
+
+        logger.info(f"Using MLLM template: {template_name}")
 
         # Get MLLM dataloader
-        self.dataloader = get_mllm_dataloader(
-            self.model_context.model,
-            self.tokenizer,
-            self.dataset,
-            self.processor,
-            self.image_processor,
-            nsamples,
-            self.quantize_config.seqlen,
-            self.seed,
-            bs,
-            self.template_obj,
-            self.extra_data_dir,
+        dataset = self.dataset.replace(" ", "") if isinstance(self.dataset, str) else self.dataset
+        if dataset is None:
+            dataset = self.template_obj.default_dataset
+
+        (
+            self.dataloader,
+            self.batch_size,
+            self.seqlen,
+            self.gradient_accumulate_steps,
+        ) = get_mllm_dataloader(
+            template=self.template_obj,
+            model=self.model_context.model,
+            tokenizer=self.tokenizer,
+            processor=self.processor,
+            image_processor=self.image_processor,
+            dataset=dataset,
+            extra_data_dir=self.extra_data_dir,
+            seqlen=self.quantize_config.seqlen,
+            bs=bs,
+            seed=self.seed,
+            nsamples=nsamples,
+            quant_nontext_module=self.quant_nontext_module,
         )
 
         # Process data through the model for calibration

@@ -276,5 +276,5 @@ class ShardWriter:
 
         if is_finalize:
             self.finalize()
-            # Optional: cleanup the saver object from rounder
-            self._initialized = False
+            ShardWriter._initialized = False
+            ShardWriter._instance = None

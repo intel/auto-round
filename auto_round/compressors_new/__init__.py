@@ -18,11 +18,17 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_round.compressors_new.calib import CalibCompressor, ImatrixCompressor
+    from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
     from auto_round.compressors_new.entry import AutoRound, Compressor
     from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 
-__all__ = ["Compressor", "CalibCompressor", "ImatrixCompressor", "ZeroShotCompressor", "AutoRound"]
+__all__ = [
+    "Compressor",
+    "CalibCompressor",
+    "CalibratedRTNCompressor",
+    "ZeroShotCompressor",
+    "AutoRound",
+]
 
 
 def __getattr__(name):
@@ -33,12 +39,13 @@ def __getattr__(name):
         if name == "Compressor":
             return Compressor
         return AutoRound
-    elif name == "CalibCompressor" or name == "ImatrixCompressor":
-        from auto_round.compressors_new.calib import CalibCompressor, ImatrixCompressor
+    elif name in ("CalibCompressor", "CalibratedRTNCompressor"):
+        from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
 
-        if name == "CalibCompressor":
-            return CalibCompressor
-        return ImatrixCompressor
+        return {
+            "CalibCompressor": CalibCompressor,
+            "CalibratedRTNCompressor": CalibratedRTNCompressor,
+        }[name]
     elif name == "ZeroShotCompressor":
         from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 

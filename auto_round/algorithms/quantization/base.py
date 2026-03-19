@@ -146,11 +146,17 @@ class BaseQuantizers:
         else:
             enable_gguf_official_mixed = False
 
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(self.model_context.model)
+        if self.quant_block_list is None:
+            quant_nontext_module = getattr(self.model_context, "quant_nontext_module", False)
+            all_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext_module)
             self.quant_block_list = find_matching_blocks(
                 self.model_context.model, all_blocks, self.to_quant_block_names
             )
+            if self.to_quant_block_names is None and self.quant_block_list:
+                from auto_round.utils import extract_block_names_to_str
+
+                self.to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
+                self.config.to_quant_block_names = self.to_quant_block_names
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
@@ -281,6 +287,7 @@ class BaseQuantizers:
         )
 
     def _register_act_max_hook(self, model):
+
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -423,40 +430,22 @@ class BaseQuantizers:
 
         return is_quantized
 
-    def quantize_block(self, bock, input_ids, input_others, q_input=False, **kwargs):
-        """Quantizes a given block of the model based on the specified configuration.
-
-        This method applies quantization to the specified block using the appropriate quantization
-        function determined by the block's configuration. It handles memory management and supports
-        optional automatic offloading to manage GPU memory usage.
+    def quantize_block(self, block_name: str, input_ids=None, input_others=None, **kwargs):
+        """Quantizes a given block of the model.
 
         Args:
-            block (torch.nn.Module): The block of the model to be quantized.
-            input_ids (torch.Tensor): The input IDs for the block.
-            input_others (dict): Additional inputs required for the block's forward pass.
-            q_input (bool, optional): Whether to quantize the input. Defaults to False.
-            auto_offload (bool, optional): Whether to automatically offload to manage GPU memory. Defaults to True.
-
-        Returns:
-            tuple: A tuple containing the quantized outputs and any additional output information.
+            block_name (str): The name of the block to quantize. The block module is
+                retrieved internally via get_module(model, block_name).
+            input_ids: Calibration inputs for the block (required by gradient-based quantizers).
+            input_others (dict): Additional inputs for the block's forward pass.
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizers")
 
-    def quantize_layer(self, layer, input_ids, input_others, q_input=False, **kwargs):
-        """Quantizes a single layer of the model based on the specified configuration.
-
-        This method applies quantization to the specified layer using the appropriate quantization
-        function determined by the layer's configuration. It handles memory management and supports
-        optional automatic offloading to manage GPU memory usage.
+    def quantize_layer(self, layer_name: str, **kwargs):
+        """Quantizes a single layer of the model.
 
         Args:
-            layer (torch.nn.Module): The layer of the model to be quantized.
-            input_ids (torch.Tensor): The input IDs for the layer.
-            input_others (dict): Additional inputs required for the layer's forward pass.
-            q_input (bool, optional): Whether to quantize the input. Defaults to False.
-            auto_offload (bool, optional): Whether to automatically offload to manage GPU memory. Defaults to True.
-
-        Returns:
-            tuple: A tuple containing the quantized outputs and any additional output information.
+            layer_name (str): The name of the layer to quantize. The layer module is
+                retrieved internally via get_module(model, layer_name).
         """
         raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizers")

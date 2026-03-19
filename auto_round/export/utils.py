@@ -14,6 +14,7 @@
 import json
 import os
 
+import torch
 import torch.nn as nn
 
 from auto_round.utils import (
@@ -22,6 +23,21 @@ from auto_round.utils import (
     logger,
     unsupported_meta_device,
 )
+
+
+def _save_model_configs(model: nn.Module, save_dir: str) -> None:
+    if hasattr(model, "config") and model.config is not None:
+        model.config.save_pretrained(save_dir)
+
+    if hasattr(model, "generation_config") and model.generation_config is not None:
+        model.generation_config.save_pretrained(save_dir)
+
+
+def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
+    for tensor in model.state_dict().values():
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
+            return True
+    return False
 
 
 def save_model(
@@ -54,13 +70,17 @@ def save_model(
     os.makedirs(save_dir, exist_ok=True)
 
     if unsupported_meta_device(model):
-        if hasattr(model, "config") and model.config is not None:
-            model.config.save_pretrained(save_dir)
-
-        if hasattr(model, "generation_config") and model.generation_config is not None:
-            model.generation_config.save_pretrained(save_dir)
+        _save_model_configs(model, save_dir)
     else:
-        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+        has_meta_tensor = _state_dict_has_meta_tensor(model)
+        if has_meta_tensor:
+            logger.info(
+                "Detected meta tensors in state_dict after shard-based saving; skipping model.save_pretrained and "
+                "saving configs only."
+            )
+            _save_model_configs(model, save_dir)
+        else:
+            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     try:
         copy_missing_tensors_from_source(
@@ -184,7 +204,9 @@ def filter_quantization_config(quantization_config):
         "scale_dtype": "torch.float16",
         "seqlen": 2048,
     }
-    iters = quantization_config.get("iters", 200)
+    iters = quantization_config.get("iters")
+    if iters is None:
+        iters = 0
 
     default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
     default_dict["minmax_lr"] = default_dict["lr"]

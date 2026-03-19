@@ -54,7 +54,7 @@ class AutoRound:
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
 
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config", "enable_adam")
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config")
 
     bits: int | None
     group_size: int | tuple | None
@@ -164,7 +164,7 @@ class AutoRound:
         if NEW_ARCH:
             from auto_round.compressors_new.entry import AutoRound as AutoRoundNew
 
-            return AutoRoundNew(**local_args)
+            return AutoRoundNew(**local_args, **kwargs)
 
         model_cls = []
 

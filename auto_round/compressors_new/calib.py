@@ -701,9 +701,9 @@ class CalibCompressor(BaseCompressor):
                 else:
                     self._offloader.reload(model, names)
 
-            m.config = model.config if hasattr(model, "config") else None
+            block_name_or_names = n if nblocks == 1 else names
             q_input, input_ids = self.quantizer.quantize_block(
-                m,
+                block_name_or_names,
                 input_ids,
                 input_others,
                 q_input=q_input,
@@ -740,7 +740,6 @@ class CalibCompressor(BaseCompressor):
         The quantized model and layer configurations.
         """
         self.post_init()
-        self.model_context.initialize(formats=self.formats, is_act_quantize=self.config.is_act_quantize)
 
         self._check_compatibility()
 
@@ -1006,7 +1005,20 @@ class CalibCompressor(BaseCompressor):
             )
 
 
-class ImatrixCompressor(CalibCompressor):
+class CalibratedRTNCompressor(CalibCompressor):
+    """CalibCompressor variant for iters=0 RTN that needs calibration data.
+
+    Handles two cases that require forward passes through the model:
+      - Weight quantization with imatrix (importance-matrix statistics for
+        improved RTN accuracy on INT / weight-only schemes).
+      - Activation quantization with static scales (e.g. NVFP4, FP8_STATIC)
+        where per-tensor or per-channel scale factors must be collected before
+        the actual quantization step.
+
+    Both cases use OptimizedRTNQuantizer and need a calibration dataset,
+    which is why they cannot be handled by the zero-shot (no-data) path.
+    """
+
     need_calib: bool = True
 
     def __init__(
@@ -1085,10 +1097,8 @@ class ImatrixCompressor(CalibCompressor):
 
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
-                block = get_module(self.model_context.model, block_name)
-
                 self.quantizer.quantize_block(
-                    block,
+                    block_name,
                     input_ids,
                     input_others,
                 )
@@ -1230,7 +1240,6 @@ class ImatrixCompressor(CalibCompressor):
             tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
         """
         self.post_init()
-        self.model_context.initialize(formats=self.formats, is_act_quantize=self.config.is_act_quantize)
 
         formats = getattr(self, "formats", None) or []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
@@ -1242,7 +1251,9 @@ class ImatrixCompressor(CalibCompressor):
         self._quant_rtn_with_imatrix()
 
         convert_module_to_hp_if_necessary(
-            self.model_context.model, self.model_context.amp_dtype, self.compress_context.device
+            self.model_context.model,
+            self.model_context.amp_dtype,
+            self.compress_context.device,
         )
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)

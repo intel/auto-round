@@ -64,10 +64,12 @@ from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block
 
 
 class RTNQuantizer(BaseQuantizers):
+
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
 
-    def quantize_block(self, block: torch.nn.Module, block_name: str, **kwargs):
+    def quantize_block(self, block_name: str, **kwargs):
+        block = get_module(self.model, block_name)
         shard_writer = ShardWriter.get_shard_writer()
 
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
@@ -100,15 +102,16 @@ class RTNQuantizer(BaseQuantizers):
                     copied_m = get_module(self.model, m.global_name)
                     copied_m.to("meta")
                 m.to("meta")
-            # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
-            # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
-            if not self.compress_context.is_immediate_saving:
-                mv_module_from_gpu(block)
-            else:
-                # Save once at block scope to capture tensors that are not saved
-                # in per-layer branch (e.g., custom module-level params/buffers).
-                shard_writer.write(name=block_name)
-                block.to("meta")
+
+        # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
+        # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
+        if not self.compress_context.is_immediate_saving:
+            mv_module_from_gpu(block)
+        else:
+            # Save once at block scope to capture tensors that are not saved
+            # in per-layer branch (e.g., custom module-level params/buffers).
+            shard_writer.write(name=block_name)
+            block.to("meta")
 
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
@@ -209,6 +212,7 @@ class RTNQuantizer(BaseQuantizers):
 
 
 class OptimizedRTNQuantizer(RTNQuantizer):
+
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
         self.batch_size = config.batch_size
@@ -221,10 +225,8 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
-    def quantize_block(
-        self, block: torch.nn.Module, input_ids: Union[list[torch.Tensor], dict], input_others: dict, **kwargs
-    ):
-
+    def quantize_block(self, block_name: str, input_ids: Union[list[torch.Tensor], dict], input_others: dict, **kwargs):
+        block = get_module(self.model, block_name)
         materialize_model_(block)
         block.to("cpu")
 

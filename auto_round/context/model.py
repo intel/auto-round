@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 from typing import Any, Callable, Optional, Union
 
 import torch
@@ -39,6 +40,10 @@ from auto_round.utils import (
 
 __all__ = ["ModelContext"]
 
+_CUSTOM_MOE_REPLACEMENT_MODULES = {
+    "gpt_oss": "auto_round.modeling.fused_moe.gpt_oss",
+}
+
 
 class ModelContext(BaseContext):
     _is_initialized = False
@@ -58,6 +63,9 @@ class ModelContext(BaseContext):
         amp=True,
         need_calib=True,
         device="cpu",
+        formats=None,
+        is_act_quantize=False,
+        quant_nontext_module=False,
     ):
         super().__init__()
         self.quantized = False
@@ -77,8 +85,33 @@ class ModelContext(BaseContext):
         self.model_dtype = model_dtype
         self.trust_remote_code = trust_remote_code
         self.amp = amp
-
         self.need_calib = need_calib
+        self.quant_nontext_module = quant_nontext_module
+
+        # Load model and run basic initialization eagerly so the model is ready
+        # by the time BaseCompressor.post_init() runs.
+        self._load_model()
+
+        if unsupported_meta_device(self.model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        check_and_mark_quantized_module(self.model)
+        self.model = self.model.eval()
+        self.shared_cache_keys = get_shared_keys(self.model)
+
+        self.is_moe_model = is_moe_model(self.model)
+        self._import_custom_moe_replacements(getattr(self.model, "config", None))
+
+        self._set_amp_dtype()
+        if is_act_quantize and self.amp_dtype == torch.float16:
+            logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
+            self.amp_dtype = torch.bfloat16
+            if self.model.dtype != torch.bfloat16:
+                self.model = self.model.to(torch.bfloat16)
+        else:
+            logger.info(f"using {self.model.dtype} for quantization tuning")
 
     def _load_model(self):
         if is_mllm_model(self.model, platform=self.platform):
@@ -96,6 +129,7 @@ class ModelContext(BaseContext):
             config: Optional[AutoConfig] = None
             try:
                 config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+                self._import_custom_moe_replacements(config)
             except (OSError, EnvironmentError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
@@ -136,6 +170,34 @@ class ModelContext(BaseContext):
 
         self._model_loaded = True
 
+    def _import_custom_moe_replacements(self, model_or_config) -> None:
+        model_type = getattr(model_or_config, "model_type", None)
+        module_name = _CUSTOM_MOE_REPLACEMENT_MODULES.get(model_type)
+        if module_name is None:
+            return
+
+        module = importlib.import_module(module_name)
+        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+
+        BUILTIN_MODULES.setdefault(model_type, module)
+        logger.debug(f"Loaded custom MoE replacement module for {model_type}")
+
+    def _patch_custom_moe_modules(self) -> None:
+        model_type = getattr(getattr(self.model, "config", None), "model_type", None)
+        if model_type != "qwen3_vl_moe":
+            return
+
+        for module in self.model.modules():
+            if module.__class__.__name__ != "Qwen3VLMoeTextSparseMoeBlock":
+                continue
+            if hasattr(module, "top_k"):
+                continue
+
+            gate = getattr(module, "gate", None)
+            top_k = getattr(gate, "top_k", None)
+            if top_k is not None:
+                setattr(module, "top_k", top_k)
+
     def _set_amp_dtype(self) -> None:
         """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration."""
         self.amp_dtype = torch.bfloat16
@@ -158,34 +220,17 @@ class ModelContext(BaseContext):
             self.amp_dtype = torch.float32
             self.model = self.model.to(torch.float32)
 
-    def initialize(self, formats, is_act_quantize=False):
-        # load and handle model
-        if not self._model_loaded:
-            self._load_model()
+    def apply_patches(self, formats):
+        """Apply format-specific model structure patches.
 
-        if unsupported_meta_device(self.model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
-            )
-        check_and_mark_quantized_module(self.model)
-        self.model = self.model.eval()
-        self.shared_cache_keys = get_shared_keys(self.model)
-
-        # Important Note! This is not very robust, do NOT rely on it to do high risky thing
-        self.is_moe_model = is_moe_model(self.model)
-
-        self._set_amp_dtype()
-        if is_act_quantize and self.amp_dtype == torch.float16:
-            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
-            self.amp_dtype = torch.bfloat16
-            if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
-                self.model = self.model.to(torch.bfloat16)
-        else:
-            logger.info(f"using {self.model.dtype} for quantization tuning")
-
+        Must be called after formats are resolved (list[OutputFormat]) and before
+        BaseQuantizers.post_init() so that configure_layer_config() operates on the
+        final model structure (post update_module).  Eliminates the need for a
+        subsequent refresh_quantizer_for_initialized_model() call.
+        """
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
+        self._patch_custom_moe_modules()
         self.model = update_module(
             self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
         )
@@ -199,7 +244,6 @@ class ModelContext(BaseContext):
             self.model = self.model.to(self.amp_dtype)
 
         self._init_model = True
-
         self._is_initialized = True
 
     def replace_forward(self, register_hook):

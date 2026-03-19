@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+from dataclasses import dataclass
 from enum import Enum
-from typing import Union
+from typing import ClassVar, Union
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -37,51 +38,64 @@ class BackendDataType(str, Enum):
     FP8 = "fp8"
 
 
+@dataclass(kw_only=True)
 class QuantizationConfig(AlgConfig):
-    _alg_cls: str = None
+    _alg_cls: ClassVar[str] = None
 
-    def __init__(
-        self,
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        *,
-        # quantization args
-        bits: int = None,
-        group_size: int = None,
-        sym: bool = None,
-        data_type: str = None,
-        act_bits: int = None,
-        act_group_size: int = None,
-        act_sym: bool = None,
-        act_data_type: str = None,
-        act_dynamic: bool = None,
-        super_bits: int = None,
-        super_group_size: int = None,
-        scale_dtype: str = None,
-        ignore_layers: str = "",
-        quant_lm_head: bool = False,
-        to_quant_block_names: Union[str, list, None] = None,
-    ):
+    # quantization args
+    scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16"
+    layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None
+    bits: int = None
+    group_size: int = None
+    sym: bool = None
+    data_type: str = None
+    act_bits: int = None
+    act_group_size: int = None
+    act_sym: bool = None
+    act_data_type: str = None
+    act_dynamic: bool = None
+    super_bits: int = None
+    super_group_size: int = None
+    scale_dtype: str = None
+    ignore_layers: str = ""
+    quant_lm_head: bool = False
+    to_quant_block_names: Union[str, list, None] = None
 
-        self.scheme = scheme
-        self.layer_config = layer_config
+    def __post_init__(self):
+        # Resolve scheme attributes early so properties (is_act_nv_fp, is_wfp8afp8, etc.)
+        # work correctly at construction time without waiting for post_init().
+        self._early_resolve_scheme()
 
-        self.bits = bits
-        self.group_size = group_size
-        self.sym = sym
-        self.data_type = data_type
-        self.act_bits = act_bits
-        self.act_group_size = act_group_size
-        self.act_sym = act_sym
-        self.act_data_type = act_data_type
-        self.act_dynamic = act_dynamic
-        self.super_bits = super_bits
-        self.super_group_size = super_group_size
+    def _early_resolve_scheme(self) -> None:
+        """Resolve scheme attributes early so properties work from init time.
 
-        self.scale_dtype = scale_dtype
-        self.ignore_layers = ignore_layers
-        self.quant_lm_head = quant_lm_head
-        self.to_quant_block_names = to_quant_block_names
+        Both entry.py routing (needs_act_calib) and BaseCompressor._adjust_torch_compile
+        need resolved attributes (act_data_type, data_type, is_act_nv_fp, ...) before
+        BaseQuantizers.post_init() runs (which is deferred until quantize() / after model
+        loading).  This method performs the same _parse_scheme() call eagerly so those
+        attributes are available from construction time.
+
+        AutoScheme is left deferred because it requires model information to select its
+        concrete option.
+        """
+        if isinstance(self.scheme, AutoScheme):
+            # AutoScheme needs model info for option selection — defer to post_init
+            return
+
+        # Collect fields that exist in both QuantizationScheme and QuantizationConfig
+        # where the user explicitly provided a value (non-None). These override the
+        # scheme's built-in defaults so that e.g. RTNConfig(scheme="NVFP4", bits=8)
+        # expands NVFP4 but keeps bits=8 instead of the scheme's default bits=4.
+        user_scheme_overrides = {
+            k: getattr(self, k) for k in QuantizationScheme.get_attributes() if getattr(self, k, None) is not None
+        }
+
+        try:
+            _, _, final_attrs = _parse_scheme(self.scheme, user_scheme_overrides)
+            vars(self).update(final_attrs)
+        except Exception:
+            # Silently ignore failures — post_init() will do the authoritative resolution
+            pass
 
     def check_config(self) -> None:
         """Checks if the configurations are valid.
@@ -153,11 +167,11 @@ class QuantizationConfig(AlgConfig):
         return False
 
     @property
-    def is_standard_fp(self, act=False):
+    def is_standard_fp(self):
         return BackendDataType.STANDARD_FP in self.data_type and not self.is_mx_fp and not self.is_nv_fp
 
     @property
-    def is_act_standard_fp(self, act=False):
+    def is_act_standard_fp(self):
         return BackendDataType.STANDARD_FP in self.act_data_type and not self.is_act_mx_fp and not self.is_act_nv_fp
 
     @property
@@ -173,8 +187,8 @@ class QuantizationConfig(AlgConfig):
         if (
             ("fp8" in self.act_data_type or ("fp" in self.act_data_type and self.act_bits == 8))
             and ("fp8" in self.data_type or ("fp" in self.data_type and self.bits == 8))
-            and self.is_standard_fp(act=True)
-            and self.is_standard_fp(act=False)
+            and self.is_act_standard_fp
+            and self.is_standard_fp
         ):
             return True
         else:

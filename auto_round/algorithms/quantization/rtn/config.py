@@ -32,6 +32,8 @@ class RTNConfig(QuantizationConfig):
         batch_size: int = 8,
         **kwargs,
     ):
+        # pop before super().__init__ so it doesn't leak into QuantizationConfig as an unknown kwarg
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         super().__init__(scheme=scheme, layer_config=layer_config, **kwargs)
 
         self.seqlen = seqlen
@@ -44,7 +46,6 @@ class RTNConfig(QuantizationConfig):
 
         # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
         # To avoid None issue, we keep a copy though it's a little ugly
-        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         if enable_opt_rtn and disable_opt_rtn:
             raise ValueError("`enable_opt_rtn` and `disable_opt_rtn` are mutually exclusive; " "only one can be set.")
         if enable_opt_rtn:

@@ -218,18 +218,29 @@ class ARQuantizer(BaseQuantizers):
 
     def quantize_block(
         self,
-        block: torch.nn.Module,
+        block_name: Union[str, list[str]],
         input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
         q_input: Union[torch.Tensor, dict, None] = None,
         auto_offload=True,
         **kwargs,
     ):
+        """Quantize a block (or multiple blocks fused as WrapperMultiblock).
+
+        Args:
+            block_name: A single block name, or a list of names when nblocks > 1.
+                The module(s) are retrieved internally via get_module().
+        """
+        if isinstance(block_name, list):
+            from auto_round.wrapper import WrapperMultiblock
+
+            modules = [get_module(self.model, n) for n in block_name]
+            block = WrapperMultiblock(modules)
+        else:
+            block = get_module(self.model, block_name)
         q_outputs, output = self._quantize_block(
             block, input_ids, input_others, q_input=q_input, auto_offload=auto_offload, **kwargs
         )
-        if hasattr(block, "config"):
-            del block.config
         if self.compress_context.is_immediate_saving:
             for n, tmp_m in block.named_modules():
                 if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
@@ -518,7 +529,7 @@ class ARQuantizer(BaseQuantizers):
             return None, output
 
     def quantize_layer(
-        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs
+        self, layer_name: str, input_ids: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs
     ):
         """Quantize a specific layer of the model using the provided inputs.
 
@@ -537,8 +548,8 @@ class ARQuantizer(BaseQuantizers):
             device = layer.tuning_device
 
         layer = layer.to(device)
-        for i in range(len(inputs)):
-            inputs[i] = inputs[i].to(layer.weight.dtype)
+        for i in range(len(input_ids)):
+            input_ids[i] = input_ids[i].to(layer.weight.dtype)
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
@@ -549,7 +560,7 @@ class ARQuantizer(BaseQuantizers):
             self.config.static_kv_dtype,
             self.config.static_attention_dtype,
         ):
-            tmp_inputs = q_inputs if q_inputs is not None else inputs
+            tmp_inputs = q_inputs if q_inputs is not None else input_ids
             hook_handles = self._register_act_max_hook(layer)
             with torch.no_grad():
                 for input in tmp_inputs:
@@ -592,7 +603,7 @@ class ARQuantizer(BaseQuantizers):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-        nsamples = len(inputs)
+        nsamples = len(input_ids)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         best_params = None
@@ -614,7 +625,7 @@ class ARQuantizer(BaseQuantizers):
             if q_inputs is not None:
                 num_elm = self._get_current_num_elm(q_inputs, whole_indices)
             else:
-                num_elm = self._get_current_num_elm(inputs, whole_indices)
+                num_elm = self._get_current_num_elm(input_ids, whole_indices)
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
@@ -629,10 +640,10 @@ class ARQuantizer(BaseQuantizers):
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
-                    org_input = [inputs[i] for i in indices]
+                    org_input = [input_ids[i] for i in indices]
                     org_input = torch.cat(org_input, dim=0).to(device)
                 else:
-                    current_input = [inputs[i] for i in indices]
+                    current_input = [input_ids[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
                 with torch.no_grad():
@@ -810,7 +821,12 @@ class ARQuantizer(BaseQuantizers):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = self._sampling_inputs(
-                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
+                input_ids,
+                input_others,
+                indices,
+                self.seqlen,
+                self.batch_dim,
+                share_cache_keys=self.model_context.shared_cache_keys,
             )
             if isinstance(tmp_input_ids, dict):
                 hidden_states = tmp_input_ids.pop("hidden_states")

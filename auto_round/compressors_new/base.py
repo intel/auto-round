@@ -30,6 +30,8 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     compile_func,
+    convert_dtype_str2torch,
+    extract_block_names_to_str,
     is_debug_mode,
     is_hpex_available,
     memory_monitor,
@@ -118,6 +120,7 @@ class BaseCompressor(object):
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
+        quant_nontext_module = kwargs.pop("quant_nontext_module", False)
 
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         # Attention static dtype
@@ -169,6 +172,10 @@ class BaseCompressor(object):
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
 
+        # Reset both context singletons before creating fresh instances so that
+        # consecutive AutoRound creations don't inherit stale config from earlier ones.
+        CompressContext.reset_context()
+        ModelContext.reset_context()
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -179,7 +186,6 @@ class BaseCompressor(object):
             is_immediate_saving=self.is_immediate_saving,
             formats=self.formats,
         )
-        ModelContext.reset_context()
         self.model_context = ModelContext(
             model,
             tokenizer=tokenizer,
@@ -189,19 +195,50 @@ class BaseCompressor(object):
             amp=amp,
             need_calib=self.need_calib,
             device=self.compress_context.device,
+            formats=self.formats,
+            is_act_quantize=self.quantize_config.is_act_quantize,
+            quant_nontext_module=quant_nontext_module,
         )
         self.shard_writer = None
+
+        from auto_round.schemes import get_gguf_scheme
+
+        qc = self.quantize_config
+        if qc.scale_dtype is None:
+            qc.scale_dtype = convert_dtype_str2torch("fp32" if get_gguf_scheme(qc.scheme) else "fp16")
+
+        # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
+        # reflects the correct value immediately after construction (not only after post_init).
+        self._adjust_torch_compile(enable_torch_compile)
+        self.compress_context.enable_torch_compile = self.enable_torch_compile
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
         self.enable_torch_compile = enable_torch_compile
+
+        # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
+        cfg = self.quantize_config
+        raw_scheme = cfg.scheme if isinstance(cfg.scheme, str) else ""
+        raw_dt = (cfg.data_type or "").lower()
+        raw_adt = (cfg.act_data_type or "").lower()
+        raw_scheme_upper = raw_scheme.upper()
+
+        is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
+        is_raw_fp8 = (
+            "fp8" in raw_dt
+            or "fp8" in raw_adt
+            or "FP8" in raw_scheme_upper
+            or ("fp" in raw_dt and getattr(cfg, "bits", 16) == 8)
+            or ("fp" in raw_adt and getattr(cfg, "act_bits", 16) == 8)
+        )
+
+        act_bits = getattr(cfg, "act_bits", 16) or 16
         if (
             not self.enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
-            and self.quantize_config.act_bits > 8
+            and act_bits > 8
             and not is_debug_mode()
-            and "fp8" not in self.quantize_config.data_type
-            and "fp8" not in self.quantize_config.act_data_type
+            and not is_raw_fp8
             and self.need_calib
         ):
             logger.info(
@@ -210,37 +247,34 @@ class BaseCompressor(object):
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
         # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and self.quantize_config.is_wfp8afp8 and not is_hpex_available():
+        if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
         # TODO: fix https://github.com/intel/auto-round/issues/1109
-        if self.enable_torch_compile and self.quantize_config.is_act_nv_fp:
+        if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def post_init(self):
+        assert self.model_context._model_loaded, "model should be loaded in ModelContext.__init__"
 
-        self.model_context._load_model()
-        assert self.model_context._model_loaded, "should load model first"
+        # 1. Resolve formats (scale_dtype was defaulted early in __init__)
+        if isinstance(self.formats, str):
+            self.formats = get_formats(self.formats, self)
+        if self.formats is not None:
+            self.compress_context.formats = self.formats
+            self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+
+        self.model_context.apply_patches(self.formats)
 
         self.quantizer = BaseQuantizers.from_config(self.quantize_config)
         self.quantizer.post_init()
         self.wrapper_block = wrapper_block
 
-        # TODO: add other algs here when they are ready
-        # self.other_alg = OtherAlg.from_config(self.other_alg_config) if self.other_alg_config is not None else None
-        # self.other_alg.post_init() if self.other_alg is not None else None
-
-        # check and update the format based on the current configuration
-        if isinstance(self.formats, str):
-            self.formats = get_formats(self.formats, self)
-        self.compress_context.formats = self.formats
-        self.shard_writer = ShardWriter(self.model_context.model, bits=8)
-
-        # Set device, must place after model loading
+        # Set device
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
 
-        # after setting iters
+        # Re-check torch compile with fully resolved config attrs
         self._adjust_torch_compile(self.enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
@@ -280,8 +314,31 @@ class BaseCompressor(object):
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+    @property
+    def optimizer(self):
+        """Return the actual optimizer class, converting string to class for backward compat.
+
+        Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).
+        New arch stores the optimizer name as a string in ``quantize_config.optimizer``.
+        This property converts it so that ``ar.optimizer == torch.optim.AdamW`` works.
+        """
+        if self.quantize_config is None:
+            return None
+        opt = getattr(self.quantize_config, "optimizer", None)
+        if opt is None:
+            # Default to AdamW when enable_adam=True and no explicit optimizer was set
+            if getattr(self.quantize_config, "enable_adam", False):
+                return torch.optim.AdamW
+            return None
+        if isinstance(opt, str):
+            return getattr(torch.optim, opt, None)
+        return opt
+
     def _adjust_immediate_packing_and_saving(self):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        if self.formats is None:
+            return
 
         formats = getattr(self, "formats", [])
         if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
@@ -380,15 +437,16 @@ class BaseCompressor(object):
             object: The compressed model object.
         """
         self.output_dir = output_dir
+        if output_dir is not None:
+            self.compress_context.output_dir = output_dir
         if format is not None:
             if isinstance(format, str) and getattr(self, "formats", None) is None:
                 logger.warning(
                     f"save_quantized with format is deprecated and will be deleted in auto_round version 1.0."
                     f" Please use Compressor(format='{format}' instead)."
                 )
-                formats = get_formats(format, self)
-                if not hasattr(self, "formats"):
-                    self.formats = formats
+                self.formats = get_formats(format, self)
+                self.compress_context.formats = self.formats
 
         if not self.model_context.quantized:
             logger.warning("please run autoround.quantize first")
@@ -408,6 +466,8 @@ class BaseCompressor(object):
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
+            if serialization_dict.get("to_quant_block_names") is None and self.quantizer.quant_block_list:
+                serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quantizer.quant_block_list)
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
@@ -458,15 +518,14 @@ class BaseCompressor(object):
         self.compress_context.output_dir = output_dir
 
         # check and update the format based on the current configuration
-        if format and self.formats is not None:
+        if format and self.formats is None:
             logger.warning(
                 f"quantize_and_save with format is deprecated and will be deleted in auto_round version 1.0."
                 f" Please use Compressor(format='{format}' instead)."
             )
             self.formats = format
         if self.formats is None:
-            if self.formats is None:
-                logger.info("format is not set, using default auto_round format.")
+            logger.info("format is not set, using default auto_round format.")
             self.formats = "auto_round"
 
         # If multiple formats are specified, enforce inplace=False
