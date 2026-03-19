@@ -195,6 +195,8 @@ def _get_glm_image_multimodal_block(model, quant_vision=False):
                 [f"model.language_model.layers.{i}" for i in range(len(model.model.language_model.layers))]
             )
 
+    return block_names
+
 
 SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block,
