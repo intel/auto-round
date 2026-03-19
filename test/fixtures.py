@@ -311,6 +311,7 @@ def tiny_qwen2_5_omni():
         config.talker_config.layer_types = config.talker_config.layer_types[:1]
 
     model = Qwen2_5OmniForConditionalGeneration(config)
+    model.config.name_or_path = None
     yield model, tokenizer, processor
 
 
@@ -347,6 +348,7 @@ def tiny_qwen3_omni_moe():
             config.talker_config.num_hidden_layers = 1
 
     model = Qwen3OmniMoeForConditionalGeneration(config)
+    model.config.name_or_path = None
     yield model, tokenizer, processor
 
 
