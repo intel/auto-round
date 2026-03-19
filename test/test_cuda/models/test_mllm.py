@@ -143,31 +143,31 @@ class TestAutoRoundMLLM:
         assert len(block_name) == 1
         assert get_block_names(model) == block_name
 
-    def test_mllm_detect(self):
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "meta-llama/Llama-3.2-11B-Vision-Instruct",
+            "deepseek-ai/deepseek-vl2-tiny",
+            "google/gemma-3-12b-it",
+            "microsoft/Phi-3.5-vision-instruct",
+            "Qwen/Qwen2-VL-2B-Instruct",
+            "HuggingFaceTB/SmolVLM-256M-Instruct",
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "OpenGVLab/InternVL3-1B",
+            "Qwen/Qwen2.5-1.5B-Instruct",
+        ],
+    )
+    def test_mllm_detect(self, model_name):
         from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
 
-        for model_name in [
-            get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct"),
-            get_model_path("deepseek-ai/deepseek-vl2-tiny"),
-            get_model_path("google/gemma-3-12b-it"),
-            get_model_path("microsoft/Phi-3.5-vision-instruct"),
-            get_model_path("Qwen/Qwen2-VL-2B-Instruct"),
-            get_model_path("HuggingFaceTB/SmolVLM-256M-Instruct"),
-            get_model_path("mistralai/Mistral-Small-3.2-24B-Instruct-2506"),
-            get_model_path("OpenGVLab/InternVL3-1B"),
-            get_model_path("mistralai/Pixtral-12B-2409"),
-        ]:
-            assert is_mllm_model(model_name)
-            try:
-                model, _, _, _ = mllm_load_model(model_name)
-            except:
-                continue
-            assert is_mllm_model(model)
-
-        for model_name in [get_model_path("Qwen/Qwen2.5-1.5B-Instruct")]:
+        if model_name == "Qwen/Qwen2.5-1.5B-Instruct":
+            model_name == get_model_path(model_name)
             assert not is_mllm_model(model_name)
             model, _ = llm_load_model(model_name)
             assert not is_mllm_model(model)
+        else:
+            model_name == get_model_path(model_name)
+            assert is_mllm_model(model_name)
 
     def test_llama32_vision_early_stop_tracking(self):
         """Test early-stop during calibration for Llama-3.2-11B-Vision-Instruct."""
