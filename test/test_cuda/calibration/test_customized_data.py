@@ -12,12 +12,16 @@ from ...helpers import get_model_path
 
 
 class TestCustomizedData:
-    save_dir = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
         yield
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_list_batch_encoding(self, tiny_qwen_model_path):

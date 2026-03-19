@@ -17,17 +17,15 @@ from ...helpers import get_captions_dataset_path, get_model_path, transformers_v
 class TestAutoRound:
     model_name = get_model_path("black-forest-labs/FLUX.1-dev")
 
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_diffusion_rtn(self):

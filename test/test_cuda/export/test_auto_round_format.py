@@ -19,7 +19,6 @@ from ...helpers import eval_generated_prompt, evaluate_accuracy, get_model_path,
 
 
 class TestAutoRound:
-    save_dir = "./saved"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -31,8 +30,13 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_greater_than_050
     @pytest.mark.parametrize("bits", [2, 3, 4, 8])
@@ -58,7 +62,6 @@ class TestAutoRound:
                 quantized_model_path, device_map="cuda:0", trust_remote_code=True
             )
             assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
-            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_autogptq
@@ -78,7 +81,6 @@ class TestAutoRound:
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         eval_generated_prompt(quantized_model_path)
         evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_awq
@@ -113,7 +115,6 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         eval_generated_prompt(model, tokenizer)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_greater_than_050
@@ -140,7 +141,7 @@ class TestAutoRound:
             seqlen=2,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
@@ -176,8 +177,6 @@ class TestAutoRound:
         print(res)
         assert "!!!" not in res
 
-        shutil.rmtree("./saved", ignore_errors=True)
-
     @pytest.mark.skip_ci(reason="IPEX is deprecated.")
     @require_awq
     @require_ipex
@@ -193,7 +192,7 @@ class TestAutoRound:
             seqlen=2,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
@@ -215,8 +214,6 @@ class TestAutoRound:
         print(res)
         assert "!!!" not in res
 
-        shutil.rmtree("./saved", ignore_errors=True)
-
     def test_fp8_block_fp8_format(self):
         model_name = "Qwen/Qwen3-0.6B"
 
@@ -237,4 +234,3 @@ class TestAutoRound:
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
         if is_cuda_support_fp8():
             eval_generated_prompt(quantized_model_path, device="cuda")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)

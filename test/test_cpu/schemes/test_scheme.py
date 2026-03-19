@@ -11,13 +11,14 @@ from ...helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_na
 
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.save_folder = "./saved"
+    @pytest.fixture(autouse=True)
+    def setup_save_folder(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_gguf(self, tiny_qwen_model_path, dataloader):
@@ -31,7 +32,6 @@ class TestAutoRound:
         )
         ar.quantize_and_save(self.save_folder, format="gguf:q4_k_m")
         assert ar.bits == 4
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_w4a16(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
@@ -65,8 +65,6 @@ class TestAutoRound:
         model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with W4A16_MIXED scheme on MoE"
 
-        shutil.rmtree(self.save_folder, ignore_errors=True)
-
     def test_w4a16_mixed_mllm(self, tiny_qwen_2_5_vl_model_path, dataloader):
 
         ar = AutoRound(
@@ -86,7 +84,6 @@ class TestAutoRound:
         assert ar.bits == 4
         assert ar.model.model.language_model.layers[0].self_attn.q_proj.bits == 16
         assert ar.model.model.visual.blocks[0].attn.qkv.bits == 16
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
@@ -104,7 +101,6 @@ class TestAutoRound:
         ar.quantize_and_save()
         model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with MXFP4 scheme"
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_vlm(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
@@ -122,7 +118,6 @@ class TestAutoRound:
         ar.quantize_and_save(self.save_folder)
         model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with NVFP4 scheme"
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @pytest.mark.parametrize(
         "scheme", ["W8A16", "MXFP8", "FPW8A16", "FP8_BLOCK", "FP8_STATIC", "GGUF:Q2_K_S", "GGUF:Q4_K_M"]
@@ -132,7 +127,6 @@ class TestAutoRound:
         print(f"scheme={scheme}")
         ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         ar.quantize_and_save(self.save_folder)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_scheme_in_layer_config(self, dataloader):
         model = get_tiny_model(opt_name_or_path, num_layers=5)
@@ -225,4 +219,3 @@ class TestAutoRound:
         ar.quantize_and_save(self.save_folder)
         model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with FP8_STATIC scheme"
-        shutil.rmtree(self.save_folder, ignore_errors=True)

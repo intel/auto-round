@@ -13,8 +13,13 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class TestAutoRound:
-    save_dir = "./saved"
     model_name = opt_name_or_path
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -26,7 +31,6 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def _run_sglang_inference(self, model_path: Path):
@@ -57,8 +61,6 @@ class TestAutoRound:
         print(generated_text)
 
         assert "!!!" not in generated_text
-
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_mixed_ar_format_sglang(self, dataloader):
         layer_config = {

@@ -14,7 +14,6 @@ from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, tr
 
 
 class TestAutoRound:
-    save_dir = "./saved"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -26,8 +25,13 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_optimum
     def test_autogptq_format(self, tiny_opt_model_path):
@@ -41,12 +45,11 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         autoround.quantize()
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         assert model is not None, "Loaded model should not be None."
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")  # skip this test in CI
     def test_autogptq_format_qsave_ignore_layers(self):
@@ -67,7 +70,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
             layer_config=layer_config,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
@@ -79,4 +82,3 @@ class TestAutoRound:
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
-        shutil.rmtree("./saved", ignore_errors=True)

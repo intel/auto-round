@@ -59,7 +59,7 @@ def test_auto_round(model):
             assert "Paris" in generated_text
 
 
-def test_mixed_autoround_format_vllm(tiny_opt_model_path, dataloader):
+def test_mixed_autoround_format_vllm(tiny_opt_model_path, dataloader, tmp_path):
     layer_config = {
         "self_attn": {"bits": 8},
         "lm_head": {"bits": 16},
@@ -72,7 +72,7 @@ def test_mixed_autoround_format_vllm(tiny_opt_model_path, dataloader):
         layer_config=layer_config,
     )
     autoround.quantize()
-    quantized_model_path = "./saved"
+    quantized_model_path = str(tmp_path / "saved")
     autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
 
     # verify loading.
@@ -82,10 +82,9 @@ def test_mixed_autoround_format_vllm(tiny_opt_model_path, dataloader):
         tensor_parallel_size=1,
         allow_deprecated_quantization=True,
     )
-    shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
-def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader):
+def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader, tmp_path):
     layer_config = {
         "self_attn": {"bits": 16, "act_bits": 16},
         "lm_head": {"bits": 16, "act_bits": 16},
@@ -98,7 +97,7 @@ def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader):
         disable_opt_rtn=True,
         layer_config=layer_config,
     )
-    quantized_model_path = "./saved"
+    quantized_model_path = str(tmp_path / "saved")
     autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
 
     # verify loading.
@@ -108,7 +107,6 @@ def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader):
         tensor_parallel_size=1,
         allow_deprecated_quantization=True,
     )
-    shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 
 # ================ Test Evaluation function ===============

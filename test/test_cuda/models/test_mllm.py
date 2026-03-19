@@ -38,13 +38,14 @@ class VisionDataLoader:
 
 @pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRoundMLLM:
-    @classmethod
-    def setup_class(self):
-        self.save_dir = "./saved"
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     # def test_vision_generation(self):
@@ -123,10 +124,8 @@ class TestAutoRoundMLLM:
         quantized_model_path = self.save_dir
         autoround.save_quantized(quantized_model_path, format="auto_round", inplace=False)
         self.qwen_inference(quantized_model_path)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
         autoround.save_quantized(quantized_model_path, format="auto_gptq", inplace=False)
         self.qwen_inference(quantized_model_path)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_vlm_env
     def test_mm_block_name(self):

@@ -11,7 +11,6 @@ from ...helpers import eval_generated_prompt, get_model_path, is_cuda_support_fp
 
 
 class TestAutoRound:
-    save_dir = "./saved"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -23,8 +22,13 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
     def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
@@ -53,7 +57,6 @@ class TestAutoRound:
             and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
     def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
@@ -83,7 +86,6 @@ class TestAutoRound:
             quantization_config["format"] == "nvfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
     def test_fp8_block_llm_compressor_format(self, tiny_qwen_model_path, dataloader):
@@ -105,4 +107,3 @@ class TestAutoRound:
         assert compressed_model.config.quantization_config["quant_method"] == "compressed-tensors"
         if is_cuda_support_fp8():
             eval_generated_prompt(quantized_model_path, device="cuda")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)

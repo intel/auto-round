@@ -14,19 +14,16 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 class TestAlgExt:
-    save_folder = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
@@ -59,7 +56,6 @@ class TestAlgExt:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         evaluate_accuracy(model, tokenizer, threshold=0.22, batch_size=64)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all case in CI")
     def test_cli(self, tiny_opt_model_path):

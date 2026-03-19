@@ -19,9 +19,14 @@ class TestAutoRoundXPU:
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
         pass
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gptq_format(self, dataloader):
         model_name = get_model_path("facebook/opt-125m")
@@ -41,7 +46,7 @@ class TestAutoRoundXPU:
             seqlen=2,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="auto")
@@ -73,7 +78,7 @@ class TestAutoRoundXPU:
             seqlen=2,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
         quantization_config = AutoRoundConfig(backend="auto")

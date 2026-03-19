@@ -18,7 +18,6 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 class TestAutoRound:
-    save_dir = "./saved"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -30,8 +29,13 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gguf
     def test_gguf_format(self, tiny_qwen_model_path, dataloader):
@@ -47,9 +51,8 @@ class TestAutoRound:
             dataset=dataloader,
         )
         autoround.quantize()
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_gguf
     def test_q4_0_accuracy(self):
@@ -59,7 +62,7 @@ class TestAutoRound:
             model_name, bits=bits, group_size=group_size, sym=sym, iters=0, data_type="int", disable_opt_rtn=True
         )
         autoround.quantize()
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
 
@@ -69,8 +72,6 @@ class TestAutoRound:
         eval_generated_prompt(model, autoround.tokenizer)
 
         evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
-
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
     @require_gguf
@@ -90,14 +91,13 @@ class TestAutoRound:
             data_type="int_asym_dq",
         )
         autoround.quantize()
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q2_k_s")
         gguf_file = os.listdir(quantized_model_path)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         result = generate_prompt(model, autoround.tokenizer)
         print(result)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
@@ -115,7 +115,6 @@ class TestAutoRound:
                 ar.quantize_and_save(output_dir=self.save_dir, format=gguf_format)
 
                 shutil.rmtree(tiny_model_path, ignore_errors=True)
-                shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test special models in CI")
     @require_gguf
@@ -132,12 +131,11 @@ class TestAutoRound:
             nsamples=8,
             disable_opt_rtn=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         file_name = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
         assert abs(file_size - 307) < 5.0
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     @require_gguf
@@ -156,18 +154,17 @@ class TestAutoRound:
             disable_opt_rtn=True,
             quant_nontext_module=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
-        assert "mmproj-model.gguf" in os.listdir("./saved")
-        for file in os.listdir("./saved"):
-            print(f"{file}: {os.path.getsize(os.path.join('./saved', file)) / 1024**2} MB")
-            file_size = os.path.getsize(os.path.join("./saved", file)) / 1024**2
+        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
+        for file in os.listdir(self.save_dir):
+            print(f"{file}: {os.path.getsize(os.path.join(self.save_dir, file)) / 1024**2} MB")
+            file_size = os.path.getsize(os.path.join(self.save_dir, file)) / 1024**2
             if "mmproj-model.gguf" in file:
                 assert abs(file_size - 75) < 5.0
             else:
                 assert abs(file_size - 690) < 5.0
 
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
@@ -186,7 +183,7 @@ class TestAutoRound:
             seqlen=16,
             disable_opt_rtn=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
         gguf_file = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
@@ -200,7 +197,6 @@ class TestAutoRound:
         assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
 
         shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested for CI")
     def test_gguf_baseline(self):
@@ -218,7 +214,6 @@ class TestAutoRound:
             super_bits=6,
             disable_opt_rtn=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
         eval_generated_prompt(quantized_model_path)
-        shutil.rmtree("./saved", ignore_errors=True)

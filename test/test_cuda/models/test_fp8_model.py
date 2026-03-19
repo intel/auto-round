@@ -18,19 +18,16 @@ from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, get_t
 
 
 class TestAutoRound:
-    save_dir = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_small_model_rtn_generation(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
@@ -39,7 +36,6 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         generate_prompt(model, tokenizer)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_gguf_imatrix(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0)
@@ -63,7 +59,6 @@ class TestAutoRound:
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.25)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_small_model_iters1(self, mock_fp8_capable_device):
@@ -71,7 +66,6 @@ class TestAutoRound:
         ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.25)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_medium_model_rtn(self, mock_fp8_capable_device):
@@ -79,7 +73,6 @@ class TestAutoRound:
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.33)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_medium_model_rtn_with_lm_head(self, mock_fp8_capable_device):
@@ -88,7 +81,6 @@ class TestAutoRound:
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.33)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_fp8_model_gguf_q4(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         from llama_cpp import Llama
@@ -98,10 +90,9 @@ class TestAutoRound:
         for file in os.listdir(self.save_dir):
             if file.endswith(".gguf"):
                 gguf_file = file
-        llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
+        llm = Llama(f"{self.save_dir}/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
     def test_fp8_model_gguf_q3(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
@@ -112,10 +103,9 @@ class TestAutoRound:
         for file in os.listdir(self.save_dir):
             if file.endswith(".gguf"):
                 gguf_file = file
-        llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
+        llm = Llama(f"{self.save_dir}/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
@@ -126,7 +116,6 @@ class TestAutoRound:
         ar.quantize_and_save(output_dir=self.save_dir)
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
         assert model is not None, f"Failed to load model for scheme {scheme}"
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
 
 def test_qwen3_fp8_moe_mxfp(tiny_fp8_qwen_moe_model_path, mock_fp8_capable_device):

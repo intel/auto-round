@@ -12,25 +12,28 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class TestLocalCalibDataset:
-    @classmethod
-    def setup_class(self):
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        os.makedirs(self.save_dir, exist_ok=True)
+
         json_data = [{"text": "awefdsfsddfd"}, {"text": "fdfdfsdfdfdfd"}, {"text": "dfdsfsdfdfdfdf"}]
-        os.makedirs("./saved", exist_ok=True)
-        self.json_file = "./saved/tmp.json"
+        self.json_file = os.path.join(self.save_dir, "tmp.json")
         with open(self.json_file, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
 
         jsonl_data = [{"text": "哈哈，開心點"}, {"text": "hello world"}]
-        os.makedirs("./saved", exist_ok=True)
-        self.jsonl_file = "./saved/tmp.jsonl"
+        self.jsonl_file = os.path.join(self.save_dir, "tmp.jsonl")
         with open(self.jsonl_file, "w") as jsonl_file:
             for item in jsonl_data:
                 json.dump(item, jsonl_file, ensure_ascii=False)
                 jsonl_file.write("\n")
 
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_json(self, tiny_opt_model_path):

@@ -13,19 +13,16 @@ from ...helpers import get_model_path, model_infer
 
 
 class TestAutoRoundAsym:
-    save_dir = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_asym_group_size_with_tuning(self, tiny_opt_model_path):
@@ -44,7 +41,6 @@ class TestAutoRoundAsym:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
     def test_asym_bits_with_tuning(self, tiny_opt_model_path):
@@ -63,7 +59,6 @@ class TestAutoRoundAsym:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
     def test_asym_format_with_tuning(self, tiny_opt_model_path):
@@ -82,4 +77,3 @@ class TestAutoRoundAsym:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
             model_infer(model, tokenizer)
-            shutil.rmtree(self.save_dir, ignore_errors=True)

@@ -18,8 +18,13 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 @pytest.mark.skip_ci(reason="multiple card test")
 class TestAutoRoundCli:
-    save_dir = "./saved"
     tasks = "lambada_openai"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -31,7 +36,6 @@ class TestAutoRoundCli:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @multi_card
@@ -59,7 +63,12 @@ class TestAutoRoundCli:
 
 @pytest.mark.skip_ci(reason="multiple card test")
 class TestAutoRound:
-    save_dir = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -71,7 +80,6 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("./tmp_autoround", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -86,7 +94,6 @@ class TestAutoRound:
         autoround.quantize()
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         evaluate_accuracy(self.save_dir, threshold=0.45, batch_size="auto")
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @multi_card
     def test_act_quantization(self, tiny_qwen_model_path):

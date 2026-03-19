@@ -10,8 +10,13 @@ from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundMarlinBackend:
-    save_dir = "./saved"
     model_name = get_model_path("facebook/opt-125m")
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -23,7 +28,6 @@ class TestAutoRoundMarlinBackend:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     # Keep one CI test for marlin backend and skip others to save time.
@@ -55,7 +59,6 @@ class TestAutoRoundMarlinBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")

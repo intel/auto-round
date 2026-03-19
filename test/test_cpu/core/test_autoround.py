@@ -25,11 +25,15 @@ class TestAutoRound:
         model_name = opt_name_or_path
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.save_folder = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_bits_setting(self, tiny_opt_model_path):
@@ -54,7 +58,6 @@ class TestAutoRound:
             amp=False,
         )
         autoround.quantize_and_save(self.save_folder, inplace=False, format="fake")
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_remove_whole_block(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -381,7 +384,6 @@ class TestAutoRound:
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         model_infer(model, tokenizer)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_embed_quant(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
@@ -434,7 +436,6 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=1)[0])
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_fallback_layers_regex_awq(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -470,7 +471,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_fallback_layers_regex_gptq(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -506,7 +506,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_fallback_layers_regex_round(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -542,7 +541,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_dequant_fp8_weight(self):
         from auto_round.utils.model import _dequant_fp8_linear_weight
@@ -737,7 +735,6 @@ class TestAutoRound:
             device_map="cpu",
         )
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_create_adam(self):
         model_name = qwen_name_or_path

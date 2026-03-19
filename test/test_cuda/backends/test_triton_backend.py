@@ -14,11 +14,15 @@ class TestAutoRoundTritonBackend:
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("facebook/opt-125m")
-        self.save_folder = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     # Keep 2 bits symmetric test for triton backend since it's a special configuration and we want to make sure it's working well.
@@ -42,7 +46,6 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.19, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -73,7 +76,6 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.34, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -114,8 +116,6 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
 
-        shutil.rmtree("./saved", ignore_errors=True)
-
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_greater_than_050
@@ -145,7 +145,6 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -182,4 +181,3 @@ class TestAutoRoundTritonBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)

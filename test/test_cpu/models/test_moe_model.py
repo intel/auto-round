@@ -41,9 +41,9 @@ def count_modules_by_type(model, target_module_name_or_class):
 
 
 @pytest.mark.parametrize("scheme", ["MXFP4", "MXFP8"])
-def test_gptoss(scheme, tiny_gpt_oss_model_path):
+def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     config = AutoConfig.from_pretrained(tiny_gpt_oss_model_path, trust_remote_code=True)
-    output_dir = "./saved"
+    output_dir = str(tmp_path / "saved")
     quantized_model = quantize_model(tiny_gpt_oss_model_path, output_dir, scheme, ignore_layers="self_attn,lm_head")
 
     # Ensure the quantized model is not None
@@ -74,8 +74,6 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path):
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
-    # clean the output directory after test
-    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 def test_llama4(tiny_llama4_model_path):

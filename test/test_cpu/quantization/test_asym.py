@@ -12,12 +12,14 @@ from ...helpers import get_model_path, model_infer
 
 
 class TestAutoRoundAsym:
-    save_folder = "./saved"
-
-    @pytest.fixture(autouse=True, scope="class")
-    def setup_and_teardown_class(self):
+    @pytest.fixture(autouse=True)
+    def setup_save_folder(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
         yield
         shutil.rmtree(self.save_folder, ignore_errors=True)
+
+    @classmethod
+    def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_asym_group_size(self, tiny_opt_model_path):
@@ -36,7 +38,6 @@ class TestAutoRoundAsym:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             model_infer(model, tokenizer)
-            shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_asym_bits(self, tiny_opt_model_path):
         for bits in [2, 8]:
@@ -54,7 +55,6 @@ class TestAutoRoundAsym:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             model_infer(model, tokenizer)
-            shutil.rmtree(self.save_folder, ignore_errors=True)
 
     # use parameters later
     def test_asym_format(self, tiny_opt_model_path):
@@ -80,4 +80,3 @@ class TestAutoRoundAsym:
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             model_infer(model, tokenizer)
-            shutil.rmtree(self.save_folder, ignore_errors=True)

@@ -1,5 +1,6 @@
 import shutil
 
+import pytest
 import torch
 
 from auto_round import AutoRound
@@ -11,12 +12,16 @@ class TestAutoRoundBlockFP:
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("Qwen/Qwen3-0.6B")
-        self.save_dir = "./saved"
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_fp8_block_fp8_format(self):
         model_name = self.model_name
@@ -38,4 +43,3 @@ class TestAutoRoundBlockFP:
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
         if is_cuda_support_fp8():
             eval_generated_prompt(quantized_model_path, device="cuda")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)

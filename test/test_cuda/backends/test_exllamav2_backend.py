@@ -13,7 +13,12 @@ from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 
 class TestAutoRoundexllamaBackend:
-    save_dir = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -25,7 +30,6 @@ class TestAutoRoundexllamaBackend:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     # keep one CI test for exllamav2 backend, since it's the only backend supporting 4bits asym quantization.
@@ -59,7 +63,6 @@ class TestAutoRoundexllamaBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -89,7 +92,6 @@ class TestAutoRoundexllamaBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -122,4 +124,3 @@ class TestAutoRoundexllamaBackend:
             model_infer(model, tokenizer)
             evaluate_accuracy(model, tokenizer, threshold=0.15, batch_size=64)
             torch.cuda.empty_cache()
-            shutil.rmtree(self.save_dir, ignore_errors=True)

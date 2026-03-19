@@ -12,13 +12,14 @@ from ...helpers import get_model_path
 
 
 class TestAutoRoundBlockFP:
-    @classmethod
-    def setup_class(self):
-        self.save_dir = "./saved"
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @classmethod
-    def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
+    def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_invalid_scheme(self, tiny_qwen_model_path):

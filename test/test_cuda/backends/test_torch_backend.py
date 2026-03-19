@@ -12,7 +12,11 @@ from ...helpers import evaluate_accuracy, get_model_path, model_infer
 
 class TestAutoRoundTorchBackend:
 
-    save_dir = "./saved"
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -24,7 +28,6 @@ class TestAutoRoundTorchBackend:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     # Keep one CI test for torch backend and skip others to save time.
@@ -57,7 +60,6 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -87,7 +89,6 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)
         torch.cuda.empty_cache()
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_autoround_3bit_asym_torch_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 3, 128, False
@@ -101,7 +102,7 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         autoround.quantize()
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:gptqmodel")
 
@@ -113,7 +114,6 @@ class TestAutoRoundTorchBackend:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree("./saved", ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Not necessary to test both symmetric and asymmetric for 3-bit quantization in CI")
     def test_autoround_3bit_sym_torch_format(self, tiny_opt_model_path, dataloader):
@@ -128,7 +128,7 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         autoround.quantize()
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
@@ -143,4 +143,3 @@ class TestAutoRoundTorchBackend:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree("./saved", ignore_errors=True)

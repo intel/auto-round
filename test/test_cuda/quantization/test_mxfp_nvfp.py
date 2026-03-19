@@ -79,19 +79,16 @@ def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):
 
 
 class TestAutoRound:
-    save_dir = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
@@ -112,7 +109,6 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
         print(model)
         assert model is not None, "Failed to load the quantized model."
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
@@ -129,7 +125,6 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -155,4 +150,3 @@ class TestAutoRound:
         from ...helpers import evaluate_accuracy
 
         evaluate_accuracy(model, tokenizer, threshold=0.49, batch_size=16, task="piqa", limit=10)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
