@@ -133,9 +133,6 @@ def get_quant_func(
     def pad_bits(data_type):
         return data_type + str(bits)
 
-    if enable_rtn:
-        dtype = "rtn_" + dtype
-
     if not disable_opt_rtn:
         opt_rtn_data_type = "opt_rtn_" + dtype
         data_types = [
