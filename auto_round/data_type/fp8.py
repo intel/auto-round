@@ -271,7 +271,7 @@ def quant_rtn_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=
     scale = max_tensor.float().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
-    tensor.div_(scale).add_(v).clamp_(info.min, info.max).to(torch.float8_e5m2)
+    tensor.div_(scale).add_(v).clamp_(info.min, info.max)
     qdq_res = tensor.to(torch.float8_e5m2).to(orig_dtype).mul_(scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     qdq_res = qdq_res.to(orig_dtype)
@@ -335,8 +335,8 @@ def quant_rtn_fp8_unit_scale(tensor, max_scale=1.0, tensor_max=None, group_size=
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     scale = torch.ones((1), device=tensor.device)
-    tensor.div_(scale).add_(v).clamp_(info.min, info.max).to(torch.float8_e4m3fn)
-    qdq_res = tensor.to(orig_dtype).mul_(scale)
+    tensor.div_(scale).add_(v).clamp_(info.min, info.max)
+    qdq_res = tensor.to(torch.float8_e4m3fn).to(orig_dtype).mul_(scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     qdq_res = qdq_res.to(orig_dtype)
     return qdq_res, scale, None
