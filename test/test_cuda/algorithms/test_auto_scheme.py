@@ -37,7 +37,7 @@ class TestAutoScheme:
     def test_auto_scheme_export_gguf(self, tiny_qwen_model_path):
         scheme = AutoScheme(avg_bits=3, options=("gguf:q2_k_s,gguf:q4_k_s"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        ar.quantize_and_save(self.save_dir)
+        ar.quantize()
 
     @pytest.mark.skip_ci(reason="not necessary to test all options")
     def test_gguf_k_1(self, tiny_qwen_model_path):
@@ -68,7 +68,7 @@ class TestAutoScheme:
         target_bits = 3
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model, tokenizer=tokenizer, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -97,7 +97,7 @@ class TestAutoScheme:
         target_bits = 5.0
         scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         for names in res:
             bits = []
@@ -126,7 +126,7 @@ class TestAutoScheme:
                 nsamples=1,
                 device_map=device_map,
             )
-            model, layer_config = ar.quantize_and_save(self.save_dir)
+            model, layer_config = ar.quantize()
             avg_bits, _ = compute_avg_bits_for_model(model)
             print(avg_bits)
             assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -139,7 +139,7 @@ class TestAutoScheme:
 
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -150,7 +150,7 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=target_bits, options=("NVFP4"), low_gpu_mem_usage=False, device_map="auto")
 
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -165,7 +165,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, device_map=device_map
         )
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -175,7 +175,7 @@ class TestAutoScheme:
         target_bits = 4.644
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -186,7 +186,7 @@ class TestAutoScheme:
         model_path = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
         ar = AutoRound(model=model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
@@ -198,7 +198,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, group_size=32
         )
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         for n, m in model.named_modules():
             if hasattr(m, "group_size"):
                 assert m.group_size == 32
@@ -215,7 +215,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=model_name, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, layer_config=user_layer_config
         )
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
         assert layer_config["model.decoder.layers.10.fc1"]["sym"] is False
         assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
@@ -233,7 +233,7 @@ class TestAutoScheme:
         ar = AutoRound(
             model=model_name, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, layer_config=user_layer_config
         )
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         assert layer_config["model.decoder.layers.10.fc1"]["bits"] == 8
         assert layer_config["model.decoder.layers.10.fc1"]["sym"] is False
         assert layer_config["model.decoder.layers.10.fc1"]["group_size"] == 32
@@ -251,7 +251,7 @@ class TestAutoScheme:
         ar = AutoRound(
             tiny_untied_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, quant_lm_head=True
         )
-        model, layer_config = ar.quantize_and_save(self.save_dir)
+        model, layer_config = ar.quantize()
         assert layer_config["lm_head"]["bits"] <= 8
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
@@ -263,7 +263,7 @@ class TestAutoScheme:
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
-        ar.quantize_and_save(self.save_dir)
+        ar.quantize()
         evaluate_accuracy(self.save_dir, threshold=0.25)
 
     @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
@@ -271,5 +271,5 @@ class TestAutoScheme:
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, enable_torch_compile=True)
-        ar.quantize_and_save(self.save_dir)
+        ar.quantize()
         evaluate_accuracy(self.save_dir, threshold=0.10)
