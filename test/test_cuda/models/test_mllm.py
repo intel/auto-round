@@ -161,12 +161,12 @@ class TestAutoRoundMLLM:
         from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
 
         if model_name == "Qwen/Qwen2.5-1.5B-Instruct":
-            model_name == get_model_path(model_name)
+            model_name = get_model_path(model_name)
             assert not is_mllm_model(model_name)
             model, _ = llm_load_model(model_name)
             assert not is_mllm_model(model)
         else:
-            model_name == get_model_path(model_name)
+            model_name = get_model_path(model_name)
             assert is_mllm_model(model_name)
 
     def test_llama32_vision_early_stop_tracking(self):
