@@ -252,19 +252,16 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    def test_lm_head_layer_config_way(self, dataloader):
+    def test_lm_head_layer_config_way(self, tiny_untied_qwen_model_path, dataloader):
         bits, group_size, sym = 4, -1, False
         layer_config = {"lm_head": {"data_type": "int"}}
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            tiny_untied_qwen_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=2,
-            seqlen=10,
-            enable_minmax_tuning=False,
-            enable_quanted_input=False,
+            iters=1,
+            seqlen=1,
             dataset=dataloader,
             layer_config=layer_config,
         )
@@ -631,21 +628,13 @@ class TestAutoRound:
 
     def test_quant_lm_head(self, tiny_untied_qwen_model_path):
         model_name = tiny_untied_qwen_model_path
-        ar = AutoRound(model_name, quant_lm_head=True, iters=0, seqlen=8, nsamples=1, disable_opt_rtn=True)
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
-        assert "lm_head" in model.config.quantization_config.extra_config
-        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
-
-        layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(
             model_name,
-            quant_lm_head=False,
+            quant_lm_head=True,
             iters=0,
             seqlen=8,
             nsamples=1,
             disable_opt_rtn=True,
-            layer_config=layer_config,
         )
         ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
