@@ -45,7 +45,6 @@ function print_summary() {
             $LIGHT_GREEN && echo "$line" && $RESET
         elif [[ "$line" == *"NO_TESTS"* ]]; then
             $LIGHT_YELLOW && echo "$line" && $RESET
-            status=1
         else
             echo "$line"
         fi

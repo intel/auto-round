@@ -8,3 +8,5 @@ numba
 lm_eval >= 0.4.10  # for transformers >= 5.0.0
 diffusers
 protobuf
+compressed-tensors==0.14.1a20260313 # temporary pin for llmcompressor
+transformers <= 5.0.0
