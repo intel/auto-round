@@ -45,6 +45,7 @@ from auto_round.schemes import (
 from auto_round.utils import (
     SUPPORTED_FORMATS,
     check_to_quantized,
+    compress_layer_names,
     copy_python_files_from_model_cache,
     find_matching_blocks,
     get_block_names,
@@ -149,6 +150,7 @@ def _check_divisible_by_32(ar):
         default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
     else:
         default_dict = asdict(ar.scheme)
+    skipped_layers = []
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
         for n, m in ar.model.named_modules():
             if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
@@ -159,7 +161,11 @@ def _check_divisible_by_32(ar):
                         continue
                     ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    logger.warning_once("some layers are skipped quantization (shape not divisible by 32).")
+                    skipped_layers.append(n)
+    compressed_skipped_layers = compress_layer_names(skipped_layers)
+    logger.warning_once(
+        f"some layers are skipped quantization (shape not divisible by 32): {compressed_skipped_layers}"
+    )
 
 
 class OutputFormat(ABC):

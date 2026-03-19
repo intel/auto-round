@@ -98,6 +98,8 @@ qwen_moe_name_or_path = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
 qwen_vl_name_or_path = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
 qwen_2_5_vl_name_or_path = get_model_path("Qwen/Qwen2.5-VL-3B-Instruct")
 gemma_name_or_path = get_model_path("benzart/gemma-2b-it-fine-tuning-for-code-test")
+qwen2_5_omni_name_or_path = get_model_path("Qwen/Qwen2.5-Omni-3B")
+qwen3_omni_name_or_path = get_model_path("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 
 
 # Slice model into tiny model for speedup

@@ -80,6 +80,7 @@ from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     compile_func,
+    compress_layer_names,
     convert_dtype_str2torch,
     convert_module_to_hp_if_necessary,
     detect_device,
@@ -100,6 +101,7 @@ from auto_round.utils import (
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
+    normalize_no_split_modules,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -1629,8 +1631,9 @@ class BaseCompressor(object):
         is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+            compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
-                logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+                logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
                 tmp_str = ",".join(predefined_ignore_layers)
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str
@@ -1884,7 +1887,8 @@ class BaseCompressor(object):
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
         if len(unquantized_layers) > 0:
-            summary_info += f",  {unquantized_layers} have not been quantized"
+            compressed_unquantized_layers = compress_layer_names(unquantized_layers)
+            summary_info += f",  {compressed_unquantized_layers} have not been quantized"
         logger.info(summary_info)
 
         self.quantized = True
