@@ -1861,14 +1861,13 @@ class BaseCompressor(object):
                 )
         pbar.set_description("Quantizing done")
         pbar.close()
+        if self.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
         self._quantize_layers(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
-
-        if self.low_cpu_mem_usage:
-            self._offloader.reload(self.model)
 
         end_time = time.time()
         cost_time = end_time - start_time
