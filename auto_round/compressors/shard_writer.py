@@ -175,8 +175,18 @@ class ShardWriter:
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
         tie_word_embeddings = False
+        config = getattr(self.model, "config", None)
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
+        if tie_word_embeddings is None:
+            # For multimodal models, check nested text/thinker configs
+            for sub_attr in ("text_config", "thinker_config", "language_config", "llm_config"):
+                sub_config = getattr(config, sub_attr, None)
+                if sub_config is not None:
+                    val = getattr(sub_config, "tie_word_embeddings", None)
+                    if val is not None:
+                        tie_word_embeddings = val
+                        break
 
         finalize_skipped_meta_tensors = []
         for pname, tensor in full_sd.items():
