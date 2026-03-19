@@ -64,7 +64,7 @@ class TestLowCpuMemUsage:
         )
         assert autoround.low_cpu_mem_usage is False
         # offload with list should be a no-op when offloader is disabled
-        autoround._offloader.offload(
+        autoround._offloader(
             autoround.model, [["model.layers.0"]], clear_memory=True, device_list=autoround.device_list
         )
         assert autoround._offloader._saved == {}
@@ -89,7 +89,7 @@ class TestLowCpuMemUsage:
 
         # Force the offloader to think it has a tempdir already
         autoround._offloader._tempdir = str(tmp_path)
-        autoround._offloader.offload(
+        autoround._offloader(
             autoround.model, [["model.layers.0"]], clear_memory=True, device_list=autoround.device_list
         )
         assert autoround._offloader.has("model.layers.0")

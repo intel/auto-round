@@ -1431,7 +1431,7 @@ class BaseCompressor(object):
                             shard_writer(self, name=block_name)
                             block.to("meta")
                         if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                            self._offloader.offload(self.model, block_name)
+                            self._offloader(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1595,7 +1595,7 @@ class BaseCompressor(object):
 
                 mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                    self._offloader.offload(self.model, block_name)
+                    self._offloader(self.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1697,14 +1697,6 @@ class BaseCompressor(object):
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
-
-        if self.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.info(
-                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
-                "Setting `low_cpu_mem_usage` to False."
-            )
-            self.low_cpu_mem_usage = False
-            self.is_immediate_saving = False
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():
@@ -1819,7 +1811,12 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         logger.info("caching done")
         if self.low_cpu_mem_usage:
-            self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+            if self.is_model_patched and not self.is_immediate_saving:
+                self._offloader(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                if not self._offloader.enabled:
+                    self.low_cpu_mem_usage = False
+            else:
+                self.low_cpu_mem_usage = False
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -3299,10 +3296,10 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
-                    self._offloader.offload(model, n, overwrite=True)
+                    self._offloader(model, n, overwrite=True)
                 else:
                     for name in names:
-                        self._offloader.offload(model, name, overwrite=True)
+                        self._offloader(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)
 
