@@ -137,7 +137,7 @@ def get_quant_func(
         dtype = "rtn_" + dtype
 
     if not disable_opt_rtn:
-        opt_rtn_data_type = "opt_" + dtype
+        opt_rtn_data_type = "opt_rtn_" + dtype
         data_types = [
             opt_rtn_data_type,
             pad_bits(opt_rtn_data_type),
@@ -151,19 +151,10 @@ def get_quant_func(
                 return QUANT_FUNC_WITH_DTYPE[data_type], data_type
 
     if group_size is not None and isinstance(group_size, tuple):
-        block_data_type = "block_" + dtype
-        data_types = [
-            block_data_type,
-            pad_bits(block_data_type),
-            pad_sym(block_data_type),
-            pad_sym(pad_bits(block_data_type)),
-        ]
+        dtype = "block_" + dtype
 
-        from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-
-        for data_type in data_types:
-            if data_type in QUANT_FUNC_WITH_DTYPE:
-                return QUANT_FUNC_WITH_DTYPE[data_type], data_type
+    if enable_rtn:
+        dtype = "rtn_" + dtype
 
     data_types = [dtype, pad_bits(dtype), pad_sym(dtype), pad_sym(pad_bits(dtype))]
     for data_type in data_types:

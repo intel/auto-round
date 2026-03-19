@@ -69,8 +69,8 @@ def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=(128, 
     return qdq_res, scale, None
 
 
-@register_dtype(("block_rtn_fp8_sym", "block_rtn_fp8", "block_rtn_fp8_e4m3"))
-def quant_block_rtn_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=(128, 128), v=0, **kwargs):
+@register_dtype(("rtn_block_fp8_sym", "rtn_block_fp8", "rtn_block_fp8_e4m3"))
+def quant_rtn_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=(128, 128), v=0, **kwargs):
     """Symmetric quantization using block float8 format.
 
     Args:
