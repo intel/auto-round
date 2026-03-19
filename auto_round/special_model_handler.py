@@ -172,6 +172,7 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     return block_names
 
+
 def _get_glm_image_multimodal_block(model, quant_vision=False):
     """Get block names for GLM-Image AR model.
 
