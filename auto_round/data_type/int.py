@@ -110,7 +110,7 @@ def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    tensor.div(scale).round_().clamp_(-maxq, maxq - 1).mul_(scale)
+    tensor.div_(scale).round_().clamp_(-maxq, maxq - 1).mul_(scale)
     qdq_result = revert_tensor_by_pad(tensor.to(orig_dtype), orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, maxq
 
@@ -163,7 +163,7 @@ def quant_tensor_rtn_sym(
     scale = (max_v / maxq).to(scale_dtype)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     scale = scale.unsqueeze(dim=-1)
-    tensor.div_(scale).add_(v).round_().clamp_(-maxq, maxq - 1).mul_(scale)
+    tensor.div_(scale).round_().clamp_(-maxq, maxq - 1).mul_(scale)
     qdq_result = revert_tensor_by_pad(tensor.to(orig_dtype), orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, maxq
 
@@ -329,7 +329,7 @@ def quant_tensor_rtn_asym(
     scale.clamp_(min=q_scale_thresh)
     zp = (-wmin).div_(scale).round_().unsqueeze_(dim=-1)
     scale.unsqueeze_(dim=-1)
-    tensor.div_(scale).add_(v).round_().add_(zp).clamp_(0, maxq).sub_(zp).mul_(scale)
+    tensor.div_(scale).round_().add_(zp).clamp_(0, maxq).sub_(zp).mul_(scale)
     qdq_result = revert_tensor_by_pad(tensor.to(orig_dtype), orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, zp
 

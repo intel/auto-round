@@ -479,17 +479,20 @@ def quant_rtn_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
         max_tensor = tensor_max.clone().detach().to(tensor.device) * max_scale
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+    scale = max_tensor.to(torch.float32) / fp8_max
     min_scaling_factor = float(1.0 / (fp8_max * 512.0))  ##copy from vllm
-    scale = max_tensor.float().div_(fp8_max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
+    scale = torch.clip(scale, min=min_scaling_factor)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
-    tensor = tensor.div_(scale).clamp_(-fp8_max, fp8_max)
+    scale = scale.unsqueeze(dim=-1)
+    fp8_res = tensor / scale
+    fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
     fp8_res = (
-        torch.ops.hpu.cast_to_fp8_v2(tensor, 1.0, False, False, torch.float8_e4m3fn)[0]
+        torch.ops.hpu.cast_to_fp8_v2(tensor, 1.0, False, False, torch.float8_e4m3fn)[0].to(orig_dtype)
         if is_hpex_available()
-        else tensor.to(torch.float8_e4m3fn)
+        else tensor.to(torch.float8_e4m3fn).to(orig_dtype)
     )
-    qdq_res = fp8_res.to(orig_dtype).mul_(scale)
+    qdq_res = fp8_res * scale
     qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
     return qdq_res, scale, None
 
@@ -580,13 +583,16 @@ if is_gaudi2():
             max_tensor = tensor_max.to(tensor.device) * max_scale
         else:
             max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+        scale = max_tensor.to(torch.float32) / info.max
         min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
-        scale = max_tensor.float().div_(info.max).clamp_(min=min_scaling_factor).unsqueeze_(dim=-1)
+        scale = torch.clip(scale, min=min_scaling_factor)
         if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
             tensor = tensor.to(torch.bfloat16)
-        tensor = tensor.div_(scale).add_(v).clamp_(info.min, info.max)
-        fp8_res = torch.ops.hpu.cast_to_fp8_v2(tensor, 1.0, False, False, torch.float8_e4m3fn)[0]
-        qdq_res = fp8_res.to(orig_dtype).mul_(scale)
+        scale = scale.unsqueeze(dim=-1)
+        fp8_res = tensor / scale + v
+        fp8_res = torch.clip(fp8_res, info.min, info.max)
+        fp8_res2 = torch.ops.hpu.cast_to_fp8_v2(fp8_res, 1.0, False, False, torch.float8_e4m3fn)[0].to(orig_dtype)
+        qdq_res = fp8_res2 * scale
         qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
         qdq_res = qdq_res.to(orig_dtype)
         return qdq_res, scale, None
