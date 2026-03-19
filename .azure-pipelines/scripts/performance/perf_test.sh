@@ -2,6 +2,7 @@
 set -e
 
 function setup_environment() {
+    echo "##[group]set up environment..."
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
@@ -13,11 +14,11 @@ function setup_environment() {
 
     model_name="Qwen/Qwen3-0.6B"
     hf download ${model_name}
-    hf download NeelNanda/pile-10k --repo-type dataset
+    echo "##[endgroup]"
 }
 
 function install_requirements() {
-    echo "##[group]set up env..."
+    echo "##[group]install requirements..."
     cd /auto-round
     uv pip uninstall auto-round || true
     BUILD_HPU_ONLY=1 uv pip install .
@@ -25,7 +26,7 @@ function install_requirements() {
 }
 
 function install_baseline_requirements() {
-    echo "##[group]set up baseline env..."
+    echo "##[group]install baseline requirements..."
     cd /auto-round
     uv pip uninstall auto-round || true
     BUILD_HPU_ONLY=1 uv pip install git+https://github.com/intel/auto-round.git
