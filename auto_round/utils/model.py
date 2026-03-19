@@ -1105,7 +1105,12 @@ def get_module(module, key):
 
     if looks_like_regex(key):
         return None
-    return module.get_submodule(key)
+    try:
+        return module.get_submodule(key)
+    except AttributeError:
+        # Some configs/tests may include keys that don't exist in a given model
+        # (e.g. optional norms). Preserve prior "missing -> None" behavior.
+        return None
 
 
 def set_module(model, key, new_module):
@@ -1120,7 +1125,12 @@ def set_module(model, key, new_module):
 
     if looks_like_regex(key):
         return
-    model.set_submodule(key, new_module)
+    try:
+        model.set_submodule(key, new_module)
+    except AttributeError:
+        # Skip missing paths to preserve previous non-throwing behavior at call sites
+        # that may include optional modules.
+        return
 
 
 def get_layer_features(layer):
