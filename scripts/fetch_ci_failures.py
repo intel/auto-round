@@ -145,11 +145,13 @@ def parse_failures_from_log(log_text):
 
     def _save_current():
         if current_test:
-            failures.append({
-                "test_name": current_test,
-                "error_line": error_lines[-1] if error_lines else "",
-                "traceback": "\n".join(current_lines),
-            })
+            failures.append(
+                {
+                    "test_name": current_test,
+                    "error_line": error_lines[-1] if error_lines else "",
+                    "traceback": "\n".join(current_lines),
+                }
+            )
 
     for raw_line in lines:
         line = strip_timestamp(raw_line)
@@ -178,9 +180,7 @@ def parse_failures_from_log(log_text):
                 continue
 
             # End of FAILURES section: "short test summary info" or final result line
-            if re.match(r"^=+ short test summary info =+$", line) or re.match(
-                r"^=+ \d+ failed", line
-            ):
+            if re.match(r"^=+ short test summary info =+$", line) or re.match(r"^=+ \d+ failed", line):
                 _save_current()
                 in_failures_section = False
                 current_test = None
@@ -207,11 +207,13 @@ def parse_failures_from_log(log_text):
             line = strip_ansi(line)
             match = re.match(r"^FAILED\s+(\S+)", line)
             if match:
-                failures.append({
-                    "test_name": match.group(1),
-                    "error_line": "(no traceback captured)",
-                    "traceback": "",
-                })
+                failures.append(
+                    {
+                        "test_name": match.group(1),
+                        "error_line": "(no traceback captured)",
+                        "traceback": "",
+                    }
+                )
 
     return failures
 
@@ -292,8 +294,10 @@ def format_markdown_output(pr_info, pr_number, checks, all_failures, grouped, bu
     lines.append(f"**PR:** [{pr_info.get('title', f'PR #{pr_number}')}]({pr_info.get('url', '')})")
     lines.append(f"**Branch:** `{pr_info.get('headRefName', '?')}` → `{pr_info.get('baseRefName', '?')}`")
     if build_id:
-        lines.append(f"**Build:** [Azure DevOps #{build_id}]"
-                      f"(https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT_ID}/_build/results?buildId={build_id})")
+        lines.append(
+            f"**Build:** [Azure DevOps #{build_id}]"
+            f"(https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT_ID}/_build/results?buildId={build_id})"
+        )
     lines.append("")
 
     # CI job results table
@@ -350,11 +354,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Fetch and summarize failed unit tests from CI for a given PR.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
+        epilog=textwrap.dedent(
+            """\
             Examples:
               %(prog)s 1570
               %(prog)s 1570 --save docs/findings/pr1570-failures.md
-        """),
+        """
+        ),
     )
     parser.add_argument("pr_number", type=int, help="GitHub PR number")
     parser.add_argument("--save", metavar="FILE", help="Save markdown summary to a file")
