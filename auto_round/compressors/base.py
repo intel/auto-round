@@ -1229,7 +1229,7 @@ class BaseCompressor(object):
         set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
-        if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
+        if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf():
             m = m.to(tuning_device)
             m.scale = None
             m.zp = None

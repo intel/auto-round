@@ -220,6 +220,7 @@ def _quant_data_with_args(
 
 def need_modify_tensor(cls, name):
     hf_arch = getattr(cls, "hf_arch", "")
+    # if hf_arch in ("Qwen3NextForCausalLM", "Qwen3_5ForCausalLM", "Qwen3_5MoeForCausalLM") and "in_proj_qkvz.weight" in name:
     if hf_arch == "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
         return True
     return False
@@ -379,8 +380,13 @@ def _special_name_handle(cls, name):
 
 
 def prepare_tensors(cls):
-    max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
     device = get_packing_device(cls.device)
+
+    # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
+    if cls.tensor_map.mapping:
+        max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
+    else:
+        max_name_len = len("vision_encoder.weight,")  # Default reasonable length
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
         if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
@@ -441,6 +447,7 @@ def prepare_tensors(cls):
                     cls.match_model_tensor_name(new_name, key, bid)
                     for key in (
                         gguf.MODEL_TENSOR.FFN_GATE_INP,
+                        gguf.MODEL_TENSOR.FFN_GATE_INP_SHEXP,
                         gguf.MODEL_TENSOR.POS_EMBD,
                         gguf.MODEL_TENSOR.TOKEN_TYPES,
                         gguf.MODEL_TENSOR.SSM_CONV1D,
@@ -457,6 +464,10 @@ def prepare_tensors(cls):
                         gguf.MODEL_TENSOR.A_ENC_EMBD_POS,
                         gguf.MODEL_TENSOR.ALTUP_CORRECT_COEF,
                         gguf.MODEL_TENSOR.ALTUP_PREDICT_COEF,
+                        # Kimi KDA conv weights should be F32
+                        gguf.MODEL_TENSOR.SSM_CONV1D_Q,
+                        gguf.MODEL_TENSOR.SSM_CONV1D_K,
+                        gguf.MODEL_TENSOR.SSM_CONV1D_V,
                     )
                 )
                 or not new_name.endswith(".weight")
