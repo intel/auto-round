@@ -14,11 +14,11 @@ from auto_round.utils import detect_device, get_attr, llm_load_model, mllm_load_
 transformers_version = version.parse(transformers.__version__)
 
 
-def generate_prompt(model, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):
+def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):
     """Generate text using a model and tokenizer.
 
     Args:
-        model: The model to use for generation.
+        model_obj_or_str: The model to use for generation.
         tokenizer: The tokenizer for the model.
         text: The input prompt text.
         max_new_tokens: Maximum number of new tokens to generate.
@@ -28,11 +28,13 @@ def generate_prompt(model, tokenizer=None, text="The capital of France is,", max
     """
     if device is None:
         device = detect_device()
-    if isinstance(model, str):
-        model, tokenizer = llm_load_model(model, trust_remote_code=True)
+    if isinstance(model_obj_or_str, str):
+        model, tokenizer = llm_load_model(model_obj_or_str, trust_remote_code=True)
     else:
+        model = model_obj_or_str
         assert tokenizer is not None, "Tokenizer must be provided when model is a model object"
-    model = model.to(device)
+    if not (hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1):
+        model = model.to(device)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)[0]
     output = tokenizer.decode(generated_ids)
@@ -40,10 +42,12 @@ def generate_prompt(model, tokenizer=None, text="The capital of France is,", max
     return output
 
 
-def eval_generated_prompt(model, tokenizer=None, text="The capital of France is", max_new_tokens=10, device=None):
+def eval_generated_prompt(
+    model, tokenizer=None, prompt_text="The United States of", target_text="america", max_new_tokens=10, device=None
+):
     """Evaluate the generated text using a model and tokenizer."""
-    out = generate_prompt(model, tokenizer, text=text, max_new_tokens=max_new_tokens, device=device)
-    assert "Paris" in out, f"Expected 'Paris' in output, but got: {out}"
+    out = generate_prompt(model, tokenizer, text=prompt_text, max_new_tokens=max_new_tokens, device=device)
+    assert target_text.lower() in out.lower(), f"Expected '{target_text}' in output, but got: {out}"
     return out
 
 
