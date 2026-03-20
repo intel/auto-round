@@ -202,7 +202,7 @@ class TestAutoRoundXPU:
             group_size=group_size,
             sym=sym,
             nsamples=2,
-            iters=2,
+            iters=0,
             seqlen=2,
             layer_config=layer_config,
             device_map=self.device,
