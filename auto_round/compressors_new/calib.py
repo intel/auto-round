@@ -928,7 +928,7 @@ class CalibCompressor(BaseCompressor):
         enable_quanted_input = self.enable_quanted_input
         has_gguf = False
 
-        if hasattr(self, "formats"):
+        if hasattr(self, "formats") and self.formats is not None:
             has_gguf = any(format_.is_gguf() for format_ in self.formats)
         if has_gguf and self.is_immediate_packing:
             enable_quanted_input = False

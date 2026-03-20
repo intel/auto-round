@@ -80,6 +80,7 @@ class BaseCompressor(object):
     compress_context: CompressContext = None
     model_context: ModelContext = None
     shard_writer: ShardWriter = None
+    supported_types = SUPPORTED_LAYER_TYPES
 
     def __init__(
         self,
@@ -185,6 +186,7 @@ class BaseCompressor(object):
             is_immediate_packing=self.is_immediate_packing,
             is_immediate_saving=self.is_immediate_saving,
             formats=self.formats,
+            static_kv_dtype=self.config.static_kv_dtype,
         )
         self.model_context = ModelContext(
             model,
@@ -211,6 +213,14 @@ class BaseCompressor(object):
         # reflects the correct value immediately after construction (not only after post_init).
         self._adjust_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
+
+    @property
+    def mllm(self):
+        return self.model_context.is_mllm
+
+    @property
+    def diffusion(self):
+        return self.model_context.is_diffusion
 
     def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
         """Sets the torch compile configuration for the tuning."""
@@ -304,7 +314,7 @@ class BaseCompressor(object):
         if name in self.__dict__:
             return self.__dict__[name]
 
-        for obj in ["quantize_config", "model_context", "compress_context", "quantizer"]:
+        for obj in ["quantizer", "quantize_config", "model_context", "compress_context"]:
             if obj not in self.__dict__:
                 continue
             obj = object.__getattribute__(self, obj)

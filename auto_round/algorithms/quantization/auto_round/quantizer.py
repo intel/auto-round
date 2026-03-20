@@ -553,11 +553,12 @@ class ARQuantizer(BaseQuantizers):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
+        static_kv_dtype = self.compress_context.static_kv_dtype
         if self.config.is_act_quantize and check_need_act_calibration(
             self.config.act_dynamic,
             self.config.act_data_type,
             self.config.act_bits,
-            self.config.static_kv_dtype,
+            static_kv_dtype,
             self.config.static_attention_dtype,
         ):
             tmp_inputs = q_inputs if q_inputs is not None else input_ids

@@ -39,6 +39,7 @@ class CompressContext(BaseContext):
         is_immediate_saving: bool = False,
         formats: Union[list, str] = None,
         output_dir: str = "./compressed_models",
+        static_kv_dtype: Optional[torch.dtype] = None,
     ):
         super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
@@ -60,3 +61,4 @@ class CompressContext(BaseContext):
         self.is_immediate_packing = is_immediate_packing
         self.is_immediate_saving = is_immediate_saving
         self.formats = formats
+        self.static_kv_dtype = static_kv_dtype

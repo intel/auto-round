@@ -27,7 +27,8 @@ def print_architecture_table():
     # MLLM combinations (dynamic classes created in entry.py)
     print(f"{'MLLM':<15} {'AutoRoundConfig':<20} {'MLLMCalibCompressor':<40} {'MLLMMixin + CalibCompressor':<35}")
     print(
-        f"{'MLLM':<15} {'RTNConfig':<20} {'MLLMCalibratedRTNCompressor':<40} {'MLLMMixin + CalibratedRTNCompressor':<35}"
+        f"{'MLLM':<15} {'RTNConfig':<20} {'MLLMCalibratedRTNCompressor':<40} "
+        f"{'MLLMMixin + CalibratedRTNCompressor':<35}"
     )
     print(f"{'MLLM':<15} {'RTNConfig':<20} {'MLLMZeroShotCompressor':<40} {'MLLMMixin + ZeroShotCompressor':<35}")
 
@@ -35,13 +36,16 @@ def print_architecture_table():
 
     # Diffusion combinations (dynamic classes created in entry.py)
     print(
-        f"{'Diffusion':<15} {'AutoRoundConfig':<20} {'DiffusionCalibCompressor':<40} {'DiffusionMixin + CalibCompressor':<35}"
+        f"{'Diffusion':<15} {'AutoRoundConfig':<20} {'DiffusionCalibCompressor':<40} "
+        f"{'DiffusionMixin + CalibCompressor':<35}"
     )
     print(
-        f"{'Diffusion':<15} {'RTNConfig':<20} {'DiffusionCalibratedRTNCompressor':<40} {'DiffusionMixin + CalibratedRTNCompressor':<35}"
+        f"{'Diffusion':<15} {'RTNConfig':<20} {'DiffusionCalibratedRTNCompressor':<40} "
+        f"{'DiffusionMixin + CalibratedRTNCompressor':<35}"
     )
     print(
-        f"{'Diffusion':<15} {'RTNConfig':<20} {'DiffusionZeroShotCompressor':<40} {'DiffusionMixin + ZeroShotCompressor':<35}"
+        f"{'Diffusion':<15} {'RTNConfig':<20} {'DiffusionZeroShotCompressor':<40} "
+        f"{'DiffusionMixin + ZeroShotCompressor':<35}"
     )
 
     print("\n" + "=" * 110 + "\n")

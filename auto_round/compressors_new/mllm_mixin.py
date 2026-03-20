@@ -59,8 +59,6 @@ class MLLMMixin:
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.template_obj = None
-        # Backward compat: ar.mllm is expected to be True for MLLM instances
-        self.mllm = True
 
         # Pass quant_nontext_module to ModelContext so get_block_names can include vision blocks
         kwargs.setdefault("quant_nontext_module", quant_nontext_module)
@@ -126,25 +124,27 @@ class MLLMMixin:
         if dataset is None:
             dataset = self.template_obj.default_dataset
 
-        (
-            self.dataloader,
-            self.batch_size,
-            self.seqlen,
-            self.gradient_accumulate_steps,
-        ) = get_mllm_dataloader(
-            template=self.template_obj,
-            model=mc.model,
-            tokenizer=tokenizer,
-            processor=processor,
-            image_processor=image_processor,
-            dataset=dataset,
-            extra_data_dir=self.extra_data_dir,
-            seqlen=self.quantize_config.seqlen,
-            bs=bs,
-            seed=self.seed,
-            nsamples=nsamples,
-            quant_nontext_module=self.quant_nontext_module,
-        )
+        if isinstance(self.dataset, str):
+            dataset = self.dataset.replace(" ", "")
+            (
+                self.dataloader,
+                self.batch_size,
+                self.seqlen,
+                self.gradient_accumulate_steps,
+            ) = get_mllm_dataloader(
+                template=self.template_obj,
+                model=mc.model,
+                tokenizer=tokenizer,
+                processor=processor,
+                image_processor=image_processor,
+                dataset=dataset,
+                extra_data_dir=self.extra_data_dir,
+                seqlen=self.quantize_config.seqlen,
+                bs=bs,
+                seed=self.seed,
+                nsamples=nsamples,
+                quant_nontext_module=self.quant_nontext_module,
+            )
 
         # Process data through the model for calibration
         total_cnt = 0

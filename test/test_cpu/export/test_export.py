@@ -429,11 +429,12 @@ class TestAutoRound:
             group_size=32,
             sym=True,
         )
+        ar.post_init()
         with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
-            get_formats("auto_round:auto_awq", ar)
+            get_formats("auto_round:auto_awq", ar.quantizer)
 
         with pytest.raises(ValueError, match="but got bits=2, data_type=int"):
-            get_formats("auto_round:llm_compressor", ar)
+            get_formats("auto_round:llm_compressor", ar.quantizer)
 
         ar = AutoRound(
             model=tiny_qwen_model_path,
@@ -442,8 +443,9 @@ class TestAutoRound:
             group_size=32,
             sym=True,
         )
+        ar.post_init()
         with pytest.raises(ValueError, match="but got data_type=fp, bits=4"):
-            get_formats("auto_round:llm_compressor", ar)
+            get_formats("auto_round:llm_compressor", ar.quantizer)
 
         ar = AutoRound(
             model=tiny_qwen_model_path,
@@ -452,7 +454,8 @@ class TestAutoRound:
             group_size=256,
             sym=True,
         )
-        get_formats("auto_round:auto_awq", ar)
+        ar.post_init()
+        get_formats("auto_round:auto_awq", ar.quantizer)
 
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
