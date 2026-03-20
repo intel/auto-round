@@ -544,7 +544,7 @@ class BaseCompressor(object):
         self.wrapper_block = wrapper_block
         if self.enable_alg_ext:
             try:
-                logger.warning_once("using algorithm extension for quantization.")
+                logger.info("using algorithm extension for quantization.")
                 from auto_round.alg_ext import wrapper_autoround
 
                 wrapper_autoround(self)
@@ -825,6 +825,9 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_nv_fp(self.act_data_type):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
+        if self.enable_torch_compile and self.super_group_size is not None and self.enable_alg_ext:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
