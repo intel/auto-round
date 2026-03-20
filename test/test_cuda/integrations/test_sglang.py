@@ -36,7 +36,7 @@ class TestAutoRound:
 
     def _run_sglang_inference(self, model_path: Path):
         llm = sgl.Engine(
-            model_path=str(model_path), mem_fraction_static=0.7, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
+            model_path=str(model_path), mem_fraction_static=0.5, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
         )
         try:
             prompts = ["Hello, my name is"]
