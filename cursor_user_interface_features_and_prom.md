@@ -8,7 +8,7 @@ _Exported on 3/19/2026 at 12:54:54 GMT+5:30 from Cursor (2.6.12)_
 1. right click, should give a option for drop downs, for the node selection
 2. right now, there's no output node ?
 3. what does seed do?
-4. what is the differnet between auto-refine prompt? and refine with AI?
+4. what is the different between auto-refine prompt? and refine with AI?
 
 
 
@@ -75,7 +75,7 @@ If you tell me exactly where in the UI you see these (e.g. which panel or button
 it says, no prompt is added but it is there. 
 fix this issue, 
 
-okay fair, no addtional output node is requried, but then clicked on generate then it gives output, which i could reuse if i need to 
+okay fair, no additional output node is required, but then clicked on generate then it gives output, which i could reuse if i need to 
 
 ---
 

@@ -1066,7 +1066,7 @@ def get_attr(module, key):
     Args:
         module (torch.nn.Module): original model
         key (str): attribute name (e.g., "layer.weight", "layer.bias")
-    
+
     Returns:
         The attribute value, or None if not found
     """
@@ -1093,6 +1093,7 @@ def set_attr(model, key, new_attr):
         if hasattr(module, name):
             module = getattr(module, name)
     setattr(module, name_list[-1], new_attr)
+
 
 def get_module(module, key):
     """Get module from model by key name using PyTorch native API.
