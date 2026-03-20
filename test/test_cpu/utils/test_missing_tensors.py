@@ -618,7 +618,8 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             # Target has a different sub-layer inside the same block
             _save_safetensors(
                 {
-                    "model.language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                    "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),  # llama4
+                    "model.language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),  # gemma
                     "model.language_model.norm.weight": torch.randn(64),
                 },
                 os.path.join(target_dir, "model.safetensors"),
