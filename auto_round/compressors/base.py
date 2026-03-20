@@ -150,6 +150,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
+    "transform_config",
 )
 
 
@@ -550,6 +551,8 @@ class BaseCompressor(object):
                 wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
+
+        self.transform_config = kwargs.pop("transform_config", {})
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
