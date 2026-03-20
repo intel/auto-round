@@ -140,10 +140,16 @@ class TestAutoRound:
 
     @require_gguf
     def test_vlm_gguf(self):
+        from huggingface_hub import hf_hub_download
+
         from ...helpers import save_tiny_model
 
-        model_name = get_model_path("google/gemma-3-4b-it")
+        model_name = "google/gemma-3-4b-it"
         tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True, use_fast=False)
+        # Needs tokenizer.model for gguf
+        # New transformers won't download it even with use_fast=False
+        file_path = hf_hub_download(repo_id=model_name, filename="tokenizer.model", local_dir=tiny_model_path)
+
         from auto_round import AutoRound
 
         autoround = AutoRound(

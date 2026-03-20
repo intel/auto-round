@@ -1,3 +1,4 @@
+import gc
 import json
 import shutil
 import sys
@@ -37,10 +38,16 @@ class TestAutoRound:
         llm = sgl.Engine(
             model_path=str(model_path), mem_fraction_static=0.7, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
         )
-        prompts = ["Hello, my name is"]
-        sampling_params = {"temperature": 0.6, "top_p": 0.95}
-        outputs = llm.generate(prompts, sampling_params)
-        return outputs[0]["text"]
+        try:
+            prompts = ["Hello, my name is"]
+            sampling_params = {"temperature": 0.6, "top_p": 0.95}
+            outputs = llm.generate(prompts, sampling_params)
+            return outputs[0]["text"]
+        finally:
+            llm.shutdown()
+            del llm
+            gc.collect()
+            torch.cuda.empty_cache()
 
     def test_ar_format_sglang(self, dataloader):
         autoround = AutoRound(
