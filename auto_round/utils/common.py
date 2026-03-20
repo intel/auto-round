@@ -795,4 +795,5 @@ def compress_layer_names(names: list) -> str:
             range_str = ",".join(ranges)
             parts.append(f"{prefix}[{range_str}]{suffix}")
     parts.extend(singles)
+    parts.sort()
     return ", ".join(parts)

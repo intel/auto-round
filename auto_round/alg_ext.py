@@ -156,7 +156,7 @@ def qdq_mxfp(tensor, max_val, max_norm, emax, ebits, mbits):
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    scale = torch.pow(2, shared_exp)
+    scale = torch.pow(2.0, shared_exp)
     tensor = tensor / scale
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm)
@@ -271,7 +271,7 @@ def quant_mx(
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    scale = torch.pow(2, shared_exp)
+    scale = torch.pow(2.0, shared_exp)
     tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
@@ -564,6 +564,7 @@ def make_qp_quants(nmax, data, quant_weights, v=0):
     return sumlx / suml2, L
 
 
+# @torch._disable_dynamo()
 def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, v=0):
     """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
