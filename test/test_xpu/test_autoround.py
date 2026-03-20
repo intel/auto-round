@@ -45,7 +45,6 @@ class TestAutoRoundXPU:
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="auto")
-        # device_map="auto" doesn't work, must use "xpu"
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
@@ -77,7 +76,6 @@ class TestAutoRoundXPU:
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
         quantization_config = AutoRoundConfig(backend="auto")
-        # device_map="auto" doesn't work, must use "xpu"
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
@@ -110,7 +108,6 @@ class TestAutoRoundXPU:
 
         # test loading
         if scheme not in ["FPW8A16"]:  # FPW8A16 group_size is 0
-            # device_map="auto" doesn't work, must use "xpu"
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path,
                 device_map=self.device,
@@ -212,7 +209,6 @@ class TestAutoRoundXPU:
         ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
 
         quantization_config = AutoRoundConfig(backend="auto")
-        # device_map="auto" doesn't work, must use "xpu"
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
