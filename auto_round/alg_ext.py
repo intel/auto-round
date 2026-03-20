@@ -582,7 +582,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     """
     dtype = torch.float32
     data = data.to(dtype)
-    maxq = 2.0**bits - 1
+    maxq = 2**bits - 1
     minq = 0
     weights = 1.0 if weights is None else weights.to(dtype)
 
