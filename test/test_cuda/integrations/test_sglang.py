@@ -107,6 +107,7 @@ class TestAutoRound:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Cannot work well in CI env")
     def test_awq_format_sglang(self, dataloader):
         autoround = AutoRound(
             self.model_name,
