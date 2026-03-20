@@ -81,7 +81,7 @@ class RTNQuantizer(BaseQuantizers):
             tied_weights_values = list(tied_weights_keys)
         tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
         # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
-        if hasattr(self.compress_context, "formats") and self.compress_context.formats[0].is_gguf():
+        if getattr(self.compress_context, "formats", None) and self.compress_context.formats[0].is_gguf():
             lm_head_name = get_lm_head_name(self.model)
             if lm_head_name is not None:
                 tied_weights_layers.append(lm_head_name)
@@ -187,6 +187,8 @@ class RTNQuantizer(BaseQuantizers):
                     m = m.unwrapper({})
                 except Exception as e:
                     raise
+
+        set_module(self.model, name, m)
         self._immediate_pack_and_save_module(name)
 
     def _immediate_pack_and_save_module(self, module_name):
@@ -378,20 +380,22 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
+            # Shared cache keys (e.g. position_embeddings, position_ids, cache_position) are stored
+            # directly as-is (not wrapped in a per-sample list) when batch_size > 1.  Indexing such
+            # values by sample index would incorrectly decompose them (e.g. (cos, sin)[0] == cos).
+            # Always pass them through unchanged.
+            if key in share_cache_keys or isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = input_others[key]
+            elif input_others[key] is not None:
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = None
 
         return current_input_ids, current_input_others

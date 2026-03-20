@@ -67,6 +67,3 @@ class RTNConfig(QuantizationConfig):
         self.disable_opt_rtn = disable_opt_rtn
         if not self.disable_opt_rtn:
             self._alg_cls = "OptimizedRTNQuantizer"
-
-        if not self.disable_opt_rtn and f"rtn_{self.data_type}" in QUANT_FUNC_WITH_DTYPE:
-            self.data_type = f"rtn_{self.data_type}"

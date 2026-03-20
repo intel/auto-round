@@ -187,6 +187,7 @@ class BaseCompressor(object):
             is_immediate_saving=self.is_immediate_saving,
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
         )
         self.model_context = ModelContext(
             model,

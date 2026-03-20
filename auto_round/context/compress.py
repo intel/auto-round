@@ -40,6 +40,8 @@ class CompressContext(BaseContext):
         formats: Union[list, str] = None,
         output_dir: str = "./compressed_models",
         static_kv_dtype: Optional[torch.dtype] = None,
+        static_attention_dtype: Optional[torch.dtype] = None,
+        **kwargs,
     ):
         super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
@@ -62,3 +64,4 @@ class CompressContext(BaseContext):
         self.is_immediate_saving = is_immediate_saving
         self.formats = formats
         self.static_kv_dtype = static_kv_dtype
+        self.static_attention_dtype = static_attention_dtype

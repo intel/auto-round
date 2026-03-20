@@ -554,12 +554,13 @@ class ARQuantizer(BaseQuantizers):
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
         static_kv_dtype = self.compress_context.static_kv_dtype
+        static_attention_dtype = self.compress_context.static_attention_dtype
         if self.config.is_act_quantize and check_need_act_calibration(
             self.config.act_dynamic,
             self.config.act_data_type,
             self.config.act_bits,
             static_kv_dtype,
-            self.config.static_attention_dtype,
+            static_attention_dtype,
         ):
             tmp_inputs = q_inputs if q_inputs is not None else input_ids
             hook_handles = self._register_act_max_hook(layer)
@@ -893,21 +894,23 @@ class ARQuantizer(BaseQuantizers):
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
+            # Shared cache keys (e.g. position_embeddings, position_ids, cache_position) are stored
+            # directly as-is (not wrapped in a per-sample list) when batch_size > 1.  Indexing such
+            # values by sample index would incorrectly decompose them (e.g. (cos, sin)[0] == cos).
+            # Always pass them through unchanged.
+            if key in share_cache_keys or isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = input_others[key]
+            elif input_others[key] is not None:
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = None
 
         return current_input_ids, current_input_others
 

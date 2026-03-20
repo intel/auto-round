@@ -65,6 +65,35 @@ class QuantizationConfig(AlgConfig):
         # Resolve scheme attributes early so properties (is_act_nv_fp, is_wfp8afp8, etc.)
         # work correctly at construction time without waiting for post_init().
         self._early_resolve_scheme()
+        # Run block-wise validation early (at construction time, before model loading).
+        # Guard with None checks because _early_resolve_scheme may leave attributes unresolved
+        # (e.g. when scheme is an AutoScheme that needs model info).
+        if self.group_size is not None and isinstance(self.group_size, (tuple, list)):
+            if not (
+                self.data_type is not None
+                and self.bits is not None
+                and self.data_type.startswith("fp")
+                and self.bits == 8
+            ):
+                raise ValueError(
+                    "Block-wise quantization (tuple group_size) only supports fp8 weight quantization, "
+                    f"but got data_type='{self.data_type}', bits={self.bits}."
+                )
+            if (
+                self.act_dynamic is not None
+                and self.act_data_type is not None
+                and self.act_bits is not None
+                and not (self.act_dynamic and self.act_data_type.startswith("fp") and self.act_bits == 8)
+            ):
+                raise NotImplementedError(
+                    "Block-wise fp8 weight quantization only supports dynamic fp8 activation quantization. "
+                    f"Got act_dynamic={self.act_dynamic}, act_data_type='{self.act_data_type}', "
+                    f"act_bits={self.act_bits}."
+                )
+        if self.act_group_size is not None and isinstance(self.act_group_size, (tuple, list)):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), or a positive integer, not a tuple."
+            )
 
     def _early_resolve_scheme(self) -> None:
         """Resolve scheme attributes early so properties work from init time.
@@ -123,10 +152,27 @@ class QuantizationConfig(AlgConfig):
                 "`group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, "
                 "or a tuple thereof (e.g. (128, 128) for block-wise quantization)"
             )
+        if isinstance(self.act_group_size, (tuple, list)):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), or a positive integer, not a tuple."
+            )
         if not self._is_valid_group_size(self.act_group_size):
             raise ValueError(
                 "`act_group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, " "or a tuple thereof"
             )
+        # Block-wise (tuple group_size) is only valid for fp8 weight quantization
+        if isinstance(self.group_size, (tuple, list)):
+            if not (self.data_type.startswith("fp") and self.bits == 8):
+                raise ValueError(
+                    "Block-wise quantization (tuple group_size) only supports fp8 weight quantization, "
+                    f"but got data_type='{self.data_type}', bits={self.bits}."
+                )
+            if not (self.act_dynamic and self.act_data_type.startswith("fp") and self.act_bits == 8):
+                raise NotImplementedError(
+                    "Block-wise fp8 weight quantization only supports dynamic fp8 activation quantization. "
+                    f"Got act_dynamic={self.act_dynamic}, act_data_type='{self.act_data_type}', "
+                    f"act_bits={self.act_bits}."
+                )
         # Reset the default value of super_bits and super_group_size
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
