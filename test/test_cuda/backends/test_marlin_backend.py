@@ -6,7 +6,8 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import evaluate_accuracy, get_model_path, model_infer
+from ...envs import require_gptqmodel
+from ...helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, model_infer
 
 
 class TestAutoRoundMarlinBackend:
@@ -163,3 +164,63 @@ class TestAutoRoundMarlinBackend:
     #     assert result['results']['lambada_openai']['acc,none'] > 0.27
     #     torch.cuda.empty_cache()
     #     shutil.rmtree("./saved", ignore_errors=True)
+
+    @require_gptqmodel
+    def test_gptqmodel_awq_marlin_4bits_sym(self):
+        """Test AWQ quantization with gptqmodel:awq_marlin backend (sym-only, float16)."""
+        model_path = get_model_path("facebook/opt-125m")
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=0,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+
+        quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
+        model = AutoModelForCausalLM.from_pretrained(
+            self.save_dir, torch_dtype="auto", device_map="auto", quantization_config=quantization_config
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        # Inference generation check
+        eval_generated_prompt(model, tokenizer)
+        # Accuracy check
+        evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
+        torch.cuda.empty_cache()
+
+    @require_gptqmodel
+    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.parametrize("group_size", [32, 64, 128])
+    def test_gptqmodel_awq_marlin_group_size(self, group_size):
+        """Test AWQ marlin backend with different group sizes."""
+        print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")
+        model_path = get_model_path("facebook/opt-125m")
+        bits, sym = 4, True
+        autoround = AutoRound(
+            model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=0,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+
+        quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
+        model = AutoModelForCausalLM.from_pretrained(
+            self.save_dir, torch_dtype="auto", device_map="auto", quantization_config=quantization_config
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        # Inference generation check
+        eval_generated_prompt(model, tokenizer)
+        # Accuracy check
+        evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
+        torch.cuda.empty_cache()

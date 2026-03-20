@@ -43,7 +43,7 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
 
 
 def eval_generated_prompt(
-    model, tokenizer=None, prompt_text="The United States of", target_text="america", max_new_tokens=10, device=None
+    model, tokenizer=None, prompt_text="The United States of", target_text="America", max_new_tokens=10, device=None
 ):
     """Evaluate the generated text using a model and tokenizer."""
     out = generate_prompt(model, tokenizer, text=prompt_text, max_new_tokens=max_new_tokens, device=device)

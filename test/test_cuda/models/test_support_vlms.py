@@ -135,7 +135,6 @@ class TestSupportVLMS:
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_vlm_env
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_phi3_vision_awq(self):
         model_path = get_model_path("microsoft/Phi-3.5-vision-instruct")
         ## test tune

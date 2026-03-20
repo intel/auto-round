@@ -11,9 +11,9 @@ from auto_round import AutoRound
 from ...envs import (
     require_autogptq,
     require_awq,
+    require_gptqmodel,
     require_greater_than_050,
     require_ipex,
-    require_package_version_ut,
 )
 from ...helpers import eval_generated_prompt, evaluate_accuracy, get_model_path, is_cuda_support_fp8
 
@@ -43,25 +43,21 @@ class TestAutoRound:
     @pytest.mark.parametrize("group_size", [32, 128])
     @pytest.mark.parametrize("is_sym", [True, False])
     def test_autoround_format(self, tiny_opt_model_path, bits, group_size, is_sym):
-        for bits in [2, 3, 4, 8]:
-            bits, group_size, sym = bits, 128, False
-            autoround = AutoRound(
-                tiny_opt_model_path,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=0,
-                disable_opt_rtn=True,
-            )
-            quantized_model_path = self.save_dir
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=is_sym,
+            iters=0,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
 
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-            # Verify loading
-            model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path, device_map="cuda:0", trust_remote_code=True
-            )
-            assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
+        # Verify loading
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_autogptq
@@ -83,8 +79,7 @@ class TestAutoRound:
         evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
-    @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_awq_backend(self):
         model_name = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, True
@@ -180,7 +175,6 @@ class TestAutoRound:
     @pytest.mark.skip_ci(reason="IPEX is deprecated.")
     @require_awq
     @require_ipex
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_autoround_awq_sym_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(

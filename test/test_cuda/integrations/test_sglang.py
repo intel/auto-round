@@ -99,3 +99,25 @@ class TestAutoRound:
         assert "!!!" not in generated_text
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_awq_format_sglang(self, dataloader):
+        autoround = AutoRound(
+            self.model_name,
+            scheme="W4A16",
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+        )
+
+        autoround.quantize_and_save(
+            output_dir=self.save_dir,
+            inplace=True,
+            format="auto_round:auto_awq",
+        )
+
+        generated_text = self._run_sglang_inference(self.save_dir)
+        print(generated_text)
+
+        assert "!!!" not in generated_text
+
+        shutil.rmtree(self.save_dir, ignore_errors=True)

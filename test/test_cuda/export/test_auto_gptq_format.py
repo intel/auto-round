@@ -9,7 +9,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 
 from auto_round import AutoRound
 
-from ...envs import require_awq, require_optimum, require_package_version_ut
+from ...envs import require_optimum
 from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, transformers_version
 
 

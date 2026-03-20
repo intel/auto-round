@@ -108,6 +108,16 @@ else:
     print("AR_LOG_LEVEL is using default value")
 ```
 
+### AR_DISABLE_OFFLOAD
+- **Description**: Forcibly disables the weight offloading feature in `OffloadManager`. Useful during development and debugging to skip all offload/reload overhead.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling offload; any other value keeps the default behavior
+- **Usage**: Set this to bypass offloading entirely
+
+```bash
+export AR_DISABLE_OFFLOAD=1
+```
+
 ## Configuration Best Practices
 
 1. **Development Environment**: Set `AR_LOG_LEVEL=TRACE` or `AR_LOG_LEVEL=DEBUG` for detailed logging during development

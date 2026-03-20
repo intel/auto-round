@@ -11,7 +11,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 from auto_round import AutoRound
 
 from ...envs import require_awq, require_optimum, require_package_version_ut
-from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, transformers_version
+from ...helpers import eval_generated_prompt, generate_prompt, get_model_path, require_gptqmodel
 
 
 class TestAutoRound:
@@ -34,8 +34,7 @@ class TestAutoRound:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_autoawq_format(self, tiny_opt_model_path):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -55,9 +54,7 @@ class TestAutoRound:
         assert model is not None, "Loaded model should not be None."
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @require_optimum
-    @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_autoawq_format_fp_qsave_layers(self):
         layer_config = {
             "model.decoder.layers.0.self_attn.k_proj": {"bits": 16},
@@ -86,3 +83,27 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
+
+    @require_gptqmodel
+    def test_fallback_regex_for_awq_format(self, tiny_opt_model_path, dataloader):
+        layer_config = {
+            "lm_head": {"bits": 16},
+            "fc1": {"bits": 16},
+        }
+        autoround = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=2,
+            seqlen=2,
+            dataset=dataloader,
+            layer_config=layer_config,
+        )
+        quantized_model_path = "self.save_dir"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        quantization_config = AutoRoundConfig()
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="auto", quantization_config=quantization_config
+        )
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        generate_prompt(model, tokenizer)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
