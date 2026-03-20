@@ -25,16 +25,20 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRound:
-    @classmethod
-    def setup_class(self):
-        self.model_name = opt_name_or_path
-        self.save_dir = ".saved/"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @classmethod
-    def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
+    def setup_class(cls):
+        cls.model_name = opt_name_or_path
+        cls.model = AutoModelForCausalLM.from_pretrained(cls.model_name, torch_dtype="auto", trust_remote_code=True)
+        cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name, trust_remote_code=True)
+
+    @classmethod
+    def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gptqmodel
@@ -65,7 +69,6 @@ class TestAutoRound:
         assert model.model.model.decoder.layers[1].self_attn.v_proj.bits == 4
         result = model.generate("Uncovering deep insights begins with")[0]  # tokens
         assert "!!!" not in model.tokenizer.decode(result)  # string output
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_gptqmodel_convert_to_ar(self, dataloader):
         layer_config = {
@@ -94,7 +97,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_autoround_format(self, dataloader):
         layer_config = {
@@ -111,7 +113,7 @@ class TestAutoRound:
             dataset=dataloader,
             layer_config=layer_config,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         config_file = Path(quantized_model_path) / "config.json"
         with open(config_file, "r", encoding="utf-8") as f:
@@ -130,7 +132,6 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_fallback_regex_for_awq_format(self, dataloader):
         layer_config = {
@@ -145,7 +146,7 @@ class TestAutoRound:
             dataset=dataloader,
             layer_config=layer_config,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
@@ -155,7 +156,6 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_ar_format_part_name_hf_loading(self, dataloader):
         layer_config = {
@@ -171,7 +171,7 @@ class TestAutoRound:
             dataset=dataloader,
             layer_config=layer_config,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize()
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
         # remove old extra_config(which contains full name layer configs), only test regex config loading
@@ -203,7 +203,6 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mixed_MXFP_autoround_format_loading(self, dataloader):
         layer_config = {
@@ -229,4 +228,3 @@ class TestAutoRound:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 
         evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16, limit=10)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)

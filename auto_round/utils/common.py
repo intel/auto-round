@@ -665,23 +665,20 @@ def json_serialize(obj: Any):
 def get_reciprocal(tensor):
     """
     Memory-frugal reciprocal:
-    - Inplace operations on original tensor
-    - Only allocates small boolean mask
+    - Uses torch.where to avoid boolean indexing (aten.nonzero),
+      which is not supported by torch.compile inductor backend.
     """
     eps = 1e-5 if tensor.dtype == torch.float16 else 1e-30
 
-    # Create mask for very small elements (small overhead)
-    mask = tensor.abs() < eps
+    # Create mask for very small elements
+    safe = tensor.abs() >= eps
 
-    # Prepare output in place: reuse tensor if allowed, otherwise create once
-    recip = torch.empty_like(tensor)
-
-    # Safe reciprocal: for nonzero elements
-    nonzero_mask = ~mask
-    recip[nonzero_mask] = 1.0 / tensor[nonzero_mask]
-
-    # Zero out elements below threshold
-    recip[mask] = 0.0
+    # Use torch.where to avoid graph breaks under torch.compile
+    # Replace near-zero values with 1.0 before dividing to avoid inf,
+    # then mask the result. Both branches are evaluated by torch.where,
+    # so the dummy 1.0 prevents division-by-zero in the unsafe branch.
+    safe_tensor = torch.where(safe, tensor, torch.ones_like(tensor))
+    recip = torch.where(safe, 1.0 / safe_tensor, torch.zeros_like(tensor))
 
     return recip
 

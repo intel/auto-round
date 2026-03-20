@@ -282,10 +282,14 @@ class TestQwen3OmniMoeReplacement:
         """Test that replaced MoE forward output matches original."""
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
 
+        # Fix seed for deterministic model weights and use small-scale input to
+        # prevent numerical overflow with random weights (talker has a larger
+        # shared_expert MLP that can produce NaN otherwise).
+        torch.manual_seed(0)
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
-        x = torch.randn(1, 4, 64)
+        x = torch.randn(1, 4, 64) * 0.1
         with torch.no_grad():
             orig_thinker_out = model.thinker.model.layers[0].mlp(x)
             orig_talker_out = model.talker.model.layers[0].mlp(x)
@@ -365,9 +369,10 @@ class TestQwen3OmniMoeUtils:
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         ignore_layers = get_predefined_ignore_layers(model)
-        assert (
-            "mlp.gate" in ignore_layers
-        ), f"Expected mlp.gate in ignore_layers for qwen3_omni_moe, got: {ignore_layers}"
+        assert ignore_layers == [
+            "thinker.model.layers.0.mlp.gate",
+            "talker.model.layers.0.mlp.gate",
+        ], f"Expected mlp.gate in ignore_layers for qwen3_omni_moe, got: {ignore_layers}"
 
 
 class TestQwen2_5OmniNotMoe:
