@@ -783,7 +783,9 @@ class OffloadManager:
                 self._weight_map = _build_weight_map(model_dir)
             weight_map = self._weight_map
         except Exception as e:
-            logger.warning(f"OffloadManager: failed to build weight map, skipping clear to preserve dynamic params: {e}")
+            logger.warning(
+                f"OffloadManager: failed to build weight map, skipping clear to preserve dynamic params: {e}"
+            )
             return set()
         prefix = block_name + "."
         return {k[len(prefix) :] for k in weight_map if k.startswith(prefix)}
