@@ -682,7 +682,11 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | exllamav2/<br/>gptq:exllamav2      | cuda    | 4              | FP16         | 5      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | gptq:cuda               | cuda           | 2、3、4、8     | FP16         | 1      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | triton                  | xpu/cuda       | 2、4、8        | BF16/FP16    | 2      | gptq/gptq_zp+-1 | auto-round                     |
-| awq                     | cuda           | 4              | FP16         | 5      | awq             | auto-awq                       |
+| awq                     | cuda           | 4              | FP16         | 5      | awq             | auto-awq<br/>transformers<4.57.0                       |
+| gptqmodel:awq/<br/>gptqmodel:awq_exllamav2 | cuda | 4         | BF16/FP16    | 6      | awq             | gptqmodel                      |
+| gptqmodel:awq_marlin    | cuda           | 4、8           | FP16         | 5      | awq             | gptqmodel                      |
+| gptqmodel:awq_gemm      | cuda           | 4              | FP16         | 3      | awq             | gptqmodel                      |
+| gptqmodel:awq_torch     | cuda/cpu       | 4              | FP16         | 2      | awq             | gptqmodel                      |
 | hpu                     | hpu            | 4              | BF16         | 0      | gptq/gptq_zp+-1 | auto-round                     |
 | torch                   | xpu/cpu/cuda   | 2、3、4、8     | BF16/FP16    | 0      | gptq/gptq_zp+-1 | auto-round                     |
 
