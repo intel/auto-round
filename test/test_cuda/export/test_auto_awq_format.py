@@ -10,8 +10,8 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 
 from auto_round import AutoRound
 
-from ...envs import require_awq, require_optimum, require_package_version_ut
-from ...helpers import eval_generated_prompt, generate_prompt, get_model_path, require_gptqmodel
+from ...envs import require_gptqmodel
+from ...helpers import eval_generated_prompt, generate_prompt, get_model_path
 
 
 class TestAutoRound:
