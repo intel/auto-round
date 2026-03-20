@@ -1793,7 +1793,6 @@ class BaseCompressor(object):
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self._get_quantized_layer_names_outside_blocks()
-        start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         if len(layer_names) > 0:
             logger.info(
@@ -1830,6 +1829,7 @@ class BaseCompressor(object):
         else:
             pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
 
+        start_time = time.time()
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
