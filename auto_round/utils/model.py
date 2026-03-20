@@ -483,9 +483,7 @@ def mllm_load_model(
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
         else:
-            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(
-                pretrained_model_name_or_path
-            )
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(pretrained_model_name_or_path)
     else:
         from huggingface_hub import hf_hub_download, list_repo_files
 
