@@ -82,18 +82,14 @@ class TestAutoScheme:
 
         # After quantize_and_save, the model's attention modules should have
         # k_scale and v_scale registered as parameters with non-zero values.
-        attn_modules = quantized_model.model.decoder.layers[0].self_attn
-        assert len(attn_modules) > 0, "No attention modules found in quantized model"
-        for name, attn in attn_modules:
-            assert hasattr(attn, "k_scale"), f"{name} missing k_scale after quantization"
-            assert hasattr(attn, "v_scale"), f"{name} missing v_scale after quantization"
-            k_val = attn.k_scale.item()
-            v_val = attn.v_scale.item()
-            assert k_val != 0.0, (
-                f"{name} k_scale is 0.0 — scale was not collected during "
-                f"calibration with AutoScheme + static_kv_dtype"
-            )
-            assert v_val != 0.0, (
-                f"{name} v_scale is 0.0 — scale was not collected during "
-                f"calibration with AutoScheme + static_kv_dtype"
-            )
+        attn = quantized_model.model.decoder.layers[0].self_attn
+        assert hasattr(attn, "k_scale"), "missing k_scale after quantization"
+        assert hasattr(attn, "v_scale"), " missing v_scale after quantization"
+        k_val = attn.k_scale.item()
+        v_val = attn.v_scale.item()
+        assert k_val != 0.0, (
+            "k_scale is 0.0 — scale was not collected during " "calibration with AutoScheme + static_kv_dtype"
+        )
+        assert v_val != 0.0, (
+            "v_scale is 0.0 — scale was not collected during " "calibration with AutoScheme + static_kv_dtype"
+        )
