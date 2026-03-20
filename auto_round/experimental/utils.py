@@ -35,7 +35,12 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
     if hasattr(module, name):
         param = getattr(module, name)
         if isinstance(param, torch.nn.Parameter):
-            param.data.copy_(new_val)
+            if param.shape == new_val.shape:
+                param.data.copy_(new_val)
+            else:
+                # Re-create the parameter when shapes differ (e.g. after offload
+                # cleared it to an empty tensor).
+                module.register_parameter(name, torch.nn.Parameter(new_val.clone(), requires_grad=param.requires_grad))
         else:
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:
