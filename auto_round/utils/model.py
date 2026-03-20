@@ -368,18 +368,30 @@ def llm_load_model(
     return model, tokenizer
 
 
-def _find_pipeline_model_subfolder_local(model_dir: str) -> tuple:
-    """Find model/processor subfolders from a local pipeline directory with model_index.json.
+def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = None) -> tuple:
+    """Find model/processor subfolders from a pipeline's model_index.json.
 
-    Scans component subdirectories to find the one whose config.json has 'architectures',
-    and looks for a 'processor' component.
+    Works for both local directories and remote HF repos.
+
+    Args:
+        model_dir_or_repo: Local directory path or HF repo id.
+        file_list: If provided, treat *model_dir_or_repo* as a remote HF repo
+            and use *file_list* (from ``list_repo_files``) to check file existence.
+            If ``None``, treat it as a local directory.
 
     Returns:
         (model_subfolder, processor_subfolder, config_dict)
     """
-    index_path = os.path.join(model_dir, "model_index.json")
-    if not os.path.exists(index_path):
-        raise FileNotFoundError(f"No config.json or model_index.json found under {model_dir}")
+    is_local = file_list is None
+
+    if is_local:
+        index_path = os.path.join(model_dir_or_repo, "model_index.json")
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(f"No config.json or model_index.json found under {model_dir_or_repo}")
+    else:
+        from huggingface_hub import hf_hub_download
+
+        index_path = hf_hub_download(model_dir_or_repo, "model_index.json")
 
     with open(index_path, "r", encoding="utf-8") as f:
         model_index = json.load(f)
@@ -394,61 +406,27 @@ def _find_pipeline_model_subfolder_local(model_dir: str) -> tuple:
     for name, value in model_index.items():
         if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
             continue
-        comp_config_path = os.path.join(model_dir, name, "config.json")
-        if not os.path.isfile(comp_config_path):
-            continue
-        with open(comp_config_path, "r", encoding="utf-8") as f:
-            comp_config = json.load(f)
+        # Load component config.json
+        if is_local:
+            cfg_path = os.path.join(model_dir_or_repo, name, "config.json")
+            if not os.path.isfile(cfg_path):
+                continue
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                comp_config = json.load(f)
+        else:
+            comp_config_file = f"{name}/config.json"
+            if comp_config_file not in file_list:
+                continue
+            cfg_path = hf_hub_download(model_dir_or_repo, comp_config_file)
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                comp_config = json.load(f)
+
         if "architectures" in comp_config:
             candidates.append((name, comp_config))
 
     if not candidates:
         raise FileNotFoundError(
-            f"model_index.json found in {model_dir} but no component with 'architectures' in its config.json"
-        )
-
-    for name, comp_config in candidates:
-        arch = comp_config["architectures"][0]
-        if "CausalLM" in arch or "ConditionalGeneration" in arch:
-            return name, processor_subfolder, comp_config
-
-    return candidates[0][0], processor_subfolder, candidates[0][1]
-
-
-def _find_pipeline_model_subfolder_remote(repo_id: str, file_list: list) -> tuple:
-    """Find model/processor subfolders from a remote HF repo with model_index.json.
-
-    Returns:
-        (model_subfolder, processor_subfolder, config_dict)
-    """
-    from huggingface_hub import hf_hub_download
-
-    index_path = hf_hub_download(repo_id, "model_index.json")
-    with open(index_path, "r", encoding="utf-8") as f:
-        model_index = json.load(f)
-
-    processor_subfolder = None
-    for name, value in model_index.items():
-        if name == "processor" and isinstance(value, list):
-            processor_subfolder = "processor"
-            break
-
-    candidates = []
-    for name, value in model_index.items():
-        if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
-            continue
-        comp_config_file = f"{name}/config.json"
-        if comp_config_file not in file_list:
-            continue
-        comp_config_path = hf_hub_download(repo_id, comp_config_file)
-        with open(comp_config_path, "r", encoding="utf-8") as f:
-            comp_config = json.load(f)
-        if "architectures" in comp_config:
-            candidates.append((name, comp_config))
-
-    if not candidates:
-        raise FileNotFoundError(
-            f"model_index.json found for {repo_id} but no component with 'architectures' in its config.json"
+            f"model_index.json found in {model_dir_or_repo} but no component with 'architectures' in its config.json"
         )
 
     for name, comp_config in candidates:
@@ -505,7 +483,7 @@ def mllm_load_model(
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
         else:
-            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder_local(
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(
                 pretrained_model_name_or_path
             )
     else:
@@ -517,7 +495,7 @@ def mllm_load_model(
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
         elif "model_index.json" in file_list:
-            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder_remote(
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(
                 pretrained_model_name_or_path, file_list
             )
         elif "config.json.gz" in file_list:

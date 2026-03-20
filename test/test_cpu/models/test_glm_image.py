@@ -26,7 +26,7 @@ import pytest
 import torch.nn as nn
 
 from auto_round.special_model_handler import _get_glm_image_multimodal_block
-from auto_round.utils.model import _find_pipeline_model_subfolder_local
+from auto_round.utils.model import _find_pipeline_model_subfolder
 
 # ---------------------------------------------------------------------------
 # Helpers – fake model hierarchy
@@ -191,7 +191,7 @@ class TestFindPipelineModelSubfolderLocal:
                 "vae": {"model_type": "autoencoder_kl"},  # no architectures → ignored
             },
         )
-        model_subfolder, processor_subfolder, cfg = _find_pipeline_model_subfolder_local(pipeline_dir)
+        model_subfolder, processor_subfolder, cfg = _find_pipeline_model_subfolder(pipeline_dir)
 
         assert model_subfolder == "vision_language_encoder"
         assert processor_subfolder == "processor"
@@ -210,7 +210,7 @@ class TestFindPipelineModelSubfolderLocal:
             },
             has_processor=False,
         )
-        model_subfolder, processor_subfolder, cfg = _find_pipeline_model_subfolder_local(pipeline_dir)
+        model_subfolder, processor_subfolder, cfg = _find_pipeline_model_subfolder(pipeline_dir)
 
         assert model_subfolder == "vision_language_encoder"
         assert processor_subfolder is None  # no processor entry
@@ -222,7 +222,7 @@ class TestFindPipelineModelSubfolderLocal:
             {"vision_language_encoder": {"architectures": ["GlmImageForConditionalGeneration"]}},
             has_processor=False,
         )
-        _, processor_subfolder, _ = _find_pipeline_model_subfolder_local(pipeline_dir)
+        _, processor_subfolder, _ = _find_pipeline_model_subfolder(pipeline_dir)
         assert processor_subfolder is None
 
     def test_with_processor_returns_processor_subfolder(self, tmp_path):
@@ -232,13 +232,13 @@ class TestFindPipelineModelSubfolderLocal:
             {"vision_language_encoder": {"architectures": ["GlmImageForConditionalGeneration"]}},
             has_processor=True,
         )
-        _, processor_subfolder, _ = _find_pipeline_model_subfolder_local(pipeline_dir)
+        _, processor_subfolder, _ = _find_pipeline_model_subfolder(pipeline_dir)
         assert processor_subfolder == "processor"
 
     def test_raises_when_no_model_index(self, tmp_path):
         """FileNotFoundError raised when neither config.json nor model_index.json exists."""
         with pytest.raises(FileNotFoundError, match="model_index.json"):
-            _find_pipeline_model_subfolder_local(str(tmp_path))
+            _find_pipeline_model_subfolder(str(tmp_path))
 
     def test_raises_when_no_component_has_architectures(self, tmp_path):
         """FileNotFoundError raised when no component config contains 'architectures'."""
@@ -250,7 +250,7 @@ class TestFindPipelineModelSubfolderLocal:
             },
         )
         with pytest.raises(FileNotFoundError, match="architectures"):
-            _find_pipeline_model_subfolder_local(pipeline_dir)
+            _find_pipeline_model_subfolder(pipeline_dir)
 
     def test_falls_back_to_first_candidate_when_no_preferred_arch(self, tmp_path):
         """When no ConditionalGeneration/CausalLM arch exists, first candidate is used."""
@@ -262,7 +262,7 @@ class TestFindPipelineModelSubfolderLocal:
             },
             has_processor=False,
         )
-        model_subfolder, _, cfg = _find_pipeline_model_subfolder_local(pipeline_dir)
+        model_subfolder, _, cfg = _find_pipeline_model_subfolder(pipeline_dir)
         # Must be one of the candidates, not crash
         assert model_subfolder in ("text_encoder", "image_encoder")
         assert "architectures" in cfg

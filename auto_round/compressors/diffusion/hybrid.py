@@ -492,11 +492,10 @@ class HybridCompressor(DiffusionCompressor):
                     break
 
         if total_cnt == 0:
-            logger.error(
+            raise RuntimeError(
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length"
+                f"dataset or decrease the sequence length"
             )
-            exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantization. "
