@@ -186,7 +186,7 @@ class BaseCompressor(object):
             is_immediate_packing=self.is_immediate_packing,
             is_immediate_saving=self.is_immediate_saving,
             formats=self.formats,
-            static_kv_dtype=self.config.static_kv_dtype,
+            static_kv_dtype=self.static_kv_dtype,
         )
         self.model_context = ModelContext(
             model,
@@ -376,14 +376,6 @@ class BaseCompressor(object):
 
         if self.compress_context.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
-
-        if self.compress_context.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.info(
-                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
-                "Setting `low_cpu_mem_usage` to False."
-            )
-            self.compress_context.low_cpu_mem_usage = False
-            self.is_immediate_saving = False
 
         if self.compress_context.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():

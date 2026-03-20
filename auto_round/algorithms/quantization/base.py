@@ -51,6 +51,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     clear_memory,
+    compress_layer_names,
     convert_dtype_str2torch,
     find_matching_blocks,
     get_block_names,
@@ -245,10 +246,12 @@ class BaseQuantizers:
     def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
         # before get_format, therefore, compress_context.formats is str
         is_gguf_format = (f := getattr(self.compress_context, "formats", None)) is not None and "gguf" in f
+        predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+        compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
             if predefined_ignore_layers:
-                logger.info(f"Using predefined ignore_layers: {predefined_ignore_layers}")
+                logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
                 tmp_str = ",".join(predefined_ignore_layers)
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str

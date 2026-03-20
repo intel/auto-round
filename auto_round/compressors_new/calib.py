@@ -44,6 +44,7 @@ from auto_round.utils import (
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
+    compress_layer_names,
     convert_module_to_hp_if_necessary,
     get_block_names,
     get_module,
@@ -714,10 +715,10 @@ class CalibCompressor(BaseCompressor):
 
             if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
-                    self._offloader.offload(model, n, overwrite=True)
+                    self._offloader(model, n, overwrite=True)
                 else:
                     for name in names:
-                        self._offloader.offload(model, name, overwrite=True)
+                        self._offloader(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)
 
@@ -790,9 +791,12 @@ class CalibCompressor(BaseCompressor):
         clear_memory(device_list=self.compress_context.device_list)
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
-            self._offloader.offload(
-                self.model_context.model, all_blocks, clear_memory=True, device_list=self.compress_context.device_list
-            )
+            if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
+                self._offloader(self.model_context.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                if not self._offloader.enabled:
+                    self.compress_context.low_cpu_mem_usage = False
+            else:
+                self.compress_context.low_cpu_mem_usage = False
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -831,6 +835,8 @@ class CalibCompressor(BaseCompressor):
                 )
         pbar.set_description("Quantizing done")
         pbar.close()
+        if self.compress_context.low_cpu_mem_usage:
+            self._offloader.reload(self.model_context.model)
         self._quantize_layers(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(
@@ -838,9 +844,6 @@ class CalibCompressor(BaseCompressor):
         )
         if self.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
-
-        if self.compress_context.low_cpu_mem_usage:
-            self._offloader.reload(self.model_context.model)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -861,7 +864,8 @@ class CalibCompressor(BaseCompressor):
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
         if len(unquantized_layers) > 0:
-            summary_info += f",  {unquantized_layers} have not been quantized"
+            compressed_unquantized_layers = compress_layer_names(unquantized_layers)
+            summary_info += f",  {compressed_unquantized_layers} have not been quantized"
         logger.info(summary_info)
 
         self.model_context.quantized = True
@@ -915,6 +919,7 @@ class CalibCompressor(BaseCompressor):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.compress_context.device,
                     disable_opt_rtn=self.disable_opt_rtn,
+                    enable_rtn=self.iters == 0,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -1104,7 +1109,7 @@ class CalibratedRTNCompressor(CalibCompressor):
                 )
 
                 if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
-                    self._offloader.offload(self.model_context.model, block_name)
+                    self._offloader(self.model_context.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.compress_context.device_list)
                 else:

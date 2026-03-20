@@ -143,7 +143,7 @@ class ZeroShotCompressor(BaseCompressor):
                 self.quantizer.quantize_block(block_name, input_ids, input_others)
 
                 if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                    self._offloader.offload(self.model_context.model, block_name)
+                    self._offloader(self.model_context.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.compress_context.device_list)
                 else:
@@ -247,7 +247,7 @@ class ZeroShotCompressor(BaseCompressor):
                         self.quantizer.quantize_block(block_name)
 
                         if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                            self._offloader.offload(self.model, block_name)
+                            self._offloader(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)

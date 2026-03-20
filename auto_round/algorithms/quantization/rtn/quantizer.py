@@ -166,6 +166,7 @@ class RTNQuantizer(BaseQuantizers):
                     enable_round_tuning=False,
                     enable_torch_compile=self.compress_context.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
+                    enable_rtn=True,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -181,6 +182,7 @@ class RTNQuantizer(BaseQuantizers):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.compress_context.enable_torch_compile,
+                        enable_rtn=True,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
