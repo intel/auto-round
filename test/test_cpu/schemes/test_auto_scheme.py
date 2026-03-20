@@ -57,9 +57,7 @@ class TestAutoScheme:
 
     def test_autoscheme_mxfp_with_static_kv(self, tiny_opt_model_path):
         """MXFP4+MXFP8 AutoScheme with static_kv_dtype='fp8' should yield
-        non-zero k_scale and v_scale on every attention layer."""
-        model_name = tiny_opt_model_path
-
+        non-zero k_scale and v_scale on the first attention layer."""
         scheme = AutoScheme(
             avg_bits=5.0,
             options=("MXFP4", "MXFP8"),
@@ -74,6 +72,7 @@ class TestAutoScheme:
             iters=0,
             nsamples=2,
             seqlen=8,
+            disable_opt_rtn=True,
         )
         quantized_model, _ = ar.quantize_and_save(
             format="fake",
@@ -84,7 +83,7 @@ class TestAutoScheme:
         # k_scale and v_scale registered as parameters with non-zero values.
         attn = quantized_model.model.decoder.layers[0].self_attn
         assert hasattr(attn, "k_scale"), "missing k_scale after quantization"
-        assert hasattr(attn, "v_scale"), " missing v_scale after quantization"
+        assert hasattr(attn, "v_scale"), "missing v_scale after quantization"
         k_val = attn.k_scale.item()
         v_val = attn.v_scale.item()
         assert k_val != 0.0, (
