@@ -1229,7 +1229,7 @@ class BaseCompressor(object):
         set_module(self.model, name, m)
         tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
         # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
-        if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf():
+        if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
             m = m.to(tuning_device)
             m.scale = None
             m.zp = None
@@ -1394,7 +1394,7 @@ class BaseCompressor(object):
                     tied_weights_layers.append(lm_head_name)
 
             if use_blockwise_quantization:  # The ram usage is a little higher
-                all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+                all_to_quantized_module_names = list(dict.fromkeys(all_to_quantized_module_names))
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))

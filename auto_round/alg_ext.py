@@ -561,7 +561,10 @@ def make_qp_quants(nmax, data, quant_weights, v=0):
     L = torch.round(iscale * data + v).clip(max=nmax)
     sumlx = torch.sum(quant_weights * data * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
-    return sumlx / suml2, L
+    # When suml2 is zero (all L=0 or all quant_weights=0), fall back to the
+    # simple max-based scale estimate to avoid NaN propagating into the GGUF file.
+    fallback_d = group_max.squeeze(-1) / nmax
+    return torch.where(suml2 > 0, sumlx / suml2, fallback_d), L
 
 
 def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, v=0):
@@ -685,7 +688,10 @@ def make_qp_new_quants(data, orig_scale, orig_mins, quant_weights, bits=4, super
     quant_weights = quant_weights.view(orig_scale.shape)
     sumlx = torch.sum(quant_weights * orig_scale * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
-    return sumlx / suml2, L
+    # When suml2 is zero, fall back to the simple max-based scale estimate
+    # to avoid NaN propagating into the GGUF file.
+    fallback_d = group_max.squeeze(-1) / nmax
+    return torch.where(suml2 > 0, sumlx / suml2, fallback_d), L
 
 
 def quant_tensor_gguf_asym_dq(
