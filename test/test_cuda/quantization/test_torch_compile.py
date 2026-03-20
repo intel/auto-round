@@ -70,6 +70,3 @@ class TestTorchCompile:
         assert len(saved_files) > 0, "No GGUF file was generated"
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
-
-
-
