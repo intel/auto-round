@@ -10,9 +10,7 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import (
-    require_awq,
     require_gptqmodel,
-    require_package_version_ut,
 )
 from ...helpers import get_model_path
 
@@ -129,8 +127,7 @@ class TestAutoRound:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @require_awq
-    @require_package_version_ut("transformers", "<4.57.0")
+    @require_gptqmodel
     def test_fallback_regex_for_awq_format(self, tiny_opt_model_path, dataloader):
         layer_config = {
             "lm_head": {"bits": 16},

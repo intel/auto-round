@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_autogptq, require_gptqmodel
-from ...helpers import evaluate_accuracy, get_model_path, model_infer
+from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, model_infer
 
 
 class TestAutoRoundTorchBackend:
@@ -93,3 +93,30 @@ class TestAutoRoundTorchBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)
         torch.cuda.empty_cache()
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    @require_gptqmodel
+    def test_gptqmodel_awq_torch_4bits_group_size_16(self, dataloader):
+        """Test AWQ quantization with gptqmodel:awq_torch backend (group_size=16, float16)."""
+        model_path = get_model_path("facebook/opt-125m")
+        bits, group_size, sym = 4, 16, True
+        autoround = AutoRound(
+            model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, dataset=dataloader
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+
+        quantization_config = AutoRoundConfig(backend="gptqmodel:awq_torch")
+        model = AutoModelForCausalLM.from_pretrained(
+            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+        )
+
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        # Inference generation check
+        output = model_infer(model, tokenizer)
+        assert isinstance(output, str) and len(output.strip()) > 0, "Model failed to generate non-empty output"
+        generated = generate_prompt(model, tokenizer, "There is a girl who likes adventure,")
+        assert len(generated) > len("There is a girl who likes adventure,"), "Generation did not produce new tokens"
+        # Accuracy check
+        evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
+        torch.cuda.empty_cache()
+        shutil.rmtree("./saved", ignore_errors=True)
