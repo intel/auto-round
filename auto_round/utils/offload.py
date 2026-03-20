@@ -100,10 +100,11 @@ def _clear_module_weights(
         module: The leaf module to clear.
         cache_numel: If *True*, store ``_cached_weight_numel`` and
             ``_cached_weight_shape`` before clearing.
-        restorable_params: If provided, only clear parameters whose names are
-            in this set.  Parameters not in the set are kept intact because
-            they cannot be restored from the checkpoint (e.g. dynamically
-            registered calibration parameters).
+        restorable_params: If provided, only clear state-dict entries
+            (parameters **and** buffers) whose names are in this set.
+            Entries not in the set are kept intact because they cannot be
+            restored from the checkpoint (e.g. dynamically registered
+            calibration parameters).
     """
     if module is None:
         return
@@ -781,8 +782,9 @@ class OffloadManager:
                 model_dir = _resolve_model_dir(self.model_dir)
                 self._weight_map = _build_weight_map(model_dir)
             weight_map = self._weight_map
-        except Exception:
-            return None
+        except Exception as e:
+            logger.warning(f"OffloadManager: failed to build weight map, skipping clear to preserve dynamic params: {e}")
+            return set()
         prefix = block_name + "."
         return {k[len(prefix):] for k in weight_map if k.startswith(prefix)}
 
