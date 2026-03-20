@@ -119,5 +119,3 @@ class TestAutoRound:
         print(generated_text)
 
         assert "!!!" not in generated_text
-
-        shutil.rmtree(self.save_dir, ignore_errors=True)

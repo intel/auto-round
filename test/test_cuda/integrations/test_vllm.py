@@ -180,4 +180,3 @@ def test_auto_round_awq_format_vllm():
     generated_text = outputs[0].outputs[0].text
     print(generated_text)
     assert len(generated_text.strip()) > 0, "vLLM AWQ inference produced empty output"
-    shutil.rmtree(save_dir, ignore_errors=True)
