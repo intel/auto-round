@@ -192,10 +192,15 @@ def save_model(
         model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     try:
-        copy_missing_tensors_from_source(
-            source_dir=model.config._name_or_path,
-            target_dir=save_dir,
-        )
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "_name_or_path")
+            and model.config.name_or_path is not None  # set None for tiny model
+        ):
+            copy_missing_tensors_from_source(
+                source_dir=model.config._name_or_path,
+                target_dir=save_dir,
+            )
     except Exception as e:
         logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
 
@@ -213,7 +218,12 @@ def save_model(
             json.dump(model.config.quantization_config, f, indent=2)
 
     try:
-        copy_python_files_from_model_cache(model, save_dir)
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "_name_or_path")
+            and model.config.name_or_path is not None  # set None for tiny model
+        ):
+            copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
 

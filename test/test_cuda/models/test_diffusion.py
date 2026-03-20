@@ -11,36 +11,56 @@ from PIL import Image
 from auto_round import AutoRoundDiffusion
 
 from ...envs import require_gptqmodel, require_optimum, require_vlm_env
-from ...helpers import transformers_version
+from ...helpers import get_captions_dataset_path, get_model_path, transformers_version
 
 
 class TestAutoRound:
-    model_name = "/dataset/FLUX.1-dev"
+    model_name = get_model_path("black-forest-labs/FLUX.1-dev")
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_diffusion_rtn(self):
+        from diffusers import AutoPipelineForText2Image
+
+        ## load the model
+        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
+        # build tiny model for testing since the full model is too large to quantize and evaluate in CI
+        pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
+        pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
+
+        ## quantize the model
+        autoround = AutoRoundDiffusion(
+            pipe,
+            tokenizer=None,
+            scheme="MXFP4",
+            iters=0,
+            disable_opt_rtn=True,
+            num_inference_steps=2,
+            dataset=get_captions_dataset_path(),
+        )
+        # skip model saving since it takes much time
+        autoround.quantize()
+
+    @pytest.mark.skip_ci(reason="Tuning will OOM in CI; Only tiny model is suggested")  # skip this test in CI
     @require_optimum
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
-    )
     def test_diffusion_tune(self):
         from diffusers import AutoPipelineForText2Image
 
         ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name).to("cuda")
+        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
         model = pipe.transformer
+        # build tiny model for testing since the full model is too large to quantize and evaluate in CI
+        pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
+        pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
 
         layer_config = {}
         # skip some layers since it takes much time
@@ -52,6 +72,7 @@ class TestAutoRound:
                 layer_config[n] = {"bits": 16, "act_bits": 16}
 
         ## quantize the model
+        # https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv
         autoround = AutoRoundDiffusion(
             pipe,
             tokenizer=None,
@@ -60,37 +81,16 @@ class TestAutoRound:
             nsamples=1,
             num_inference_steps=2,
             layer_config=layer_config,
-            dataset="/dataset/captions_source.tsv",
+            dataset=get_captions_dataset_path(),
         )
         # skip model saving since it takes much time
         autoround.quantize()
 
-    @pytest.mark.skipif(
-        transformers_version >= version.parse("5.0.0"),
-        reason="cannot import name 'MT5Tokenizer' from 'transformers', https://github.com/huggingface/diffusers/issues/13035",
-    )
-    def test_diffusion_rtn(self):
-        from diffusers import AutoPipelineForText2Image
-
-        ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
-
-        ## quantize the model
-        autoround = AutoRoundDiffusion(
-            pipe,
-            tokenizer=None,
-            scheme="MXFP4",
-            iters=0,
-            num_inference_steps=2,
-            dataset="/dataset/captions_source.tsv",
-        )
-        # skip model saving since it takes much time
-        autoround.quantize()
-
+    @pytest.mark.skip_ci(reason="Download large model; Time-consuming")
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model
 
-        assert is_diffusion_model("/dataset/FLUX.1-dev")
-        assert is_diffusion_model("/models/stable-diffusion-2-1")
-        assert is_diffusion_model("/models/stable-diffusion-xl-base-1.0")
-        assert is_diffusion_model("/models/Qwen3-8B") is False
+        assert is_diffusion_model(get_model_path("black-forest-labs/FLUX.1-dev"))
+        assert is_diffusion_model(get_model_path("sd2-community/stable-diffusion-2-1"))
+        assert is_diffusion_model(get_model_path("stabilityai/stable-diffusion-xl-base-1.0"))
+        assert is_diffusion_model(get_model_path("Qwen/Qwen3-8B")) is False

@@ -150,6 +150,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
+    "transform_config",
 )
 
 
@@ -544,12 +545,14 @@ class BaseCompressor(object):
         self.wrapper_block = wrapper_block
         if self.enable_alg_ext:
             try:
-                logger.warning_once("using algorithm extension for quantization.")
+                logger.info("using algorithm extension for quantization.")
                 from auto_round.alg_ext import wrapper_autoround
 
                 wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
+
+        self.transform_config = kwargs.pop("transform_config", {})
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -825,6 +828,9 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_nv_fp(self.act_data_type):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
+        if self.enable_torch_compile and self.super_group_size is not None and self.enable_alg_ext:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
 
     def _dq_check(self) -> None:
         """Reset the default value of super_bits and super_group_size"""
@@ -1258,6 +1264,7 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
+                    enable_rtn=self.iters == 0,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -1273,6 +1280,7 @@ class BaseCompressor(object):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.enable_torch_compile,
+                        enable_rtn=self.iters == 0,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1431,7 +1439,7 @@ class BaseCompressor(object):
                             shard_writer(self, name=block_name)
                             block.to("meta")
                         if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                            self._offloader.offload(self.model, block_name)
+                            self._offloader(self.model, block_name)
                         clear_memory(device_list=self.device_list)
                         memory_monitor.log_summary()
                         pbar.update(1)
@@ -1595,7 +1603,7 @@ class BaseCompressor(object):
 
                 mv_module_from_gpu(block)
                 if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                    self._offloader.offload(self.model, block_name)
+                    self._offloader(self.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.device_list)
                 else:
@@ -1697,14 +1705,6 @@ class BaseCompressor(object):
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
-
-        if self.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.info(
-                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
-                "Setting `low_cpu_mem_usage` to False."
-            )
-            self.low_cpu_mem_usage = False
-            self.is_immediate_saving = False
 
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():
@@ -1819,7 +1819,12 @@ class BaseCompressor(object):
         clear_memory(device_list=self.device_list)
         logger.info("caching done")
         if self.low_cpu_mem_usage:
-            self._offloader.offload(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+            if self.is_model_patched and not self.is_immediate_saving:
+                self._offloader(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                if not self._offloader.enabled:
+                    self.low_cpu_mem_usage = False
+            else:
+                self.low_cpu_mem_usage = False
         if len(all_blocks) > 1:
             pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         else:
@@ -1859,14 +1864,13 @@ class BaseCompressor(object):
                 )
         pbar.set_description("Quantizing done")
         pbar.close()
+        if self.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
         self._quantize_layers(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
         if self.is_immediate_saving:
             shard_writer(self, is_finalize=True)
-
-        if self.low_cpu_mem_usage:
-            self._offloader.reload(self.model)
 
         end_time = time.time()
         cost_time = end_time - start_time
@@ -1940,6 +1944,7 @@ class BaseCompressor(object):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                     disable_opt_rtn=self.disable_opt_rtn,
+                    enable_rtn=self.iters == 0,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -2708,6 +2713,7 @@ class BaseCompressor(object):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            enable_rtn=self.iters == 0,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -3019,6 +3025,7 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            enable_rtn=self.iters == 0,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
@@ -3300,10 +3307,10 @@ class BaseCompressor(object):
 
             if self.low_cpu_mem_usage and not self.is_immediate_saving:
                 if nblocks == 1:
-                    self._offloader.offload(model, n, overwrite=True)
+                    self._offloader(model, n, overwrite=True)
                 else:
                     for name in names:
-                        self._offloader.offload(model, name, overwrite=True)
+                        self._offloader(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)
 
