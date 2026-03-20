@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from auto_round.utils.weight_handler import (
@@ -14,6 +15,7 @@ class TestCompressedTensor:
     mxfp4_model_path = "QuixiAI/Llama-3.2-1B-MXFP4"
     fp8_block_model_path = "RedHatAI/Qwen3-0.6B-FP8-BLOCK"
 
+    @pytest.mark.skip(reason="CompressedLinear removed in compressed_tensors PR #610, see #1578")
     def test_fp8_block(self):
         model = get_tiny_model(get_model_path(self.fp8_block_model_path))
         assert (
@@ -26,6 +28,7 @@ class TestCompressedTensor:
             type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear
         ), "CompressedLinear layer was not converted to Linear"
 
+    @pytest.mark.skip(reason="CompressedLinear removed in compressed_tensors PR #610, see #1578")
     def test_nvfp4(self):
         model = get_tiny_model(get_model_path(self.nvfp4_model_path))
         assert (
@@ -38,6 +41,7 @@ class TestCompressedTensor:
             type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear
         ), "CompressedLinear layer was not converted to Linear"
 
+    @pytest.mark.skip(reason="CompressedLinear removed in compressed_tensors PR #610, see #1578")
     def test_mxfp4(self):
         model = get_tiny_model(get_model_path(self.mxfp4_model_path))
         assert (

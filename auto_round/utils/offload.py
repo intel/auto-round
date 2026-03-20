@@ -786,7 +786,7 @@ class OffloadManager:
             logger.warning(f"OffloadManager: failed to build weight map, skipping clear to preserve dynamic params: {e}")
             return set()
         prefix = block_name + "."
-        return {k[len(prefix):] for k in weight_map if k.startswith(prefix)}
+        return {k[len(prefix) :] for k in weight_map if k.startswith(prefix)}
 
     def _clear(self, module: torch.nn.Module, block_name: str | None = None) -> None:
         """Clear weight/bias tensors in module and its sub-modules.
@@ -800,12 +800,14 @@ class OffloadManager:
             if restorable is not None:
                 # Build the set of param basenames that are restorable for this submodule
                 sub_prefix = (name + ".") if name else ""
-                sub_restorable = {k[len(sub_prefix):] for k in restorable
-                                  if k.startswith(sub_prefix) and "." not in k[len(sub_prefix):]}
+                sub_restorable = {
+                    k[len(sub_prefix) :]
+                    for k in restorable
+                    if k.startswith(sub_prefix) and "." not in k[len(sub_prefix) :]
+                }
             else:
                 sub_restorable = None
-            _clear_module_weights(submodule, cache_numel=self.cache_numel,
-                                  restorable_params=sub_restorable)
+            _clear_module_weights(submodule, cache_numel=self.cache_numel, restorable_params=sub_restorable)
 
     @staticmethod
     def _needs_loading(module: torch.nn.Module) -> bool:
