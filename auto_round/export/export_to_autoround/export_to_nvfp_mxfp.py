@@ -234,9 +234,7 @@ def save_quantized_as_fp(
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
-    from auto_round.utils.common import looks_like_regex
-
-    names = [n for n in layer_config.keys() if not looks_like_regex(n)]
+    names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally

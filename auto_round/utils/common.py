@@ -629,22 +629,6 @@ def to_standard_regex(pattern: str) -> str:
     return regex
 
 
-def looks_like_regex(pattern: str) -> bool:
-    """Heuristic check whether a string is intended as a regex pattern.
-
-    Used to avoid treating regex keys (e.g. `.*k_proj.*`) as exact PyTorch
-    submodule dotted paths. `get_submodule/set_submodule` only support exact names.
-    """
-    if pattern is None:
-        return False
-    if not isinstance(pattern, str):
-        return False
-    if pattern.startswith("re:"):
-        return True
-    # Regex meta characters and escapes are not valid in exact module names.
-    return any(ch in pattern for ch in ("*", "?", "[", "]", "(", ")", "|", "^", "$", "+", "\\"))
-
-
 def matches_any_regex(layer_name: str, regex_config: dict[str, dict]) -> bool:
     """
     Check whether `layer_name` matches any regex pattern key in `regex_config`.

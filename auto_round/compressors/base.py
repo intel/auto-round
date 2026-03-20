@@ -3394,16 +3394,11 @@ class BaseCompressor(object):
         all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
 
         for key in self.layer_config.keys():
-            from auto_round.utils.common import looks_like_regex
-
-            if looks_like_regex(key):
-                continue
             if key in all_layers_in_block:
                 continue
             layer = get_module(self.model, key)
             if layer is None:
-                logger.error(f"could not find layer {key} in the model, exit...")
-                exit(-1)
+                continue
             if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 

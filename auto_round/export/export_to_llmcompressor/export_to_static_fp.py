@@ -149,9 +149,7 @@ def save_quantized_as_static_fp(
     processor = kwargs.get("processor", None)
     image_processor = kwargs.get("image_processor", None)
 
-    from auto_round.utils.common import looks_like_regex
-
-    names = [n for n in layer_config.keys() if not looks_like_regex(n)]
+    names = list(layer_config.keys())
     max_workers = 1
     if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally

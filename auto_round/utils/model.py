@@ -1100,16 +1100,13 @@ def get_module(module, key):
     Args:
         module (torch.nn.Module): original model
         key (str): module name
-    """
-    from auto_round.utils.common import looks_like_regex
 
-    if looks_like_regex(key):
-        return None
+    Returns:
+        The submodule if found, None otherwise.
+    """
     try:
         return module.get_submodule(key)
-    except AttributeError:
-        # Some configs/tests may include keys that don't exist in a given model
-        # (e.g. optional norms). Preserve prior "missing -> None" behavior.
+    except (AttributeError, KeyError):
         return None
 
 
@@ -1121,15 +1118,9 @@ def set_module(model, key, new_module):
         key (str): module name
         new_module (torch.nn.Module): new module to be inserted
     """
-    from auto_round.utils.common import looks_like_regex
-
-    if looks_like_regex(key):
-        return
     try:
         model.set_submodule(key, new_module)
-    except AttributeError:
-        # Skip missing paths to preserve previous non-throwing behavior at call sites
-        # that may include optional modules.
+    except (AttributeError, KeyError):
         return
 
 

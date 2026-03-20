@@ -83,13 +83,9 @@ def _collect_modules_to_not_convert(
 
     layers_in_blocks = set(get_layer_names_in_block(model, quant_block_list=all_blocks))
 
-    from auto_round.utils.common import looks_like_regex
-
     # 2. Collect non-quantized layers from layer_config
     layers_from_block_patterns = set()
     for layer_name, layer_cfg in layer_config.items():
-        if looks_like_regex(layer_name):
-            continue
         if not check_to_quantized(layer_cfg) and not any(name in layer_name for name in modules_to_not_convert):
             layers_from_block_patterns.add(layer_name)
     modules_to_not_convert.update(layers_from_block_patterns)
@@ -180,9 +176,7 @@ def save_quantized_as_autoawq(
     else:
         compressed_model = model
 
-    from auto_round.utils.common import looks_like_regex
-
-    names = [n for n in layer_config.keys() if not looks_like_regex(n)]
+    names = list(layer_config.keys())
 
     backend = None
     max_workers = 1
