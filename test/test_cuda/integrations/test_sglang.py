@@ -35,9 +35,12 @@ class TestAutoRound:
         )
         prompts = ["Hello, my name is"]
         sampling_params = {"temperature": 0.6, "top_p": 0.95}
-        outputs = llm.generate(prompts, sampling_params)
-        llm.shutdown()
-        return outputs[0]["text"]
+        try:
+            outputs = llm.generate(prompts, sampling_params)
+            text = outputs[0]["text"]
+            return text
+        finally:
+            llm.shutdown()
 
     def test_ar_format_sglang(self, dataloader):
         autoround = AutoRound(
