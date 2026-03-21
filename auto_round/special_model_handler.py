@@ -28,6 +28,7 @@ mllms_with_limited_bs = (
     "mllama",
     "qwen2_5_omni",
     "qwen3_omni_moe",
+    "glm_image",
 )  # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
@@ -42,6 +43,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "llama4",
     "internvl_chat",
     "glm4v_moe",
+    "glm_image",
     "qwen3_vl_moe",
     "qwen2_5_omni",
     "qwen3_omni_moe",
@@ -171,10 +173,36 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     return block_names
 
 
+def _get_glm_image_multimodal_block(model, quant_vision=False):
+    """Get block names for GLM-Image AR model.
+
+    GLM-Image AR model structure:
+    - model.visual.blocks: vision encoder
+    - model.language_model.layers: autoregressive text backbone
+
+    By default, only text backbone is quantized. Set quant_vision=True to include
+    the visual encoder blocks.
+    """
+    block_names = []
+
+    if quant_vision and hasattr(model, "model") and hasattr(model.model, "visual"):
+        if hasattr(model.model.visual, "blocks"):
+            block_names.append([f"model.visual.blocks.{i}" for i in range(len(model.model.visual.blocks))])
+
+    if hasattr(model, "model") and hasattr(model.model, "language_model"):
+        if hasattr(model.model.language_model, "layers"):
+            block_names.append(
+                [f"model.language_model.layers.{i}" for i in range(len(model.model.language_model.layers))]
+            )
+
+    return block_names
+
+
 SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block,
     "qwen2_5_omni": _get_qwen2_5_omni_multimodal_block,
     "qwen3_omni_moe": _get_qwen3_omni_moe_multimodal_block,
+    "glm_image": _get_glm_image_multimodal_block,
 }
 
 

@@ -53,6 +53,7 @@ from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
     release_layer_safely,
+    resolve_pipeline_export_layout,
     save_model,
 )
 from auto_round.schemes import QuantizationScheme
@@ -211,12 +212,17 @@ def save_quantized_as_autogptq(
     safe_serialization = kwargs.get("safe_serialization", True)
 
     # --- Save metadata (tokenizer, processor, etc.) ---
+    processor_output_dir = output_dir
+    model_output_dir = output_dir
+    if output_dir:
+        model_output_dir, processor_output_dir, _ = resolve_pipeline_export_layout(model, output_dir)
+
     if output_dir:
         # if os.path.exists(output_dir):
         #     logger.info(f"{output_dir} already exists, may cause overwrite conflicts.")
         for comp in (tokenizer, processor, image_processor):
             if comp is not None and hasattr(comp, "save_pretrained"):
-                comp.save_pretrained(output_dir)
+                comp.save_pretrained(processor_output_dir)
 
     # --- Handle quantization structure ---
     all_blocks = quant_block_list
@@ -319,6 +325,6 @@ def save_quantized_as_autogptq(
 
     dtype = torch.float16  ##force dtype to fp16
     save_model(
-        model, output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
+        model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
     )
     return model

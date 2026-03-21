@@ -486,6 +486,7 @@ MM_KEYS = [
     "token2wav",
     "code2wav",
     "code_predictor",
+    "vqmodel",
     "vision_model",
     "audio_tower",
     "vision_encoder",
