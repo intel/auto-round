@@ -1,0 +1,67 @@
+trigger: none
+
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round
+      - auto_round_extension
+      - .azure-pipelines/scripts/performance
+      - .azure-pipelines/performance-test.yaml
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
+variables:
+  CONTAINER_NAME: "AutoRoundPerfTest"
+
+pool: GAUDI
+
+stages:
+  - stage: PerformanceTest
+    displayName: Performance Test
+    dependsOn: []
+    jobs:
+      - job: PerformanceTestJob
+        displayName: Performance Test Job
+        steps:
+          - template: template/docker-template.yml
+            parameters:
+              containerName: $(CONTAINER_NAME)
+              imageSource: pull
+
+          - script: |
+              docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \
+                && export UV_NO_PROGRESS=1 \
+                && export UV_SYSTEM_PYTHON=1 \
+                && pip install uv \
+                && uv pip install -r test/test_hpu/requirements.txt \
+                && uv pip install huggingface_hub \
+                && uv pip list"
+            displayName: "HPU Env Setup"
+
+          - script: |
+              docker exec $(CONTAINER_NAME) \
+              bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
+                && bash perf_test.sh"
+            displayName: "Run performance test"
+
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/log_dir
+              artifact: "Performance_Test_Logs"
+              publishLocation: "pipeline"
+
+          - task: Bash@3
+            condition: always()
+            inputs:
+              targetType: "inline"
+              script: |
+                docker stop $(CONTAINER_NAME)
+                docker rm -vf $(CONTAINER_NAME) || true
+            displayName: "Docker clean up"

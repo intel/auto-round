@@ -86,7 +86,14 @@ class QuantizationScheme:
         for field in self.get_attributes():
             if skip_act_check and field.startswith("act_"):
                 continue
-            if getattr(self, field) != getattr(other, field):
+            self_val = getattr(self, field)
+            other_val = getattr(other, field)
+            # Treat None and empty dict as equivalent for dict fields like transform_config
+            if self_val != other_val:
+                if isinstance(self_val, dict) and not self_val and other_val is None:
+                    continue
+                if isinstance(other_val, dict) and not other_val and self_val is None:
+                    continue
                 return False
         return True
 
