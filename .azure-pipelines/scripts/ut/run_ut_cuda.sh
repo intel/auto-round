@@ -107,7 +107,7 @@ function run_unit_test() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort); do
+    for test_file in $(find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
@@ -231,7 +231,40 @@ function run_unit_test_sglang() {
     fi
 }
 
+function run_unit_test_vllm() {
+    # install unit test dependencies
+    create_conda_env
+
+    cd ${REPO_PATH}/test
+    rm -rf .coverage* *.xml *.html
+    uv pip install -r test_cuda/requirements_vllm.txt
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
+
+    pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
+    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    # run unit tests individually with separate logs
+    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
+        echo "Running ${test_file}..."
+
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vllm.html --self-contained-html --cov-report xml:coverage_vllm.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+    done
+
+    if [ -f "report_vllm.html" ] && [ -f "coverage_vllm.xml" ]; then
+        mv report_vllm.html ${LOG_DIR}/
+        mv coverage_vllm.xml ${LOG_DIR}/
+    fi
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_vllm_test*.log" "CUDA VLLM Unit Tests"; then
+        echo "Some CUDA VLLM unit tests failed. Please check the individual log files for details."
+    fi
+}
+
 function main() {
+    run_unit_test_vllm
     run_unit_test_vlm
     run_unit_test_llmc
     run_unit_test_sglang

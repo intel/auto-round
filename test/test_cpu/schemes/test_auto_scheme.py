@@ -7,19 +7,14 @@ from auto_round import AutoRound, AutoScheme
 
 
 class TestAutoScheme:
-    save_dir = "./saved"
-
-    @pytest.fixture(autouse=True, scope="class")
-    def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
         yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
+    @classmethod
+    def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_auto_scheme_export(self, tiny_opt_model_path):
@@ -27,12 +22,10 @@ class TestAutoScheme:
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         ar.quantize_and_save(self.save_dir)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
         scheme = AutoScheme(avg_bits=4, options=("mxfp4"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
         ar.quantize_and_save(self.save_dir)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_layer_config(self, tiny_opt_model_path):
         from auto_round.auto_scheme.utils import compute_avg_bits_for_model

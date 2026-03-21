@@ -9,16 +9,16 @@ import transformers
 from packaging import version
 
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.utils import get_attr, llm_load_model, mllm_load_model, set_attr
+from auto_round.utils import detect_device, get_attr, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
 
 
-def generate_prompt(model, tokenizer, text="There is a girl who likes adventure,", max_new_tokens=50):
+def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):
     """Generate text using a model and tokenizer.
 
     Args:
-        model: The model to use for generation.
+        model_obj_or_str: The model to use for generation.
         tokenizer: The tokenizer for the model.
         text: The input prompt text.
         max_new_tokens: Maximum number of new tokens to generate.
@@ -26,10 +26,29 @@ def generate_prompt(model, tokenizer, text="There is a girl who likes adventure,
     Returns:
         str: The generated text.
     """
+    if device is None:
+        device = detect_device()
+    if isinstance(model_obj_or_str, str):
+        model, tokenizer = llm_load_model(model_obj_or_str, trust_remote_code=True)
+    else:
+        model = model_obj_or_str
+        assert tokenizer is not None, "Tokenizer must be provided when model is a model object"
+    if not (hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1):
+        model = model.to(device)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    output = tokenizer.decode(model.generate(**inputs, max_new_tokens=max_new_tokens)[0])
+    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)[0]
+    output = tokenizer.decode(generated_ids)
     print(output)
     return output
+
+
+def eval_generated_prompt(
+    model, tokenizer=None, prompt_text="The United States of", target_text="America", max_new_tokens=10, device=None
+):
+    """Evaluate the generated text using a model and tokenizer."""
+    out = generate_prompt(model, tokenizer, text=prompt_text, max_new_tokens=max_new_tokens, device=device)
+    assert target_text.lower() in out.lower(), f"Expected '{target_text}' in output, but got: {out}"
+    return out
 
 
 def evaluate_accuracy(
@@ -76,6 +95,7 @@ def get_model_path(model_name: str) -> str:
     model_name = model_name.rstrip("/")
     ut_path = f"/tf_dataset/auto_round/models/{model_name}"
     local_path = f"/models/{model_name.split('/')[-1]}"
+    local_path_1 = f"/dataset/{model_name.split('/')[-1]}"
 
     if "DeepSeek-V2-Lite" in model_name and os.path.exists("/data0/deepseek-ai/DeepSeek-V2-Lite"):
         return "/data0/deepseek-ai/DeepSeek-V2-Lite"
@@ -84,8 +104,45 @@ def get_model_path(model_name: str) -> str:
         return ut_path
     elif os.path.exists(local_path):
         return local_path
+    elif os.path.exists(local_path_1):
+        return local_path_1
     else:
         return model_name
+
+
+def get_captions_dataset_path() -> str:
+    """Find captions_source.tsv locally or download it to tmp.
+
+    Checks /dataset/, /tf_dataset/, and test/tmp/ for the file.
+    If not found, downloads from the mlcommons URL to test/tmp/.
+
+    Returns:
+        str: The path to captions_source.tsv.
+    """
+    import urllib.request
+
+    filename = "captions_source.tsv"
+    url = (
+        "https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/"
+        "text_to_image/coco2014/captions/captions_source.tsv"
+    )
+
+    local_candidates = [
+        f"/dataset/{filename}",
+        f"/tf_dataset/{filename}",
+        os.path.join(os.path.dirname(__file__), "tmp", filename),
+    ]
+    for path in local_candidates:
+        if os.path.exists(path):
+            return path
+
+    # Download to tmp
+    tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, filename)
+    print(f"[Helper] Downloading {filename} from {url} to {tmp_path}")
+    urllib.request.urlretrieve(url, tmp_path)
+    return tmp_path
 
 
 opt_name_or_path = get_model_path("facebook/opt-125m")
@@ -332,3 +389,19 @@ def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similari
         raise ValueError(f"Unknown metric: {metric}. Choose from: 'mse', 'cosine_similarity', 'topk'")
 
     return passed
+
+
+def is_cuda_support_fp8(major=9, minor=0):
+    """Check if the current CUDA device capability is >= (major, minor).
+
+    Args:
+        major: Required major compute capability (default: 9).
+        minor: Required minor compute capability (default: 0).
+
+    Returns:
+        bool: True if CUDA is available and device capability >= (major, minor).
+    """
+    if not torch.cuda.is_available():
+        return False
+    cap = torch.cuda.get_device_capability()
+    return cap >= (major, minor)

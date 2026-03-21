@@ -13,7 +13,7 @@ pr:
       - test/test_hpu
       - setup.py
       - requirements-hpu.txt
-      - .azure-pipelines/scripts/ut
+      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
       - .azure-pipelines/template/docker-template.yml
       - .azure-pipelines/template/ut-template.yml
     exclude:
@@ -21,8 +21,6 @@ pr:
       - auto_round/export/export_to_awq
       - "*.md"
       - "**/*.md"
-      - .azure-pipelines/scripts/ut/run_ut_cuda.sh
-      - .azure-pipelines/scripts/ut/run_ut.sh
 
 pool: GAUDI
 

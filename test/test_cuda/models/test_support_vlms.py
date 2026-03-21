@@ -4,17 +4,19 @@ import sys
 
 import pytest
 import requests
+from huggingface_hub import snapshot_download
 from packaging import version
 from PIL import Image
 from transformers import AutoRoundConfig  # # must import for auto-round format
 
 from ...envs import require_gptqmodel, require_package_version_ut, require_vlm_env
-from ...helpers import transformers_version
+from ...helpers import get_model_path, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestSupportVLMS:
 
     @classmethod
@@ -29,7 +31,7 @@ class TestSupportVLMS:
 
     @require_gptqmodel
     def test_qwen2(self):
-        model_path = "/models/Qwen2-VL-2B-Instruct/"
+        model_path = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         # test tune
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
@@ -84,7 +86,7 @@ class TestSupportVLMS:
     @require_vlm_env
     @require_package_version_ut("transformers", "<4.54.0")
     def test_phi3(self):
-        model_path = "/models/Phi-3.5-vision-instruct/"
+        model_path = get_model_path("microsoft/Phi-3.5-vision-instruct")
         ## test tune
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
@@ -96,7 +98,10 @@ class TestSupportVLMS:
         from transformers import AutoModelForCausalLM, AutoProcessor
 
         quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128")
-        res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
+        local_model_path = (
+            model_path if os.path.isdir(model_path) else snapshot_download(model_path, allow_patterns=["*.py"])
+        )
+        res = os.system(f"cp {local_model_path}/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
             device_map=f"cuda:{self.device}",
@@ -130,9 +135,8 @@ class TestSupportVLMS:
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_vlm_env
-    @require_package_version_ut("transformers", "<4.57.0")
     def test_phi3_vision_awq(self):
-        model_path = "/models/Phi-3.5-vision-instruct/"
+        model_path = get_model_path("microsoft/Phi-3.5-vision-instruct")
         ## test tune
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round --mllm "
@@ -146,7 +150,10 @@ class TestSupportVLMS:
         from transformers import AutoModelForCausalLM, AutoProcessor
 
         quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128")
-        res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
+        local_model_path = (
+            model_path if os.path.isdir(model_path) else snapshot_download(model_path, allow_patterns=["*.py"])
+        )
+        res = os.system(f"cp {local_model_path}/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=f"cuda:{self.device}", trust_remote_code=True, torch_dtype="auto"
         )
@@ -184,7 +191,7 @@ class TestSupportVLMS:
         reason="transformers api changed",
     )
     def test_glm(self):
-        model_path = "/models/glm-4v-9b/"
+        model_path = get_model_path("THUDM/glm-4v-9b")
         ## test tune
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round "
@@ -193,7 +200,7 @@ class TestSupportVLMS:
         assert not (res > 0 or res == -1), "glm-4v-9b tuning fail"
 
     def test_granite_vision(self):
-        model_path = "/models/granite-vision-3.2-2b"
+        model_path = get_model_path("ibm-granite/granite-vision-3.2-2b")
         ## test tune
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {self.python_path} -m auto_round "
