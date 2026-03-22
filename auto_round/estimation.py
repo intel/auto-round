@@ -38,7 +38,7 @@ DTYPE_BYTES = {
 _SECS_PER_LAYER_PER_ITER = 0.12
 
 
-def _count_parameters(config):
+def _count_parameters(config):  # pylint: disable=too-many-locals
     """Estimate total parameter count from a transformers model config.
 
     Uses hidden_size, intermediate_size, num_hidden_layers, and vocab_size
@@ -46,45 +46,46 @@ def _count_parameters(config):
     hidden_size^2 * num_layers heuristic when fields are missing.
     """
     hidden = getattr(config, "hidden_size", None)
-    intermediate = getattr(config, "intermediate_size", None)
     num_layers = getattr(config, "num_hidden_layers", None)
-    vocab_size = getattr(config, "vocab_size", None)
-    num_attention_heads = getattr(config, "num_attention_heads", None)
-    num_key_value_heads = getattr(config, "num_key_value_heads", num_attention_heads)
-
     if hidden is None or num_layers is None:
         return None
 
-    # Attention: Q, K, V projections + output projection
-    head_dim = hidden // num_attention_heads if num_attention_heads else hidden
-    q_params = hidden * hidden  # Q projection
-    k_params = hidden * (num_key_value_heads * head_dim if num_key_value_heads else hidden)
-    v_params = k_params
-    o_params = hidden * hidden  # output projection
-    attn_params = q_params + k_params + v_params + o_params
+    intermediate = getattr(config, "intermediate_size", None)
+    vocab_size = getattr(config, "vocab_size", None)
+    num_heads = getattr(config, "num_attention_heads", None)
+    num_kv_heads = getattr(config, "num_key_value_heads", num_heads)
 
-    # FFN: gate + up + down projections (for gated architectures like LLaMA)
-    if intermediate is not None:
-        ffn_params = 3 * hidden * intermediate  # gate_proj + up_proj + down_proj
-    else:
-        ffn_params = 4 * hidden * hidden  # classic 4x expansion
-
-    # Per-layer params (attention + ffn + layer norms)
+    attn_params = _count_attention_params(hidden, num_heads, num_kv_heads)
+    ffn_params = _count_ffn_params(hidden, intermediate)
     layer_params = attn_params + ffn_params + 2 * hidden  # 2 layer norms
 
     total = num_layers * layer_params
-
-    # Embedding + LM head
-    if vocab_size is not None:
-        embedding_params = vocab_size * hidden
-        # Most models tie embeddings and lm_head
-        tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
-        if tie_word_embeddings:
-            total += embedding_params
-        else:
-            total += 2 * embedding_params
-
+    total += _count_embedding_params(config, hidden, vocab_size)
     return total
+
+
+def _count_attention_params(hidden, num_heads, num_kv_heads):
+    """Count attention layer parameters (Q, K, V, O projections)."""
+    head_dim = hidden // num_heads if num_heads else hidden
+    kv_dim = num_kv_heads * head_dim if num_kv_heads else hidden
+    return hidden * hidden + 2 * hidden * kv_dim + hidden * hidden
+
+
+def _count_ffn_params(hidden, intermediate):
+    """Count FFN layer parameters."""
+    if intermediate is not None:
+        return 3 * hidden * intermediate  # gate + up + down
+    return 4 * hidden * hidden  # classic 4x expansion
+
+
+def _count_embedding_params(config, hidden, vocab_size):
+    """Count embedding and LM head parameters."""
+    if vocab_size is None:
+        return 0
+    embedding_params = vocab_size * hidden
+    if getattr(config, "tie_word_embeddings", True):
+        return embedding_params
+    return 2 * embedding_params
 
 
 def _format_bytes(num_bytes):
@@ -166,52 +167,81 @@ def estimate_time(num_layers, iters, nsamples, batch_size):
     return total_seconds
 
 
-def dry_run_estimate(model_name, scheme_bits, group_size, model_dtype="float16",
-                     batch_size=8, seqlen=2048, nsamples=128, iters=200,
-                     trust_remote_code=True, platform="hf"):
+_DRY_RUN_DEFAULTS = {
+    "model_dtype": "float16",
+    "batch_size": 8,
+    "seqlen": 2048,
+    "nsamples": 128,
+    "iters": 200,
+    "trust_remote_code": True,
+    "platform": "hf",
+}
+
+
+def dry_run_estimate(model_name, scheme_bits, group_size, **kwargs):
     """Run a dry-run estimation and return a dict of estimates.
 
     Args:
         model_name: HuggingFace model name or local path.
         scheme_bits: Target quantization bit width (e.g. 4 for W4A16).
         group_size: Quantization group size.
-        model_dtype: Original model data type string.
-        batch_size: Calibration batch size.
-        seqlen: Calibration sequence length.
-        nsamples: Number of calibration samples.
-        iters: Number of tuning iterations.
-        trust_remote_code: Whether to trust remote code when loading config.
-        platform: Platform to load model config from.
+        **kwargs: Optional overrides - model_dtype, batch_size, seqlen,
+            nsamples, iters, trust_remote_code, platform.
 
     Returns:
         dict with keys: param_count, peak_vram_bytes, output_size_bytes,
         estimated_time_secs, and their formatted string versions.
     """
-    if platform == "model_scope":
-        from modelscope import AutoConfig
-    else:
-        from transformers import AutoConfig
-
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    opts = {**_DRY_RUN_DEFAULTS, **kwargs}
+    config = _load_model_config(model_name, opts)
 
     param_count = _count_parameters(config)
     if param_count is None:
-        logger.warning("Could not estimate parameter count from model config.")
+        logger.warning(
+            "Could not estimate parameter count from model config."
+        )
         return None
 
+    return _build_estimate_result(
+        model_name, scheme_bits, group_size, param_count, config, opts
+    )
+
+
+def _load_model_config(model_name, opts):
+    """Load model config from the specified platform."""
+    auto_config = _load_auto_config(opts["platform"])
+    return auto_config.from_pretrained(
+        model_name, trust_remote_code=opts["trust_remote_code"]
+    )
+
+
+def _build_estimate_result(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    model_name, scheme_bits, group_size, param_count, config, opts
+):
+    """Build the estimation result dictionary."""
     hidden_size = getattr(config, "hidden_size", 4096)
     num_layers = getattr(config, "num_hidden_layers", 32)
+    dtype_bytes = DTYPE_BYTES.get(opts["model_dtype"], 2)
 
-    dtype_bytes = DTYPE_BYTES.get(model_dtype, 2)
+    peak_vram = estimate_vram(
+        param_count, dtype_bytes,
+        opts["batch_size"], opts["seqlen"], hidden_size
+    )
+    output_size = estimate_output_size(
+        param_count, scheme_bits, group_size
+    )
+    est_time = estimate_time(
+        num_layers, opts["iters"], opts["nsamples"], opts["batch_size"]
+    )
 
-    peak_vram = estimate_vram(param_count, dtype_bytes, batch_size, seqlen, hidden_size)
-    output_size = estimate_output_size(param_count, scheme_bits, group_size)
-    est_time = estimate_time(num_layers, iters, nsamples, batch_size)
-
+    param_str = (
+        f"{param_count / 1e9:.2f}B" if param_count >= 1e9
+        else f"{param_count / 1e6:.1f}M"
+    )
     return {
         "model_name": model_name,
         "param_count": param_count,
-        "param_count_str": f"{param_count / 1e9:.2f}B" if param_count >= 1e9 else f"{param_count / 1e6:.1f}M",
+        "param_count_str": param_str,
         "peak_vram_bytes": peak_vram,
         "peak_vram_str": _format_bytes(peak_vram),
         "output_size_bytes": output_size,
@@ -220,13 +250,20 @@ def dry_run_estimate(model_name, scheme_bits, group_size, model_dtype="float16",
         "estimated_time_str": _format_time(est_time),
         "scheme_bits": scheme_bits,
         "group_size": group_size,
-        "model_dtype": model_dtype,
-        "batch_size": batch_size,
-        "seqlen": seqlen,
-        "nsamples": nsamples,
-        "iters": iters,
         "num_layers": num_layers,
+        **{k: opts[k] for k in (
+            "model_dtype", "batch_size", "seqlen", "nsamples", "iters"
+        )},
     }
+
+
+def _load_auto_config(platform):
+    """Load the appropriate AutoConfig class for the platform."""
+    if platform == "model_scope":
+        from modelscope import AutoConfig  # pylint: disable=import-outside-toplevel
+    else:
+        from transformers import AutoConfig  # pylint: disable=import-outside-toplevel
+    return AutoConfig
 
 
 def print_dry_run_report(estimates):
