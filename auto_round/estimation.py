@@ -197,22 +197,16 @@ def dry_run_estimate(model_name, scheme_bits, group_size, **kwargs):
 
     param_count = _count_parameters(config)
     if param_count is None:
-        logger.warning(
-            "Could not estimate parameter count from model config."
-        )
+        logger.warning("Could not estimate parameter count from model config.")
         return None
 
-    return _build_estimate_result(
-        model_name, scheme_bits, group_size, param_count, config, opts
-    )
+    return _build_estimate_result(model_name, scheme_bits, group_size, param_count, config, opts)
 
 
 def _load_model_config(model_name, opts):
     """Load model config from the specified platform."""
     auto_config = _load_auto_config(opts["platform"])
-    return auto_config.from_pretrained(
-        model_name, trust_remote_code=opts["trust_remote_code"]
-    )
+    return auto_config.from_pretrained(model_name, trust_remote_code=opts["trust_remote_code"])
 
 
 def _build_estimate_result(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -223,21 +217,11 @@ def _build_estimate_result(  # pylint: disable=too-many-arguments,too-many-posit
     num_layers = getattr(config, "num_hidden_layers", 32)
     dtype_bytes = DTYPE_BYTES.get(opts["model_dtype"], 2)
 
-    peak_vram = estimate_vram(
-        param_count, dtype_bytes,
-        opts["batch_size"], opts["seqlen"], hidden_size
-    )
-    output_size = estimate_output_size(
-        param_count, scheme_bits, group_size
-    )
-    est_time = estimate_time(
-        num_layers, opts["iters"], opts["nsamples"], opts["batch_size"]
-    )
+    peak_vram = estimate_vram(param_count, dtype_bytes, opts["batch_size"], opts["seqlen"], hidden_size)
+    output_size = estimate_output_size(param_count, scheme_bits, group_size)
+    est_time = estimate_time(num_layers, opts["iters"], opts["nsamples"], opts["batch_size"])
 
-    param_str = (
-        f"{param_count / 1e9:.2f}B" if param_count >= 1e9
-        else f"{param_count / 1e6:.1f}M"
-    )
+    param_str = f"{param_count / 1e9:.2f}B" if param_count >= 1e9 else f"{param_count / 1e6:.1f}M"
     return {
         "model_name": model_name,
         "param_count": param_count,
@@ -251,9 +235,7 @@ def _build_estimate_result(  # pylint: disable=too-many-arguments,too-many-posit
         "scheme_bits": scheme_bits,
         "group_size": group_size,
         "num_layers": num_layers,
-        **{k: opts[k] for k in (
-            "model_dtype", "batch_size", "seqlen", "nsamples", "iters"
-        )},
+        **{k: opts[k] for k in ("model_dtype", "batch_size", "seqlen", "nsamples", "iters")},
     }
 
 
@@ -286,8 +268,10 @@ def print_dry_run_report(estimates):
     print(f"  Estimated peak VRAM:    {estimates['peak_vram_str']}")
     print(f"  Estimated output size:  {estimates['output_size_str']}")
     print(f"  Estimated time:         {estimates['estimated_time_str']}")
-    print(f"    (batch_size={estimates['batch_size']}, seqlen={estimates['seqlen']}, "
-          f"nsamples={estimates['nsamples']}, iters={estimates['iters']})")
+    print(
+        f"    (batch_size={estimates['batch_size']}, seqlen={estimates['seqlen']}, "
+        f"nsamples={estimates['nsamples']}, iters={estimates['iters']})"
+    )
     print(border)
     print("  NOTE: These are rough estimates. Actual values depend on")
     print("  hardware, model architecture, and runtime conditions.")
