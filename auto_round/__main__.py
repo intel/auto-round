@@ -169,6 +169,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
         basic.add_argument(
+            "--dry_run",
+            "--dry-run",
+            action="store_true",
+            help="Estimate VRAM usage, output file size, and quantization time "
+            "without running the full quantization process. "
+            "Loads only the model config (no weights) and prints a summary.",
+        )
+        basic.add_argument(
             "--disable_trust_remote_code",
             action="store_true",
             help="Disable trusting remote code when loading models. "
@@ -613,6 +621,30 @@ def tune(args):
     scheme = args.scheme.upper()
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
+
+    if args.dry_run:
+        from auto_round.estimation import dry_run_estimate, print_dry_run_report
+
+        scheme_obj = PRESET_SCHEMES[scheme]
+        target_bits = args.bits if args.bits is not None else scheme_obj.bits
+        group_size = args.group_size if args.group_size is not None else scheme_obj.group_size
+
+        model_dtype = args.model_dtype or "float16"
+        estimates = dry_run_estimate(
+            model_name=model_name,
+            scheme_bits=target_bits,
+            group_size=group_size,
+            model_dtype=model_dtype,
+            batch_size=args.batch_size,
+            seqlen=args.seqlen,
+            nsamples=args.nsamples,
+            iters=args.iters,
+            trust_remote_code=not args.disable_trust_remote_code,
+            platform=args.platform,
+        )
+        print_dry_run_report(estimates)
+        return
+
     if args.disable_deterministic_algorithms:
         logger.warning(
             "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
