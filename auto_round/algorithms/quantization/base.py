@@ -23,7 +23,6 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.compressors_new.utils import (
     IndexSampler,
     _get_quantized_layer_names_outside_blocks,
-    _get_save_folder_name,
     block_forward,
     check_need_act_calibration,
     check_skippable_keywords,
@@ -90,6 +89,8 @@ class BaseQuantizers:
         self.ignore_layers = config.ignore_layers
         self.quant_lm_head = config.quant_lm_head
         self.to_quant_block_names = config.to_quant_block_names
+        # Instance-level flag: avoids class-level sharing that could cause cross-instance bugs.
+        self._scheme_resolved = False
 
     @classmethod
     def from_config(cls, config: QuantizationConfig):
@@ -104,29 +105,39 @@ class BaseQuantizers:
     def formats(self):
         return getattr(self.compress_context, "formats", None)
 
-    def post_init(self):
-        # should be set after loading model and set layer_config, cause some special scheme need these.
-        # Preserve the original, unparsed scheme for later use in auto scheme generation
-        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
+    def resolve_scheme(
+        self,
+        model_context: "ModelContext",
+        compress_context: "CompressContext",
+        dataset: str = None,
+    ) -> None:
+        """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
-        # # Alternatively, you can use ModelContext.get_context
-        self.model_context = ModelContext()
-        self.compress_context = CompressContext()
+        Must be called BEFORE get_formats() and BEFORE post_init().
+        Idempotent: safe to call multiple times.
 
-        # used in shard writer, rafactor later
-        self._get_save_folder_name = _get_save_folder_name
+        Args:
+            model_context: The ModelContext created by BaseCompressor.
+            compress_context: The CompressContext created by BaseCompressor.
+            dataset: Calibration dataset name/path.  Used by AutoScheme's delta-loss
+                     scheme selection.  Callers should pass the compressor's own dataset
+                     (or a sensible default) rather than leaving it to a global lookup.
+        """
+        if self._scheme_resolved:
+            return
 
-        self.model = self.model_context.model
+        self.model_context = model_context
+        self.compress_context = compress_context
+        self.model = model_context.model
+        if dataset is not None:
+            self.dataset = dataset
 
+        # Build user-specified overrides from fields defined in QuantizationScheme.
         scheme_fields = {f.name for f in fields(QuantizationScheme)}
-        user_scheme_overrides = {}
-        for k in scheme_fields:
-            v = getattr(self.config, k, None)
-            if v is not None:
-                user_scheme_overrides[k] = v
+        user_scheme_overrides = {k: v for k in scheme_fields if (v := getattr(self.config, k, None)) is not None}
         default_scheme, self.is_auto_scheme, final_attrs = _parse_scheme(self.scheme, user_scheme_overrides)
 
-        # Bind attributes to self.config for easy instance-level access
+        # Bind resolved attrs to config and self for convenient access.
         for key, value in final_attrs.items():
             setattr(self.config, key, value)
             if hasattr(self, key):
@@ -136,16 +147,25 @@ class BaseQuantizers:
         self.orig_scheme = copy.deepcopy(self.scheme)
         self.scheme = default_scheme
 
+        # GGUF format uses fp32 scale dtype; everything else defaults to fp16.
         gguf_scheme_name = get_gguf_scheme(self.scheme)
-        # GGUF uses fp32 scale dtype as default
         if self.scale_dtype is None:
             self.scale_dtype = "fp32" if gguf_scheme_name else "fp16"
         self.scale_dtype = convert_dtype_str2torch(self.scale_dtype)
 
-        if not self.is_auto_scheme:
-            enable_gguf_official_mixed = True
-        else:
-            enable_gguf_official_mixed = False
+        self._scheme_resolved = True
+
+    def post_init(self) -> None:
+        """Phase-2 init: build layer config on the patched model.
+
+        Requires resolve_scheme() to have been called first (asserted below).
+        Must be called AFTER model_context.apply_patches().
+        """
+        assert self._scheme_resolved, (
+            "resolve_scheme() must be called before post_init(). " "BaseCompressor.post_init() does this automatically."
+        )
+
+        enable_gguf_official_mixed = not self.is_auto_scheme
 
         if self.quant_block_list is None:
             quant_nontext_module = getattr(self.model_context, "quant_nontext_module", False)

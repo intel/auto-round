@@ -30,7 +30,6 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     compile_func,
-    convert_dtype_str2torch,
     extract_block_names_to_str,
     is_debug_mode,
     is_hpex_available,
@@ -204,11 +203,13 @@ class BaseCompressor(object):
         )
         self.shard_writer = None
 
-        from auto_round.schemes import get_gguf_scheme
+        # scale_dtype is resolved in quantizer.resolve_scheme() after scheme resolution,
+        # so it is not initialized here to avoid premature evaluation with an unresolved scheme.
 
-        qc = self.quantize_config
-        if qc.scale_dtype is None:
-            qc.scale_dtype = convert_dtype_str2torch("fp32" if get_gguf_scheme(qc.scheme) else "fp16")
+        # Flag for post_init idempotency.  Set to False here so post_init() can be called
+        # either via quantize_and_save() (preferred, outside inference_mode) or directly
+        # from quantize() as a fallback for non-AutoScheme cases.
+        self._post_init_done = False
 
         # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
         # reflects the correct value immediately after construction (not only after post_init).
@@ -266,49 +267,87 @@ class BaseCompressor(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
-    def post_init(self):
-        assert self.model_context._model_loaded, "model should be loaded in ModelContext.__init__"
+    def _get_calibration_dataset(self) -> str:
+        """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
+        dataset = self.__dict__.get("dataset", None)
+        if dataset:
+            return dataset
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
-        # 1. Resolve formats (scale_dtype was defaulted early in __init__)
+        scheme = self.quantize_config.scheme
+        if isinstance(scheme, AutoScheme) and scheme.dataset:
+            return scheme.dataset
+        return "NeelNanda/pile-10k"
+
+    def post_init(self) -> None:
+        """One-time initialization that requires a loaded model.
+
+        Call this OUTSIDE any ``@torch.inference_mode()`` context when using
+        AutoScheme – delta-loss selection needs autograd (backward pass).
+        ``quantize_and_save()`` does this automatically before entering the
+        inference-mode quantize loop.
+
+        The five phases in order:
+          1. Scheme resolution  – pure config, no model structure needed.
+          2. Format resolution  – needs data_type/bits from phase 1.
+          3. Model patching     – needs formats from phase 2.
+          4. Layer-config build – needs patched model from phase 3.
+          5. Hardware setup     – device map, torch.compile, offloading.
+        """
+        if self._post_init_done:
+            return
+
+        # ── Phase 1: resolve scheme ───────────────────────────────────────────
+        # Creates the quantizer and runs scheme parsing (pure config work:
+        # sets data_type / bits / sym / scale_dtype etc.).
+        self.quantizer = BaseQuantizers.from_config(self.quantize_config)
+        self.quantizer.resolve_scheme(
+            model_context=self.model_context,
+            compress_context=self.compress_context,
+            dataset=self._get_calibration_dataset(),
+        )
+        self.wrapper_block = wrapper_block
+
+        # ── Phase 2: resolve output format ───────────────────────────────────
+        # get_formats() inspects data_type / bits etc. that were just resolved.
         if isinstance(self.formats, str):
             self.formats = get_formats(self.formats, self)
         if self.formats is not None:
             self.compress_context.formats = self.formats
-            ShardWriter.reset()  # Ensure a fresh ShardWriter for every new quantization run
+            ShardWriter.reset()
             self.shard_writer = ShardWriter(self.model_context.model, bits=8)
 
+        # ── Phase 3: patch model structure ───────────────────────────────────
+        # update_module() may replace layers (e.g. MoE expert merging); must
+        # happen before configure_layer_config() so it sees the final topology.
         self.model_context.apply_patches(self.formats)
 
-        self.quantizer = BaseQuantizers.from_config(self.quantize_config)
+        # ── Phase 4: build layer config ──────────────────────────────────────
+        # configure_layer_config() walks the patched model; _gen_auto_scheme()
+        # (AutoScheme path) runs delta-loss forward+backward passes.
         self.quantizer.post_init()
-        self.wrapper_block = wrapper_block
 
-        # Set device
+        # ── Phase 5: hardware / compile setup ────────────────────────────────
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
-
-        # Re-check torch compile with fully resolved config attrs
+        # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._adjust_torch_compile(self.enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
-
         self.block_forward = (
             compile_func(block_forward, self.compress_context.device) if self.enable_torch_compile else block_forward
         )
-
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
-        def _should_disable_inplace_due_to_layers_outside_block() -> bool:
-            return self.quantizer.has_qlayer_outside_block and self.need_calib
-
-        # Disable inplace mode when there are quantized layers outside blocks
-        # under specific iteration/optimization settings.
-        if _should_disable_inplace_due_to_layers_outside_block():
+        # Disable inplace when quantized layers live outside transformer blocks.
+        if self.quantizer.has_qlayer_outside_block and self.need_calib:
             self.inplace = False
+
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
-            # Determine if immediate packing is required
             self._adjust_immediate_packing_and_saving()
+
+        self._post_init_done = True
 
     # backward compatible with the legacy API
     def __getattr__(self, name: str) -> Any:
@@ -539,6 +578,9 @@ class BaseCompressor(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
+        # IMPORTANT: post_init() must run outside any @torch.inference_mode() context
+        # because AutoScheme's delta-loss selection requires gradient tracking.
+        self.post_init()
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 

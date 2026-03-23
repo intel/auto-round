@@ -121,7 +121,13 @@ class Compressor(object):
                 static_attention_dtype=kwargs.get("static_attention_dtype"),
             )
 
-            if enable_imatrix or needs_act_calib:
+            # AutoScheme always requires calibration data for delta-loss based
+            # scheme selection, regardless of whether imatrix is needed.
+            from auto_round.auto_scheme.gen_auto_scheme import AutoScheme as _AutoScheme
+
+            is_auto_scheme = isinstance(config.scheme, _AutoScheme)
+
+            if enable_imatrix or needs_act_calib or is_auto_scheme:
                 config._alg_cls = "OptimizedRTNQuantizer"
                 # For RTN with calibration data, dynamically combine with model-specific Mixin
                 if model_type == "mllm":

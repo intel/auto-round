@@ -534,6 +534,18 @@ def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
         return scheme
     if isinstance(scheme, str):
         return ""
+    # AutoScheme is a lazy placeholder whose concrete option is resolved later
+    # (after model loading).  It is never a GGUF scheme itself.
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+    if isinstance(scheme, AutoScheme):
+        # options is always a list after AutoScheme.__post_init__.
+        # If the primary option is a GGUF scheme, propagate it so that
+        # scale_dtype defaults to fp32 (GGUF convention).
+        primary = scheme.options[0] if scheme.options else None
+        if isinstance(primary, str) and primary.upper().startswith("GGUF"):
+            return primary
+        return ""
     for key, val in PRESET_SCHEMES.items():
         # For q40 or q4_1 we only support it with str scheme， otherwise it will be matched incorrectly with W4G32
         if not key.upper().startswith("GGUF") or ("0" in key or "1" in key):
