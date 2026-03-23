@@ -488,7 +488,7 @@ class FP8Handler(WeightTypeHandler):
             return True
 
         if hasattr(module, "quantization_scheme"):
-            from compressed_tensors.quantization.utils import is_module_quantized
+            from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
             if is_module_quantized(module):
                 q_scheme = module.quantization_scheme
@@ -520,7 +520,7 @@ class FP8Handler(WeightTypeHandler):
     ) -> torch.nn.Module:
         """Convert a single FP8/CompressedLinear layer to a standard Linear layer."""
         if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
-            from compressed_tensors.compressors.base import decompress_module
+            from compressed_tensors.compressors.base import decompress_module  # pylint: disable=E0401
 
             decompress_module(layer)
             return layer
@@ -586,7 +586,7 @@ class MXFP4Handler(WeightTypeHandler):
                 compressor_name = module.compressor.__class__.__name__
                 return "MXFP4" in compressor_name
         if hasattr(module, "quantization_scheme"):
-            from compressed_tensors.quantization.utils import is_module_quantized
+            from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
             if is_module_quantized(module):
                 q_scheme = module.quantization_scheme
@@ -676,7 +676,7 @@ class MXFP8Handler(WeightTypeHandler):
             compressor_name = module.compressor.__class__.__name__
             return "MXFP8" in compressor_name
         if hasattr(module, "quantization_scheme"):
-            from compressed_tensors.quantization.utils import is_module_quantized
+            from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
             if is_module_quantized(module):
                 q_scheme = module.quantization_scheme
@@ -762,7 +762,7 @@ class NVFP4Handler(WeightTypeHandler):
             compressor_name = module.compressor.__class__.__name__
             return "NVFP4" in compressor_name
         if hasattr(module, "quantization_scheme"):
-            from compressed_tensors.quantization.utils import is_module_quantized
+            from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
             if is_module_quantized(module):
                 q_scheme = module.quantization_scheme
@@ -786,7 +786,7 @@ class NVFP4Handler(WeightTypeHandler):
     ) -> torch.nn.Module:
         """Convert an NVFP4 CompressedLinear layer to a standard Linear layer."""
         if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
-            from compressed_tensors.compressors.base import decompress_module
+            from compressed_tensors.compressors.base import decompress_module  # pylint: disable=E0401
 
             decompress_module(layer)
             return layer
