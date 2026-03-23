@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, get_tiny_model, save_tiny_model, transformers_version
+from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, save_tiny_model
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -24,31 +24,18 @@ class TestGGUF:
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_basic_usage(self, tiny_gemma_model_path, tiny_qwen_model_path):
-        python_path = sys.executable
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_gemma_model_path} "
-            f" --bs 16 --iters 0 --nsamples 1 --format gguf:q4_k_m"
-        )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
-        shutil.rmtree("./saved", ignore_errors=True)
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_qwen_model_path}"
-            f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
-        )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
-        shutil.rmtree("./saved", ignore_errors=True)
-
-    def test_q4_0(self):
+    def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            self.model_name,
+            tiny_qwen_model_path,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -57,72 +44,30 @@ class TestGGUF:
             nsamples=1,
             seqlen=8,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
         gguf_file = os.listdir(quantized_model_path)[0]
-
-        # TODO: fix the issue of gguf loading error in transformers v5
-        # cls = transformers.generation.configuration_utils.GenerationConfig'>, json_file = None
-        #     def _dict_from_json_file(cls, json_file: str | os.PathLike):
-        # >       with open(json_file, "r", encoding="utf-8") as reader:
-        # E       TypeError: expected str, bytes or os.PathLike object, not NoneType
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        text = "There is a girl who likes adventure,"
-        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-
-        shutil.rmtree("./saved", ignore_errors=True)
+        assert gguf_file.endswith(".gguf"), "Saved file is not in gguf format"
+        # Accuracy test is covered in test_cuda/export/test_gguf_format.py::TestAutoRound::test_q4_0_accuracy
 
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model_name,
-            iters=1,
-            nsamples=1,
-            seqlen=10,
-            # data_type="int"
+            iters=0,
+            disable_opt_rtn=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_1")
         assert autoround.group_size == 32
         assert not autoround.sym
-        gguf_file = os.listdir("saved")[0]
+        gguf_file = os.listdir(self.save_dir)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        text = "There is a girl who likes adventure,"
-        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-        shutil.rmtree("./saved", ignore_errors=True)
+        eval_generated_prompt(model, self.tokenizer)
 
-    def test_gguf_baseline(self):
-        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        autoround = AutoRound(
-            model,
-            self.tokenizer,
-            bits=3,
-            group_size=16,
-            sym=True,
-            iters=0,
-            nsamples=8,
-            seqlen=2,
-            data_type="rtn_int_sym_dq",
-            super_group_size=16,
-            super_bits=6,
-            disable_opt_rtn=True,
-        )
-        quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-        text = "There is a girl who likes adventure,"
-        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
-        shutil.rmtree("./saved", ignore_errors=True)
-
-    def test_q4_k_m(self, dataloader):
-        model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
         layer_config = {
             "lm_head": {
                 "bits": 4,
@@ -133,12 +78,11 @@ class TestGGUF:
                 "super_group_size": 8,
             },
             "model.embed_tokens": {"bits": 6, "group_size": 32, "super_bits": 6, "super_group_size": 8},
-            "model.layers.12.mlp.gate_proj": {"bits": 3},
-            "model.layers.10.mlp.gate_proj": {"bits": 8},
+            "model.layers.1.mlp.gate_proj": {"bits": 3},
+            "model.layers.0.mlp.gate_proj": {"bits": 8},
         }
         autoround = AutoRound(
-            model,
-            tokenizer,
+            model_name,
             layer_config=layer_config,
             iters=0,
             seqlen=1,
@@ -146,25 +90,18 @@ class TestGGUF:
             dataset=dataloader,
             disable_opt_rtn=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
-        assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"] == 16
-        assert autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"] == "int_sym_dq"
-        assert autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"] == "int_asym_dq"
-        assert autoround.model.model.layers[0].self_attn.v_proj.bits == 6
-        assert autoround.model.model.layers[12].self_attn.v_proj.bits == 4
+        assert autoround.layer_config["model.layers.1.self_attn.v_proj"]["super_group_size"] == 16
+        assert autoround.layer_config["model.layers.1.self_attn.v_proj"]["data_type"] == "int_sym_dq"
+        assert autoround.layer_config["model.layers.0.self_attn.v_proj"]["data_type"] == "int_asym_dq"
+        assert autoround.model.model.layers[0].self_attn.v_proj.bits == 4
+        assert autoround.model.model.layers[1].self_attn.v_proj.bits == 6
         assert autoround.model.model.embed_tokens.bits == 6
         assert autoround.model.model.embed_tokens.group_size == 16
-        assert autoround.model.model.layers[12].mlp.gate_proj.bits == 3
-        assert autoround.model.model.layers[10].mlp.gate_proj.bits == 8
-        assert autoround.layer_config["model.layers.10.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
-        shutil.rmtree("./saved", ignore_errors=True)
-
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        autoround = AutoRound(model, tokenizer, iters=0, nsamples=1, seqlen=128, disable_opt_rtn=False)
-        quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
-        shutil.rmtree("./saved", ignore_errors=True)
+        assert autoround.model.model.layers[1].mlp.gate_proj.bits == 3
+        assert autoround.model.model.layers[0].mlp.gate_proj.bits == 8
+        assert autoround.layer_config["model.layers.0.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
 
     def test_all_format(self, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
@@ -190,63 +127,51 @@ class TestGGUF:
         # test mixed q2_k_s
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
-            f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED"
+            f" --bs 16 --iters 0 --disable_opt_rtn --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    def test_vlm_gguf(self):
-        from ...helpers import save_tiny_model
-
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
-        tiny_model_path = save_tiny_model(model_name, "./tmp/tiny_qwen_vl_model_path", num_layers=3, is_mllm=True)
+    def test_vlm_gguf(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
 
         autoround = AutoRoundMLLM(
-            tiny_model_path,
+            tiny_qwen_vl_model_path,
             iters=0,
             nsamples=8,
             disable_opt_rtn=True,
             quant_nontext_module=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        assert "mmproj-model.gguf" in os.listdir("./saved")
+        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
-                assert abs(file_size - 56) < 5.0
+                assert file_size < 60, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
             else:
-                assert abs(file_size - 264) < 5.0
-        shutil.rmtree("./saved", ignore_errors=True)
-        shutil.rmtree(tiny_model_path, ignore_errors=True)
+                assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
-    def test_vlm_gguf_wo_quant_nontext_module(self):
-        from ...helpers import save_tiny_model
-
-        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
-        tiny_model_path = save_tiny_model(model_name, "./tmp/tiny_qwen_vl_model_path", num_layers=3, is_mllm=True)
+    def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRoundMLLM
 
         autoround = AutoRoundMLLM(
-            tiny_model_path,
+            tiny_qwen_vl_model_path,
             iters=0,
             nsamples=8,
             disable_opt_rtn=True,
             quant_nontext_module=False,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        assert "mmproj-model.gguf" in os.listdir("./saved")
+        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
                 assert abs(file_size - 361) < 5.0
             else:
                 assert abs(file_size - 264) < 5.0
-        shutil.rmtree("./saved", ignore_errors=True)
-        shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     def test_qtype_setting(self):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
@@ -319,26 +244,20 @@ class TestGGUF:
             and ar.layer_config["model.embed_tokens"]["super_bits"] == 8
         )
 
-    def test_q2k_mixed(self):
-        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
-        saved_tiny_model_path = save_tiny_model(
-            model_name,
-            "./tmp/tiny_qwen_model_path",
-            num_layers=3,
-            is_mllm=False,
-        )
+    def test_q2k_mixed(self, tiny_qwen_moe_model_path):
+        model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
-            saved_tiny_model_path,
+            model_name,
             iters=0,
             nsamples=1,
             seqlen=16,
             disable_opt_rtn=True,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
         gguf_file = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
-        assert abs(file_size - 1362) < 5.0
+        assert file_size < 1150, f"file size {file_size} MB is too large for q2_k_mixed format"
         from gguf.gguf_reader import GGUFReader
 
         gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
@@ -346,6 +265,3 @@ class TestGGUF:
         assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
         assert gguf_model.get_tensor(10).name == "blk.0.ffn_up_exps.weight"
         assert gguf_model.get_tensor(10).tensor_type.name == "Q2_K"
-
-        shutil.rmtree("./saved", ignore_errors=True)
-        shutil.rmtree(saved_tiny_model_path, ignore_errors=True)

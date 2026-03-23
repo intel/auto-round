@@ -31,6 +31,7 @@ VISUAL_KEYS = [
     "audio_tower",
     "code_predictor",
     "multi_modal_projector",
+    "vqmodel",
     "vision_tower",
     "multimodal_projector",
     "vision_model",

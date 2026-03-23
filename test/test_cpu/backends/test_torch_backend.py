@@ -15,11 +15,15 @@ class TestAutoRoundTorchBackend:
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("facebook/opt-125m")
-        self.save_folder = "./saved"
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_torch_4bits_asym(self, dataloader):
@@ -57,7 +61,6 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16, limit=10)
         torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
 
     def test_torch_4bits_sym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
@@ -85,4 +88,3 @@ class TestAutoRoundTorchBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=32, limit=1000)
         torch.cuda.empty_cache()
-        shutil.rmtree(self.save_folder, ignore_errors=True)
