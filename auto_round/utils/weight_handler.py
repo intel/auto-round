@@ -487,12 +487,25 @@ class FP8Handler(WeightTypeHandler):
                 return "Float" in compressor_name
             return True
 
+        if hasattr(module, "quantization_scheme"):
+            from compressed_tensors.quantization.utils import is_module_quantized
+
+            if is_module_quantized(module):
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits == 8
+                    and "float" in q_scheme.weights.data_type
+                    and q_scheme.input_activations.num_bits == 8
+                    and "float" in q_scheme.input_activations.data_type
+                ):
+                    return True
+
         # Check for FP8Linear layer type
         if module.__class__.__name__ == "FP8Linear":
             return True
 
         # Fallback: Check for FP8 dtype (for torch.nn.Linear with FP8 weights)
-        if type(module) == torch.nn.Linear and module.weight is not None:
+        if type(module) == torch.nn.Linear and getattr(module, "weight", None) is not None:
             if str(module.weight.dtype).startswith("torch.float8"):
                 return True
 
@@ -506,6 +519,12 @@ class FP8Handler(WeightTypeHandler):
         to_cpu: bool = False,
     ) -> torch.nn.Module:
         """Convert a single FP8/CompressedLinear layer to a standard Linear layer."""
+        if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
+            from compressed_tensors.compressors.base import decompress_module
+
+            decompress_module(layer)
+            return layer
+
         from auto_round.schemes import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
@@ -563,10 +582,23 @@ class MXFP4Handler(WeightTypeHandler):
     def detect_layer(self, module: torch.nn.Module) -> bool:
         """Check if a module is an MXFP4 CompressedLinear layer."""
         if module.__class__.__name__ != "CompressedLinear":
-            return False
-        if hasattr(module, "compressor") and module.compressor is not None:
-            compressor_name = module.compressor.__class__.__name__
-            return "MXFP4" in compressor_name
+            if hasattr(module, "compressor") and module.compressor is not None:
+                compressor_name = module.compressor.__class__.__name__
+                return "MXFP4" in compressor_name
+        if hasattr(module, "quantization_scheme"):
+            from compressed_tensors.quantization.utils import is_module_quantized
+
+            if is_module_quantized(module):
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits == 4
+                    and q_scheme.weights.type == "float"
+                    and q_scheme.weights.group_size == 32
+                    and q_scheme.input_activations.num_bits == 4
+                    and q_scheme.input_activations.type == "float"
+                    and q_scheme.input_activations.group_size == 32
+                ):
+                    return True
         return False
 
     def convert_layer(
@@ -643,6 +675,20 @@ class MXFP8Handler(WeightTypeHandler):
         if hasattr(module, "compressor") and module.compressor is not None:
             compressor_name = module.compressor.__class__.__name__
             return "MXFP8" in compressor_name
+        if hasattr(module, "quantization_scheme"):
+            from compressed_tensors.quantization.utils import is_module_quantized
+
+            if is_module_quantized(module):
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits == 8
+                    and q_scheme.weights.type == "float"
+                    and q_scheme.weights.group_size == 32
+                    and q_scheme.input_activations.num_bits == 8
+                    and q_scheme.input_activations.type == "float"
+                    and q_scheme.input_activations.group_size == 32
+                ):
+                    return True
         return False
 
     def convert_layer(
@@ -715,6 +761,20 @@ class NVFP4Handler(WeightTypeHandler):
         if hasattr(module, "compressor") and module.compressor is not None:
             compressor_name = module.compressor.__class__.__name__
             return "NVFP4" in compressor_name
+        if hasattr(module, "quantization_scheme"):
+            from compressed_tensors.quantization.utils import is_module_quantized
+
+            if is_module_quantized(module):
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits == 4
+                    and q_scheme.weights.type == "float"
+                    and q_scheme.weights.group_size == 16
+                    and q_scheme.input_activations.num_bits == 4
+                    and q_scheme.input_activations.type == "float"
+                    and q_scheme.input_activations.group_size == 16
+                ):
+                    return True
         return False
 
     def convert_layer(
@@ -725,6 +785,12 @@ class NVFP4Handler(WeightTypeHandler):
         to_cpu: bool = False,
     ) -> torch.nn.Module:
         """Convert an NVFP4 CompressedLinear layer to a standard Linear layer."""
+        if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
+            from compressed_tensors.compressors.base import decompress_module
+
+            decompress_module(layer)
+            return layer
+
         from auto_round.schemes import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
