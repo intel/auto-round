@@ -142,7 +142,9 @@ class ShardWriter:
         if self.use_safetensors:
             from safetensors.torch import save_file
 
-            save_file(self.current_shard_tensors, tmp_path)
+            contiguous_tensors = {k: v.contiguous() if not v.is_contiguous() else v
+                                  for k, v in self.current_shard_tensors.items()}
+            save_file(contiguous_tensors, tmp_path)
         else:
             torch.save(self.current_shard_tensors, tmp_path)
 
