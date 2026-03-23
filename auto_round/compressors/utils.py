@@ -429,7 +429,10 @@ def set_layer_config(
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
                 layer_config.pop(name)
-                logger.debug(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
+                logger.warning(
+                    f"'{name}' exists in the model but is not a supported quantization target "
+                    f"in the current scheme, ignoring its setting in `layer_config`"
+                )
                 continue
 
         regex = re.compile(to_standard_regex(name))

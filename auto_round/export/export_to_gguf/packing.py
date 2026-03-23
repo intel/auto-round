@@ -655,11 +655,7 @@ def q2_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, i
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
         blocks = blocks.reshape(blocks.shape[0], -1)
-        # blocks, scales, mins = quant_tensor_gguf_asym_dq(
-        # blocks, bits=2, scale_dtype=torch.float32, imatrix=imatrix)
-        blocks, scales, mins = quant_tensor_gguf_opt_rtn_asym_dq(
-            blocks, bits=2, scale_dtype=torch.float32, imatrix=imatrix
-        )
+        blocks, scales, mins = quant_tensor_gguf_asym_dq(blocks, bits=2, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
         mins, d_wmin = mins["wmin"], mins["d_wmin"]
         blocks = blocks.reshape((nb, QK_K // 16, 16))
