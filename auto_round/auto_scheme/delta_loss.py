@@ -33,8 +33,8 @@ from auto_round.auto_scheme.utils import (
 )
 from auto_round.calib_dataset import get_dataloader
 from auto_round.data_type.gguf import (
-    quant_tensor_gguf_opt_rtn_asym_dq,
-    quant_tensor_gguf_opt_rtn_sym_dq,
+    quant_tensor_gguf_asym_dq,
+    quant_tensor_gguf_sym_dq,
     search_gguf_scale_min_asym,
     search_gguf_scale_min_sym,
 )
@@ -260,7 +260,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(tensor, bits, scale_dtype, imatrix)
             tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
 
-            qdq_w, _, _ = quant_tensor_gguf_opt_rtn_asym_dq(
+            qdq_w, _, _ = quant_tensor_gguf_asym_dq(
                 tensor=tensor,
                 bits=bits,
                 scale_dtype=scale_dtype,
@@ -275,7 +275,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
             scale, d_scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=1)
             tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
-            qdq_w, _, _ = quant_tensor_gguf_opt_rtn_sym_dq(
+            qdq_w, _, _ = quant_tensor_gguf_sym_dq(
                 tensor=tensor, bits=bits, scale_dtype=scale_dtype, imatrix=imatrix, scale=scale, d_scale=d_scale
             )
         else:
