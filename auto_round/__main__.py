@@ -151,10 +151,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument(
             "--disable_low_cpu_mem_usage",
             action="store_true",
-            help=(
-                "Disable low CPU memory mode. "
-                "Use this flag to turn off the default low CPU memory behavior."
-            ),
+            help=("Disable low CPU memory mode. " "Use this flag to turn off the default low CPU memory behavior."),
         )
         basic.add_argument(
             "--format",
