@@ -54,6 +54,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
+    wrap_block_forward_positional_to_kwargs,
 )
 from auto_round.utils.device import (
     parse_available_devices,
@@ -460,6 +461,8 @@ class CalibCompressor(BaseCompressor):
         Returns:
             function: The forward function.
         """
+        if self.model_context.is_diffusion:
+            return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
         def post_process_cache_data(batch_size, data, data_name):
             """

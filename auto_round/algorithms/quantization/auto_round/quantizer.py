@@ -43,6 +43,7 @@ from auto_round.utils import (
     is_auto_device_mapping,
     is_hpex_available,
     memory_monitor,
+    merge_block_output_keys,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     to_device,
@@ -91,7 +92,7 @@ class ARQuantizer(BaseQuantizers):
         super().post_init()
         if self.enable_alg_ext:
             try:
-                logger.warning_once("using algorithm extension for quantization.")
+                logger.info("using algorithm extension for quantization.")
                 from auto_round.alg_ext import wrapper_autoround
 
                 wrapper_autoround(self)
@@ -129,7 +130,7 @@ class ARQuantizer(BaseQuantizers):
         )
         if isinstance(current_input_ids, dict):
             hidden_states = current_input_ids.pop("hidden_states")
-            current_input_others.update(current_input_ids)
+            merge_block_output_keys(block, current_input_others, current_input_ids)
             current_input_ids = hidden_states
         output_q = block_forward(
             block,

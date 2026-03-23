@@ -72,6 +72,7 @@ class SerializedCompressorConfig:
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
+    transform_config: Optional[dict[str, Any]] = None
 
 
 class BaseCompressor(object):
@@ -172,6 +173,8 @@ class BaseCompressor(object):
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
 
+        self.transform_config = kwargs.pop("transform_config", {})
+
         # Reset both context singletons before creating fresh instances so that
         # consecutive AutoRound creations don't inherit stale config from earlier ones.
         CompressContext.reset_context()
@@ -266,6 +269,11 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
+        super_group_size = getattr(cfg, "super_group_size", None)
+        enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
+        if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""

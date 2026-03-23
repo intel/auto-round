@@ -91,7 +91,11 @@ class ShardWriter:
         # Directory Setup
         compress_context = CompressContext.get_context()
         formats = compress_context.formats
-        self.output_dir = os.path.join(_get_save_folder_name(formats[0]), "")
+        base_dir = _get_save_folder_name(formats[0])
+        subfolder = getattr(self.model, "_autoround_pipeline_subfolder", None)
+        if subfolder:
+            base_dir = os.path.join(base_dir, subfolder)
+        self.output_dir = os.path.join(base_dir, "")
         os.makedirs(self.output_dir, exist_ok=True)
 
         ShardWriter._initialized = True

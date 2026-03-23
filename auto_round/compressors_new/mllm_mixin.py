@@ -179,3 +179,33 @@ class MLLMMixin:
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(f"Insufficient number of samples: required {nsamples}, but only {total_cnt} were processed.")
+
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+        """Save the quantized model to the specified output directory in the specified format.
+
+        Args:
+            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
+            format (str, optional): The format in which to save the model. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            **kwargs: Additional keyword arguments specific to the export format.
+
+        Returns:
+            object: The compressed model object.
+        """
+        mc = self.model_context
+        processor = mc.processor
+        image_processor = mc.image_processor
+        tokenizer = mc.tokenizer
+
+        if processor is not None and not hasattr(processor, "chat_template"):
+            processor.chat_template = None
+        compressed_model = super().save_quantized(
+            output_dir=output_dir,
+            format=format,
+            inplace=inplace,
+            processor=processor,
+            image_processor=image_processor,
+            quant_nontext_module=self.quant_nontext_module if hasattr(self, "quant_nontext_module") else False,
+            **kwargs,
+        )
+        return compressed_model
