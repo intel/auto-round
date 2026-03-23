@@ -695,7 +695,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### Specify Inference Backend
 
-AutoRound automatically selects the  backend for each layer based on compatibility. In general, the priority order is Marlin > ExLLaMAV2 > Triton, but the final choice depends on factors such as group size, bit width, packing format, hardware device, and other implementation details.
+AutoRound automatically selects the backend for each layer based on compatibility. In general, the priority order is Marlin > ExLLaMAV2 > Triton, but the final choice depends on factors such as group size, bit width, packing format, hardware device, and other implementation details.
 
 The backend may not always be the most suitable for certain devices. 
 You can specify your preferred backend such as "ipex" for CPU and Intel GPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
@@ -713,17 +713,21 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
-| Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
-|--------------------------------------|----------|---------|-----------|----------|-----------------|-------------------------------|
-| ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
-| marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
-| exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq/gptq_zp+-1 | gptqmodel                     |
-| exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 3        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
-| gptq:cuda                            | cuda     | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
-| triton                               | xpu/cuda | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | <br/>auto-round                    |
-| awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                      |
-| hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
-| torch                                | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                    |
+| Name                                         | Devices      | Bits    | Dtypes    | Priority | Packing format  | Requirements                      |
+|----------------------------------------------|--------------|---------|-----------|----------|-----------------|-----------------------------------|
+| ipex                                         | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch       |
+| marlin                                       | cuda         | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                         |
+| exllamav2 or<br/>gptqmodel:exllamav2         | cuda         | 4       | BF16/FP16 | 5        | gptq/gptq_zp+-1 | gptqmodel                         |
+| exllamav2 or<br/>gptq:exllamav2              | cuda         | 4       | FP16      | 3        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
+| gptq:cuda                                    | cuda         | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
+| triton                                       | xpu/cuda     | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | auto-round                        |
+| awq                                          | cuda         | 4       | FP16      | 5        | awq             | auto-awq<br/>transformers<4.57.0                          |
+| gptqmodel:awq or<br/>gptqmodel:awq_exllamav2 | cuda         | 4       | BF16/FP16 | 6        | awq             | gptqmodel                         |
+| gptqmodel:awq_marlin                         | cuda         | 4,8     | FP16      | 5        | awq             | gptqmodel                         |
+| gptqmodel:awq_gemm                           | cuda         | 4       | FP16      | 3        | awq             | gptqmodel                         |
+| gptqmodel:awq_torch                          | cuda/cpu     | 4       | FP16      | 2        | awq             | gptqmodel                         |
+| hpu                                          | hpu          | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                        |
+| torch                                        | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                        |
 
 
 ### Convert GPTQ/AWQ to AutoRound

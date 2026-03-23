@@ -19,8 +19,13 @@ class TestLLMC:
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     # remove since w8a8 not in llmcompressor format supported schemes
     # def test_llmcompressor_w8a8(self):
@@ -50,15 +55,15 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save("./saved", format="llm_compressor")
+        autoround.quantize_and_save(self.save_dir, format="llm_compressor")
         # from vllm import LLM
-        # model = LLM("./saved")
+        # model = LLM(self.save_dir)
         # result = model.generate("Hello my name is")
         # print(result)
 
         import json
 
-        config = json.load(open("./saved/config.json"))
+        config = json.load(open(os.path.join(self.save_dir, "config.json")))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
@@ -75,11 +80,11 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save("./saved", format="auto_round:llm_compressor")
+        autoround.quantize_and_save(self.save_dir, format="auto_round:llm_compressor")
 
         import json
 
-        config = json.load(open("./saved/config.json"))
+        config = json.load(open(os.path.join(self.save_dir, "config.json")))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"

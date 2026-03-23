@@ -14,7 +14,6 @@
 
 import torch
 
-from auto_round.data_type.int import quant_tensor_rtn_sym, quant_tensor_sym
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import float8_e4m3fn_ste, get_gaudi_fp8_ste_func
 
@@ -57,62 +56,9 @@ def progressive_quant_fp8_int4(
     ##convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
     ##convert to int4
+    from auto_round.data_type.int import quant_tensor_sym
 
     qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(
-        fp8_res_using_16bit,
-        bits=bits,
-        group_size=group_size,
-        v=v,
-        min_scale=min_scale,
-        max_scale=max_scale,
-        scale_dtype=torch.bfloat16,
-        q_scale_thresh=q_scale_thresh,
-    )
-    qdq_tensor = qdq_int4_tensor * bf16_to_fp8_scale
-
-    bf16_to_int4_scale = scale_fp8_to_int4 * bf16_to_fp8_scale
-    return qdq_tensor, {"scale": bf16_to_int4_scale, "bf16_to_fp8_scale": bf16_to_fp8_scale}, zp_fp8_to_int4
-
-
-@register_dtype("rtn_fp8_to_int_sym")
-def progressive_quant_rtn_fp8_int4(
-    tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5, **kwargs
-):
-    """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
-
-    This method first quantizes the input tensor into float8 format and then performs
-    a secondary quantization to int4 with grouping.
-
-    Args:
-        tensor (torch.Tensor): Input tensor to quantize.
-        bits (int, optional): Bit precision for secondary quantization. Defaults to 4.
-        group_size (int, optional): Group size for int4 quantization. Defaults to -1 (no grouping).
-        v (float, optional): Optional parameter for variance tuning. Defaults to 0.
-        min_scale (float, optional): Minimum scaling factor for int4 quantization. Defaults to 1.0.
-        max_scale (float, optional): Maximum scaling factor for int4 quantization. Defaults to 1.0.
-        q_scale_thresh (float, optional): Threshold for scaling. Defaults to 1e-5.
-        **kwargs: Additional arguments for compatibility.
-
-    Returns:
-        tuple:
-            - Quantized and dequantized tensor (torch.Tensor).
-            - Combined scaling factor (torch.Tensor).
-            - Placeholder for zp (None).
-    """
-
-    info = torch.finfo(torch.float8_e4m3fn)
-    orig_dtype = tensor.dtype
-    tensor_max = torch.max(torch.abs(tensor)).to(torch.float32)
-    scale = tensor_max.to(torch.float32) / info.max
-    min_scaling_factor = 1.0 / (info.max * 512.0)  ##copy from vllm
-    bf16_to_fp8_scale = tensor_max.div_(info.max).clamp_(min=min_scaling_factor)
-    fp8_res = tensor.div_(bf16_to_fp8_scale).clamp_(info.min, info.max).to(torch.float8_e4m3fn)
-
-    ##convert to bf16
-    fp8_res_using_16bit = fp8_res.to(orig_dtype)
-    ##convert to int4
-
-    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_rtn_sym(
         fp8_res_using_16bit,
         bits=bits,
         group_size=group_size,

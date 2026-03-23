@@ -13,6 +13,7 @@
 # limitations under the License.
 import json
 import os
+import shutil
 
 import torch
 import torch.nn as nn
@@ -38,6 +39,134 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             return True
     return False
+
+
+def is_local_pipeline_model_dir(model_dir: str) -> bool:
+    if not model_dir or not os.path.isdir(model_dir):
+        return False
+    return os.path.isfile(os.path.join(model_dir, "model_index.json"))
+
+
+def is_remote_pipeline_model_dir(model_dir: str) -> bool:
+    if not model_dir or os.path.isdir(model_dir):
+        return False
+    try:
+        from huggingface_hub import list_repo_files
+
+        return "model_index.json" in list_repo_files(model_dir)
+    except Exception:
+        return False
+
+
+def is_pipeline_model_dir(model_dir: str) -> bool:
+    return is_local_pipeline_model_dir(model_dir) or is_remote_pipeline_model_dir(model_dir)
+
+
+def _resolve_pipeline_source_dir(model: nn.Module) -> str | None:
+    candidates = [
+        getattr(model, "name_or_path", None),
+        getattr(getattr(model, "config", None), "_name_or_path", None),
+        getattr(getattr(model, "config", None), "name_or_path", None),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and is_pipeline_model_dir(candidate):
+            return candidate
+    return None
+
+
+def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
+    target_path = os.path.join(output_dir, relative_path)
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    if is_local_pipeline_model_dir(model_dir):
+        source_path = os.path.join(model_dir, relative_path)
+    else:
+        from huggingface_hub import hf_hub_download
+
+        source_path = hf_hub_download(model_dir, relative_path)
+    shutil.copy2(source_path, target_path)
+
+
+def _copy_pipeline_artifacts(source_dir: str, output_dir: str, exclude_components: set[str] | None = None):
+    exclude_components = exclude_components or set()
+    os.makedirs(output_dir, exist_ok=True)
+
+    model_index_path = os.path.join(source_dir, "model_index.json") if is_local_pipeline_model_dir(source_dir) else None
+    if model_index_path:
+        with open(model_index_path, "r", encoding="utf-8") as f:
+            model_index = json.load(f)
+    else:
+        from huggingface_hub import hf_hub_download, list_repo_files
+
+        with open(hf_hub_download(source_dir, "model_index.json"), "r", encoding="utf-8") as f:
+            model_index = json.load(f)
+
+    component_dirs = [k for k, v in model_index.items() if not k.startswith("_") and isinstance(v, list)]
+    is_local = is_local_pipeline_model_dir(source_dir)
+
+    # Copy root-level files
+    if is_local:
+        for name in os.listdir(source_dir):
+            src = os.path.join(source_dir, name)
+            if os.path.isfile(src) and (
+                name in ("model_index.json", ".gitattributes") or name.lower().startswith(("readme", "license"))
+            ):
+                shutil.copy2(src, os.path.join(output_dir, name))
+    else:
+        all_files = list(list_repo_files(source_dir))
+        for name in all_files:
+            if "/" not in name and (
+                name in ("model_index.json", ".gitattributes") or name.lower().startswith(("readme", "license"))
+            ):
+                _copy_pipeline_artifact(source_dir, name, output_dir)
+
+    # Copy component directories
+    for component_name in component_dirs:
+        if component_name in exclude_components:
+            continue
+        if is_local:
+            src = os.path.join(source_dir, component_name)
+            dst = os.path.join(output_dir, component_name)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            prefix = f"{component_name}/"
+            for f in all_files:
+                if f.startswith(prefix):
+                    _copy_pipeline_artifact(source_dir, f, output_dir)
+
+
+def resolve_pipeline_export_layout(model: nn.Module, output_dir: str) -> tuple[str, str, bool]:
+    model_component = getattr(model, "_autoround_pipeline_subfolder", None)
+    if model_component is None:
+        return output_dir, output_dir, False
+
+    source_dir = _resolve_pipeline_source_dir(model)
+    processor_component = None
+    if source_dir is not None:
+        try:
+            model_index_path = (
+                os.path.join(source_dir, "model_index.json") if is_local_pipeline_model_dir(source_dir) else None
+            )
+            if model_index_path:
+                with open(model_index_path, "r", encoding="utf-8") as f:
+                    model_index = json.load(f)
+            else:
+                from huggingface_hub import hf_hub_download
+
+                with open(hf_hub_download(source_dir, "model_index.json"), "r", encoding="utf-8") as f:
+                    model_index = json.load(f)
+            if "processor" in model_index and isinstance(model_index["processor"], list):
+                processor_component = "processor"
+            excluded = {model_component}
+            if processor_component:
+                excluded.add(processor_component)
+            _copy_pipeline_artifacts(source_dir, output_dir, exclude_components=excluded)
+        except Exception as e:
+            logger.warning("Failed to copy pipeline artifacts from %s: %s", source_dir, e)
+
+    model_output_dir = os.path.join(output_dir, model_component)
+    processor_output_dir = os.path.join(output_dir, processor_component) if processor_component else output_dir
+    return model_output_dir, processor_output_dir, True
 
 
 def save_model(
@@ -83,10 +212,15 @@ def save_model(
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     try:
-        copy_missing_tensors_from_source(
-            source_dir=model.config._name_or_path,
-            target_dir=save_dir,
-        )
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "_name_or_path")
+            and model.config.name_or_path is not None  # set None for tiny model
+        ):
+            copy_missing_tensors_from_source(
+                source_dir=model.config._name_or_path,
+                target_dir=save_dir,
+            )
     except Exception as e:
         logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
 
@@ -104,7 +238,12 @@ def save_model(
             json.dump(model.config.quantization_config, f, indent=2)
 
     try:
-        copy_python_files_from_model_cache(model, save_dir)
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "_name_or_path")
+            and model.config.name_or_path is not None  # set None for tiny model
+        ):
+            copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
 
