@@ -461,8 +461,6 @@ class CalibCompressor(BaseCompressor):
         Returns:
             function: The forward function.
         """
-        if self.model_context.is_diffusion:
-            return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
         def post_process_cache_data(batch_size, data, data_name):
             """
@@ -922,7 +920,6 @@ class CalibCompressor(BaseCompressor):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.compress_context.device,
                     disable_opt_rtn=self.disable_opt_rtn,
-                    enable_rtn=self.iters == 0,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)

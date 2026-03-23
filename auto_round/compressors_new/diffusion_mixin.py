@@ -18,6 +18,7 @@ import torch
 from tqdm import tqdm
 
 from auto_round.logger import logger
+from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
 
 class DiffusionMixin:
@@ -54,6 +55,14 @@ class DiffusionMixin:
 
         # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
+
+    def _get_block_forward_func(self, name: str):
+        """Diffusion models pass positional args; wrap the base forward func accordingly.
+
+        The MRO guarantees that super() resolves to CalibCompressor._get_block_forward_func,
+        mirroring the old-arch pattern in compressors/diffusion/compressor.py.
+        """
+        return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
     @torch.no_grad()
     def calib(self, nsamples, bs):

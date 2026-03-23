@@ -71,6 +71,12 @@ class Compressor(object):
         # Detect model type to determine if we need special compressor
         model_type = detect_model_type(model)
 
+        # If the user explicitly passes processor/image_processor, treat as MLLM even if
+        # auto-detection missed it (mirrors the has_multimodal_assets check in autoround.py).
+        has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None
+        if has_multimodal_assets and model_type != "mllm":
+            model_type = "mllm"
+
         if isinstance(config, AutoRoundConfig):
             # For AutoRound, we need calibration-based compression
             # Dynamically create combined class using Mixin pattern
