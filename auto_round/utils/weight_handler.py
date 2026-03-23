@@ -581,7 +581,7 @@ class MXFP4Handler(WeightTypeHandler):
 
     def detect_layer(self, module: torch.nn.Module) -> bool:
         """Check if a module is an MXFP4 CompressedLinear layer."""
-        if module.__class__.__name__ != "CompressedLinear":
+        if module.__class__.__name__ == "CompressedLinear":
             if hasattr(module, "compressor") and module.compressor is not None:
                 compressor_name = module.compressor.__class__.__name__
                 return "MXFP4" in compressor_name
@@ -670,11 +670,10 @@ class MXFP8Handler(WeightTypeHandler):
 
     def detect_layer(self, module: torch.nn.Module) -> bool:
         """Check if a module is an MXFP8 CompressedLinear layer."""
-        if module.__class__.__name__ != "CompressedLinear":
-            return False
-        if hasattr(module, "compressor") and module.compressor is not None:
-            compressor_name = module.compressor.__class__.__name__
-            return "MXFP8" in compressor_name
+        if module.__class__.__name__ == "CompressedLinear":
+            if hasattr(module, "compressor") and module.compressor is not None:
+                compressor_name = module.compressor.__class__.__name__
+                return "MXFP8" in compressor_name
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
@@ -756,11 +755,10 @@ class NVFP4Handler(WeightTypeHandler):
 
     def detect_layer(self, module: torch.nn.Module) -> bool:
         """Check if a module is an NVFP4 CompressedLinear layer."""
-        if module.__class__.__name__ != "CompressedLinear":
-            return False
-        if hasattr(module, "compressor") and module.compressor is not None:
-            compressor_name = module.compressor.__class__.__name__
-            return "NVFP4" in compressor_name
+        if module.__class__.__name__ == "CompressedLinear":
+            if hasattr(module, "compressor") and module.compressor is not None:
+                compressor_name = module.compressor.__class__.__name__
+                return "NVFP4" in compressor_name
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
