@@ -17,11 +17,11 @@ deepseek_v2_lite_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite-Chat")
 def setup_deepseek_v2_lite():
     """Fixture to set up the DeepSeek-V2-Lite model for testing."""
     model_name = deepseek_v2_lite_path
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
     # Reduce layers for faster testing
     config.num_hidden_layers = 2
-    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_config(config, trust_remote_code=False)
     output_dir = "./tmp/test_moe_alignment_deepseek"
     return model, tokenizer, output_dir, config
 

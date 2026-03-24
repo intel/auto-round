@@ -301,8 +301,22 @@ class TestQwen3OmniMoeReplacement:
             new_thinker_out = model.thinker.model.layers[0].mlp(x)
             new_talker_out = model.talker.model.layers[0].mlp(x)
 
-        assert torch.allclose(orig_thinker_out, new_thinker_out, atol=1e-5), "Thinker MoE forward mismatch"
-        assert torch.allclose(orig_talker_out, new_talker_out, atol=1e-5), "Talker MoE forward mismatch"
+        # Use a NaN-safe comparison: check that NaN positions match, then
+        # compare finite values.  This avoids false failures when random
+        # weights cause some outputs to overflow to NaN.
+        for name, orig, new in [
+            ("Thinker", orig_thinker_out, new_thinker_out),
+            ("Talker", orig_talker_out, new_talker_out),
+        ]:
+            assert orig.shape == new.shape, f"{name} shape mismatch: {orig.shape} vs {new.shape}"
+            orig_nan = torch.isnan(orig)
+            new_nan = torch.isnan(new)
+            assert torch.equal(orig_nan, new_nan), f"{name} NaN positions differ"
+            finite_mask = ~orig_nan
+            if finite_mask.any():
+                assert torch.allclose(
+                    orig[finite_mask], new[finite_mask], atol=1e-5
+                ), f"{name} MoE forward mismatch on finite values"
 
 
 class TestQwen3OmniMoeProcessor:
