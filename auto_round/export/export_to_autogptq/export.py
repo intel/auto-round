@@ -179,12 +179,14 @@ def pack_layer(name, model, backend, device=None):
             zero = int(zero.flatten()[0])
     else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero
+    if isinstance(zero, torch.Tensor) and zero.dtype == torch.bfloat16:
+        zero = zero.float()
     sig = inspect.signature(qlayer.pack)
     param_count = len(sig.parameters)
     if param_count == 2:
         qlayer.pack(layer, scale, device)
     else:
-        qlayer.pack(layer, scale, zero.float(), None, device)
+        qlayer.pack(layer, scale, zero, None, device)
     qlayer.to(orig_device)
     set_module(model, name, qlayer)
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
