@@ -53,7 +53,6 @@ class TestCompressedTensor:
         assert (
             model.model.layers[0].mlp.up_proj.weight_packed.dtype == torch.uint8
         ), "Original weight is not in FP8 format"
-        print(model.model.layers[0].mlp.up_proj.quantization_scheme)
         assert hasattr(
             model.model.layers[0].mlp.up_proj, "quantization_scheme"
         ), "Model does not contain CompressedLinear layers"

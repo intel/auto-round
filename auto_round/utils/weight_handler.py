@@ -490,7 +490,7 @@ class FP8Handler(WeightTypeHandler):
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
-            if is_module_quantized(module):
+            if is_module_quantized(module) and module.quantization_status.value == "compressed":
                 q_scheme = module.quantization_scheme
                 if (
                     q_scheme.weights.num_bits == 8
@@ -588,7 +588,7 @@ class MXFP4Handler(WeightTypeHandler):
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
-            if is_module_quantized(module):
+            if is_module_quantized(module) and module.quantization_status.value == "compressed":
                 q_scheme = module.quantization_scheme
                 if (
                     q_scheme.weights.num_bits == 4
@@ -677,7 +677,7 @@ class MXFP8Handler(WeightTypeHandler):
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
-            if is_module_quantized(module):
+            if is_module_quantized(module) and module.quantization_status.value == "compressed":
                 q_scheme = module.quantization_scheme
                 if (
                     q_scheme.weights.num_bits == 8
@@ -762,7 +762,7 @@ class NVFP4Handler(WeightTypeHandler):
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
-            if is_module_quantized(module):
+            if is_module_quantized(module) and module.quantization_status.value == "compressed":
                 q_scheme = module.quantization_scheme
                 if (
                     q_scheme.weights.num_bits == 4
