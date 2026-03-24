@@ -142,6 +142,7 @@ def _use_grad_for_differentiable(func):
     Returns:
         Callable: Wrapped function that manages the gradient context.
     """
+
     def _use_grad(self, *args, **kwargs):
         prev_grad = torch.is_grad_enabled()
         try:

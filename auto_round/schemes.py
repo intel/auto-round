@@ -65,6 +65,7 @@ class QuantizationScheme:
         super_group_size (int | None): Group size for the secondary scale
             quantization.
     """
+
     bits: int = 4
     group_size: int = 128
     sym: bool = True

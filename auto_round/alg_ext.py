@@ -581,6 +581,7 @@ def _register_act_max_hook_ext(self, model):
     Returns:
         list: List of :class:`torch.utils.hooks.RemovableHook` handles.
     """
+
     def get_act_max_hook(module, input, output):
         if isinstance(input, (tuple, list)):
             input = input[0]
