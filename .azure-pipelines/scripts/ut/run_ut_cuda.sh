@@ -170,7 +170,7 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128
+    uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
